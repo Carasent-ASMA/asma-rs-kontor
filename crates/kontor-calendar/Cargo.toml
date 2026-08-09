@@ -1,0 +1,21 @@
+[package]
+name = "kontor-calendar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Work windows, holiday imports, drain state and scoped overrides."
+
+[lints]
+workspace = true
+
+[dependencies]
+jiff = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+icalendar = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }

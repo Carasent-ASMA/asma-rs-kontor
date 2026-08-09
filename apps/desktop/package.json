@@ -1,0 +1,13 @@
+{
+  "name": "kontor-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Tauri 2 desktop shell for the Kontor console (scaffold placeholder owned by KON-MVP-17)",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  }
+}

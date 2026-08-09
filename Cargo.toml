@@ -1,0 +1,101 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kontor-core",
+    "crates/kontor-store",
+    "crates/kontor-runtime",
+    "crates/kontor-runtime-paseo",
+    "crates/kontor-runtime-ao",
+    "crates/kontor-runtime-codex",
+    "crates/kontor-context",
+    "crates/kontor-accounts",
+    "crates/kontor-teams",
+    "crates/kontor-scheduler",
+    "crates/kontor-calendar",
+    "crates/kontor-policy",
+    "crates/kontor-integrations-asma",
+    "crates/kontor-api",
+    "crates/kontor-daemon",
+    "crates/kontor-cli",
+    "crates/kontor-mcp",
+    "crates/kontor-profiles",
+    "crates/kontor-intake",
+    "tests/contract",
+    "tests/e2e",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Carasent-ASMA/asma-rs-kontor"
+authors = ["Carasent ASMA"]
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+
+# Exact pins are authoritative; the generated Cargo.lock is committed.
+# KON-MVP-02 owns this list: later tickets add shared dependencies only
+# through re-planning (CON-007).
+[workspace.dependencies]
+# All requirements are exact direct pins (=X.Y.Z): caret/compatible semantics
+# are rejected here so resolution never drifts from the committed Cargo.lock
+# (CON-007; KON-MVP-02 owns this list).
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+uuid = { version = "=1.24.0", features = ["v7", "serde"] }
+# Bundled IANA tzdb is required on every platform (DST behavior must not
+# depend on the host /usr/share/zoneinfo), so tzdb-bundle-always is enabled
+# explicitly: jiff's default tzdb-bundle-platform only bundles on Windows/wasm.
+jiff = { version = "=0.2.35", features = ["serde", "tzdb-bundle-always"] }
+thiserror = "=2.0.20"
+
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "signal", "process"] }
+async-trait = "=0.1.92"
+futures = "=0.3.33"
+tokio-stream = "=0.1.19"
+
+axum = "=0.8.9"
+tower = "=0.5.3"
+tower-http = { version = "=0.7.0", features = ["trace", "cors"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt"] }
+
+reqwest = { version = "=0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
+rusqlite = { version = "=0.40.2", features = ["bundled", "backup"] }
+
+clap = { version = "=4.6.6", features = ["derive"] }
+utoipa = "=5.5.0"
+utoipa-swagger-ui = "=9.0.2"
+rmcp = { version = "=3.1.2", features = ["server"] }
+
+url = "=2.5.8"
+bytes = "=1.12.1"
+sha2 = "=0.11.0"
+hex = "=0.4.3"
+
+secrecy = "=0.10.3"
+zeroize = "=1.9.0"
+keyring = "=4.1.6"
+directories = "=6.0.0"
+fs4 = "=1.1.0"
+
+icalendar = "=0.17.13"
+
+tempfile = "=3.27.0"
+proptest = "=1.11.0"
+insta = "=1.48.0"
+assert_cmd = "=2.2.2"
+predicates = "=3.1.4"
+wiremock = "=0.6.5"
+
+tauri = "=2.11.5"
+tauri-build = "=2.6.3"
+tauri-plugin-stronghold = "=2.3.1"

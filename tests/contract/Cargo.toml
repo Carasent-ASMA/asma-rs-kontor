@@ -1,0 +1,20 @@
+[package]
+name = "kontor-tests-contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Kontor workspace contract test crate."
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }
+insta = { workspace = true }
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+wiremock = { workspace = true }

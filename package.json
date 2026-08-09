@@ -1,0 +1,16 @@
+{
+  "name": "asma-rs-kontor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Kontor control plane workspace - Rust core, React console, Tauri desktop",
+  "packageManager": "pnpm@11.6.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build",
+    "audit:prod": "pnpm audit --prod"
+  }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "kontor-accounts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Non-secret account profiles, credential references and routing."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+secrecy = { workspace = true }
+zeroize = { workspace = true }
+keyring = { workspace = true }
+directories = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
