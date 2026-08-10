@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "id": "q7.delivery",
+  "version": 3,
+  "name": "Arbitrary delivery profile",
+  "phases": [
+    {
+      "id": "q7.capture",
+      "label": "Capture",
+      "required_artifacts": ["artifact.brief"],
+      "gates": [],
+      "rejection_route": null
+    },
+    {
+      "id": "q7.shape",
+      "label": "Shape",
+      "required_artifacts": [],
+      "gates": [],
+      "rejection_route": "q7.capture"
+    },
+    {
+      "id": "q7.assemble",
+      "label": "Assemble",
+      "required_artifacts": [],
+      "gates": [],
+      "rejection_route": "q7.shape"
+    },
+    {
+      "id": "q7.attest",
+      "label": "Attest",
+      "required_artifacts": ["artifact.report"],
+      "gates": ["q7.attest.sign"],
+      "rejection_route": "q7.shape"
+    },
+    {
+      "id": "q7.settle",
+      "label": "Settle",
+      "required_artifacts": [],
+      "gates": [],
+      "rejection_route": null
+    }
+  ],
+  "edges": [
+    { "from": "q7.capture", "to": "q7.shape", "handoff_role": "maker.primary" },
+    { "from": "q7.shape", "to": "q7.assemble", "handoff_role": null },
+    { "from": "q7.assemble", "to": "q7.attest", "handoff_role": null },
+    { "from": "q7.attest", "to": "q7.settle", "handoff_role": null }
+  ],
+  "entry_phase": "q7.capture",
+  "terminal_phases": ["q7.settle"],
+  "roles": [
+    { "role": "maker.primary", "version": 1 },
+    { "role": "reviewer.independent", "version": 2 },
+    { "role": "authority.waiver", "version": 1 }
+  ],
+  "skills": [{ "skill": "skill.analysis", "version": 1 }],
+  "team_template": null,
+  "artifacts": [
+    {
+      "key": "artifact.brief",
+      "label": "Brief",
+      "producer_phase": "q7.capture",
+      "content_type": "document",
+      "evidence_required": true
+    },
+    {
+      "key": "artifact.report",
+      "label": "Report",
+      "producer_phase": "q7.assemble",
+      "content_type": "report",
+      "evidence_required": true
+    }
+  ],
+  "gates": [
+    {
+      "id": "q7.attest.sign",
+      "phase": "q7.attest",
+      "evaluator_roles": ["reviewer.independent"],
+      "required_evidence": ["artifact.report"],
+      "rejection_target": "q7.shape",
+      "waiver_allowed": true,
+      "waiver_roles": ["authority.waiver"]
+    }
+  ],
+  "runtime_routing": { "runtime_kind": "generic.runtime", "version": 1 },
+  "budget_defaults": {
+    "max_tokens": 400000,
+    "max_commands": 250,
+    "max_duration_seconds": 7200,
+    "max_cost": { "minor_units": 5000, "currency": "NOK" }
+  },
+  "calendar_policy": null,
+  "external_workflow": null
+}

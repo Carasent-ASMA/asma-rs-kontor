@@ -17,3 +17,8 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
 thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

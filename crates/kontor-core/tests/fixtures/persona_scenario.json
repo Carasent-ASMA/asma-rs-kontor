@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "scenario_id": "0193f000-0000-7000-8000-00000000a001",
+  "version": 2,
+  "persona": "persona.hesitant-newcomer",
+  "characteristics": {
+    "schema_version": 1,
+    "goals": ["complete the flow without help"],
+    "traits": ["low confidence", "reads every label"]
+  },
+  "identity": { "reference": "seeded fixture identity 4", "seeded": true },
+  "environment": { "kind": "sandbox", "reference": "sandbox-eu-1" },
+  "steps": [
+    {
+      "order": 1,
+      "instruction": "Open the entry screen",
+      "expected_evidence": ["artifact.session-recording"]
+    },
+    {
+      "order": 2,
+      "instruction": "Attempt the primary action",
+      "expected_evidence": ["artifact.session-recording"]
+    }
+  ],
+  "prohibited_actions": ["contact a real recipient", "write to production"],
+  "required_evidence": ["artifact.session-recording"],
+  "gate_under_test": "q7.attest.sign",
+  "actor_role": "persona.actor",
+  "evaluator_roles": ["reviewer.independent"]
+}

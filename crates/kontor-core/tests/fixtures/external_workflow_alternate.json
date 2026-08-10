@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "connector": "connector.beta",
+  "project": "nordlys",
+  "issue_type": "sak",
+  "work_profile": null,
+  "version": 1,
+  "milestones": [
+    {
+      "milestone": "milestone.development-started",
+      "predicate": {
+        "kind": "task_state_is",
+        "state": "in_progress"
+      },
+      "target": {
+        "status_id": "S-77",
+        "status_name": "Under arbeid"
+      }
+    },
+    {
+      "milestone": "milestone.verification-started",
+      "predicate": {
+        "kind": "gate_state_is",
+        "gate": "q7.attest.sign",
+        "state": "active"
+      },
+      "target": {
+        "status_id": "S-78",
+        "status_name": "Til kontroll"
+      }
+    },
+    {
+      "milestone": "milestone.closed",
+      "predicate": {
+        "kind": "all_required_gates_passed"
+      },
+      "target": {
+        "status_id": "S-99",
+        "status_name": "Ferdig"
+      }
+    }
+  ],
+  "statuses": [
+    {
+      "selector": {
+        "status_id": "S-10",
+        "status_name": "Ny"
+      },
+      "class": "active"
+    },
+    {
+      "selector": {
+        "status_id": "S-77",
+        "status_name": "Under arbeid"
+      },
+      "class": "active"
+    },
+    {
+      "selector": {
+        "status_id": "S-78",
+        "status_name": "Til kontroll"
+      },
+      "class": "active"
+    },
+    {
+      "selector": {
+        "status_id": "S-90",
+        "status_name": "P\u00e5 vent"
+      },
+      "class": "hold"
+    },
+    {
+      "selector": {
+        "status_id": "S-99",
+        "status_name": "Ferdig"
+      },
+      "class": "terminal_success"
+    },
+    {
+      "selector": {
+        "status_id": "S-98",
+        "status_name": "Abgebrochen"
+      },
+      "class": "terminal_cancelled"
+    },
+    {
+      "selector": {
+        "status_id": "S-97",
+        "status_name": "Zurueckgewiesen"
+      },
+      "class": "terminal_rejected"
+    }
+  ],
+  "inbound_compatible": [
+    {
+      "status_id": "S-10",
+      "status_name": "Ny"
+    },
+    {
+      "status_id": "S-77",
+      "status_name": "Under arbeid"
+    },
+    {
+      "status_id": "S-78",
+      "status_name": "Til kontroll"
+    }
+  ],
+  "ownership_milestone": "milestone.development-started",
+  "ownership": {
+    "identity_source": "external_account_id",
+    "mismatch": "raise_conflict",
+    "terminal_action": "preserve"
+  },
+  "hold": {
+    "status_id": "S-90",
+    "status_name": "P\u00e5 vent"
+  },
+  "reopen": {
+    "status_id": "S-10",
+    "status_name": "Ny"
+  }
+}

@@ -12,8 +12,17 @@ description = "SQLite repositories, migrations and event append/replay for the K
 workspace = true
 
 [dependencies]
+# The exact version is the workspace's own package version. A bare path
+# dependency is a wildcard requirement, which `deny.toml` refuses.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# Integration tests assert schema inventory, trigger behaviour and immutability
+# through direct SQL, which the public store API deliberately does not expose.
+rusqlite = { workspace = true }
+tempfile = { workspace = true }
