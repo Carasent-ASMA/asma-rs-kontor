@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kontor.asma.carasent.com/schemas/handoff-capsule-v1.schema.json",
+  "title": "Kontor portable handoff capsule and acknowledgement v1",
+  "description": "The portable cross-engine handoff and the receiver acknowledgement that binds one exact capsule digest. The capsule carries explicit, reviewable work evidence and nothing else: no transcript, no hidden model state, no token cache, no credentials and no provider-native session locator. Same-engine continuation metadata is a separate, non-portable document and never appears here. Every list is required; a producer with nothing to report sends an explicit empty list, so 'no tests' and 'forgot the tests' are never the same capsule.",
+  "oneOf": [
+    { "$ref": "#/$defs/handoffCapsule" },
+    { "$ref": "#/$defs/handoffAcknowledgement" }
+  ],
+  "$defs": {
+    "handoffCapsule": {
+      "title": "Handoff capsule",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "realm_id",
+        "handoff_id",
+        "continuation_mode",
+        "source_run_id",
+        "context_pack_id",
+        "context_pack_hash",
+        "workspace",
+        "attempted_work",
+        "touched_files",
+        "commits",
+        "tests",
+        "decisions",
+        "evidence",
+        "remaining_work",
+        "risks",
+        "recommended_next_action"
+      ],
+      "properties": {
+        "schema_version": { "type": "integer", "const": 1 },
+        "realm_id": { "$ref": "#/$defs/uuidV7" },
+        "handoff_id": { "$ref": "#/$defs/uuidV7" },
+        "continuation_mode": {
+          "description": "Always cross_engine_handoff. A capsule claiming same-engine continuity is refused: this document cannot transfer native session state.",
+          "type": "string",
+          "const": "cross_engine_handoff"
+        },
+        "source_run_id": {
+          "description": "The run handing over.",
+          "$ref": "#/$defs/uuidV7"
+        },
+        "target_run_id": {
+          "description": "The run taking over, once it exists. Absent or null until then; never equal to source_run_id.",
+          "oneOf": [{ "$ref": "#/$defs/uuidV7" }, { "type": "null" }]
+        },
+        "context_pack_id": { "$ref": "#/$defs/uuidV7" },
+        "context_pack_hash": {
+          "description": "Digest of the Context Pack the source run was frozen against.",
+          "$ref": "#/$defs/contentHash"
+        },
+        "workspace": { "$ref": "#/$defs/workspaceRef" },
+        "attempted_work": {
+          "description": "What the source run attempted, in order. No exact duplicates.",
+          "$ref": "#/$defs/textList"
+        },
+        "touched_files": {
+          "description": "Files the source run touched. No exact duplicates.",
+          "$ref": "#/$defs/textList"
+        },
+        "commits": {
+          "description": "Commits the source run produced. No exact duplicates.",
+          "$ref": "#/$defs/idList"
+        },
+        "tests": {
+          "description": "Test commands and their results, in order. The result is part of the entry, so re-running a command after a fix is two distinct attempts rather than a rejected duplicate.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/testAttempt" },
+          "uniqueItems": true
+        },
+        "decisions": {
+          "description": "Decisions taken, so the successor does not relitigate them.",
+          "$ref": "#/$defs/textList"
+        },
+        "evidence": {
+          "description": "References to stored evidence. References only; never the evidence payload.",
+          "$ref": "#/$defs/idList"
+        },
+        "remaining_work": { "$ref": "#/$defs/textList" },
+        "risks": { "$ref": "#/$defs/textList" },
+        "recommended_next_action": {
+          "description": "The single recommended next action. Must not be blank.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "handoffAcknowledgement": {
+      "title": "Handoff acknowledgement",
+      "description": "A separate document bound to one exact capsule digest: a receiver cannot acknowledge 'a handoff', only this one. Workspace-mutation enforcement belongs to the runtime and scheduler, not to this contract.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "realm_id",
+        "capsule_hash",
+        "receiver_run_id",
+        "receipt_id",
+        "evidence_hash",
+        "acknowledged_at"
+      ],
+      "properties": {
+        "schema_version": { "type": "integer", "const": 1 },
+        "realm_id": { "$ref": "#/$defs/uuidV7" },
+        "capsule_hash": {
+          "description": "Digest of the exact capsule being acknowledged.",
+          "$ref": "#/$defs/contentHash"
+        },
+        "receiver_run_id": {
+          "description": "The run taking the work over. Never the run that produced the capsule.",
+          "$ref": "#/$defs/uuidV7"
+        },
+        "receipt_id": { "$ref": "#/$defs/uuidV7" },
+        "evidence_hash": { "$ref": "#/$defs/contentHash" },
+        "acknowledged_at": {
+          "description": "Canonical UTC RFC 3339 instant.",
+          "type": "string"
+        }
+      }
+    },
+    "uuidV7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "contentHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "workspaceRef": {
+      "description": "The workspace the successor inherits.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "branch", "baseline_commit"],
+      "properties": {
+        "root": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string", "minLength": 1 },
+        "baseline_commit": { "type": "string", "minLength": 1 }
+      }
+    },
+    "textList": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "idList": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "testAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "result"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "result": {
+          "type": "string",
+          "enum": ["passed", "failed", "skipped"]
+        }
+      }
+    }
+  }
+}

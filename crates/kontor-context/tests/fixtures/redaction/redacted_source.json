@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "realm_id": "0192f0a1-0000-7000-8000-00000000f001",
+  "layer": "project_profile",
+  "source_id": "project.profile",
+  "revision": 2,
+  "restricted_references": [],
+  "redactions": [
+    { "path": "/connection", "reason": "credential_like" }
+  ],
+  "content": {
+    "goal": "ship the context pack",
+    "allowed_tools": ["read", "write"],
+    "connection": {
+      "host": "db.example",
+      "dsn": "psql://kontor@db.example/kontor?password=canary-redacted-not-a-real-password",
+      "pool": { "max": 4 }
+    }
+  }
+}

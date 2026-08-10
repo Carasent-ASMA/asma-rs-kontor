@@ -1,0 +1,7 @@
+{
+  "adr.0007": {
+    "decision": "allowed",
+    "realm_id": "0192f0a1-0000-7000-8000-00000000f001",
+    "value": { "adr": "ADR-0007", "title": "API assembly" }
+  }
+}
