@@ -2,7 +2,10 @@
 //!
 //! Every adapter Kontor ever gains must pass this suite. It is stated in terms
 //! of [`RuntimeAdapter`] rather than the fake, so a Paseo, AO or Codex adapter
-//! can be dropped in without the assertions changing.
+//! can be dropped in without the assertions changing. The three cross-adapter
+//! contracts themselves live in this crate's library
+//! ([`kontor_tests_contract`]) so a real adapter crate runs the same assertions
+//! instead of copying them; the fake-specific scenarios stay here.
 //!
 //! The mutants this suite exists to kill:
 //!
@@ -20,8 +23,7 @@
 use std::collections::BTreeSet;
 
 use kontor_core::id::{
-    AgentRunId, BoundedText, EventCursor, ExternalId, RoleSlotId, RuntimeBindingId, TaskId,
-    TeamRunId, Timestamp, parse_utc_timestamp,
+    AgentRunId, EventCursor, ExternalId, RoleSlotId, RuntimeBindingId, TaskId, TeamRunId,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::state::{
@@ -44,9 +46,16 @@ use kontor_runtime::request::{
     ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::timeline::{
-    EventSubject, HistoryCursor, HistoryReader, SessionEvent, SessionEventKind, TimelineBreak,
-    TimelinePosition, pending_permissions,
+    EventSubject, SessionEventKind, TimelineBreak, TimelinePosition, pending_permissions,
 };
+// The three cross-adapter contracts, and the helpers they are stated with, come
+// from this crate's library so the fake and every real adapter are judged by one
+// copy of each rule.
+use kontor_tests_contract::{
+    EVIDENCE_WINDOW_SECONDS, SESSION_KINDS, adapter_contract, at, closes, drain_history,
+    reconciliation_contract, sequences, session_content_contract, text,
+};
+
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -66,12 +75,8 @@ const DUPLICATE: &str = include_str!("fixtures/runtime_adapter/duplicate.json");
 const TRANSPORT_FAILURE: &str = include_str!("fixtures/runtime_adapter/transport_failure.json");
 
 // ---------------------------------------------------------------------------
-// Harness
+// Harness — fake-specific only; the shared helpers come from the library.
 // ---------------------------------------------------------------------------
-
-fn at(text: &str) -> Timestamp {
-    parse_utc_timestamp(text).expect("fixture timestamp is canonical UTC")
-}
 
 fn script(json: &str) -> RuntimeScript {
     serde_json::from_str(json).expect("fixture describes a runtime script")
@@ -94,33 +99,8 @@ fn capabilities(trust_grade: TrustGrade) -> RuntimeCapabilities {
     }
 }
 
-fn text(value: &str) -> BoundedText {
-    BoundedText::parse(value).expect("bounded text")
-}
-
 fn root(path: &str) -> WorkspaceRoot {
     WorkspaceRoot::parse(path).expect("absolute workspace path")
-}
-
-/// How old an observation may be and still close a run, for this suite.
-const EVIDENCE_WINDOW_SECONDS: i64 = 60;
-
-/// The terminal outcome `observation` closes `binding` on, judged when it was
-/// observed.
-///
-/// The trust grade is never an argument, and the snapshot it comes out of is
-/// never the caller's: `adapter` is asked to vouch for the binding first, so a
-/// run can only be closed at the evidence quality the runtime actually had when
-/// the session was bound. A binding it never issued vouches for nothing and
-/// closes nothing. Age is judged from the observation itself; tests about
-/// staleness pass their own clock.
-async fn closes(
-    adapter: &dyn RuntimeAdapter,
-    observation: &ControlPlaneObservation,
-    binding: &RuntimeBindingSnapshot,
-) -> Option<TerminalOutcome> {
-    let issued = adapter.issued_binding(binding).await.ok()?;
-    observation.terminal_evidence(&issued, observation.observed_at, EVIDENCE_WINDOW_SECONDS)
 }
 
 /// Ask the runtime to admit a launch, and spend what it issues on `parts`.
@@ -156,7 +136,6 @@ async fn admitted(adapter: &dyn RuntimeAdapter, parts: LaunchParts) -> LaunchReq
 fn slot_of(agent_run_id: AgentRunId) -> RoleSlotId {
     RoleSlotId::parse(&format!("slot-{agent_run_id}")).expect("a run id is a legal open key")
 }
-
 /// One team run working on one task in one verified place.
 struct Team {
     fake: ScriptedFakeRuntime,
@@ -260,44 +239,6 @@ async fn prepare(
         })
         .await
         .map(|outcome| outcome.snapshot)
-}
-
-/// Page through a session's whole history, validating continuity as it goes.
-async fn drain_history(
-    adapter: &dyn RuntimeAdapter,
-    binding: &RuntimeBindingSnapshot,
-    page_size: u32,
-) -> RuntimeResult<(Vec<SessionEvent>, TimelinePosition)> {
-    let mut cursor: Option<HistoryCursor> = None;
-    let mut reader: Option<HistoryReader> = None;
-    let mut items: Vec<SessionEvent> = Vec::new();
-    loop {
-        let mut page = adapter
-            .history(&HistoryRequest {
-                binding: binding.clone(),
-                cursor: cursor.clone(),
-                page_size,
-            })
-            .await?;
-        if reader.is_none() {
-            reader = Some(HistoryReader::start(binding.binding_id(), page.epoch));
-        }
-        let validating = reader.as_mut().expect("the reader was just created");
-        // Validation strips anything already covered, so what the caller
-        // accumulates is exactly once by construction rather than by counting.
-        validating.accept_page(&mut page)?;
-        items.extend(page.items.iter().cloned());
-        cursor = page.next.clone();
-        if cursor.is_none() {
-            break;
-        }
-    }
-    let anchor = reader.expect("history returns at least one page").anchor();
-    Ok((items, anchor))
-}
-
-fn sequences(events: &[SessionEvent]) -> Vec<u64> {
-    events.iter().map(|event| event.position.sequence).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1550,15 +1491,6 @@ async fn history_then_strict_after_live_is_exactly_once() {
     );
 }
 
-const SESSION_KINDS: &[SessionEventKind] = &[
-    SessionEventKind::Message,
-    SessionEventKind::ToolCall,
-    SessionEventKind::PermissionRequest,
-    SessionEventKind::PermissionResolved,
-    SessionEventKind::StateChange,
-    SessionEventKind::Log,
-];
-
 #[tokio::test]
 async fn selective_live_subscription_still_validates_every_position() {
     let team = Team::new(TrustGrade::A).await;
@@ -2481,135 +2413,8 @@ async fn a_step_pinned_to_one_request_is_not_spent_on_another() {
 // The shared contracts, stated against the trait
 // ---------------------------------------------------------------------------
 
-/// Identity, refusal and evidence rules every adapter must satisfy.
-async fn adapter_contract(
-    adapter: &dyn RuntimeAdapter,
-    launch: &LaunchRequest,
-) -> RuntimeResult<RuntimeBindingSnapshot> {
-    let declared = adapter.discover_capabilities().await?;
-    assert!(declared.supports(RuntimeCapability::Launch));
-
-    let launched = adapter.launch(launch).await?;
-    assert_eq!(launched.snapshot.agent_run_id(), launch.agent_run_id());
-    assert_eq!(launched.snapshot.binding_id(), launch.binding_id());
-    assert_eq!(
-        launched.snapshot.correlation.label.agent_run_id(),
-        launch.agent_run_id()
-    );
-    assert_eq!(
-        launched.snapshot.capabilities, declared,
-        "the binding freezes what discovery reported"
-    );
-    assert_eq!(
-        closes(adapter, &launched.observation, &launched.snapshot).await,
-        None,
-        "a launch acknowledgement never closes a run"
-    );
-
-    let resumed = adapter
-        .resume(&ResumeRequest {
-            binding: launched.snapshot.clone(),
-            requested_at: at("2026-08-10T09:01:00Z"),
-        })
-        .await?;
-    assert_eq!(resumed.agent_run_id, launch.agent_run_id());
-    assert_eq!(resumed.contact, RuntimeContact::Reachable);
-
-    Ok(launched.snapshot)
-}
-
-/// History, live delivery and idempotency rules every adapter must satisfy.
-async fn session_content_contract(
-    adapter: &dyn RuntimeAdapter,
-    binding: &RuntimeBindingSnapshot,
-) -> RuntimeResult<()> {
-    let (history, anchor) = drain_history(adapter, binding, 2).await?;
-    let mut live = adapter
-        .subscribe_live(&LiveSubscribeRequest {
-            binding: binding.clone(),
-            kinds: SESSION_KINDS.iter().copied().collect(),
-            strict_after: anchor,
-        })
-        .await?;
-
-    let mut seen = sequences(&history);
-    while let Some(event) = live.next_event() {
-        seen.push(event?.position.sequence);
-    }
-    let unique: BTreeSet<u64> = seen.iter().copied().collect();
-    assert_eq!(seen.len(), unique.len(), "no event is delivered twice");
-    assert!(
-        seen.windows(2).all(|pair| pair[1] == pair[0] + 1),
-        "no event is skipped between history and live"
-    );
-
-    let message_id = MessageId::generate();
-    let send = SendMessageRequest {
-        binding: binding.clone(),
-        message_id,
-        body: text("contract message"),
-        sent_at: at("2026-08-10T09:40:00Z"),
-    };
-    let first = adapter.send(&send).await?;
-    let replay = adapter.send(&send).await?;
-    assert_eq!(first, replay, "a retried message replays its own result");
-
-    let cursor = HistoryCursor::issue(RuntimeBindingId::generate(), anchor);
-    assert!(
-        adapter
-            .history(&HistoryRequest {
-                binding: binding.clone(),
-                cursor: Some(cursor),
-                page_size: 2,
-            })
-            .await
-            .is_err(),
-        "a cursor from another session is refused rather than reset"
-    );
-    Ok(())
-}
-
-/// Classification rules every adapter must satisfy.
-async fn reconciliation_contract(
-    adapter: &dyn RuntimeAdapter,
-    bindings: &[RuntimeBindingSnapshot],
-) -> RuntimeResult<()> {
-    let sessions = adapter.discover_sessions().await?;
-    for session in &sessions {
-        assert!(
-            session.correlation.is_none()
-                || session
-                    .correlation
-                    .is_some_and(|label| !label.to_string().is_empty()),
-            "discovery reports raw facts, never Kontor identity it invented"
-        );
-    }
-
-    let report = adapter.reconcile(bindings).await?;
-    for binding in bindings {
-        let classified = report
-            .findings
-            .iter()
-            .filter(|finding| match finding {
-                ReconciliationFinding::Matched { binding_id, .. }
-                | ReconciliationFinding::GenerationChanged { binding_id, .. }
-                | ReconciliationFinding::MissingSession { binding_id, .. } => {
-                    *binding_id == binding.binding_id()
-                }
-                _ => false,
-            })
-            .count();
-        assert_eq!(classified, 1, "every binding is classified exactly once");
-    }
-    assert!(
-        report.findings.iter().all(|finding| !matches!(
-            finding.proposed_state(),
-            Some(DerivedRunState::Terminal { .. })
-        )),
-        "reconciliation never concludes that work finished"
-    );
-    Ok(())
-}
+// The three contracts below live in `kontor_tests_contract`; these tests are
+// the fake's entry into them.
 
 #[tokio::test]
 async fn scripted_fake_passes_adapter_contract() {

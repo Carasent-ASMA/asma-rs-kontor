@@ -1,0 +1,7 @@
+id: 3
+event: session_updated
+data: {"seq":3,"projectId":"prj_kontor_ao_dev","sessionId":"ses_claude_1","type":"session_updated","payload":{},"createdAt":"2026-08-10T09:00:02Z"}
+
+id: 4
+event: pr_updated
+data: {"seq":4,"projectId":"prj_kontor_ao_dev","sessionId":"ses_claude_1","type":"pr_updated","payload":{},"createdAt":"2026-08-10T09:00:03Z"}

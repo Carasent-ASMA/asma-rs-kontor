@@ -1,0 +1,17 @@
+{
+  "id": "ses_claude_1",
+  "projectId": "prj_kontor_ao_dev",
+  "kind": "worker",
+  "harness": "claude-code",
+  "branch": "kontor-run-01890000-0000-7000-8000-000000000001",
+  "displayName": "kontor-1",
+  "activity": { "state": "idle", "lastActivityAt": "2026-08-10T09:05:00Z" },
+  "status": "merged",
+  "isTerminated": false,
+  "terminateOnPrMerge": false,
+  "isPinned": false,
+  "terminalHandleId": "trm_claude_1",
+  "prs": [],
+  "createdAt": "2026-08-10T09:00:00Z",
+  "updatedAt": "2026-08-10T09:05:00Z"
+}

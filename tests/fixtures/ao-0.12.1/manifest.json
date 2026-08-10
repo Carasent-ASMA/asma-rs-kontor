@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "ao_version": "0.12.1",
+  "ao_git_tag": "v0.12.1",
+  "ao_git_sha": "1df40e93772c2c48e916870d9c3ddf8f29a69f84",
+  "recorded_for": "KON-MVP-12 / ASMA-7756",
+  "recorded_on": "2026-08-10",
+  "derived_from": [
+    "backend/internal/httpd/apispec/openapi.yaml (generated code-first from Go; the authoritative REST envelope shapes)",
+    "backend/internal/domain/activity.go (ActivityState vocabulary and the waiting_input vs blocked distinction)",
+    "backend/internal/domain/status.go (derived SessionStatus vocabulary, including no_signal)",
+    "backend/internal/domain/agentconfig.go (PermissionMode vocabulary)",
+    "backend/internal/ports/agent.go (NormalizePermissionMode: empty AND unknown collapse to default)",
+    "backend/internal/session_manager/manager.go (effectiveAgentConfig role overlay; verbatim caller branch on spawn)",
+    "backend/internal/adapters/agent/codex/codex.go (appendApprovalFlags: the argv this ticket refuses)",
+    "backend/internal/cdc/event.go (global change_log Event: seq/projectId/sessionId/type/createdAt)",
+    "backend/internal/httpd/events.go (SSE frame format: id/event/data, after + Last-Event-ID)",
+    "backend/internal/terminal/protocol.go (/mux channels, frame types, base64 PTY payloads)",
+    "backend/internal/httpd/router.go (healthz/readyz payload: status/service/pid, no boot id)"
+  ],
+  "sanitization": {
+    "identifiers": "Every project id, session id, terminal handle and branch is synthetic. AgentRunIds are pinned canonical UUIDv7 values so fixtures stay static data rather than templates a test has to interpolate.",
+    "paths": "The only path present is the synthetic project path /w/ao-project. No developer home directory, no real worktree and no machine path appears.",
+    "prompts": "No real prompt, message or transcript text. Bodies are short synthetic strings.",
+    "credentials": "No credential material of any kind: no tokens, no cookies, no request headers and no account identifiers. AO's /api/v1/agents list is recorded as harness ids and labels only, which is all AO exposes there."
+  },
+  "recorded_facts": {
+    "healthz_has_no_boot_id": "GET /healthz and /readyz return status/service/pid/executablePath/cwd. There is no boot or instance identifier, so a new adapter generation can never be minted from a liveness probe alone. Generation continuity is decided by the persisted global change_log cursor instead.",
+    "sse_sequence_is_global": "change_log seq is global across the daemon, not per session. Continuity must be validated over every event before filtering by session, or another session's event reads as this session's gap.",
+    "session_view_has_no_workspace_path": "ControllersSessionView exposes id/projectId/kind/harness/branch/activity/status/isTerminated/terminalHandleId and timestamps. AO's internal workspacePath is not in the public envelope, which is why PrepareWorkspace is unsupported.",
+    "send_max_length": "SendSessionMessageRequest.message is maxLength 4096, which is the adapter's declared max_message_bytes.",
+    "display_name_max_length": "SpawnSessionRequest.displayName is maxLength 20. A Kontor correlation label is longer, so the label rides `branch` and never the display name.",
+    "no_parent_field": "0.12.1 exposes no durable parent/child session link. AO-internal orchestrator children appear flat in the inventory, so a parent is never inferred from a name, a timestamp or branch proximity.",
+    "codex_residual_hook_trust_bypass": "AO always appends --dangerously-bypass-hook-trust to Codex argv (appendHookTrustBypassFlag) so its activity hooks run without an interactive trust review. This is unconditional and is NOT removed by choosing accept-edits or auto. It is recorded here as a residual trust fact and is deliberately not used to claim a higher trust grade."
+  },
+  "pinned_agent_runs": {
+    "claude": "01890000-0000-7000-8000-000000000001",
+    "codex": "01890000-0000-7000-8000-000000000002",
+    "cursor": "01890000-0000-7000-8000-000000000003",
+    "opencode": "01890000-0000-7000-8000-000000000004",
+    "adoptable": "01890000-0000-7000-8000-000000000005"
+  },
+  "project": {
+    "id": "prj_kontor_ao_dev",
+    "path": "/w/ao-project"
+  }
+}

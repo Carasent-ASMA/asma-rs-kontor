@@ -1,0 +1,5 @@
+{
+  "error": "not_found",
+  "code": "SESSION_NOT_FOUND",
+  "message": "session ses_claude_1 is unknown"
+}

@@ -49,12 +49,12 @@ pub use adapter::{
     LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 pub use admission::{
-    AdmissionOutcome, AdmissionRequest, AdmissionTicket, LaunchAuthority, ReplacedBinding,
-    RoleSlotKey,
+    AdmissionLedger, AdmissionOutcome, AdmissionRequest, AdmissionTicket, ClaimedSeat,
+    LaunchAuthority, OccupiedSeat, ReplacedBinding, RoleSlotKey, SeatFacts,
 };
 pub use capability::{
-    IssuedBinding, LimitDemand, OperationContext, RuntimeBindingSnapshot, RuntimeCapabilities,
-    RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
+    IssuedBinding, IssuedBindingRegistry, LimitDemand, OperationContext, RuntimeBindingSnapshot,
+    RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
 };
 pub use fake::{RequestKey, RuntimeScript, ScriptStep, ScriptedFakeRuntime};
 pub use observation::{

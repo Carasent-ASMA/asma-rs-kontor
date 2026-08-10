@@ -1,0 +1,23 @@
+{
+  "session": {
+    "id": "ses_cursor_1",
+    "projectId": "prj_kontor_ao_dev",
+    "kind": "worker",
+    "harness": "cursor",
+    "branch": "kontor-run-01890000-0000-7000-8000-000000000003",
+    "activity": {
+      "state": "idle",
+      "lastActivityAt": "2026-08-10T09:05:02Z"
+    },
+    "status": "idle",
+    "isTerminated": false,
+    "terminateOnPrMerge": false,
+    "isPinned": false,
+    "prs": [],
+    "createdAt": "2026-08-10T09:00:02Z",
+    "updatedAt": "2026-08-10T09:05:02Z",
+    "terminalHandleId": "trm_cursor_1"
+  },
+  "promptBytes": 12,
+  "systemPromptBytes": 0
+}

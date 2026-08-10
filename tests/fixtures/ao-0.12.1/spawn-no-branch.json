@@ -1,0 +1,23 @@
+{
+  "session": {
+    "id": "ses_claude_1",
+    "projectId": "prj_kontor_ao_dev",
+    "kind": "worker",
+    "harness": "claude-code",
+    "displayName": "kontor-1",
+    "activity": {
+      "state": "active",
+      "lastActivityAt": "2026-08-10T09:05:00Z"
+    },
+    "status": "working",
+    "isTerminated": false,
+    "terminateOnPrMerge": false,
+    "isPinned": false,
+    "terminalHandleId": "trm_claude_1",
+    "prs": [],
+    "createdAt": "2026-08-10T09:00:00Z",
+    "updatedAt": "2026-08-10T09:05:00Z"
+  },
+  "promptBytes": 12,
+  "systemPromptBytes": 0
+}

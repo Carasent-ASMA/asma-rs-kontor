@@ -1,0 +1,166 @@
+{
+  "sessions": [
+    {
+      "id": "ses_codex_1",
+      "projectId": "prj_kontor_ao_dev",
+      "kind": "worker",
+      "harness": "codex",
+      "branch": "kontor-run-01890000-0000-7000-8000-000000000002",
+      "activity": {
+        "state": "active",
+        "lastActivityAt": "2026-08-10T09:05:01Z"
+      },
+      "status": "working",
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "isPinned": false,
+      "prs": [],
+      "createdAt": "2026-08-10T09:00:01Z",
+      "updatedAt": "2026-08-10T09:05:01Z"
+    },
+    {
+      "id": "ses_cursor_1",
+      "projectId": "prj_kontor_ao_dev",
+      "kind": "worker",
+      "harness": "cursor",
+      "branch": "kontor-run-01890000-0000-7000-8000-000000000003",
+      "activity": {
+        "state": "idle",
+        "lastActivityAt": "2026-08-10T09:05:02Z"
+      },
+      "status": "idle",
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "isPinned": false,
+      "prs": [],
+      "createdAt": "2026-08-10T09:00:02Z",
+      "updatedAt": "2026-08-10T09:05:02Z"
+    },
+    {
+      "id": "ses_opencode_1",
+      "projectId": "prj_kontor_ao_dev",
+      "kind": "worker",
+      "harness": "opencode",
+      "branch": "kontor-run-01890000-0000-7000-8000-000000000004",
+      "activity": {
+        "state": "waiting_input",
+        "lastActivityAt": "2026-08-10T09:05:03Z"
+      },
+      "status": "needs_input",
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "isPinned": false,
+      "prs": [],
+      "createdAt": "2026-08-10T09:00:03Z",
+      "updatedAt": "2026-08-10T09:05:03Z"
+    },
+    {
+      "id": "ses_foreign_1",
+      "projectId": "prj_kontor_ao_dev",
+      "kind": "worker",
+      "harness": "claude-code",
+      "branch": "feature/started-by-hand",
+      "activity": {
+        "state": "active",
+        "lastActivityAt": "2026-08-10T09:06:00Z"
+      },
+      "status": "working",
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "isPinned": false,
+      "prs": [],
+      "createdAt": "2026-08-10T08:30:00Z",
+      "updatedAt": "2026-08-10T09:06:00Z"
+    },
+    {
+      "id": "ses_adoptable_1",
+      "projectId": "prj_kontor_ao_dev",
+      "kind": "worker",
+      "harness": "claude-code",
+      "branch": "kontor-run-01890000-0000-7000-8000-000000000005",
+      "activity": {
+        "state": "idle",
+        "lastActivityAt": "2026-08-10T09:06:01Z"
+      },
+      "status": "idle",
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "isPinned": false,
+      "prs": [],
+      "createdAt": "2026-08-10T08:31:00Z",
+      "updatedAt": "2026-08-10T09:06:01Z"
+    },
+    {
+      "id": "ses_ao_child_1",
+      "projectId": "prj_kontor_ao_dev",
+      "kind": "worker",
+      "harness": "claude-code",
+      "branch": "ao/orchestrator-child-7",
+      "activity": {
+        "state": "active",
+        "lastActivityAt": "2026-08-10T09:06:02Z"
+      },
+      "status": "working",
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "isPinned": false,
+      "prs": [],
+      "createdAt": "2026-08-10T09:00:00Z",
+      "updatedAt": "2026-08-10T09:06:02Z"
+    },
+    {
+      "id": "ses_orchestrator_1",
+      "projectId": "prj_kontor_ao_dev",
+      "kind": "orchestrator",
+      "harness": "claude-code",
+      "branch": "kontor-run-01890000-0000-7000-8000-000000000001",
+      "activity": {
+        "state": "active",
+        "lastActivityAt": "2026-08-10T09:06:03Z"
+      },
+      "status": "working",
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "isPinned": false,
+      "prs": [],
+      "createdAt": "2026-08-10T09:00:00Z",
+      "updatedAt": "2026-08-10T09:06:03Z"
+    },
+    {
+      "id": "ses_other_project_1",
+      "projectId": "prj_someone_else",
+      "kind": "worker",
+      "harness": "claude-code",
+      "branch": "kontor-run-01890000-0000-7000-8000-000000000001",
+      "activity": {
+        "state": "active",
+        "lastActivityAt": "2026-08-10T09:06:04Z"
+      },
+      "status": "working",
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "isPinned": false,
+      "prs": [],
+      "createdAt": "2026-08-10T09:00:00Z",
+      "updatedAt": "2026-08-10T09:06:04Z"
+    },
+    {
+      "id": "ses_aider_1",
+      "projectId": "prj_kontor_ao_dev",
+      "kind": "worker",
+      "harness": "aider",
+      "branch": "feature/aider-work",
+      "activity": {
+        "state": "active",
+        "lastActivityAt": "2026-08-10T09:06:05Z"
+      },
+      "status": "working",
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "isPinned": false,
+      "prs": [],
+      "createdAt": "2026-08-10T09:00:00Z",
+      "updatedAt": "2026-08-10T09:06:05Z"
+    }
+  ]
+}

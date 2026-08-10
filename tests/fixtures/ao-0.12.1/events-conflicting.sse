@@ -1,0 +1,11 @@
+id: 1
+event: session_created
+data: {"seq":1,"projectId":"prj_kontor_ao_dev","sessionId":"ses_claude_1","type":"session_created","payload":{},"createdAt":"2026-08-10T09:00:00Z"}
+
+id: 2
+event: session_updated
+data: {"seq":2,"projectId":"prj_kontor_ao_dev","sessionId":"ses_codex_1","type":"session_updated","payload":{},"createdAt":"2026-08-10T09:00:01Z"}
+
+id: 2
+event: session_updated
+data: {"seq":2,"projectId":"prj_kontor_ao_dev","sessionId":"ses_cursor_1","type":"session_updated","payload":{},"createdAt":"2026-08-10T09:09:09Z"}

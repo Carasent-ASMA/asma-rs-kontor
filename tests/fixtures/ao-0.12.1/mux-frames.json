@@ -1,0 +1,13 @@
+[
+  { "ch": "terminal", "id": "trm_claude_1", "type": "open", "cols": 120, "rows": 40 },
+  { "ch": "terminal", "id": "trm_claude_1", "type": "opened" },
+  { "ch": "terminal", "id": "trm_claude_1", "type": "data", "data": "G1syShtbMzJtb2sbWzBtDQo=" },
+  { "ch": "terminal", "id": "trm_claude_1", "type": "data", "data": "//79" },
+  { "ch": "terminal", "id": "trm_claude_1", "type": "resize", "cols": 100, "rows": 30 },
+  { "ch": "subscribe", "type": "subscribe" },
+  { "ch": "sessions", "type": "snapshot", "session": { "seq": 3, "projectId": "prj_kontor_ao_dev", "sessionId": "ses_claude_1", "eventType": "session_updated" } },
+  { "ch": "system", "type": "ping" },
+  { "ch": "system", "type": "pong" },
+  { "ch": "terminal", "id": "trm_claude_1", "type": "exited" },
+  { "ch": "terminal", "id": "trm_claude_1", "type": "error", "error": "terminal handle is unknown" }
+]
