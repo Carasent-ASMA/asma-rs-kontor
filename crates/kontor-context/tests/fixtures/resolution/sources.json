@@ -1,0 +1,104 @@
+[
+  {
+    "schema_version": 1,
+    "realm_id": "0192f0a1-0000-7000-8000-00000000f001",
+    "layer": "run_override",
+    "source_id": "run.override",
+    "revision": 6,
+    "restricted_references": [],
+    "redactions": [],
+    "content": {
+      "winner": "run_override",
+      "layers": { "run_override": true },
+      "budget": null,
+      "nested": { "shared": { "run": "r" } }
+    }
+  },
+  {
+    "schema_version": 1,
+    "realm_id": "0192f0a1-0000-7000-8000-00000000f001",
+    "layer": "scope",
+    "source_id": "scope.mini-project",
+    "revision": 3,
+    "restricted_references": [
+      {
+        "path": "/decisions/adr_ref",
+        "reference_key": "adr.0007",
+        "realm_id": "0192f0a1-0000-7000-8000-00000000f001"
+      }
+    ],
+    "redactions": [],
+    "content": {
+      "winner": "scope",
+      "layers": { "scope": true },
+      "budget": { "minutes": 60 },
+      "decisions": { "adr_ref": null },
+      "nested": { "shared": { "scope": "s" } }
+    }
+  },
+  {
+    "schema_version": 1,
+    "realm_id": "0192f0a1-0000-7000-8000-00000000f001",
+    "layer": "global_profile",
+    "source_id": "global.profile",
+    "revision": 1,
+    "restricted_references": [],
+    "redactions": [],
+    "content": {
+      "winner": "global_profile",
+      "layers": { "global_profile": true },
+      "goal": "keep the fleet green",
+      "allowed_tools": ["read"],
+      "budget": { "minutes": 30, "attempts": 1 },
+      "nested": { "shared": { "global": "g" } }
+    }
+  },
+  {
+    "schema_version": 1,
+    "realm_id": "0192f0a1-0000-7000-8000-00000000f001",
+    "layer": "task_additions",
+    "source_id": "task.additions",
+    "revision": 5,
+    "restricted_references": [],
+    "redactions": [],
+    "content": {
+      "winner": "task_additions",
+      "layers": { "task_additions": true },
+      "acceptance_criteria": ["same hash", "precedence", "redaction"],
+      "nested": { "shared": { "task": "a" } }
+    }
+  },
+  {
+    "schema_version": 1,
+    "realm_id": "0192f0a1-0000-7000-8000-00000000f001",
+    "layer": "project_profile",
+    "source_id": "project.profile",
+    "revision": 2,
+    "restricted_references": [],
+    "redactions": [
+      { "path": "/internal_notes", "reason": "policy_excluded" }
+    ],
+    "content": {
+      "winner": "project_profile",
+      "layers": { "project_profile": true },
+      "allowed_tools": ["read", "write"],
+      "internal_notes": { "draft": "not for the pack" },
+      "nested": { "shared": { "project": "p" } }
+    }
+  },
+  {
+    "schema_version": 1,
+    "realm_id": "0192f0a1-0000-7000-8000-00000000f001",
+    "layer": "team_role_profile",
+    "source_id": "team.role.implementer",
+    "revision": 4,
+    "restricted_references": [],
+    "redactions": [],
+    "content": {
+      "winner": "team_role_profile",
+      "layers": { "team_role_profile": true },
+      "goal": { "statement": "land the context pack", "owner": "implementer" },
+      "nested": { "shared": { "team": "t" } }
+    }
+  }
+]

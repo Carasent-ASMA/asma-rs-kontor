@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kontor.asma.carasent.com/schemas/context-pack-v1.schema.json",
+  "title": "Kontor Context Pack v1",
+  "description": "The canonical document a Context Pack preview and a started snapshot are hashed from. It carries the resolved pack, the winning source of every leaf and the redaction report. It never carries a redacted value, a hash of a redacted value, a source handle or a provider-native session locator. The digest of the canonical serialization of this document (compact UTF-8, object keys sorted, array order preserved) is the only Context Pack hash.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "realm_id", "pack", "provenance", "redactions"],
+  "properties": {
+    "schema_version": {
+      "description": "The envelope contract this document was written under.",
+      "type": "integer",
+      "const": 1
+    },
+    "realm_id": {
+      "description": "The realm every source belonged to.",
+      "$ref": "#/$defs/uuidV7"
+    },
+    "pack": {
+      "description": "The resolved context, after restricted-reference admission and after redaction. Redacted paths are absent, not nulled.",
+      "type": "object"
+    },
+    "provenance": {
+      "description": "The winning source of every resolved leaf, ordered by path. Exactly one entry exists per leaf; a leaf is any non-object value plus an empty object. No entry survives for a replaced or redacted subtree.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/provenanceEntry" }
+    },
+    "redactions": {
+      "description": "Every applied redaction, ordered by path then declaring source. Metadata only.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/redactionRecord" }
+    }
+  },
+  "$defs": {
+    "uuidV7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sourceKey": {
+      "description": "A stable, deployment-defined source key. Unique within its layer — the same key may contribute at several layers, each with its own precedence rank — and the secondary sort key, so `(layer, source_id)` totally orders the sources and caller collection order cannot reach the result.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "jsonPointer": {
+      "description": "An RFC 6901 pointer into the resolved pack.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^/"
+    },
+    "contextLayer": {
+      "description": "The approved resolution order, weakest first. A caller supplies a layer, never a numeric priority.",
+      "type": "string",
+      "enum": [
+        "global_profile",
+        "project_profile",
+        "scope",
+        "team_role_profile",
+        "task_additions",
+        "run_override"
+      ]
+    },
+    "redactionReason": {
+      "description": "Why a path was removed. A reason code is metadata about a value that is already gone.",
+      "type": "string",
+      "enum": [
+        "credential_like",
+        "personal_data",
+        "restricted_scope",
+        "policy_excluded"
+      ]
+    },
+    "provenanceEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "layer", "source_id", "revision"],
+      "properties": {
+        "path": { "$ref": "#/$defs/jsonPointer" },
+        "layer": { "$ref": "#/$defs/contextLayer" },
+        "source_id": { "$ref": "#/$defs/sourceKey" },
+        "revision": {
+          "description": "The immutable revision of the winning source.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "redactionRecord": {
+      "description": "Path, declaring source and reason code. There is deliberately no value, no digest of the value and no length: the report says that a path was dropped and why, never what was there.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "source_id", "reason"],
+      "properties": {
+        "path": { "$ref": "#/$defs/jsonPointer" },
+        "source_id": { "$ref": "#/$defs/sourceKey" },
+        "reason": { "$ref": "#/$defs/redactionReason" }
+      }
+    }
+  }
+}

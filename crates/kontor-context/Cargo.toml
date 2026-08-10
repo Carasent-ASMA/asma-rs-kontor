@@ -12,9 +12,14 @@ description = "Context Pack resolution, canonical hashing and portable handoffs.
 workspace = true
 
 [dependencies]
+# Canonical JSON, SHA-256, realm envelopes, sensitive scanning and every id are
+# `kontor-core`'s; this crate never recreates them, so the scaffold's direct
+# sha2/hex/uuid/thiserror pins are gone.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-uuid = { workspace = true }
-thiserror = { workspace = true }
+
+[dev-dependencies]
+# Integration tests link the crate, not its dependencies.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+serde_json = { workspace = true }

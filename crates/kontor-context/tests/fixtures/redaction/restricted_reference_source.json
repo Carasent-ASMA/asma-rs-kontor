@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "realm_id": "0192f0a1-0000-7000-8000-00000000f001",
+  "layer": "scope",
+  "source_id": "scope.mini-project",
+  "revision": 3,
+  "restricted_references": [
+    {
+      "path": "/decisions/restricted",
+      "reference_key": "decision.restricted",
+      "realm_id": "0192f0a1-0000-7000-8000-00000000f001"
+    }
+  ],
+  "redactions": [],
+  "content": {
+    "goal": "carry only what the grant allows",
+    "decisions": { "restricted": null }
+  }
+}
