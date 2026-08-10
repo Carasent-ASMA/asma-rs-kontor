@@ -53,8 +53,8 @@ pub use admission::{
     RoleSlotKey,
 };
 pub use capability::{
-    IssuedBinding, LimitDemand, OperationContext, RuntimeBindingSnapshot, RuntimeCapabilities,
-    RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
+    IssuedBinding, IssuedBindingRegistry, LimitDemand, OperationContext, RuntimeBindingSnapshot,
+    RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
 };
 pub use fake::{RequestKey, RuntimeScript, ScriptStep, ScriptedFakeRuntime};
 pub use observation::{

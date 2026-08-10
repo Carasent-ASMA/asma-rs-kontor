@@ -347,6 +347,109 @@ impl IssuedBinding {
     }
 }
 
+/// The bindings one runtime has issued, and the only public way to vouch for one.
+///
+/// [`IssuedBinding::attest`] is crate-private, which made
+/// [`crate::adapter::RuntimeAdapter`] impossible to implement outside this crate:
+/// the trait must hand back an [`IssuedBinding`] and nothing outside could mint
+/// one. This registry is that missing half. An adapter records what it issued and
+/// vouches for what a caller presents, so the *comparison* every adapter has to
+/// perform lives here once rather than being restated — correctly or otherwise —
+/// in each one.
+///
+/// # What this guarantees, and what it does not
+///
+/// [`IssuedBindingRegistry::attest`] compares the presented snapshot against the
+/// recorded one **whole** — trust grade, limits, correlation and all — so a clone
+/// with [`TrustGrade::A`] written into it is refused rather than quietly
+/// corrected. That is the check that keeps a promoted snapshot from becoming
+/// terminal evidence through a real adapter, and it is the property KON-MVP-05's
+/// forgery tests pin.
+///
+/// It does not make the token unforgeable in principle. A caller determined to
+/// bypass its adapter could build a registry of its own, record a fabricated
+/// snapshot into it and vouch for that. Closing *that* would need this crate in
+/// the call path — a sealed witness passed into `issued_binding`, so minting is
+/// only reachable from inside an adapter call — which changes the trait signature
+/// and belongs to KON-MVP-05 rather than here. What is deliberate is where the
+/// remaining risk sits: the honest path (record, then vouch) is also the shortest
+/// one, and the dishonest path is no longer something a call site can fall into
+/// by holding a real snapshot and reaching for a public constructor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IssuedBindingRegistry {
+    issued: std::collections::BTreeMap<RuntimeBindingId, RuntimeBindingSnapshot>,
+}
+
+impl IssuedBindingRegistry {
+    /// A registry that has issued nothing.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a binding this runtime has just issued.
+    ///
+    /// The recorded value is the runtime's own copy, and it is what every later
+    /// attestation is judged against.
+    pub fn record(&mut self, snapshot: RuntimeBindingSnapshot) {
+        self.issued.insert(snapshot.binding_id(), snapshot);
+    }
+
+    /// The runtime's own copy of one binding.
+    #[must_use]
+    pub fn get(&self, binding_id: RuntimeBindingId) -> Option<&RuntimeBindingSnapshot> {
+        self.issued.get(&binding_id)
+    }
+
+    /// Every binding still held, in binding-id order.
+    pub fn snapshots(&self) -> impl Iterator<Item = &RuntimeBindingSnapshot> {
+        self.issued.values()
+    }
+
+    /// How many bindings are held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.issued.len()
+    }
+
+    /// Whether the runtime has issued nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.issued.is_empty()
+    }
+
+    /// Drop every binding, as a runtime generation change must.
+    ///
+    /// A repeated native id in a new generation is a different session, so the
+    /// old bindings are invalidated rather than re-pointed at whatever now
+    /// answers to their native ids.
+    pub fn clear(&mut self) {
+        self.issued.clear();
+    }
+
+    /// Vouch for a snapshot this runtime actually issued.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::StaleBinding`] for a binding this runtime never
+    /// issued and for one that differs in any field from what it issued, and
+    /// [`RuntimeError::CorrelationFailed`] for a recorded snapshot that is not
+    /// internally consistent.
+    pub fn attest(&self, claimed: &RuntimeBindingSnapshot) -> RuntimeResult<IssuedBinding> {
+        match self.issued.get(&claimed.binding_id()) {
+            None => Err(RuntimeError::StaleBinding {
+                rule: "this runtime never issued this binding",
+            }),
+            // Whole-value comparison is the point. Comparing only the binding id
+            // would vouch for a clone whose trust grade had been promoted, which
+            // is exactly the forgery the token exists to refuse.
+            Some(issued) if issued != claimed => Err(RuntimeError::StaleBinding {
+                rule: "this is not the binding the runtime issued",
+            }),
+            Some(issued) => IssuedBinding::attest(issued.clone()),
+        }
+    }
+}
+
 /// Everything the shared preflight needs to decide one operation.
 #[derive(Debug, Clone, Copy)]
 pub struct OperationContext<'a> {
@@ -521,6 +624,77 @@ mod tests {
         .expect("observation stays available at every grade");
         preflight(&declared, &OperationContext::new(RuntimeCapability::Launch))
             .expect_err("an advisory runtime may not be driven");
+    }
+
+    #[test]
+    fn the_registry_refuses_a_promoted_or_foreign_snapshot() {
+        use kontor_core::id::{AgentRunId, ExternalName, RuntimeKindKey, parse_utc_timestamp};
+        use kontor_core::repository::RuntimeBinding;
+        use kontor_core::state::NativeRuntimeIdentity;
+
+        use crate::observation::CorrelationEvidence;
+        use crate::request::CorrelationLabel;
+
+        let at = parse_utc_timestamp("2026-08-10T09:00:00Z").expect("canonical UTC");
+        let run = AgentRunId::generate();
+        let identity = NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse("registry.runtime").expect("valid runtime key"),
+            host: ExternalName::parse("registry-host").expect("valid host"),
+            generation: 1,
+            native_id: kontor_core::id::ExternalId::parse("session-1").expect("valid native id"),
+        };
+        let real = RuntimeBindingSnapshot {
+            binding: RuntimeBinding {
+                id: RuntimeBindingId::generate(),
+                agent_run_id: run,
+                identity: identity.clone(),
+                bound_at: at,
+            },
+            capabilities: capabilities(TrustGrade::C),
+            correlation: CorrelationEvidence {
+                label: CorrelationLabel::for_run(run),
+                native: identity,
+                established_at: at,
+            },
+        };
+
+        let mut registry = IssuedBindingRegistry::new();
+        registry.record(real.clone());
+        assert_eq!(registry.len(), 1);
+        registry
+            .attest(&real)
+            .expect("the runtime vouches for its own binding");
+
+        // The forgery the token exists to refuse: the caller's own clone, with
+        // the trust grade promoted so a report would close the run. It is
+        // rejected because the comparison is whole-value, not by binding id.
+        let mut promoted = real.clone();
+        promoted.capabilities.trust_grade = TrustGrade::A;
+        assert_eq!(
+            registry
+                .attest(&promoted)
+                .expect_err("a promoted clone is not what the runtime issued"),
+            RuntimeError::StaleBinding {
+                rule: "this is not the binding the runtime issued"
+            }
+        );
+
+        // A binding from another runtime is not merely different, it is unknown.
+        let mut foreign = real.clone();
+        foreign.binding.id = RuntimeBindingId::generate();
+        assert_eq!(
+            registry
+                .attest(&foreign)
+                .expect_err("a binding this runtime never issued"),
+            RuntimeError::StaleBinding {
+                rule: "this runtime never issued this binding"
+            }
+        );
+
+        // A generation change invalidates rather than re-points.
+        registry.clear();
+        assert!(registry.is_empty());
+        assert!(registry.attest(&real).is_err());
     }
 
     #[test]

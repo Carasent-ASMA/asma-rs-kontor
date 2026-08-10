@@ -1,0 +1,3 @@
+id: 1
+event: session_created
+data: {"sequence":1,"project":"prj_kontor_ao_dev"}

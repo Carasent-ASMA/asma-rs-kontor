@@ -1,0 +1,16 @@
+{
+  "status": "ok",
+  "project": {
+    "id": "prj_kontor_ao_dev",
+    "name": "kontor-ao-dev",
+    "kind": "single_repo",
+    "path": "/w/ao-project",
+    "repo": "ao-project",
+    "defaultBranch": "main",
+    "config": {
+      "agentConfig": { "permissions": "ask-me-later" },
+      "worker": {},
+      "orchestrator": {}
+    }
+  }
+}

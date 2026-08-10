@@ -1,0 +1,10 @@
+{
+  "status": "degraded",
+  "project": {
+    "id": "prj_kontor_ao_dev",
+    "name": "kontor-ao-dev",
+    "kind": "single_repo",
+    "path": "/w/ao-project",
+    "resolveError": "worktree root is not a git repository"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "source": "backend/internal/adapters/agent/codex/codex.go appendApprovalFlags + appendHookTrustBypassFlag",
+  "unconditional_flags": ["--dangerously-bypass-hook-trust"],
+  "modes": [
+    {
+      "permissions": "",
+      "normalizes_to": "default",
+      "approval_argv": ["--dangerously-bypass-approvals-and-sandbox"],
+      "kontor_verdict": "refused"
+    },
+    {
+      "permissions": "default",
+      "normalizes_to": "default",
+      "approval_argv": ["--dangerously-bypass-approvals-and-sandbox"],
+      "kontor_verdict": "refused"
+    },
+    {
+      "permissions": "ask-me-later",
+      "normalizes_to": "default",
+      "approval_argv": ["--dangerously-bypass-approvals-and-sandbox"],
+      "kontor_verdict": "refused"
+    },
+    {
+      "permissions": "bypass-permissions",
+      "normalizes_to": "bypass-permissions",
+      "approval_argv": ["--dangerously-bypass-approvals-and-sandbox"],
+      "kontor_verdict": "refused"
+    },
+    {
+      "permissions": "accept-edits",
+      "normalizes_to": "accept-edits",
+      "approval_argv": ["--ask-for-approval", "on-request"],
+      "kontor_verdict": "allowed"
+    },
+    {
+      "permissions": "auto",
+      "normalizes_to": "auto",
+      "approval_argv": ["--ask-for-approval", "on-request", "-c", "approvals_reviewer=\"auto_review\""],
+      "kontor_verdict": "allowed"
+    }
+  ]
+}

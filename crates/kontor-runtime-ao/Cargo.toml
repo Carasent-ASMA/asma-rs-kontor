@@ -12,11 +12,28 @@ description = "Agent Orchestrator REST/SSE/WS integration adapter for the Kontor
 workspace = true
 
 [dependencies]
-tokio = { workspace = true }
-tokio-stream = { workspace = true }
-futures = { workspace = true }
-reqwest = { workspace = true }
+# The exact version is the workspace's own package version. A bare path
+# dependency is a wildcard requirement, which `deny.toml` refuses.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-uuid = { workspace = true }
-thiserror = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+
+# KON-MVP-12 deliberately declares no WebSocket client. AO's `/mux` carries
+# character-level PTY bytes, which architecture §14.2 keeps outside the semantic
+# session-content contract, so the adapter parses *recorded* mux frames
+# (`wire::mux`) and never opens the socket. A live `/mux` transport needs an exact
+# workspace-pinned WebSocket dependency compatible with Tokio/rustls, which the
+# root manifest does not carry; that pin belongs to KON-MVP-02/KON-MVP-20 and is
+# not made here. Hand-rolled framing to dodge that gate is explicitly rejected.
+
+[dev-dependencies]
+tokio = { workspace = true }
+# The capability-aware shared contract, so this adapter is judged by the same
+# assertions as the scripted fake rather than by a copy of them. The dependency
+# runs test-crate -> adapter only in this direction: `kontor-tests-contract` is
+# stated against `RuntimeAdapter` and never depends on AO.
+kontor-tests-contract = { path = "../../tests/contract", version = "=0.1.0" }

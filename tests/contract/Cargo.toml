@@ -19,11 +19,17 @@ path = "runtime_adapter.rs"
 name = "profiles_teams"
 path = "profiles_teams.rs"
 
-[dev-dependencies]
-# KON-MVP-05: the shared runtime-adapter contract suite runs against the
-# scripted fake, so it needs the port and the domain types it is stated in.
+[dependencies]
+# KON-MVP-05/KON-MVP-12: the reusable, capability-aware contract harness lives in
+# `src/lib.rs` so a real adapter crate can run the *same* assertions as the
+# scripted fake instead of copying them. That library target needs the port and
+# the domain types the contract is stated in as normal dependencies; the test
+# targets below pick them up through it. No adapter crate is a dependency here:
+# the harness is stated against `RuntimeAdapter`, never against a provider.
 kontor-core = { path = "../../crates/kontor-core", version = "=0.1.0" }
 kontor-runtime = { path = "../../crates/kontor-runtime", version = "=0.1.0" }
+
+[dev-dependencies]
 # KON-MVP-08: the profiles/teams contract exercises the sealed slot API against
 # the real store and the same scripted fake, rather than against mock sessions.
 kontor-profiles = { path = "../../crates/kontor-profiles", version = "=0.1.0" }

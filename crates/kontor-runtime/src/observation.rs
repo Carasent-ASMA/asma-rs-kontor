@@ -245,6 +245,29 @@ pub enum ReconciliationFinding {
         /// What Kontor bound.
         bound: NativeRuntimeIdentity,
     },
+    /// The runtime does not vouch for this binding at all.
+    ///
+    /// A [`RuntimeBindingSnapshot`] is a plain value with public fields, so one
+    /// can be fabricated to name any native session. An adapter that keeps an
+    /// [`IssuedBindingRegistry`](crate::capability::IssuedBindingRegistry)
+    /// resolves every presented snapshot through it first, and reports this
+    /// rather than [`Self::Matched`] — whose action is `Keep` — for anything the
+    /// registry did not issue, or issued with different values. It is the
+    /// reconciliation counterpart of [`RuntimeError::StaleBinding`].
+    ///
+    /// Distinct from [`Self::GenerationChanged`], which is the narrower claim
+    /// that a session with this native id exists in *another* generation. This
+    /// one makes no claim about the session at all — only that the binding is not
+    /// the runtime's.
+    Unattested {
+        /// The run the binding claims.
+        agent_run_id: AgentRunId,
+        /// The binding.
+        binding_id: RuntimeBindingId,
+        /// The identity the snapshot presented. The runtime never issued it, so
+        /// it is what was claimed rather than what was bound.
+        presented: NativeRuntimeIdentity,
+    },
     /// An unbound session carrying a Kontor label for a run with no binding.
     Adoptable {
         /// The run the session claims.
@@ -283,7 +306,9 @@ impl ReconciliationFinding {
     pub const fn proposed_state(&self) -> Option<DerivedRunState> {
         match self {
             Self::Matched { .. } | Self::Adoptable { .. } | Self::Orphan { .. } => None,
-            Self::GenerationChanged { .. } => Some(DerivedRunState::Orphaned),
+            Self::GenerationChanged { .. } | Self::Unattested { .. } => {
+                Some(DerivedRunState::Orphaned)
+            }
             Self::MissingSession { .. } => Some(DerivedRunState::LostContact),
         }
     }
@@ -293,7 +318,9 @@ impl ReconciliationFinding {
     pub const fn action(&self) -> ReconciliationAction {
         match self {
             Self::Matched { .. } => ReconciliationAction::Keep,
-            Self::GenerationChanged { .. } => ReconciliationAction::ProposeOrphanReview,
+            Self::GenerationChanged { .. } | Self::Unattested { .. } => {
+                ReconciliationAction::ProposeOrphanReview
+            }
             Self::MissingSession { .. } => ReconciliationAction::ProposeLostContactReview,
             Self::Adoptable { .. } => ReconciliationAction::ProposeAdoption,
             Self::Orphan { .. } => ReconciliationAction::ProposeInboxEntry,
