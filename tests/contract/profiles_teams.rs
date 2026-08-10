@@ -21,14 +21,15 @@ use std::collections::BTreeSet;
 
 use kontor_core::id::CanonicalDocument;
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, ArtifactKey, BoundedText, ContentHash, ExternalName, ProjectId,
-    RuntimeBindingId, SCHEMA_VERSION, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, Timestamp,
-    parse_utc_timestamp,
+    AccountProfileId, AgentRunId, ArtifactKey, BoundedText, ContentHash, CredentialAlias,
+    ExternalName, ProjectId, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, SpecVersion, TaskId,
+    TaskWorkflowId, TeamRunId, Timestamp, parse_utc_timestamp,
 };
 use kontor_core::repository::{
-    AgentRun, NewGateEvaluation, NewObservation, NewProject, NewRuntimeEvent, NewTask,
-    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, ProjectRepository, RunClosure,
-    RunRepository, SpecRepository, TaskTransitionRequest, WorkflowRepository,
+    AgentRun, CredentialReference, CredentialReferenceKind, NewAccountProfile, NewGateEvaluation,
+    NewObservation, NewProject, NewRuntimeEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow,
+    NewTeamRun, ProjectRepository, RunClosure, RunRepository, SpecRepository,
+    TaskTransitionRequest, WorkflowRepository,
 };
 use kontor_core::spec::{
     PersonaScenarioSpec, ResolvedWorkProfileSnapshot, TeamRunSnapshot, WorkProfileSpec,
@@ -69,6 +70,14 @@ fn now() -> Timestamp {
 
 fn name(text: &str) -> ExternalName {
     ExternalName::parse(text).expect("a valid external name")
+}
+
+fn document(marker: &str) -> CanonicalDocument {
+    CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "marker": marker
+    }))
+    .expect("a canonical document")
 }
 
 fn capabilities() -> RuntimeCapabilities {
@@ -393,11 +402,21 @@ impl World {
     fn pass_every_gate(&self, workflow: TaskWorkflowId) {
         let account = AccountProfileId::generate();
         self.store
-            .create_account_profile(&kontor_core::repository::AccountProfile {
+            .create_account_profile(&NewAccountProfile {
                 id: account,
                 project_id: self.project,
                 label: name("Evaluator"),
                 external_account_id: None,
+                harness: RuntimeKindKey::parse("zz.runtime").expect("a valid runtime key"),
+                credential_ref: CredentialReference {
+                    kind: CredentialReferenceKind::ConfigHome,
+                    alias: CredentialAlias::parse("zz-evaluator").expect("a valid alias"),
+                },
+                environment: document("evaluator-environment"),
+                routing: document("evaluator-routing"),
+                capability: document("evaluator-capability"),
+                provider_identity: None,
+                enabled: true,
                 created_at: now(),
             })
             .expect("an evaluator account exists");
