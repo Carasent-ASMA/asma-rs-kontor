@@ -42,6 +42,9 @@ use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
     LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
+use kontor_runtime::admission::{
+    AdmissionLedger, AdmissionOutcome, AdmissionRequest, OccupiedSeat, SeatFacts,
+};
 use kontor_runtime::capability::{
     IssuedBinding, IssuedBindingRegistry, LimitDemand, OperationContext, RuntimeBindingSnapshot,
     RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
@@ -483,6 +486,15 @@ pub struct AoCheckpoint {
     pub last_event_digest: Option<ContentHash>,
     /// Every binding the adapter issued and has not invalidated.
     pub bindings: Vec<RuntimeBindingSnapshot>,
+    /// Every team-run seat holding one of those sessions.
+    ///
+    /// Persisted because AC-4 is a rule about seats and a binding does not name
+    /// one: without this, a restarted adapter would admit a second launch into a
+    /// seat that is already working. Only *occupied* seats round-trip — a
+    /// reservation exists only between an admission and the launch that spends
+    /// it, and its authority cannot be serialized either, so a caller that
+    /// restarts mid-admission asks again.
+    pub seats: Vec<OccupiedSeat>,
     /// The message ledger, in commit order.
     pub deliveries: Vec<(MessageId, ContentHash, AoDelivery)>,
     /// The next adapter-local content position per binding.
@@ -498,6 +510,7 @@ impl AoCheckpoint {
             last_event_seq: 0,
             last_event_digest: None,
             bindings: Vec::new(),
+            seats: Vec::new(),
             deliveries: Vec::new(),
             positions: Vec::new(),
         }
@@ -513,11 +526,54 @@ struct AoState {
     generation: u64,
     events: AoEventCursor,
     bindings: IssuedBindingRegistry,
+    /// The seat rule, from the shared ledger rather than restated here. Every
+    /// read and write of it happens under this adapter's one state lock, which is
+    /// what makes "check the seat, then claim it" a single step.
+    admissions: AdmissionLedger,
     messages: MessageLedger<AoDelivery>,
     /// The commit-ordered projection of `messages`, which the shared ledger does
     /// not expose. Both are written through one helper so they cannot drift.
     deliveries: Vec<(MessageId, ContentHash, AoDelivery)>,
     positions: BTreeMap<RuntimeBindingId, u64>,
+}
+
+/// This adapter's answers to the two questions the shared ledger cannot answer.
+///
+/// Borrowed out of [`AoState`], so both are read in the same critical section
+/// that claims the seat.
+struct AoSeatFacts<'a> {
+    bindings: &'a IssuedBindingRegistry,
+    generation: u64,
+}
+
+impl SeatFacts for AoSeatFacts<'_> {
+    fn issued_binding(&self, binding_id: RuntimeBindingId) -> Option<RuntimeBindingSnapshot> {
+        self.bindings.get(binding_id).cloned()
+    }
+
+    /// What AO can prove synchronously, which is retirement and not completion.
+    ///
+    /// A binding from an older generation, or one this adapter no longer holds, is
+    /// retired: it cannot keep a seat, and saying so needs no request.
+    ///
+    /// Completion is the half AO cannot answer here. It is Grade B — a run closes
+    /// only on a *fresh inspect*, which is an async call this adapter must not make
+    /// while holding its state lock, and the alternative would be reporting a
+    /// session's last known state as terminality. That is exactly the guess this
+    /// adapter is built to refuse, so a replacement over a live current-generation
+    /// seat is refused as not evidenced rather than admitted on a stale read.
+    /// Recovery reaches such a seat through the generation change that retires its
+    /// binding, or through reconciliation.
+    fn holder_is_finished_or_retired(
+        &self,
+        binding_id: RuntimeBindingId,
+        _native_id: &ExternalId,
+    ) -> bool {
+        match self.bindings.get(binding_id) {
+            None => true,
+            Some(snapshot) => snapshot.identity().generation != self.generation,
+        }
+    }
 }
 
 /// The AO runtime adapter for one lane.
@@ -554,6 +610,13 @@ impl AoAdapter {
                     }
                     registry
                 },
+                admissions: {
+                    let mut ledger = AdmissionLedger::new();
+                    for seat in checkpoint.seats.iter().cloned() {
+                        ledger.restore_occupied(seat);
+                    }
+                    ledger
+                },
                 messages,
                 deliveries: checkpoint.deliveries.clone(),
                 positions: checkpoint.positions.iter().copied().collect(),
@@ -582,6 +645,7 @@ impl AoAdapter {
             last_event_seq: state.events.guard.position().sequence,
             last_event_digest: state.events.last_digest.clone(),
             bindings: state.bindings.snapshots().cloned().collect(),
+            seats: state.admissions.occupied_seats().collect(),
             deliveries: state.deliveries.clone(),
             positions: state.positions.iter().map(|(k, v)| (*k, *v)).collect(),
         }
@@ -1035,6 +1099,118 @@ impl AoAdapter {
             sequence: *sequence,
         }
     }
+    /// Everything a launch does once its seat has agreed to it.
+    ///
+    /// Separate from [`RuntimeAdapter::launch`] so one place decides what a
+    /// failure costs: every `?` here is a refusal that happens after the seat was
+    /// claimed, and all of them are answered by the single release at the call
+    /// site.
+    async fn launch_admitted(
+        &self,
+        request: &LaunchRequest,
+        capabilities: &RuntimeCapabilities,
+        generation: u64,
+        held: usize,
+    ) -> RuntimeResult<LaunchOutcome> {
+        preflight(
+            capabilities,
+            &OperationContext {
+                operation: RuntimeCapability::Launch,
+                autonomous: true,
+                account_pinned: request.account_profile_id().is_some(),
+                binding: None,
+                workspace: Some(request.workspace_claim()),
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::ConcurrentSessions(
+                    u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
+                )),
+            },
+        )?;
+
+        // AO owns the per-session worktree and never publishes its path, so a
+        // Kontor workspace binding cannot describe where this session will work.
+        // Accepting one would mean advertising a verified shared task workspace
+        // that nothing verified — and the shared preflight cannot catch it here,
+        // because it only checks a workspace claim for a runtime that declares
+        // `PrepareWorkspace`.
+        if request.workspace().is_some() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "AO owns its per-session worktree and exposes no canonical path, so it \
+                       cannot accept a prepared Kontor task workspace",
+            });
+        }
+        if *request.cwd() != self.lane.project_path {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the claimed working directory is not this lane's configured AO project",
+            });
+        }
+
+        // Project resolution and the Codex guard both run before the spawn, so a
+        // refusal costs no session.
+        self.get_project().await?;
+        self.guard_codex_permissions().await?;
+
+        let label = request.correlation();
+        let body = serde_json::json!({
+            "projectId": self.lane.project_id,
+            "kind": self.lane.kind.as_str(),
+            "harness": self.lane.harness.as_str(),
+            // The full correlation label rides the branch. AO's `displayName` is
+            // capped at 20 characters, which a Kontor label exceeds, so a display
+            // name could only ever hold a prefix — and a truncated label is not
+            // correlation evidence.
+            "branch": label.to_string(),
+            "prompt": request.prompt().as_str(),
+        })
+        .to_string();
+
+        let (view, raw) = match self.transport.call(&AoCall::spawn(body)).await {
+            Ok(reply) => {
+                let spawned: AoSpawnSessionResponse = reply.parse("AoSpawnSessionResponse")?;
+                (spawned.session, reply)
+            }
+            // The POST may have landed. Searching by correlation before deciding
+            // anything is the whole of §10.3's recovery rule; retrying the POST
+            // would be how one run acquires two agents.
+            Err(RuntimeError::Transport { .. }) => self.recover_launch(&label).await?,
+            Err(other) => return Err(other),
+        };
+
+        // AO echoes back whatever branch it was asked for, so the correlation
+        // label alone cannot prove the response is about work in this lane. A
+        // session naming another project, another client or another kind is
+        // refused before it becomes a binding: binding it would point the run at a
+        // session in a tree Kontor never verified.
+        self.ensure_lane_membership(&view)?;
+        let snapshot = self.bind(
+            request.agent_run_id(),
+            request.binding_id(),
+            &view,
+            request.requested_at(),
+            generation,
+        )?;
+        let observation = self.observation(
+            request.agent_run_id(),
+            snapshot.identity().clone(),
+            &raw.body,
+            &view,
+            // A spawn is an acknowledgement. Whatever state AO reports in it, a
+            // command acknowledgement can never close a run.
+            ObservationSource::CommandAck,
+        )?;
+        // The reservation is spent in the same critical section that records the
+        // binding, so there is no instant at which this adapter owns a session and
+        // its seat is still reservable.
+        {
+            let state = &mut *self.lock();
+            state.admissions.occupy(request, view.native_id()?);
+            state.bindings.record(snapshot.clone());
+        }
+        Ok(LaunchOutcome {
+            snapshot,
+            observation,
+        })
+    }
 }
 
 #[async_trait]
@@ -1064,6 +1240,18 @@ impl RuntimeAdapter for AoAdapter {
         self.lock().bindings.attest(claimed)
     }
 
+    /// Admission is bookkeeping about seats: it starts nothing, reaches no AO
+    /// surface, and is deliberately not recorded in the call ledger, so "the
+    /// daemon was never called" keeps meaning what it says.
+    async fn admit_launch(&self, request: &AdmissionRequest) -> RuntimeResult<AdmissionOutcome> {
+        let state = &mut *self.lock();
+        let facts = AoSeatFacts {
+            bindings: &state.bindings,
+            generation: state.generation,
+        };
+        state.admissions.admit(request, &facts)
+    }
+
     async fn prepare_workspace(
         &self,
         _request: &WorkspacePrepareRequest,
@@ -1072,105 +1260,50 @@ impl RuntimeAdapter for AoAdapter {
     }
 
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
+        // Admission first, before the project read and long before the spawn.
+        //
+        // A `LaunchRequest` is a value: it can be held and presented twice. What it
+        // cannot do is restate a fact about *this adapter* — whether this seat is
+        // still holding the reservation this authority was issued for. A replay
+        // finds it spent, an authority for another seat finds the wrong one, and
+        // freshly minted run and binding ids do not help because the seat is the
+        // key. Reading the table is not an effect, so this refusal costs nothing
+        // and creates no session.
+        //
+        // The run-keyed companion is checked alongside it: it is not implied by the
+        // seat rule, because one run admitted into two *different* seats passes
+        // admission twice.
         let (capabilities, generation, held) = {
             let state = self.lock();
+            state.admissions.ensure_admitted(request)?;
+            if state
+                .bindings
+                .snapshots()
+                .any(|snapshot| snapshot.agent_run_id() == request.agent_run_id())
+            {
+                return Err(RuntimeError::SessionAlreadyBound {
+                    rule: "recovery launches a successor run, never the same run twice",
+                });
+            }
             (
                 self.lane.capabilities(),
                 state.generation,
                 state.bindings.len(),
             )
         };
-        preflight(
-            &capabilities,
-            &OperationContext {
-                operation: RuntimeCapability::Launch,
-                autonomous: true,
-                account_pinned: request.account_profile_id.is_some(),
-                binding: None,
-                workspace: Some(request.workspace_claim()),
-                current_generation: Some(generation),
-                demand: Some(LimitDemand::ConcurrentSessions(
-                    u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
-                )),
-            },
-        )?;
 
-        // AO owns the per-session worktree and never publishes its path, so a
-        // Kontor workspace binding cannot describe where this session will work.
-        // Accepting one would mean advertising a verified shared task workspace
-        // that nothing verified — and the shared preflight cannot catch it here,
-        // because it only checks a workspace claim for a runtime that declares
-        // `PrepareWorkspace`.
-        if request.workspace.is_some() {
-            return Err(RuntimeError::WorkspaceMismatch {
-                rule: "AO owns its per-session worktree and exposes no canonical path, so it \
-                       cannot accept a prepared Kontor task workspace",
-            });
+        // From here the reservation is claimed, so every remaining refusal has to
+        // hand the seat back. A refused launch leaves no session either way; what
+        // it must not also leave is a seat holding a reservation nobody can spend
+        // or replace. One wrapper does it for every `?` below, because spelling the
+        // release out per path is how one of them ends up forgotten.
+        let outcome = self
+            .launch_admitted(request, &capabilities, generation, held)
+            .await;
+        if outcome.is_err() {
+            self.lock().admissions.release(request);
         }
-        if request.cwd != self.lane.project_path {
-            return Err(RuntimeError::WorkspaceMismatch {
-                rule: "the claimed working directory is not this lane's configured AO project",
-            });
-        }
-
-        // Project resolution and the Codex guard both run before the spawn, so a
-        // refusal costs no session.
-        self.get_project().await?;
-        self.guard_codex_permissions().await?;
-
-        let label = request.correlation();
-        let body = serde_json::json!({
-            "projectId": self.lane.project_id,
-            "kind": self.lane.kind.as_str(),
-            "harness": self.lane.harness.as_str(),
-            // The full correlation label rides the branch. AO's `displayName` is
-            // capped at 20 characters, which a Kontor label exceeds, so a display
-            // name could only ever hold a prefix — and a truncated label is not
-            // correlation evidence.
-            "branch": label.to_string(),
-            "prompt": request.prompt.as_str(),
-        })
-        .to_string();
-
-        let (view, raw) = match self.transport.call(&AoCall::spawn(body)).await {
-            Ok(reply) => {
-                let spawned: AoSpawnSessionResponse = reply.parse("AoSpawnSessionResponse")?;
-                (spawned.session, reply)
-            }
-            // The POST may have landed. Searching by correlation before deciding
-            // anything is the whole of §10.3's recovery rule; retrying the POST
-            // would be how one run acquires two agents.
-            Err(RuntimeError::Transport { .. }) => self.recover_launch(&label).await?,
-            Err(other) => return Err(other),
-        };
-
-        // AO echoes back whatever branch it was asked for, so the correlation
-        // label alone cannot prove the response is about work in this lane. A
-        // session naming another project, another client or another kind is
-        // refused before it becomes a binding: binding it would point the run at a
-        // session in a tree Kontor never verified.
-        self.ensure_lane_membership(&view)?;
-        let snapshot = self.bind(
-            request.agent_run_id,
-            request.binding_id,
-            &view,
-            request.requested_at,
-            generation,
-        )?;
-        let observation = self.observation(
-            request.agent_run_id,
-            snapshot.identity().clone(),
-            &raw.body,
-            &view,
-            // A spawn is an acknowledgement. Whatever state AO reports in it, a
-            // command acknowledgement can never close a run.
-            ObservationSource::CommandAck,
-        )?;
-        self.lock().bindings.record(snapshot.clone());
-        Ok(LaunchOutcome {
-            snapshot,
-            observation,
-        })
+        outcome
     }
 
     async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation> {

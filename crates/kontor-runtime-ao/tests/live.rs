@@ -39,12 +39,15 @@ use tokio::sync::Barrier;
 use tokio::time::timeout;
 
 use kontor_core::id::{
-    AgentRunId, BoundedText, ExternalName, RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId,
-    parse_utc_timestamp,
+    AgentRunId, BoundedText, ExternalName, RoleSlotId, RuntimeBindingId, RuntimeKindKey, TaskId,
+    TeamRunId, parse_utc_timestamp,
 };
 use kontor_runtime::adapter::RuntimeAdapter;
+use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::RuntimeCapability;
-use kontor_runtime::request::{CancelRequest, InspectRequest, MessageId, SendMessageRequest};
+use kontor_runtime::request::{
+    CancelRequest, InspectRequest, LaunchParts, LaunchRequest, MessageId, SendMessageRequest,
+};
 use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_runtime_ao::adapter::{AoAdapter, AoCheckpoint, AoLane};
 use kontor_runtime_ao::client::AoHttpTransport;
@@ -123,12 +126,20 @@ fn lane(config: &LiveEnv, harness: AoHarness) -> AoLane {
     }
 }
 
-/// A launch request for one lane, in the lane's own AO project.
-fn live_launch_request(config: &LiveEnv) -> kontor_runtime::request::LaunchRequest {
+/// A launch for one lane, in the lane's own AO project, with the adapter's own
+/// authority to perform it.
+///
+/// Admission runs here rather than inside the spawned task: it is bookkeeping
+/// about seats, it reaches no AO surface, and what this test claims to overlap is
+/// the launches themselves. Each lane gets its own team run, so four concurrent
+/// launches are four seats and not four attempts at one.
+async fn live_admitted_launch(ao: &AoAdapter, config: &LiveEnv) -> LaunchRequest {
     let agent_run_id = AgentRunId::generate();
-    kontor_runtime::request::LaunchRequest {
+    let parts = LaunchParts {
         agent_run_id,
         team_run_id: TeamRunId::generate(),
+        role_slot_id: RoleSlotId::parse(&format!("slot-{agent_run_id}"))
+            .expect("a run id is a legal open key"),
         task_id: TaskId::generate(),
         binding_id: RuntimeBindingId::generate(),
         workspace: None,
@@ -140,7 +151,19 @@ fn live_launch_request(config: &LiveEnv) -> kontor_runtime::request::LaunchReque
         ))
         .expect("bounded prompt"),
         requested_at: parse_utc_timestamp("2026-08-10T09:00:00Z").expect("canonical UTC"),
-    }
+    };
+    ao.admit_launch(&AdmissionRequest {
+        slot: RoleSlotKey::new(parts.team_run_id, parts.role_slot_id.clone()),
+        agent_run_id: parts.agent_run_id,
+        binding_id: parts.binding_id,
+        replaces: None,
+        requested_at: parts.requested_at,
+    })
+    .await
+    .expect("a fresh seat admits this launch")
+    .into_authority()
+    .expect("admission issues authority rather than a resume")
+    .into_request(parts)
 }
 
 /// When one lane's launch was in flight.
@@ -284,7 +307,7 @@ async fn live_smoke_launches_two_clients_concurrently() {
     let rendezvous = Arc::new(Barrier::new(ready.len()));
     let mut handles = Vec::with_capacity(ready.len());
     for (harness, ao) in ready {
-        let request = live_launch_request(&config);
+        let request = live_admitted_launch(&ao, &config).await;
         let rendezvous = Arc::clone(&rendezvous);
         handles.push(tokio::spawn(async move {
             let together = timeout(RENDEZVOUS_TIMEOUT, rendezvous.wait()).await.is_ok();

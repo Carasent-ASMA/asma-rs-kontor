@@ -25,20 +25,21 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use kontor_core::id::{
-    AgentRunId, BoundedText, ExternalId, ExternalName, RuntimeBindingId, RuntimeKindKey, TaskId,
-    TeamRunId,
+    AgentRunId, BoundedText, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId,
+    RuntimeKindKey, TaskId, TeamRunId,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::state::{
     DerivedRunState, NativeRuntimeIdentity, ObservedRunState, RuntimeContact, TerminalOutcome,
 };
-use kontor_runtime::adapter::{RuntimeAdapter, RuntimeError};
+use kontor_runtime::adapter::{LaunchOutcome, RuntimeAdapter, RuntimeError, RuntimeResult};
+use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
 use kontor_runtime::observation::{
     CorrelationEvidence, ObservationSource, ReconciliationAction, ReconciliationFinding,
 };
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchRequest,
+    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchParts, LaunchRequest,
     LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
     SendMessageRequest,
 };
@@ -256,6 +257,16 @@ impl Fixture {
     fn mutations(&self) -> Vec<String> {
         self.daemon.mutations()
     }
+
+    /// Admit `agent_run_id` into its own seat and spend that admission at once.
+    ///
+    /// The two steps travel together because a launch has no other legal order,
+    /// and because writing them out at every call site would bury what each test
+    /// is actually about.
+    async fn launch_run(&self, agent_run_id: AgentRunId) -> RuntimeResult<LaunchOutcome> {
+        let request = launch_request(&self.ao, agent_run_id).await;
+        self.ao.launch(&request).await
+    }
 }
 
 impl std::ops::Deref for Fixture {
@@ -266,12 +277,25 @@ impl std::ops::Deref for Fixture {
     }
 }
 
-/// A launch of `agent_run_id` into the lane's own AO project, with no Kontor
-/// workspace binding — which is the only shape AO can accept.
-fn launch_request(agent_run_id: AgentRunId) -> LaunchRequest {
-    LaunchRequest {
+/// The seat one run of this suite launches into.
+///
+/// Distinct runs get distinct seats, because admission is keyed on the seat and
+/// almost every test here is about something else. A test that means "two
+/// attempts at *the same* seat" names the slot itself.
+fn slot_of(agent_run_id: AgentRunId) -> RoleSlotId {
+    RoleSlotId::parse(&format!("slot-{agent_run_id}")).expect("a run id is a legal open key")
+}
+
+/// What a launch of `agent_run_id` names: the lane's own AO project, and no
+/// Kontor workspace binding — the only shape AO can accept.
+///
+/// A plain value that cannot be launched. Pairing it with runtime-issued
+/// authority is what produces a `LaunchRequest`.
+fn launch_parts(agent_run_id: AgentRunId) -> LaunchParts {
+    LaunchParts {
         agent_run_id,
         team_run_id: TeamRunId::generate(),
+        role_slot_id: slot_of(agent_run_id),
         task_id: TaskId::generate(),
         binding_id: RuntimeBindingId::generate(),
         workspace: None,
@@ -280,6 +304,32 @@ fn launch_request(agent_run_id: AgentRunId) -> LaunchRequest {
         prompt: text("do the work"),
         requested_at: at("2026-08-10T09:00:00Z"),
     }
+}
+
+/// The only way a launch exists: the adapter admits the seat first.
+///
+/// There is no struct literal to reach for — `LaunchRequest`'s fields are private
+/// and its authority has no public constructor — so every launch in this suite
+/// goes through the adapter's own reservation table. Tests that are *about*
+/// refused admission call `admit_launch` themselves.
+async fn admitted(ao: &AoAdapter, parts: LaunchParts) -> LaunchRequest {
+    ao.admit_launch(&AdmissionRequest {
+        slot: RoleSlotKey::new(parts.team_run_id, parts.role_slot_id.clone()),
+        agent_run_id: parts.agent_run_id,
+        binding_id: parts.binding_id,
+        replaces: None,
+        requested_at: parts.requested_at,
+    })
+    .await
+    .expect("the seat admits this launch")
+    .into_authority()
+    .expect("admission issues authority rather than a resume")
+    .into_request(parts)
+}
+
+/// The common case: one run, its own seat, this lane's project.
+async fn launch_request(ao: &AoAdapter, agent_run_id: AgentRunId) -> LaunchRequest {
+    admitted(ao, launch_parts(agent_run_id)).await
 }
 
 /// Every lane, with the fixtures it launches and inspects through.
@@ -320,7 +370,7 @@ fn lanes() -> Vec<(AoHarness, &'static str, &'static str, &'static str)> {
 async fn every_fixture_lane_passes_the_shared_adapter_contract() {
     for (harness, pinned, spawn, session) in lanes() {
         let ao = Fixture::new(harness, daemon(spawn, session));
-        let request = launch_request(run(pinned));
+        let request = launch_request(&ao, run(pinned)).await;
         let snapshot = adapter_contract(&*ao, &request)
             .await
             .unwrap_or_else(|error| panic!("{harness} lane fails the adapter contract: {error}"));
@@ -346,10 +396,7 @@ async fn every_fixture_lane_passes_the_shared_session_content_contract() {
     // history and live events, and the positive branch for follow-up.
     for (harness, pinned, spawn, session) in lanes() {
         let ao = Fixture::new(harness, daemon(spawn, session));
-        let launched = ao
-            .launch(&launch_request(run(pinned)))
-            .await
-            .expect("the lane launches");
+        let launched = ao.launch_run(run(pinned)).await.expect("the lane launches");
         session_content_contract(&*ao, &launched.snapshot)
             .await
             .unwrap_or_else(|error| {
@@ -362,10 +409,7 @@ async fn every_fixture_lane_passes_the_shared_session_content_contract() {
 async fn every_fixture_lane_passes_the_shared_reconciliation_contract() {
     for (harness, pinned, spawn, session) in lanes() {
         let ao = Fixture::new(harness, daemon(spawn, session));
-        let launched = ao
-            .launch(&launch_request(run(pinned)))
-            .await
-            .expect("the lane launches");
+        let launched = ao.launch_run(run(pinned)).await.expect("the lane launches");
         reconciliation_contract(&*ao, std::slice::from_ref(&launched.snapshot))
             .await
             .unwrap_or_else(|error| {
@@ -413,7 +457,7 @@ async fn four_lanes_share_one_inventory_without_stealing_each_others_sessions() 
 async fn every_unsupported_operation_is_refused_before_the_daemon_is_called() {
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     let binding = launched.snapshot;
@@ -512,8 +556,9 @@ fn the_unsupported_table_and_the_declared_capabilities_cannot_disagree() {
 #[tokio::test]
 async fn an_account_pinned_launch_is_refused_before_dispatch() {
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
-    let mut request = launch_request(run(RUN_CLAUDE));
-    request.account_profile_id = Some(kontor_core::id::AccountProfileId::generate());
+    let mut parts = launch_parts(run(RUN_CLAUDE));
+    parts.account_profile_id = Some(kontor_core::id::AccountProfileId::generate());
+    let request = admitted(&ao, parts).await;
     let error = ao
         .launch(&request)
         .await
@@ -528,9 +573,9 @@ async fn an_account_pinned_launch_is_refused_before_dispatch() {
 #[tokio::test]
 async fn a_launch_presenting_a_kontor_workspace_binding_is_refused_before_dispatch() {
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
-    let mut request = launch_request(run(RUN_CLAUDE));
-    let team_run_id = request.team_run_id;
-    let task_id = request.task_id;
+    let mut parts = launch_parts(run(RUN_CLAUDE));
+    let team_run_id = parts.team_run_id;
+    let task_id = parts.task_id;
     let root = WorkspaceRoot::parse("/w/ao-project/task-1").expect("absolute path");
     let identity = NativeRuntimeIdentity {
         runtime_kind: RuntimeKindKey::parse("ao.claude-code").expect("valid kind"),
@@ -538,7 +583,7 @@ async fn a_launch_presenting_a_kontor_workspace_binding_is_refused_before_dispat
         generation: 1,
         native_id: ExternalId::parse("wks_invented").expect("valid id"),
     };
-    request.workspace = Some(WorkspaceBindingSnapshot {
+    parts.workspace = Some(WorkspaceBindingSnapshot {
         binding: WorkspaceBinding {
             id: WorkspaceBindingId::generate(),
             team_run_id,
@@ -554,7 +599,8 @@ async fn a_launch_presenting_a_kontor_workspace_binding_is_refused_before_dispat
             established_at: at("2026-08-10T08:59:00Z"),
         },
     });
-    request.cwd = root;
+    parts.cwd = root;
+    let request = admitted(&ao, parts).await;
 
     let error = ao
         .launch(&request)
@@ -567,8 +613,9 @@ async fn a_launch_presenting_a_kontor_workspace_binding_is_refused_before_dispat
 #[tokio::test]
 async fn a_launch_claiming_another_directory_is_refused_before_dispatch() {
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
-    let mut request = launch_request(run(RUN_CLAUDE));
-    request.cwd = WorkspaceRoot::parse("/w/somewhere-else").expect("absolute path");
+    let mut parts = launch_parts(run(RUN_CLAUDE));
+    parts.cwd = WorkspaceRoot::parse("/w/somewhere-else").expect("absolute path");
+    let request = admitted(&ao, parts).await;
     let error = ao
         .launch(&request)
         .await
@@ -589,7 +636,7 @@ async fn a_degraded_or_relocated_project_cannot_authorize_a_launch() {
             daemon(SPAWN_CLAUDE, SESSION_LIVE).answering(&AoCall::project(PROJECT_ID), fixture),
         );
         assert!(
-            ao.launch(&launch_request(run(RUN_CLAUDE))).await.is_err(),
+            ao.launch_run(run(RUN_CLAUDE)).await.is_err(),
             "{why} must not authorize a launch"
         );
         assert!(
@@ -620,7 +667,7 @@ async fn an_unsafe_codex_permission_mode_is_refused_before_any_mutating_call() {
                 .answering(&AoCall::project(PROJECT_ID), fixture),
         );
         let error = ao
-            .launch(&launch_request(run(RUN_CODEX)))
+            .launch_run(run(RUN_CODEX))
             .await
             .err()
             .unwrap_or_else(|| {
@@ -664,7 +711,7 @@ async fn codex_launch_restore_and_resume_agent_all_run_the_same_guard() {
                 .then_answering(&AoCall::session("ses_codex_1"), session_fixture),
         );
         let launched = ao
-            .launch(&launch_request(run(RUN_CODEX)))
+            .launch_run(run(RUN_CODEX))
             .await
             .expect("the safe config launches");
         ao.take_calls();
@@ -705,7 +752,7 @@ async fn a_project_envelope_about_another_project_cannot_clear_the_codex_guard()
          and the path check"
     );
     let error = ao
-        .launch(&launch_request(run(RUN_CODEX)))
+        .launch_run(run(RUN_CODEX))
         .await
         .expect_err("an envelope about another project authorizes nothing");
     assert!(
@@ -727,7 +774,7 @@ async fn an_approval_gated_codex_mode_proceeds() {
             daemon(SPAWN_CODEX, fixture!("session-codex-live.json"))
                 .answering(&AoCall::project(PROJECT_ID), fixture),
         );
-        ao.launch(&launch_request(run(RUN_CODEX)))
+        ao.launch_run(run(RUN_CODEX))
             .await
             .expect("accept-edits and auto both keep an approval gate");
     }
@@ -969,7 +1016,7 @@ async fn no_uncertain_observation_can_close_a_run() {
                 .then_answering(&AoCall::session("ses_claude_1"), fixture),
         );
         let launched = ao
-            .launch(&launch_request(run(RUN_CLAUDE)))
+            .launch_run(run(RUN_CLAUDE))
             .await
             .expect("the lane launches");
         let observed = ao
@@ -995,7 +1042,7 @@ async fn only_a_fresh_inspect_of_an_explicit_termination_confirms_cancellation()
             .then_answering(&AoCall::session("ses_claude_1"), SESSION_TERMINATED),
     );
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
 
@@ -1042,7 +1089,7 @@ async fn a_forged_or_foreign_binding_closes_nothing_through_the_registry() {
             .then_answering(&AoCall::session("ses_claude_1"), SESSION_TERMINATED),
     );
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     let genuine = launched.snapshot;
@@ -1098,7 +1145,7 @@ async fn a_forged_binding_is_refused_before_any_effect_on_every_bound_operation(
     // build. Only the registry knows what this runtime issued.
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let genuine = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches")
         .snapshot;
@@ -1200,7 +1247,7 @@ async fn a_forged_binding_cannot_grant_itself_a_larger_message_limit() {
     // Attestation happening at all is.
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let genuine = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches")
         .snapshot;
@@ -1261,7 +1308,7 @@ async fn a_launch_response_from_another_lane_is_refused_and_binds_nothing() {
             daemon(SPAWN_CLAUDE, SESSION_LIVE).answering(&AoCall::spawn(String::new()), fixture),
         );
         let error = ao
-            .launch(&launch_request(run(RUN_CLAUDE)))
+            .launch_run(run(RUN_CLAUDE))
             .await
             .err()
             .unwrap_or_else(|| panic!("a spawn naming {label} must not produce a LaunchOutcome"));
@@ -1279,7 +1326,7 @@ async fn a_launch_response_from_another_lane_is_refused_and_binds_nothing() {
     // The unmutated response still binds, so the refusals above are the check
     // working rather than the launch path being broken.
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
-    ao.launch(&launch_request(run(RUN_CLAUDE)))
+    ao.launch_run(run(RUN_CLAUDE))
         .await
         .expect("this lane's own response binds");
     assert_eq!(ao.checkpoint().bindings.len(), 1);
@@ -1297,7 +1344,7 @@ async fn a_restore_or_resume_response_from_another_lane_is_refused() {
             .answering(&AoCall::restore("ses_claude_1"), RESTORE_FOREIGN_PROJECT),
     );
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     assert_eq!(
@@ -1330,7 +1377,7 @@ async fn a_live_session_from_another_lane_is_refused_on_every_route_that_reads_o
             ),
         );
         let launched = ao
-            .launch(&launch_request(run(RUN_CLAUDE)))
+            .launch_run(run(RUN_CLAUDE))
             .await
             .expect("the lane launches");
         ao.take_calls();
@@ -1367,7 +1414,7 @@ async fn a_live_session_from_another_lane_is_refused_on_every_route_that_reads_o
     // inspect being broken.
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     ao.take_calls();
@@ -1394,7 +1441,7 @@ async fn a_forged_binding_is_never_matched_by_reconciliation() {
     // endorsed by the very sweep that exists to catch it.
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let genuine = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches")
         .snapshot;
@@ -1471,6 +1518,173 @@ async fn a_forged_binding_is_never_matched_by_reconciliation() {
 }
 
 // ---------------------------------------------------------------------------
+// Launch admission: the seat rule, as this adapter enforces it
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_replayed_launch_request_creates_no_second_session() {
+    // The AC-4 claim on the one adapter that talks to a real daemon. A
+    // `LaunchRequest` is a value and can be presented twice; what it cannot do is
+    // restate a fact about this adapter's own table, so the second presentation
+    // finds the reservation spent.
+    let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
+    let spawn = AoCall::spawn(String::new());
+    let request = launch_request(&ao, run(RUN_CLAUDE)).await;
+
+    ao.launch(&request).await.expect("the first launch lands");
+    let replayed = ao
+        .launch(&request)
+        .await
+        .expect_err("the same authority cannot be spent twice");
+
+    assert!(
+        matches!(replayed, RuntimeError::LaunchNotAdmitted { .. }),
+        "a replay must fail as unadmitted rather than as anything AO said, got {replayed:?}"
+    );
+    assert_eq!(
+        ao.count(&spawn),
+        1,
+        "the replay must create no second session"
+    );
+    assert_eq!(
+        ao.checkpoint().bindings.len(),
+        1,
+        "and must leave one binding, not two"
+    );
+    assert_eq!(
+        ao.checkpoint().seats.len(),
+        1,
+        "the seat holds exactly the session that was launched into it"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_launch_hands_its_seat_back_so_a_fresh_attempt_can_be_admitted() {
+    // The release path. It exists because every refusal between admission and the
+    // first native effect would otherwise wedge the seat: nothing else clears a
+    // reservation, so the seat would hold neither a session nor a spendable
+    // reservation — the state AC-4 forbids.
+    //
+    // This adapter can reach it, which the scripted fake cannot: an account-pinned
+    // launch is admitted and then refused by preflight, before AO is touched.
+    let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
+    let parts = launch_parts(run(RUN_CLAUDE));
+
+    let mut pinned = parts.clone();
+    pinned.account_profile_id = Some(kontor_core::id::AccountProfileId::generate());
+    let refused = admitted(&ao, pinned).await;
+    assert_eq!(
+        ao.launch(&refused)
+            .await
+            .expect_err("AO cannot prove a per-run account environment"),
+        RuntimeError::AccountEnvironmentUnavailable
+    );
+    assert!(ao.calls().is_empty(), "the refusal cost no request");
+    assert!(
+        ao.checkpoint().seats.is_empty(),
+        "a refused launch leaves no session in the seat"
+    );
+
+    // A *fresh* attempt at the same seat: same run, new binding, as Kontor mints
+    // one per attempt. Without the release this is refused as "another launch is
+    // already reserved for this seat" — retrying the identical question would not
+    // prove anything, because the standing reservation would answer it.
+    let mut retried = parts;
+    retried.binding_id = RuntimeBindingId::generate();
+    let second = admitted(&ao, retried).await;
+    let launched = ao
+        .launch(&second)
+        .await
+        .expect("the seat was handed back, so a fresh attempt may have it");
+    assert_eq!(launched.snapshot.agent_run_id(), run(RUN_CLAUDE));
+}
+
+#[tokio::test]
+async fn one_run_cannot_own_two_live_sessions_even_in_two_seats() {
+    // The run-keyed companion, which the seat rule does not imply: one run admitted
+    // into two *different* seats passes admission twice. Recovery launches a
+    // successor run, never the same run again.
+    let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
+    let spawn = AoCall::spawn(String::new());
+    ao.launch_run(run(RUN_CLAUDE))
+        .await
+        .expect("the first seat launches");
+
+    // A second seat, admitted on its own merits, for a run that already has a
+    // session.
+    let elsewhere = launch_request(&ao, run(RUN_CLAUDE)).await;
+    let error = ao
+        .launch(&elsewhere)
+        .await
+        .expect_err("one run may not own two live sessions");
+
+    assert!(
+        matches!(error, RuntimeError::SessionAlreadyBound { .. }),
+        "the refusal must name the run, not the seat, got {error:?}"
+    );
+    assert_eq!(ao.count(&spawn), 1, "and must create no second session");
+    assert_eq!(ao.checkpoint().bindings.len(), 1);
+}
+
+#[tokio::test]
+async fn a_restarted_adapter_still_refuses_a_second_session_in_an_occupied_seat() {
+    // AC-4 has to survive a Kontor restart, and a binding does not name a seat, so
+    // the seats travel in the checkpoint next to the bindings. Without that, a
+    // restarted adapter would admit a fresh launch into a seat that is working.
+    let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
+    let parts = launch_parts(run(RUN_CLAUDE));
+    let request = admitted(&ao, parts.clone()).await;
+    ao.launch(&request).await.expect("the lane launches");
+    let checkpoint = ao.checkpoint();
+    assert_eq!(checkpoint.seats.len(), 1, "the seat is persisted");
+
+    let restarted = Fixture::restarted(
+        AoHarness::ClaudeCode,
+        daemon(SPAWN_CLAUDE, SESSION_LIVE),
+        checkpoint,
+    );
+    // A different run asking for the seat that is already working.
+    let mut intruder = parts.clone();
+    intruder.agent_run_id = run(RUN_ADOPTABLE);
+    intruder.binding_id = RuntimeBindingId::generate();
+    let refused = restarted
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(intruder.team_run_id, intruder.role_slot_id.clone()),
+            agent_run_id: intruder.agent_run_id,
+            binding_id: intruder.binding_id,
+            replaces: None,
+            requested_at: intruder.requested_at,
+        })
+        .await
+        .expect_err("a rehydrated seat is still occupied");
+    assert!(
+        matches!(refused, RuntimeError::SlotAlreadyAdmitted { .. }),
+        "the restart must not turn an occupied seat into a vacant one, got {refused:?}"
+    );
+
+    // And the run that already holds it is told to continue rather than relaunch.
+    let resumed = restarted
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(parts.team_run_id, parts.role_slot_id.clone()),
+            agent_run_id: parts.agent_run_id,
+            binding_id: parts.binding_id,
+            replaces: None,
+            requested_at: parts.requested_at,
+        })
+        .await
+        .expect("its own run's seat answers");
+    assert_eq!(
+        resumed.resumed().map(RuntimeBindingSnapshot::binding_id),
+        Some(parts.binding_id),
+        "compatible work is a resume of the runtime's own binding, not a launch"
+    );
+    assert!(
+        restarted.calls().is_empty(),
+        "admission is bookkeeping and reaches no AO surface"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Correlation, lost acknowledgements and the ledger
 // ---------------------------------------------------------------------------
 
@@ -1481,7 +1695,7 @@ async fn a_lost_launch_acknowledgement_recovers_by_correlation_without_a_second_
         AoHarness::ClaudeCode,
         daemon(SPAWN_CLAUDE, SESSION_LIVE).losing_acknowledgement(&spawn),
     );
-    let request = launch_request(run(RUN_CLAUDE));
+    let request = launch_request(&ao, run(RUN_CLAUDE)).await;
     let launched = ao
         .launch(&request)
         .await
@@ -1509,7 +1723,7 @@ async fn a_lost_launch_with_no_matching_branch_stays_unknown_rather_than_relaunc
             .answering(&AoCall::sessions(), INVENTORY_WITHOUT_CLAUDE),
     );
     let error = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect_err("nothing proves AO created a session");
     assert!(matches!(error, RuntimeError::Transport { .. }));
@@ -1530,7 +1744,7 @@ async fn two_sessions_on_one_correlation_branch_bind_nothing() {
             .answering(&AoCall::sessions(), INVENTORY_DIVERGED),
     );
     assert_eq!(
-        ao.launch(&launch_request(run(RUN_CLAUDE)))
+        ao.launch_run(run(RUN_CLAUDE))
             .await
             .expect_err("a diverged lane binds nothing"),
         RuntimeError::CorrelationFailed
@@ -1550,7 +1764,7 @@ async fn a_branch_that_is_not_this_runs_label_is_refused() {
             daemon(fixture, SESSION_LIVE).answering(&AoCall::spawn(String::new()), fixture),
         );
         assert_eq!(
-            ao.launch(&launch_request(run(RUN_CLAUDE)))
+            ao.launch_run(run(RUN_CLAUDE))
                 .await
                 .expect_err("a branch reporting {why} is not correlation evidence"),
             RuntimeError::CorrelationFailed,
@@ -1563,7 +1777,7 @@ async fn a_branch_that_is_not_this_runs_label_is_refused() {
 async fn a_retried_follow_up_replays_its_acknowledgement_and_posts_once() {
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     let send = SendMessageRequest {
@@ -1603,7 +1817,7 @@ async fn a_lost_follow_up_acknowledgement_is_never_sent_again() {
         daemon(SPAWN_CLAUDE, SESSION_LIVE).losing_acknowledgement(&route),
     );
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     let send = SendMessageRequest {
@@ -1649,7 +1863,7 @@ async fn an_acknowledgement_for_another_message_is_not_this_messages_receipt() {
                 .answering(&AoCall::send("ses_claude_1", String::new()), fixture),
         );
         let launched = ao
-            .launch(&launch_request(run(RUN_CLAUDE)))
+            .launch_run(run(RUN_CLAUDE))
             .await
             .expect("the lane launches");
         assert!(
@@ -1676,7 +1890,7 @@ async fn a_refused_follow_up_leaves_the_identifier_usable() {
             .answering(&route, SEND_OK),
     );
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     let send = SendMessageRequest {
@@ -1698,7 +1912,7 @@ async fn a_refused_follow_up_leaves_the_identifier_usable() {
 async fn an_oversized_follow_up_is_refused_before_dispatch() {
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     ao.take_calls();
@@ -1730,7 +1944,7 @@ async fn a_send_not_ok_is_refused_without_burning_the_identifier() {
             .answering(&AoCall::send("ses_claude_1", String::new()), SEND_OK),
     );
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     let send = SendMessageRequest {
@@ -1755,7 +1969,7 @@ async fn resume_restores_only_a_terminated_session_and_never_relaunches_a_live_o
     // A live session: inspect only.
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     let observed = ao
@@ -1780,7 +1994,7 @@ async fn resume_restores_only_a_terminated_session_and_never_relaunches_a_live_o
             .then_answering(&AoCall::session("ses_claude_1"), SESSION_TERMINATED),
     );
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     ao.resume(&ResumeRequest {
@@ -1799,7 +2013,7 @@ async fn resume_restores_only_a_terminated_session_and_never_relaunches_a_live_o
             .then_answering(&AoCall::session("ses_claude_1"), SESSION_EXITED),
     );
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     ao.resume(&ResumeRequest {
@@ -1900,7 +2114,7 @@ async fn every_replay_break_blocks_scheduling_by_invalidating_the_bindings() {
     ] {
         let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
         let launched = ao
-            .launch(&launch_request(run(RUN_CLAUDE)))
+            .launch_run(run(RUN_CLAUDE))
             .await
             .expect("the lane launches");
         assert_eq!(
@@ -1933,7 +2147,7 @@ async fn a_reset_change_log_starts_a_new_generation_and_invalidates_every_bindin
     // replay, which is why the checkpoint carries one.
     let first = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let launched = first
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     first.observe_events(EVENTS_NORMAL).expect("the first pass");
@@ -1980,7 +2194,7 @@ async fn a_reset_change_log_starts_a_new_generation_and_invalidates_every_bindin
 async fn an_ao_restart_duplicates_no_session_event_or_message() {
     // Round one: launch, follow up, consume the log.
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
-    let request = launch_request(run(RUN_CLAUDE));
+    let request = launch_request(&ao, run(RUN_CLAUDE)).await;
     let launched = ao.launch(&request).await.expect("the lane launches");
     let message_id = MessageId::generate();
     let acknowledged = ao
@@ -2024,7 +2238,7 @@ async fn an_ao_restart_duplicates_no_session_event_or_message() {
             .bindings
             .first()
             .map(RuntimeBindingSnapshot::binding_id),
-        Some(request.binding_id)
+        Some(request.binding_id())
     );
 
     // And the message ledger still answers the same identifier from evidence
@@ -2085,7 +2299,7 @@ async fn a_persisted_change_is_keyed_by_generation_so_a_reset_cannot_collide() {
 async fn a_foreign_session_enters_the_inbox_and_a_labelled_one_is_only_adoptable() {
     let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let launched = ao
-        .launch(&launch_request(run(RUN_CLAUDE)))
+        .launch_run(run(RUN_CLAUDE))
         .await
         .expect("the lane launches");
     ao.take_calls();
@@ -2175,7 +2389,7 @@ async fn a_flat_ao_inventory_neither_erases_nor_invents_a_parent_link() {
 
     let first = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let parent = first
-        .launch(&launch_request(parent_run))
+        .launch_run(parent_run)
         .await
         .expect("the parent run launches")
         .snapshot;

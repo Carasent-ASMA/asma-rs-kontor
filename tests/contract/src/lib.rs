@@ -178,11 +178,11 @@ pub async fn adapter_contract(
     );
 
     let launched = adapter.launch(launch).await?;
-    assert_eq!(launched.snapshot.agent_run_id(), launch.agent_run_id);
-    assert_eq!(launched.snapshot.binding_id(), launch.binding_id);
+    assert_eq!(launched.snapshot.agent_run_id(), launch.agent_run_id());
+    assert_eq!(launched.snapshot.binding_id(), launch.binding_id());
     assert_eq!(
         launched.snapshot.correlation.label.agent_run_id(),
-        launch.agent_run_id
+        launch.agent_run_id()
     );
     assert_eq!(
         launched.snapshot.capabilities, declared,
@@ -200,7 +200,7 @@ pub async fn adapter_contract(
     };
     if declared.supports(RuntimeCapability::Resume) {
         let resumed = adapter.resume(&resume).await?;
-        assert_eq!(resumed.agent_run_id, launch.agent_run_id);
+        assert_eq!(resumed.agent_run_id, launch.agent_run_id());
         assert_eq!(resumed.contact, RuntimeContact::Reachable);
         assert_eq!(
             closes(adapter, &resumed, &launched.snapshot).await,
