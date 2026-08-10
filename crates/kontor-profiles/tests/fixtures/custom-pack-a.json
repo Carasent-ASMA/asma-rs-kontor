@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "pack_id": "alpha-pack",
+  "version": 1,
+  "manifest": [
+    {
+      "category": "alpha-cat",
+      "label": "Alpha runnable",
+      "availability": "seeded",
+      "profile": "alpha-profile",
+      "profile_version": 1
+    },
+    {
+      "category": "alpha-vocab",
+      "label": "Alpha vocabulary only",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    }
+  ],
+  "roles": [
+    { "role": "alpha-r1", "version": 1, "label": "Alpha role one" },
+    { "role": "alpha-r2", "version": 1, "label": "Alpha role two" },
+    { "role": "alpha-r3", "version": 1, "label": "Alpha role three" }
+  ],
+  "skills": [{ "skill": "alpha-s1", "version": 1, "label": "Alpha skill one" }],
+  "contexts": [],
+  "teams": [
+    {
+      "schema_version": 1,
+      "template_id": "01936f5a-0000-7000-8000-00000000000a",
+      "version": 1,
+      "name": "Alpha team",
+      "roles": [
+        { "role": { "role": "alpha-r1", "version": 1 }, "min_slots": 2, "max_slots": 2 },
+        { "role": { "role": "alpha-r2", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "alpha-r3", "version": 1 }, "min_slots": 1, "max_slots": 1 }
+      ],
+      "slots": [
+        {
+          "id": "alpha-k1",
+          "role": { "role": "alpha-r1", "version": 1 },
+          "skills": [{ "skill": "alpha-s1", "version": 1 }],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "alpha-k2",
+          "role": { "role": "alpha-r1", "version": 1 },
+          "skills": [{ "skill": "alpha-s1", "version": 1 }],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": {
+            "authorized_roles": ["alpha-r2"],
+            "required_evidence": ["alpha-a3"]
+          }
+        },
+        {
+          "id": "alpha-k3",
+          "role": { "role": "alpha-r2", "version": 1 },
+          "skills": [],
+          "context": null,
+          "may_evaluate": ["alpha-g1"],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "alpha-k4",
+          "role": { "role": "alpha-r3", "version": 1 },
+          "skills": [],
+          "context": null,
+          "may_evaluate": ["alpha-g2"],
+          "may_waive": [],
+          "waiver_policy": null
+        }
+      ],
+      "handoffs": [
+        {
+          "from_slot": "alpha-k1",
+          "to_slot": "alpha-k3",
+          "after_phase": "alpha-p2",
+          "required_artifacts": ["alpha-a2"]
+        },
+        {
+          "from_slot": "alpha-k2",
+          "to_slot": "alpha-k3",
+          "after_phase": "alpha-p3",
+          "required_artifacts": ["alpha-a3"]
+        },
+        {
+          "from_slot": "alpha-k3",
+          "to_slot": "alpha-k4",
+          "after_phase": "alpha-p4",
+          "required_artifacts": ["alpha-a4"]
+        }
+      ],
+      "max_successor_depth": 2,
+      "max_handoff_depth": 4
+    }
+  ],
+  "profiles": [
+    {
+      "schema_version": 1,
+      "id": "alpha-profile",
+      "version": 1,
+      "name": "Alpha branched profile",
+      "phases": [
+        {
+          "id": "alpha-p1",
+          "label": "Alpha one",
+          "required_artifacts": ["alpha-a1"],
+          "gates": [],
+          "rejection_route": null
+        },
+        {
+          "id": "alpha-p2",
+          "label": "Alpha two",
+          "required_artifacts": ["alpha-a2"],
+          "gates": [],
+          "rejection_route": "alpha-p1"
+        },
+        {
+          "id": "alpha-p3",
+          "label": "Alpha three",
+          "required_artifacts": ["alpha-a3"],
+          "gates": [],
+          "rejection_route": "alpha-p1"
+        },
+        {
+          "id": "alpha-p4",
+          "label": "Alpha four",
+          "required_artifacts": ["alpha-a4"],
+          "gates": ["alpha-g1"],
+          "rejection_route": "alpha-p1"
+        },
+        {
+          "id": "alpha-p5",
+          "label": "Alpha five",
+          "required_artifacts": ["alpha-a5"],
+          "gates": ["alpha-g2"],
+          "rejection_route": "alpha-p1"
+        }
+      ],
+      "edges": [
+        { "from": "alpha-p1", "to": "alpha-p2", "handoff_role": "alpha-r1" },
+        { "from": "alpha-p1", "to": "alpha-p3", "handoff_role": "alpha-r1" },
+        { "from": "alpha-p2", "to": "alpha-p4", "handoff_role": "alpha-r2" },
+        { "from": "alpha-p3", "to": "alpha-p4", "handoff_role": "alpha-r2" },
+        { "from": "alpha-p4", "to": "alpha-p5", "handoff_role": "alpha-r3" }
+      ],
+      "entry_phase": "alpha-p1",
+      "terminal_phases": ["alpha-p5"],
+      "roles": [
+        { "role": "alpha-r1", "version": 1 },
+        { "role": "alpha-r2", "version": 1 },
+        { "role": "alpha-r3", "version": 1 }
+      ],
+      "skills": [{ "skill": "alpha-s1", "version": 1 }],
+      "team_template": { "template_id": "01936f5a-0000-7000-8000-00000000000a", "version": 1 },
+      "artifacts": [
+        {
+          "key": "alpha-a1",
+          "label": "Alpha artifact one",
+          "producer_phase": "alpha-p1",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "alpha-a2",
+          "label": "Alpha artifact two",
+          "producer_phase": "alpha-p2",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "alpha-a3",
+          "label": "Alpha artifact three",
+          "producer_phase": "alpha-p3",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "alpha-a4",
+          "label": "Alpha artifact four",
+          "producer_phase": "alpha-p4",
+          "content_type": "dataset",
+          "evidence_required": true
+        },
+        {
+          "key": "alpha-a5",
+          "label": "Alpha artifact five",
+          "producer_phase": "alpha-p5",
+          "content_type": "link",
+          "evidence_required": true
+        }
+      ],
+      "gates": [
+        {
+          "id": "alpha-g1",
+          "phase": "alpha-p4",
+          "evaluator_roles": ["alpha-r2"],
+          "required_evidence": ["alpha-a2", "alpha-a3", "alpha-a4"],
+          "rejection_target": "alpha-p1",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "alpha-g2",
+          "phase": "alpha-p5",
+          "evaluator_roles": ["alpha-r3"],
+          "required_evidence": ["alpha-a5"],
+          "rejection_target": "alpha-p1",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        }
+      ],
+      "runtime_routing": { "runtime_kind": "alpha-runtime", "version": 1 },
+      "budget_defaults": {
+        "max_tokens": 1000,
+        "max_commands": 10,
+        "max_duration_seconds": 600,
+        "max_cost": { "minor_units": 100, "currency": "EUR" }
+      },
+      "calendar_policy": null,
+      "external_workflow": null
+    }
+  ],
+  "personas": []
+}

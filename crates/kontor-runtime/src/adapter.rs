@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use kontor_core::DomainError;
 use kontor_core::id::{RuntimeBindingId, Timestamp};
 
+use crate::admission::AdmissionRequest;
 use crate::capability::{
     IssuedBinding, RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, TrustGrade,
 };
@@ -83,6 +84,48 @@ pub enum RuntimeError {
     /// The runtime did not prove that the native session belongs to the run.
     #[error("native session is not correlated with the requested run")]
     CorrelationFailed,
+    /// The seat is already spoken for: it holds a live native session, or a
+    /// reservation issued to someone else.
+    ///
+    /// **This is what makes AC-4 hold.** A seat may hold at most one
+    /// non-terminal binding or one outstanding reservation, and the runtime is
+    /// the only party that can answer which. Minting a fresh
+    /// [`kontor_core::id::AgentRunId`] and
+    /// [`kontor_core::id::RuntimeBindingId`] does not evade it, because neither
+    /// appears in the key.
+    #[error("role slot is already admitted: {rule}")]
+    SlotAlreadyAdmitted {
+        /// Why admission was refused.
+        rule: &'static str,
+    },
+    /// A launch presented authority that is not the reservation this runtime is
+    /// holding for that seat.
+    ///
+    /// Covers a replayed request whose reservation was already consumed, an
+    /// authority issued for another seat, run or binding, and one assembled
+    /// without asking a runtime at all.
+    #[error("launch was not admitted: {rule}")]
+    LaunchNotAdmitted {
+        /// Why the authority was refused.
+        rule: &'static str,
+    },
+    /// A replacement cited a predecessor the runtime cannot agree is finished.
+    #[error("replacement is not evidenced: {rule}")]
+    ReplacementNotEvidenced {
+        /// Why the citation was refused.
+        rule: &'static str,
+    },
+    /// A launch was requested for an agent run that already owns a live native
+    /// session in this runtime.
+    ///
+    /// The seat-keyed rule above is the general one; this is the run-keyed
+    /// companion, and it is not redundant: one run admitted into *two different*
+    /// seats passes admission twice and is stopped here.
+    #[error("agent run already owns a live native session: {rule}")]
+    SessionAlreadyBound {
+        /// Why the launch was refused.
+        rule: &'static str,
+    },
     /// The session's content can no longer be followed and must be re-read.
     #[error("timeline must be refetched: {reason}")]
     TimelineRefetchRequired {
@@ -225,14 +268,71 @@ pub trait RuntimeAdapter: Send + Sync {
         request: &WorkspacePrepareRequest,
     ) -> RuntimeResult<WorkspaceOutcome>;
 
-    /// Start a new native session for an agent run.
+    /// Decide, atomically, whether one seat may be filled — and say so once.
+    ///
+    /// **This is where AC-4 is enforced.** An implementation keeps a table keyed
+    /// by [`crate::admission::RoleSlotKey`] in which each seat holds at most one
+    /// non-terminal native binding *or* one outstanding reservation, never both
+    /// and never two. Checking and claiming that key happen without an
+    /// interleaving, so two callers racing for one seat cannot both be admitted.
+    ///
+    /// Three answers, and no fourth:
+    ///
+    /// * the seat is free (or its cited predecessor is genuinely finished) →
+    ///   claim it and return [`crate::admission::AdmissionOutcome::Admitted`];
+    /// * the seat already holds a live session **for this same run** → return
+    ///   [`crate::admission::AdmissionOutcome::Resumed`] with the runtime's own
+    ///   binding, because compatible work continues, it does not relaunch;
+    /// * anything else → refuse, having changed nothing.
+    ///
+    /// A repeated request naming the same seat, run and binding while a
+    /// reservation is outstanding is the *same* request — re-issue the same
+    /// reservation rather than a second one, so a lost answer is recoverable
+    /// without ever holding two.
+    ///
+    /// Admission produces no native effect: nothing is started, and a refusal
+    /// leaves nothing to undo.
     ///
     /// # Errors
-    /// Refuses before dispatch on capability, trust, account environment, task
-    /// workspace and limits, and after dispatch when the session cannot be
-    /// correlated with the requested run. A launch with no verified workspace
-    /// binding, or one that claims a working directory other than the bound
-    /// root, is refused before the session exists.
+    /// Returns [`RuntimeError::SlotAlreadyAdmitted`] for a seat held by another
+    /// run, another binding or an outstanding reservation, and
+    /// [`RuntimeError::ReplacementNotEvidenced`] for a replacement whose cited
+    /// predecessor is not the binding this seat holds, is not observed finished,
+    /// or is not linked to the run now asking.
+    async fn admit_launch(
+        &self,
+        request: &AdmissionRequest,
+    ) -> RuntimeResult<crate::admission::AdmissionOutcome>;
+
+    /// Start a new native session for an agent run.
+    ///
+    /// **Consume the admission before the first native effect, and revalidate
+    /// the seat while doing it.** Resolve the request's
+    /// [`crate::admission::LaunchAuthority`] against the reservation this
+    /// runtime is holding for the seat *the request names*; it must be that
+    /// exact reservation, for that run and that binding. Then take it. A
+    /// replayed request finds it spent, an authority aimed at another seat finds
+    /// the wrong one, and an authority no runtime issued finds none —
+    /// [`RuntimeError::LaunchNotAdmitted`] in every case, with zero sessions and
+    /// zero effects.
+    ///
+    /// Reading and consuming the table is not a native effect, so this must come
+    /// first: an implementation that starts a session and then discovers it was
+    /// not admitted has already broken AC-4.
+    ///
+    /// **One live session per agent run**, as the run-keyed companion:
+    /// [`RuntimeError::SessionAlreadyBound`] for a run that already owns a
+    /// session, which catches one run admitted into two different seats.
+    /// Recovery creates a *successor* run and launches that; it never starts a
+    /// second session under the same [`kontor_core::id::AgentRunId`].
+    ///
+    /// # Errors
+    /// Refuses before dispatch on admission, capability, trust, account
+    /// environment, task workspace, an already-bound run and limits, and after
+    /// dispatch when the session cannot be correlated with the requested run. A
+    /// launch with no verified workspace binding, or one that claims a working
+    /// directory other than the bound root, is refused before the session
+    /// exists.
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome>;
 
     /// Continue an existing native session in place.

@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "pack_id": "omega-pack",
+  "version": 3,
+  "manifest": [
+    {
+      "category": "omega-cat",
+      "label": "Omega runnable",
+      "availability": "seeded",
+      "profile": "omega-profile",
+      "profile_version": 1
+    }
+  ],
+  "roles": [
+    { "role": "omega-m1", "version": 1, "label": "Omega role one" },
+    { "role": "omega-m2", "version": 1, "label": "Omega role two" }
+  ],
+  "skills": [{ "skill": "omega-sx", "version": 2, "label": "Omega skill" }],
+  "contexts": [{ "template": "omega-ctx", "version": 1, "label": "Omega context" }],
+  "teams": [
+    {
+      "schema_version": 1,
+      "template_id": "01936f5a-0000-7000-8000-00000000000b",
+      "version": 1,
+      "name": "Omega team",
+      "roles": [
+        { "role": { "role": "omega-m1", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "omega-m2", "version": 1 }, "min_slots": 1, "max_slots": 1 }
+      ],
+      "slots": [
+        {
+          "id": "omega-w1",
+          "role": { "role": "omega-m1", "version": 1 },
+          "skills": [{ "skill": "omega-sx", "version": 2 }],
+          "context": { "template": "omega-ctx", "version": 1 },
+          "may_evaluate": [],
+          "may_waive": ["omega-h1"],
+          "waiver_policy": null
+        },
+        {
+          "id": "omega-w2",
+          "role": { "role": "omega-m2", "version": 1 },
+          "skills": [],
+          "context": null,
+          "may_evaluate": ["omega-h1"],
+          "may_waive": [],
+          "waiver_policy": {
+            "authorized_roles": ["omega-m1"],
+            "required_evidence": ["omega-x1"]
+          }
+        }
+      ],
+      "handoffs": [
+        {
+          "from_slot": "omega-w1",
+          "to_slot": "omega-w2",
+          "after_phase": "omega-t1",
+          "required_artifacts": ["omega-x1"]
+        }
+      ],
+      "max_successor_depth": 1,
+      "max_handoff_depth": 2
+    }
+  ],
+  "profiles": [
+    {
+      "schema_version": 1,
+      "id": "omega-profile",
+      "version": 1,
+      "name": "Omega linear profile",
+      "phases": [
+        {
+          "id": "omega-t1",
+          "label": "Omega one",
+          "required_artifacts": ["omega-x1"],
+          "gates": [],
+          "rejection_route": null
+        },
+        {
+          "id": "omega-t2",
+          "label": "Omega two",
+          "required_artifacts": ["omega-x2"],
+          "gates": ["omega-h1"],
+          "rejection_route": "omega-t1"
+        }
+      ],
+      "edges": [{ "from": "omega-t1", "to": "omega-t2", "handoff_role": "omega-m2" }],
+      "entry_phase": "omega-t1",
+      "terminal_phases": ["omega-t2"],
+      "roles": [
+        { "role": "omega-m1", "version": 1 },
+        { "role": "omega-m2", "version": 1 }
+      ],
+      "skills": [{ "skill": "omega-sx", "version": 2 }],
+      "team_template": { "template_id": "01936f5a-0000-7000-8000-00000000000b", "version": 1 },
+      "artifacts": [
+        {
+          "key": "omega-x1",
+          "label": "Omega artifact one",
+          "producer_phase": "omega-t1",
+          "content_type": "image",
+          "evidence_required": true
+        },
+        {
+          "key": "omega-x2",
+          "label": "Omega artifact two",
+          "producer_phase": "omega-t2",
+          "content_type": "document",
+          "evidence_required": true
+        }
+      ],
+      "gates": [
+        {
+          "id": "omega-h1",
+          "phase": "omega-t2",
+          "evaluator_roles": ["omega-m2"],
+          "required_evidence": ["omega-x1", "omega-x2"],
+          "rejection_target": "omega-t1",
+          "waiver_allowed": true,
+          "waiver_roles": ["omega-m1"]
+        }
+      ],
+      "runtime_routing": { "runtime_kind": "omega-runtime", "version": 4 },
+      "budget_defaults": {
+        "max_tokens": 42,
+        "max_commands": 1,
+        "max_duration_seconds": 30,
+        "max_cost": { "minor_units": 1, "currency": "USD" }
+      },
+      "calendar_policy": null,
+      "external_workflow": null
+    }
+  ],
+  "personas": [
+    {
+      "profile": "omega-profile",
+      "profile_version": 1,
+      "scenario": {
+        "schema_version": 1,
+        "scenario_id": "01936f5a-0000-7000-8000-00000000000c",
+        "version": 1,
+        "persona": "omega-actor",
+        "characteristics": {
+          "schema_version": 1,
+          "notes": ["An unrelated simulated actor with its own vocabulary"]
+        },
+        "identity": { "reference": "omega-seeded-actor", "seeded": true },
+        "environment": { "kind": "local", "reference": "omega-local" },
+        "steps": [
+          {
+            "order": 1,
+            "instruction": "Perform the first omega step",
+            "expected_evidence": ["omega-x1"]
+          },
+          {
+            "order": 2,
+            "instruction": "Perform the second omega step",
+            "expected_evidence": ["omega-x2"]
+          }
+        ],
+        "prohibited_actions": ["Escape the omega sandbox", "Write outside the omega workspace"],
+        "required_evidence": ["omega-x1"],
+        "gate_under_test": "omega-h1",
+        "actor_role": "omega-actor",
+        "evaluator_roles": ["omega-m2"]
+      }
+    }
+  ]
+}

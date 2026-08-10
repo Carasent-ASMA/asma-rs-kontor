@@ -1,0 +1,827 @@
+{
+  "schema_version": 1,
+  "pack_id": "kontor-mvp",
+  "version": 1,
+  "manifest": [
+    {
+      "category": "code",
+      "label": "Code change",
+      "availability": "seeded",
+      "profile": "code",
+      "profile_version": 1
+    },
+    {
+      "category": "ux-ui-layout",
+      "label": "UX and UI layout",
+      "availability": "seeded",
+      "profile": "ux-ui-layout",
+      "profile_version": 1
+    },
+    {
+      "category": "research",
+      "label": "Research",
+      "availability": "seeded",
+      "profile": "research",
+      "profile_version": 1
+    },
+    {
+      "category": "docs",
+      "label": "Documentation",
+      "availability": "seeded",
+      "profile": "docs",
+      "profile_version": 1
+    },
+    {
+      "category": "discovery",
+      "label": "Discovery",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "investigation",
+      "label": "Investigation and root cause",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "planning",
+      "label": "Planning",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "architecture",
+      "label": "Architecture",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "accessibility",
+      "label": "Accessibility",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "quality-assurance",
+      "label": "Quality assurance",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "release-management",
+      "label": "Release management",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "operations",
+      "label": "Operations",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "incident-response",
+      "label": "Incident and disaster recovery",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "maintenance",
+      "label": "Maintenance",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "drift-detection",
+      "label": "Drift, regression and data integrity",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "compliance",
+      "label": "Compliance",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    },
+    {
+      "category": "retirement",
+      "label": "Retirement",
+      "availability": "manifest_only",
+      "profile": null,
+      "profile_version": null
+    }
+  ],
+  "roles": [
+    { "role": "architect", "version": 1, "label": "Architect" },
+    { "role": "builder", "version": 1, "label": "Builder" },
+    { "role": "tester", "version": 1, "label": "Tester" },
+    { "role": "inspector", "version": 1, "label": "Inspector" },
+    { "role": "therapist-verifier", "version": 1, "label": "Therapist verifier" },
+    { "role": "researcher", "version": 1, "label": "Researcher" },
+    { "role": "judge", "version": 1, "label": "Judge" },
+    { "role": "synthesizer", "version": 1, "label": "Synthesizer" },
+    { "role": "reviewer", "version": 1, "label": "Reviewer" }
+  ],
+  "skills": [
+    { "skill": "planning", "version": 1, "label": "Planning" },
+    { "skill": "implementation", "version": 1, "label": "Implementation" },
+    { "skill": "verification", "version": 1, "label": "Verification" },
+    { "skill": "inspection", "version": 1, "label": "Inspection" },
+    { "skill": "clinical-simulation", "version": 1, "label": "Clinical simulation" },
+    { "skill": "research-method", "version": 1, "label": "Research method" },
+    { "skill": "synthesis", "version": 1, "label": "Synthesis" },
+    { "skill": "editorial", "version": 1, "label": "Editorial" }
+  ],
+  "contexts": [{ "template": "team-brief", "version": 1, "label": "Team brief" }],
+  "profiles": [
+    {
+      "schema_version": 1,
+      "id": "code",
+      "version": 1,
+      "name": "Code change",
+      "phases": [
+        {
+          "id": "implementation",
+          "label": "Implementation",
+          "required_artifacts": ["code-change"],
+          "gates": [],
+          "rejection_route": null
+        },
+        {
+          "id": "code-review",
+          "label": "Code review",
+          "required_artifacts": ["review-notes"],
+          "gates": ["code-review-gate"],
+          "rejection_route": "implementation"
+        },
+        {
+          "id": "qa",
+          "label": "Quality assurance",
+          "required_artifacts": ["qa-report"],
+          "gates": ["qa-gate"],
+          "rejection_route": "implementation"
+        },
+        {
+          "id": "release",
+          "label": "Release",
+          "required_artifacts": ["release-notes"],
+          "gates": ["release-gate"],
+          "rejection_route": "implementation"
+        }
+      ],
+      "edges": [
+        { "from": "implementation", "to": "code-review", "handoff_role": "inspector" },
+        { "from": "code-review", "to": "qa", "handoff_role": "tester" },
+        { "from": "qa", "to": "release", "handoff_role": "architect" }
+      ],
+      "entry_phase": "implementation",
+      "terminal_phases": ["release"],
+      "roles": [
+        { "role": "architect", "version": 1 },
+        { "role": "builder", "version": 1 },
+        { "role": "tester", "version": 1 },
+        { "role": "inspector", "version": 1 }
+      ],
+      "skills": [
+        { "skill": "planning", "version": 1 },
+        { "skill": "implementation", "version": 1 },
+        { "skill": "verification", "version": 1 },
+        { "skill": "inspection", "version": 1 }
+      ],
+      "team_template": { "template_id": "01936f5a-0000-7000-8000-000000000001", "version": 1 },
+      "artifacts": [
+        {
+          "key": "code-change",
+          "label": "Code change",
+          "producer_phase": "implementation",
+          "content_type": "code_change",
+          "evidence_required": true
+        },
+        {
+          "key": "review-notes",
+          "label": "Review notes",
+          "producer_phase": "code-review",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "qa-report",
+          "label": "QA report",
+          "producer_phase": "qa",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "release-notes",
+          "label": "Release notes",
+          "producer_phase": "release",
+          "content_type": "document",
+          "evidence_required": true
+        }
+      ],
+      "gates": [
+        {
+          "id": "code-review-gate",
+          "phase": "code-review",
+          "evaluator_roles": ["inspector"],
+          "required_evidence": ["code-change", "review-notes"],
+          "rejection_target": "implementation",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "qa-gate",
+          "phase": "qa",
+          "evaluator_roles": ["tester"],
+          "required_evidence": ["qa-report"],
+          "rejection_target": "implementation",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "release-gate",
+          "phase": "release",
+          "evaluator_roles": ["architect"],
+          "required_evidence": ["release-notes"],
+          "rejection_target": "implementation",
+          "waiver_allowed": true,
+          "waiver_roles": ["inspector"]
+        }
+      ],
+      "runtime_routing": { "runtime_kind": "native-agent", "version": 1 },
+      "budget_defaults": {
+        "max_tokens": 200000,
+        "max_commands": 500,
+        "max_duration_seconds": 7200,
+        "max_cost": { "minor_units": 20000, "currency": "NOK" }
+      },
+      "calendar_policy": null,
+      "external_workflow": null
+    },
+    {
+      "schema_version": 1,
+      "id": "ux-ui-layout",
+      "version": 1,
+      "name": "UX and UI layout",
+      "phases": [
+        {
+          "id": "design",
+          "label": "Design",
+          "required_artifacts": ["design-decisions", "interaction-states"],
+          "gates": [],
+          "rejection_route": null
+        },
+        {
+          "id": "design-review",
+          "label": "Design review",
+          "required_artifacts": ["design-review-notes"],
+          "gates": ["design-review-gate"],
+          "rejection_route": "design"
+        },
+        {
+          "id": "implementation",
+          "label": "Layout implementation",
+          "required_artifacts": ["layout-implementation"],
+          "gates": [],
+          "rejection_route": "design"
+        },
+        {
+          "id": "code-review",
+          "label": "Code review",
+          "required_artifacts": ["code-review-notes"],
+          "gates": ["layout-code-review-gate"],
+          "rejection_route": "implementation"
+        },
+        {
+          "id": "functionality-qa",
+          "label": "Functionality QA",
+          "required_artifacts": ["functional-tests"],
+          "gates": ["functionality-qa-gate"],
+          "rejection_route": "implementation"
+        },
+        {
+          "id": "design-qa",
+          "label": "Design QA",
+          "required_artifacts": [
+            "responsive-screenshots",
+            "accessibility-evidence",
+            "visual-regression-output"
+          ],
+          "gates": ["design-qa-gate"],
+          "rejection_route": "design"
+        },
+        {
+          "id": "final-audit",
+          "label": "Final audit",
+          "required_artifacts": ["audit-report"],
+          "gates": ["final-audit-gate"],
+          "rejection_route": "design"
+        },
+        {
+          "id": "release",
+          "label": "Release",
+          "required_artifacts": ["release-notes"],
+          "gates": ["layout-release-gate"],
+          "rejection_route": "design"
+        }
+      ],
+      "edges": [
+        { "from": "design", "to": "design-review", "handoff_role": "inspector" },
+        { "from": "design-review", "to": "implementation", "handoff_role": "builder" },
+        { "from": "implementation", "to": "code-review", "handoff_role": "inspector" },
+        { "from": "code-review", "to": "functionality-qa", "handoff_role": "tester" },
+        { "from": "functionality-qa", "to": "design-qa", "handoff_role": "inspector" },
+        { "from": "design-qa", "to": "final-audit", "handoff_role": "architect" },
+        { "from": "final-audit", "to": "release", "handoff_role": "architect" }
+      ],
+      "entry_phase": "design",
+      "terminal_phases": ["release"],
+      "roles": [
+        { "role": "architect", "version": 1 },
+        { "role": "builder", "version": 1 },
+        { "role": "tester", "version": 1 },
+        { "role": "inspector", "version": 1 },
+        { "role": "therapist-verifier", "version": 1 }
+      ],
+      "skills": [
+        { "skill": "planning", "version": 1 },
+        { "skill": "implementation", "version": 1 },
+        { "skill": "verification", "version": 1 },
+        { "skill": "inspection", "version": 1 },
+        { "skill": "clinical-simulation", "version": 1 }
+      ],
+      "team_template": { "template_id": "01936f5a-0000-7000-8000-000000000001", "version": 1 },
+      "artifacts": [
+        {
+          "key": "design-decisions",
+          "label": "Design decisions",
+          "producer_phase": "design",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "interaction-states",
+          "label": "Interaction states",
+          "producer_phase": "design",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "design-review-notes",
+          "label": "Design review notes",
+          "producer_phase": "design-review",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "layout-implementation",
+          "label": "Layout implementation",
+          "producer_phase": "implementation",
+          "content_type": "code_change",
+          "evidence_required": true
+        },
+        {
+          "key": "code-review-notes",
+          "label": "Code review notes",
+          "producer_phase": "code-review",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "functional-tests",
+          "label": "Functional tests",
+          "producer_phase": "functionality-qa",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "responsive-screenshots",
+          "label": "Responsive screenshots",
+          "producer_phase": "design-qa",
+          "content_type": "image",
+          "evidence_required": true
+        },
+        {
+          "key": "accessibility-evidence",
+          "label": "Accessibility evidence",
+          "producer_phase": "design-qa",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "visual-regression-output",
+          "label": "Visual regression output",
+          "producer_phase": "design-qa",
+          "content_type": "image",
+          "evidence_required": true
+        },
+        {
+          "key": "audit-report",
+          "label": "Audit report",
+          "producer_phase": "final-audit",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "release-notes",
+          "label": "Release notes",
+          "producer_phase": "release",
+          "content_type": "document",
+          "evidence_required": true
+        }
+      ],
+      "gates": [
+        {
+          "id": "design-review-gate",
+          "phase": "design-review",
+          "evaluator_roles": ["inspector"],
+          "required_evidence": [
+            "design-decisions",
+            "interaction-states",
+            "design-review-notes"
+          ],
+          "rejection_target": "design",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "layout-code-review-gate",
+          "phase": "code-review",
+          "evaluator_roles": ["inspector"],
+          "required_evidence": ["layout-implementation", "code-review-notes"],
+          "rejection_target": "implementation",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "functionality-qa-gate",
+          "phase": "functionality-qa",
+          "evaluator_roles": ["tester", "therapist-verifier"],
+          "required_evidence": ["functional-tests"],
+          "rejection_target": "implementation",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "design-qa-gate",
+          "phase": "design-qa",
+          "evaluator_roles": ["inspector"],
+          "required_evidence": [
+            "responsive-screenshots",
+            "accessibility-evidence",
+            "visual-regression-output"
+          ],
+          "rejection_target": "design",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "final-audit-gate",
+          "phase": "final-audit",
+          "evaluator_roles": ["architect"],
+          "required_evidence": ["audit-report"],
+          "rejection_target": "design",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "layout-release-gate",
+          "phase": "release",
+          "evaluator_roles": ["architect"],
+          "required_evidence": ["release-notes"],
+          "rejection_target": "design",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        }
+      ],
+      "runtime_routing": { "runtime_kind": "native-agent", "version": 1 },
+      "budget_defaults": {
+        "max_tokens": 200000,
+        "max_commands": 500,
+        "max_duration_seconds": 7200,
+        "max_cost": { "minor_units": 20000, "currency": "NOK" }
+      },
+      "calendar_policy": null,
+      "external_workflow": null
+    },
+    {
+      "schema_version": 1,
+      "id": "research",
+      "version": 1,
+      "name": "Research",
+      "phases": [
+        {
+          "id": "scoping",
+          "label": "Scoping",
+          "required_artifacts": ["research-scope"],
+          "gates": [],
+          "rejection_route": null
+        },
+        {
+          "id": "lane-a",
+          "label": "Research lane A",
+          "required_artifacts": ["lane-a-findings"],
+          "gates": [],
+          "rejection_route": "scoping"
+        },
+        {
+          "id": "lane-b",
+          "label": "Research lane B",
+          "required_artifacts": ["lane-b-findings"],
+          "gates": [],
+          "rejection_route": "scoping"
+        },
+        {
+          "id": "evidence-review",
+          "label": "Evidence review",
+          "required_artifacts": ["evidence-index"],
+          "gates": ["evidence-gate"],
+          "rejection_route": "scoping"
+        },
+        {
+          "id": "synthesis",
+          "label": "Synthesis",
+          "required_artifacts": ["synthesis-report"],
+          "gates": ["synthesis-gate"],
+          "rejection_route": "scoping"
+        },
+        {
+          "id": "final-review",
+          "label": "Final review",
+          "required_artifacts": ["research-review-notes"],
+          "gates": ["research-final-gate"],
+          "rejection_route": "scoping"
+        }
+      ],
+      "edges": [
+        { "from": "scoping", "to": "lane-a", "handoff_role": "researcher" },
+        { "from": "scoping", "to": "lane-b", "handoff_role": "researcher" },
+        { "from": "lane-a", "to": "evidence-review", "handoff_role": "judge" },
+        { "from": "lane-b", "to": "evidence-review", "handoff_role": "judge" },
+        { "from": "evidence-review", "to": "synthesis", "handoff_role": "synthesizer" },
+        { "from": "synthesis", "to": "final-review", "handoff_role": "reviewer" }
+      ],
+      "entry_phase": "scoping",
+      "terminal_phases": ["final-review"],
+      "roles": [
+        { "role": "researcher", "version": 1 },
+        { "role": "judge", "version": 1 },
+        { "role": "synthesizer", "version": 1 },
+        { "role": "reviewer", "version": 1 }
+      ],
+      "skills": [
+        { "skill": "research-method", "version": 1 },
+        { "skill": "inspection", "version": 1 },
+        { "skill": "synthesis", "version": 1 },
+        { "skill": "editorial", "version": 1 }
+      ],
+      "team_template": { "template_id": "01936f5a-0000-7000-8000-000000000002", "version": 1 },
+      "artifacts": [
+        {
+          "key": "research-scope",
+          "label": "Research scope",
+          "producer_phase": "scoping",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "lane-a-findings",
+          "label": "Lane A findings",
+          "producer_phase": "lane-a",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "lane-b-findings",
+          "label": "Lane B findings",
+          "producer_phase": "lane-b",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "evidence-index",
+          "label": "Evidence index",
+          "producer_phase": "evidence-review",
+          "content_type": "dataset",
+          "evidence_required": true
+        },
+        {
+          "key": "synthesis-report",
+          "label": "Synthesis report",
+          "producer_phase": "synthesis",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "research-review-notes",
+          "label": "Final review notes",
+          "producer_phase": "final-review",
+          "content_type": "document",
+          "evidence_required": true
+        }
+      ],
+      "gates": [
+        {
+          "id": "evidence-gate",
+          "phase": "evidence-review",
+          "evaluator_roles": ["judge"],
+          "required_evidence": ["lane-a-findings", "lane-b-findings", "evidence-index"],
+          "rejection_target": "scoping",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "synthesis-gate",
+          "phase": "synthesis",
+          "evaluator_roles": ["judge"],
+          "required_evidence": ["synthesis-report"],
+          "rejection_target": "scoping",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "research-final-gate",
+          "phase": "final-review",
+          "evaluator_roles": ["reviewer"],
+          "required_evidence": ["research-review-notes"],
+          "rejection_target": "scoping",
+          "waiver_allowed": true,
+          "waiver_roles": ["judge"]
+        }
+      ],
+      "runtime_routing": { "runtime_kind": "native-agent", "version": 1 },
+      "budget_defaults": {
+        "max_tokens": 150000,
+        "max_commands": 200,
+        "max_duration_seconds": 5400,
+        "max_cost": { "minor_units": 15000, "currency": "NOK" }
+      },
+      "calendar_policy": null,
+      "external_workflow": null
+    },
+    {
+      "schema_version": 1,
+      "id": "docs",
+      "version": 1,
+      "name": "Documentation",
+      "phases": [
+        {
+          "id": "authoring",
+          "label": "Authoring",
+          "required_artifacts": ["draft"],
+          "gates": [],
+          "rejection_route": null
+        },
+        {
+          "id": "technical-review",
+          "label": "Technical review",
+          "required_artifacts": ["technical-review-notes"],
+          "gates": ["technical-review-gate"],
+          "rejection_route": "authoring"
+        },
+        {
+          "id": "final-review",
+          "label": "Final review",
+          "required_artifacts": ["docs-final-notes"],
+          "gates": ["docs-final-gate"],
+          "rejection_route": "authoring"
+        }
+      ],
+      "edges": [
+        { "from": "authoring", "to": "technical-review", "handoff_role": "inspector" },
+        { "from": "technical-review", "to": "final-review", "handoff_role": "architect" }
+      ],
+      "entry_phase": "authoring",
+      "terminal_phases": ["final-review"],
+      "roles": [
+        { "role": "architect", "version": 1 },
+        { "role": "builder", "version": 1 },
+        { "role": "inspector", "version": 1 }
+      ],
+      "skills": [
+        { "skill": "implementation", "version": 1 },
+        { "skill": "inspection", "version": 1 },
+        { "skill": "planning", "version": 1 }
+      ],
+      "team_template": { "template_id": "01936f5a-0000-7000-8000-000000000001", "version": 1 },
+      "artifacts": [
+        {
+          "key": "draft",
+          "label": "Draft",
+          "producer_phase": "authoring",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "technical-review-notes",
+          "label": "Technical review notes",
+          "producer_phase": "technical-review",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "docs-final-notes",
+          "label": "Final review notes",
+          "producer_phase": "final-review",
+          "content_type": "document",
+          "evidence_required": true
+        }
+      ],
+      "gates": [
+        {
+          "id": "technical-review-gate",
+          "phase": "technical-review",
+          "evaluator_roles": ["inspector"],
+          "required_evidence": ["draft", "technical-review-notes"],
+          "rejection_target": "authoring",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "docs-final-gate",
+          "phase": "final-review",
+          "evaluator_roles": ["architect"],
+          "required_evidence": ["docs-final-notes"],
+          "rejection_target": "authoring",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        }
+      ],
+      "runtime_routing": { "runtime_kind": "native-agent", "version": 1 },
+      "budget_defaults": {
+        "max_tokens": 80000,
+        "max_commands": 100,
+        "max_duration_seconds": 3600,
+        "max_cost": { "minor_units": 8000, "currency": "NOK" }
+      },
+      "calendar_policy": null,
+      "external_workflow": null
+    }
+  ],
+  "personas": [
+    {
+      "profile": "ux-ui-layout",
+      "profile_version": 1,
+      "scenario": {
+        "schema_version": 1,
+        "scenario_id": "01936f5a-0000-7000-8000-000000000003",
+        "version": 1,
+        "persona": "simulated-patient",
+        "characteristics": {
+          "schema_version": 1,
+          "goals": [
+            "Book an appointment without help",
+            "Read a message from the care team",
+            "Change a scheduled time on a small screen"
+          ],
+          "constraints": [
+            "Uses a phone one-handed",
+            "Reads slowly and enlarges text",
+            "Is simulated fixture data and represents nobody real"
+          ]
+        },
+        "identity": { "reference": "seeded-fixture-actor-01", "seeded": true },
+        "environment": { "kind": "sandbox", "reference": "local-sandbox" },
+        "steps": [
+          {
+            "order": 1,
+            "instruction": "Open the booking view and read the earliest offered time",
+            "expected_evidence": ["interaction-states"]
+          },
+          {
+            "order": 2,
+            "instruction": "Change the offered time and confirm the change",
+            "expected_evidence": ["functional-tests"]
+          },
+          {
+            "order": 3,
+            "instruction": "Return to the overview and confirm the new time is shown",
+            "expected_evidence": ["functional-tests"]
+          }
+        ],
+        "prohibited_actions": [
+          "Submit a real clinical referral",
+          "Contact a real care provider",
+          "Delete or modify another person's record",
+          "Leave the sandbox environment"
+        ],
+        "required_evidence": ["functional-tests", "interaction-states"],
+        "gate_under_test": "functionality-qa-gate",
+        "actor_role": "simulated-patient",
+        "evaluator_roles": ["therapist-verifier"]
+      }
+    }
+  ]
+}

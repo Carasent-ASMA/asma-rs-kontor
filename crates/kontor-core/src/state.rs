@@ -119,6 +119,40 @@ impl TaskClosureCertificate {
     }
 }
 
+/// What a task presents about the team that did its work, when it is asked to
+/// become terminal.
+///
+/// A task's profile and its team carry two independent sets of obligations: the
+/// profile says which phases, gates and artifacts must exist, the team says
+/// which role slots must have finished. Satisfying one says nothing about the
+/// other, so a terminal transition names both.
+///
+/// [`TaskTeamClosure::Certified`] deliberately carries only *identity* — which
+/// team run, and the digest of the policy that was proved about it. It is a
+/// citation, not the evidence: the store re-proves the substance against its own
+/// rows (the team run closed, it serves this task, none of its runs is still
+/// open), exactly as a run closure re-proves the event it cites. A fabricated
+/// citation therefore buys nothing.
+///
+/// The supported way to obtain one is
+/// `kontor_teams::run::TeamClosureCertificate::task_team_closure`, which is the
+/// only thing that can prove every *declared* role slot — including one that
+/// never produced a run — is accounted for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaskTeamClosure {
+    /// The task's pinned profile prescribes no team, so there are no role slots
+    /// to account for.
+    NoTeam,
+    /// The task ran through this team run, whose closure was certified.
+    Certified {
+        /// The team run being cited.
+        team_run_id: TeamRunId,
+        /// Digest of the declared-slot policy that was proved about it.
+        policy_digest: ContentHash,
+    },
+}
+
 /// A requested task transition together with the evidence it requires.
 #[derive(Debug, Clone, Copy)]
 pub struct TaskTransition<'a> {

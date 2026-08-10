@@ -50,8 +50,9 @@ use kontor_core::spec::{
 use kontor_core::state::{
     AbandonReceiptFacts, DerivedRunState, DesiredRunState, GateState, GateVerdict,
     NativeRuntimeIdentity, ObservedRunState, RunLifecycle, RunProjection, TaskState,
-    TaskTransition, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
-    TerminalEvidenceSource, TerminalOutcome, plan_team_advance, plan_team_closure,
+    TaskTeamClosure, TaskTransition, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence,
+    TerminalEvidence, TerminalEvidenceSource, TerminalOutcome, plan_team_advance,
+    plan_team_closure,
 };
 use kontor_core::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -1684,9 +1685,14 @@ impl WorkflowRepository for SqliteStore {
         let revision = revision_of(revision)?;
         revision.expect("task", request.expected_revision)?;
 
-        // Closure is certified by the pinned profile, never asserted by the
-        // caller: `TaskClosureCertificate` has no public constructor.
-        let certificate = if request.to == TaskState::Done {
+        // A task becoming terminal answers for two independent things: its
+        // pinned profile's phases, gates and artifacts, and its team's role
+        // slots. Neither implies the other, so both are checked here — and a
+        // failed or cancelled task is checked for the team just as a completed
+        // one is, because an open native session is no more acceptable under a
+        // failure than under a success.
+        let mut certificate = None;
+        if request.to.is_terminal() {
             let workflow_id: Option<String> = transaction
                 .query_row(
                     "SELECT id FROM task_workflows
@@ -1696,21 +1702,40 @@ impl WorkflowRepository for SqliteStore {
                 )
                 .optional()
                 .map_err(backend)?;
-            let workflow_id = workflow_id.ok_or(DomainError::MissingEvidence {
-                subject: "task completion",
-                rule: "a task without an active workflow has no closure evidence",
-            })?;
-            let workflow_id = TaskWorkflowId::parse(&workflow_id)?;
-            let (workflow, _) = load_workflow(&transaction, request.project_id, workflow_id)?;
-            let states = reduce_gate_states(&transaction, request.project_id, workflow_id)?;
-            Some(workflow.snapshot.certify_closure(
-                &request.completed_phases,
-                &states,
-                &request.produced_artifacts,
-            )?)
-        } else {
-            None
-        };
+
+            let pinned = match workflow_id {
+                Some(id) => {
+                    let workflow_id = TaskWorkflowId::parse(&id)?;
+                    let (workflow, _) =
+                        load_workflow(&transaction, request.project_id, workflow_id)?;
+                    Some((workflow_id, workflow))
+                }
+                None => None,
+            };
+
+            ensure_team_accounted_for(
+                &transaction,
+                request,
+                pinned.as_ref().is_some_and(|(_, workflow)| {
+                    workflow.snapshot.definition.team_template.is_some()
+                }),
+            )?;
+
+            // Closure is certified by the pinned profile, never asserted by the
+            // caller: `TaskClosureCertificate` has no public constructor.
+            if request.to == TaskState::Done {
+                let (workflow_id, workflow) = pinned.ok_or(DomainError::MissingEvidence {
+                    subject: "task completion",
+                    rule: "a task without an active workflow has no closure evidence",
+                })?;
+                let states = reduce_gate_states(&transaction, request.project_id, workflow_id)?;
+                certificate = Some(workflow.snapshot.certify_closure(
+                    &request.completed_phases,
+                    &states,
+                    &request.produced_artifacts,
+                )?);
+            }
+        }
 
         let transition = TaskTransition {
             to: request.to,
@@ -3768,6 +3793,90 @@ impl CalendarRepository for SqliteStore {
 /// repository so the read path and the write path share one shape.
 pub(crate) fn team_run_snapshot(json: &str, hash: &str) -> RepositoryResult<TeamRunSnapshot> {
     stored_document(json, hash)
+}
+
+/// Prove a terminal task has accounted for the team that did its work.
+///
+/// The caller's [`TaskTeamClosure`] is a *citation*, not evidence: it names
+/// which team run was certified. Everything that matters is re-proved here from
+/// the store's own rows — the cited team serves this task, it has closed, and
+/// none of its runs is still open — so a fabricated citation buys nothing, in
+/// the same way a run closure re-proves the event it cites.
+///
+/// The one thing only `kontor-teams` can prove is that every *declared* role
+/// slot is accounted for, including one that never produced a run. That is what
+/// obtaining the certificate required, and it is why the citation is the
+/// supported way in.
+fn ensure_team_accounted_for(
+    transaction: &Transaction<'_>,
+    request: &TaskTransitionRequest,
+    prescribes_team: bool,
+) -> RepositoryResult<()> {
+    if !prescribes_team {
+        // No pinned team means no role slots to answer for. Claiming otherwise
+        // is a confusion worth refusing rather than ignoring.
+        if request.team_closure != TaskTeamClosure::NoTeam {
+            return Err(DomainError::invalid(
+                "task transition",
+                "team closure was cited for a task whose profile prescribes no team",
+            )
+            .into());
+        }
+        return Ok(());
+    }
+
+    let TaskTeamClosure::Certified {
+        team_run_id,
+        policy_digest: _,
+    } = request.team_closure
+    else {
+        return Err(DomainError::MissingEvidence {
+            subject: "task transition",
+            rule: "a task whose profile prescribes a team must cite that team's closure",
+        }
+        .into());
+    };
+
+    let cited: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT task_id, lifecycle FROM team_runs WHERE project_id = ?1 AND id = ?2",
+            params![request.project_id.to_string(), team_run_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((task_id, lifecycle)) = cited else {
+        return Err(DomainError::MissingEvidence {
+            subject: "task transition",
+            rule: "the cited team run is not stored in this project",
+        }
+        .into());
+    };
+    if TaskId::parse(&task_id)? != request.task_id {
+        return Err(DomainError::MissingEvidence {
+            subject: "task transition",
+            rule: "the cited team run serves a different task",
+        }
+        .into());
+    }
+    if !RunLifecycle::parse(&lifecycle)?.is_terminal() {
+        return Err(DomainError::MissingEvidence {
+            subject: "task transition",
+            rule: "the cited team run has not closed",
+        }
+        .into());
+    }
+
+    // The open-slot check, decided from the rows rather than from the citation.
+    let children = read_team_child_evidence(transaction, request.project_id, team_run_id)?;
+    if children.iter().any(|child| !child.lifecycle.is_terminal()) {
+        return Err(DomainError::MissingEvidence {
+            subject: "task transition",
+            rule: "a role slot of the cited team run is still open",
+        }
+        .into());
+    }
+    Ok(())
 }
 
 /// Load a team's own child runs as immutable evidence rows.

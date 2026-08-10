@@ -20,8 +20,8 @@
 use std::collections::BTreeSet;
 
 use kontor_core::id::{
-    AgentRunId, BoundedText, EventCursor, ExternalId, RuntimeBindingId, TaskId, TeamRunId,
-    Timestamp, parse_utc_timestamp,
+    AgentRunId, BoundedText, EventCursor, ExternalId, RoleSlotId, RuntimeBindingId, TaskId,
+    TeamRunId, Timestamp, parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::state::{
@@ -29,6 +29,7 @@ use kontor_core::state::{
     TerminalOutcome, derive_run_state,
 };
 use kontor_runtime::adapter::{LaunchOutcome, RuntimeAdapter, RuntimeError, RuntimeResult};
+use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{
     RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade,
 };
@@ -38,9 +39,9 @@ use kontor_runtime::observation::{
     ReconciliationFinding,
 };
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
-    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
-    SendMessageRequest,
+    AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchParts,
+    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
+    ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::timeline::{
     EventSubject, HistoryCursor, HistoryReader, SessionEvent, SessionEventKind, TimelineBreak,
@@ -122,12 +123,52 @@ async fn closes(
     observation.terminal_evidence(&issued, observation.observed_at, EVIDENCE_WINDOW_SECONDS)
 }
 
+/// Ask the runtime to admit a launch, and spend what it issues on `parts`.
+///
+/// There is no other way to obtain a `LaunchRequest`, which is the point: this
+/// suite has every public API of `kontor-runtime` available to it and still
+/// cannot assemble one without a runtime saying yes.
+///
+/// # Panics
+/// Panics when the seat is not admitted. Tests that are *about* refused
+/// admission call [`RuntimeAdapter::admit_launch`] themselves.
+async fn admitted(adapter: &dyn RuntimeAdapter, parts: LaunchParts) -> LaunchRequest {
+    adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(parts.team_run_id, parts.role_slot_id.clone()),
+            agent_run_id: parts.agent_run_id,
+            binding_id: parts.binding_id,
+            replaces: None,
+            requested_at: parts.requested_at,
+        })
+        .await
+        .expect("the seat admits this launch")
+        .into_authority()
+        .expect("admission issues authority rather than a resume")
+        .into_request(parts)
+}
+
+/// The seat one run of this suite launches into.
+///
+/// Distinct runs get distinct seats, because admission is keyed on the seat and
+/// most of this suite is about something else. Tests that mean "two attempts at
+/// *the same* seat" name the slot themselves.
+fn slot_of(agent_run_id: AgentRunId) -> RoleSlotId {
+    RoleSlotId::parse(&format!("slot-{agent_run_id}")).expect("a run id is a legal open key")
+}
+
 /// One team run working on one task in one verified place.
 struct Team {
     fake: ScriptedFakeRuntime,
     team_run_id: TeamRunId,
     task_id: TaskId,
     workspace: WorkspaceBindingSnapshot,
+    /// One binding id per run, remembered.
+    ///
+    /// A caller retrying a launch that failed asks the *same* question again —
+    /// same seat, same run, same binding — which is what makes the retry a
+    /// retry rather than a second attempt at an already-reserved seat.
+    bindings: std::sync::Mutex<std::collections::BTreeMap<AgentRunId, RuntimeBindingId>>,
 }
 
 impl Team {
@@ -148,7 +189,18 @@ impl Team {
             team_run_id,
             task_id,
             workspace,
+            bindings: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    /// The binding id this suite uses for one run, minted once.
+    fn binding_for(&self, agent_run_id: AgentRunId) -> RuntimeBindingId {
+        *self
+            .bindings
+            .lock()
+            .expect("the fixture lock is intact")
+            .entry(agent_run_id)
+            .or_insert_with(RuntimeBindingId::generate)
     }
 
     fn load(&self, json: &str, correlations: &[CorrelationLabel]) {
@@ -157,13 +209,14 @@ impl Team {
             .expect("the fixture loads");
     }
 
-    /// A launch request for one role of this team run, in the verified place.
-    fn launch_request(&self, agent_run_id: AgentRunId) -> LaunchRequest {
-        LaunchRequest {
+    /// What a launch for one role of this team run names, in the verified place.
+    fn launch_parts(&self, agent_run_id: AgentRunId) -> LaunchParts {
+        LaunchParts {
             agent_run_id,
             team_run_id: self.team_run_id,
+            role_slot_id: slot_of(agent_run_id),
             task_id: self.task_id,
-            binding_id: RuntimeBindingId::generate(),
+            binding_id: self.binding_for(agent_run_id),
             workspace: Some(self.workspace.clone()),
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
@@ -172,8 +225,14 @@ impl Team {
         }
     }
 
+    /// An admitted launch request for one role, in the verified place.
+    async fn launch_request(&self, agent_run_id: AgentRunId) -> LaunchRequest {
+        admitted(&self.fake, self.launch_parts(agent_run_id)).await
+    }
+
     async fn launch(&self, agent_run_id: AgentRunId) -> RuntimeResult<LaunchOutcome> {
-        self.fake.launch(&self.launch_request(agent_run_id)).await
+        let request = self.launch_request(agent_run_id).await;
+        self.fake.launch(&request).await
     }
 
     /// Launch one role and keep the binding.
@@ -318,10 +377,13 @@ async fn grade_c_cannot_autonomously_dispatch() {
         }
     );
 
-    let launch = fake
-        .launch(&LaunchRequest {
-            agent_run_id: AgentRunId::generate(),
+    let advisory_run = AgentRunId::generate();
+    let request = admitted(
+        &fake,
+        LaunchParts {
+            agent_run_id: advisory_run,
             team_run_id,
+            role_slot_id: slot_of(advisory_run),
             task_id,
             binding_id: RuntimeBindingId::generate(),
             workspace: None,
@@ -329,7 +391,11 @@ async fn grade_c_cannot_autonomously_dispatch() {
             account_profile_id: None,
             prompt: text("do the work"),
             requested_at: at("2026-08-10T09:00:00Z"),
-        })
+        },
+    )
+    .await;
+    let launch = fake
+        .launch(&request)
         .await
         .expect_err("an advisory runtime may not be launched into");
     assert!(matches!(launch, RuntimeError::InsufficientTrust { .. }));
@@ -639,11 +705,13 @@ async fn team_run_roles_share_one_verified_workspace_binding() {
 
     // Another team run gets its own workspace, and cannot borrow this one.
     let other_team = TeamRunId::generate();
-    let stolen = team
-        .fake
-        .launch(&LaunchRequest {
-            agent_run_id: AgentRunId::generate(),
+    let other_run = AgentRunId::generate();
+    let request = admitted(
+        &team.fake,
+        LaunchParts {
+            agent_run_id: other_run,
             team_run_id: other_team,
+            role_slot_id: slot_of(other_run),
             task_id: team.task_id,
             binding_id: RuntimeBindingId::generate(),
             workspace: Some(team.workspace.clone()),
@@ -651,7 +719,12 @@ async fn team_run_roles_share_one_verified_workspace_binding() {
             account_profile_id: None,
             prompt: text("do the work"),
             requested_at: at("2026-08-10T09:00:00Z"),
-        })
+        },
+    )
+    .await;
+    let stolen = team
+        .fake
+        .launch(&request)
         .await
         .expect_err("another team run may not launch into this workspace");
     assert_eq!(
@@ -667,8 +740,9 @@ async fn launch_without_a_workspace_binding_is_refused_before_any_effect() {
     let team = Team::new(TrustGrade::A).await;
     team.fake.take_calls();
 
-    let mut request = team.launch_request(AgentRunId::generate());
-    request.workspace = None;
+    let mut parts = team.launch_parts(AgentRunId::generate());
+    parts.workspace = None;
+    let request = admitted(&team.fake, parts).await;
 
     let error = team
         .fake
@@ -688,8 +762,9 @@ async fn launch_with_a_mismatched_workspace_root_is_refused_before_any_effect() 
     let team = Team::new(TrustGrade::A).await;
     team.fake.take_calls();
 
-    let mut request = team.launch_request(AgentRunId::generate());
-    request.cwd = root("/w/some-other-tree");
+    let mut parts = team.launch_parts(AgentRunId::generate());
+    parts.cwd = root("/w/some-other-tree");
+    let request = admitted(&team.fake, parts).await;
 
     let error = team
         .fake
@@ -709,8 +784,9 @@ async fn launch_with_a_mismatched_workspace_root_is_refused_before_any_effect() 
     );
 
     // The same binding presented for another task is refused too.
-    let mut foreign = team.launch_request(AgentRunId::generate());
-    foreign.task_id = TaskId::generate();
+    let mut foreign_parts = team.launch_parts(AgentRunId::generate());
+    foreign_parts.task_id = TaskId::generate();
+    let foreign = admitted(&team.fake, foreign_parts).await;
     assert_eq!(
         team.fake
             .launch(&foreign)
@@ -800,8 +876,9 @@ async fn a_workspace_root_alias_cannot_dodge_the_guard_rails() {
     // And a role claiming the same place in the other spelling still lands in
     // the verified one rather than being refused as a stranger.
     let team = Team::new(TrustGrade::A).await;
-    let mut aliased = team.launch_request(AgentRunId::generate());
-    aliased.cwd = root("/w/task-1/");
+    let mut aliased_parts = team.launch_parts(AgentRunId::generate());
+    aliased_parts.cwd = root("/w/task-1/");
+    let aliased = admitted(&team.fake, aliased_parts).await;
     team.fake
         .launch(&aliased)
         .await
@@ -818,9 +895,10 @@ async fn a_fabricated_workspace_binding_is_refused_before_any_effect() {
     // evidence for the one it claims, however well-formed the binding looks.
     let mut forged = team.workspace.clone();
     forged.binding.team_run_id = other_team;
-    let mut request = team.launch_request(AgentRunId::generate());
-    request.team_run_id = other_team;
-    request.workspace = Some(forged);
+    let mut parts = team.launch_parts(AgentRunId::generate());
+    parts.team_run_id = other_team;
+    parts.workspace = Some(forged);
+    let request = admitted(&team.fake, parts).await;
     assert_eq!(
         team.fake
             .launch(&request)
@@ -841,10 +919,11 @@ async fn a_fabricated_workspace_binding_is_refused_before_any_effect() {
         .ensure_correlated()
         .expect("the other runtime's snapshot is internally consistent");
 
-    let mut imported = team.launch_request(AgentRunId::generate());
-    imported.team_run_id = borrowed_team;
-    imported.task_id = borrowed_task;
-    imported.workspace = Some(borrowed);
+    let mut imported_parts = team.launch_parts(AgentRunId::generate());
+    imported_parts.team_run_id = borrowed_team;
+    imported_parts.task_id = borrowed_task;
+    imported_parts.workspace = Some(borrowed);
+    let imported = admitted(&team.fake, imported_parts).await;
     assert_eq!(
         team.fake
             .launch(&imported)
@@ -888,8 +967,8 @@ async fn all_typed_operations_preserve_kontor_identity() {
     let team = Team::new(TrustGrade::A).await;
     team.load(PERMISSION_WAIT, &[]);
     let agent_run_id = AgentRunId::generate();
-    let request = team.launch_request(agent_run_id);
-    let binding_id = request.binding_id;
+    let request = team.launch_request(agent_run_id).await;
+    let binding_id = request.binding_id();
 
     let launched = team.fake.launch(&request).await.expect("the role launches");
     assert_eq!(launched.snapshot.agent_run_id(), agent_run_id);
@@ -1105,8 +1184,9 @@ async fn account_pinned_launch_requires_account_env() {
     let team = Team::with_capabilities(declared).await;
     team.fake.take_calls();
 
-    let mut request = team.launch_request(AgentRunId::generate());
-    request.account_profile_id = Some(kontor_core::id::AccountProfileId::generate());
+    let mut parts = team.launch_parts(AgentRunId::generate());
+    parts.account_profile_id = Some(kontor_core::id::AccountProfileId::generate());
+    let request = admitted(&team.fake, parts).await;
 
     assert_eq!(
         team.fake
@@ -2410,11 +2490,11 @@ async fn adapter_contract(
     assert!(declared.supports(RuntimeCapability::Launch));
 
     let launched = adapter.launch(launch).await?;
-    assert_eq!(launched.snapshot.agent_run_id(), launch.agent_run_id);
-    assert_eq!(launched.snapshot.binding_id(), launch.binding_id);
+    assert_eq!(launched.snapshot.agent_run_id(), launch.agent_run_id());
+    assert_eq!(launched.snapshot.binding_id(), launch.binding_id());
     assert_eq!(
         launched.snapshot.correlation.label.agent_run_id(),
-        launch.agent_run_id
+        launch.agent_run_id()
     );
     assert_eq!(
         launched.snapshot.capabilities, declared,
@@ -2432,7 +2512,7 @@ async fn adapter_contract(
             requested_at: at("2026-08-10T09:01:00Z"),
         })
         .await?;
-    assert_eq!(resumed.agent_run_id, launch.agent_run_id);
+    assert_eq!(resumed.agent_run_id, launch.agent_run_id());
     assert_eq!(resumed.contact, RuntimeContact::Reachable);
 
     Ok(launched.snapshot)
@@ -2534,7 +2614,7 @@ async fn reconciliation_contract(
 #[tokio::test]
 async fn scripted_fake_passes_adapter_contract() {
     let team = Team::new(TrustGrade::A).await;
-    let request = team.launch_request(AgentRunId::generate());
+    let request = team.launch_request(AgentRunId::generate()).await;
     adapter_contract(&team.fake, &request)
         .await
         .expect("the scripted fake satisfies the adapter contract");

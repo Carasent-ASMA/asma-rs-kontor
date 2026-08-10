@@ -38,7 +38,7 @@ use crate::spec::{
 };
 use crate::state::{
     DesiredRunState, GateState, GateVerdict, NativeRuntimeIdentity, RunLifecycle, RunProjection,
-    TaskState, TeamTerminalEvidence, TerminalEvidence, TerminalOutcome,
+    TaskState, TaskTeamClosure, TeamTerminalEvidence, TerminalEvidence, TerminalOutcome,
 };
 use crate::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -453,6 +453,12 @@ pub struct TaskTransitionRequest {
     pub produced_artifacts: BTreeSet<ArtifactKey>,
     /// Phases recorded complete, for a completion transition.
     pub completed_phases: BTreeSet<PhaseKey>,
+    /// What the task presents about its team, for a terminal transition.
+    ///
+    /// Required for *every* terminal target, not only completion: a task that
+    /// fails or is cancelled while a role slot still holds a live native session
+    /// is exactly as wrong as one that succeeds that way.
+    pub team_closure: TaskTeamClosure,
     /// When it happened.
     pub occurred_at: Timestamp,
 }
@@ -1219,7 +1225,9 @@ pub trait WorkflowRepository {
     ///
     /// # Errors
     /// Refuses a terminal task, an illegal transition, a resume without a
-    /// receipt and a completion without profile closure.
+    /// receipt, a completion without profile closure, and any terminal
+    /// transition whose team obligations are unaccounted for — a cited team run
+    /// that is not this task's, has not closed, or still has an open run.
     fn transition_task(&self, request: &TaskTransitionRequest) -> RepositoryResult<Task>;
 }
 

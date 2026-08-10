@@ -11,6 +11,14 @@ description = "Adapter contract, capabilities and normalized events for agent ru
 [lints]
 workspace = true
 
+# No features. There was a `role-slot-permit` gate here, guarding an entry point
+# that minted a `LaunchRequest` for `kontor-teams`. It was removed rather than
+# tightened: Cargo unifies features per build, so any crate sharing a graph with
+# `kontor-teams` got the gate open whether it asked or not, which made the gate a
+# statement about the build rather than about authority. A launch is now
+# authorized by `admission::LaunchAuthority`, which only a runtime can issue and
+# only that runtime can redeem.
+
 [dependencies]
 # The exact version is the workspace's own package version. A bare path
 # dependency is a wildcard requirement, which `deny.toml` refuses.
