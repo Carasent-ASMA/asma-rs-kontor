@@ -1,0 +1,22 @@
+{
+  "epoch": 1,
+  "sessions": [
+    {
+      "native_id": "native-unclaimed",
+      "state": "running",
+      "observed_at": "2026-08-10T09:10:00Z"
+    },
+    {
+      "native_id": "native-mislabelled",
+      "correlation_text": "native-mislabelled",
+      "state": "running",
+      "observed_at": "2026-08-10T09:10:01Z"
+    },
+    {
+      "native_id": "native-adoptable",
+      "correlation_slot": 0,
+      "state": "waiting_input",
+      "observed_at": "2026-08-10T09:10:02Z"
+    }
+  ]
+}

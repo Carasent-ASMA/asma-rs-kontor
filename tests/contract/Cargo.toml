@@ -11,7 +11,17 @@ description = "Kontor workspace contract test crate."
 [lints]
 workspace = true
 
+[[test]]
+name = "runtime_adapter"
+path = "runtime_adapter.rs"
+
 [dev-dependencies]
+# KON-MVP-05: the shared runtime-adapter contract suite runs against the
+# scripted fake, so it needs the port and the domain types it is stated in.
+kontor-core = { path = "../../crates/kontor-core", version = "=0.1.0" }
+kontor-runtime = { path = "../../crates/kontor-runtime", version = "=0.1.0" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 proptest = { workspace = true }
 insta = { workspace = true }

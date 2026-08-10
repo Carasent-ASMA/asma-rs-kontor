@@ -1,0 +1,6 @@
+{
+  "epoch": 1,
+  "history": [
+    { "kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:00:01Z", "body": "work before the restart" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "epoch": 1,
+  "limits": {
+    "max_message_bytes": 16,
+    "max_history_page": 2,
+    "max_concurrent_sessions": 4
+  },
+  "history": [
+    { "kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:00:01Z", "body": "one" },
+    { "kind": "message", "sequence": 2, "emitted_at": "2026-08-10T09:00:02Z", "body": "two" },
+    { "kind": "message", "sequence": 3, "emitted_at": "2026-08-10T09:00:03Z", "body": "three" }
+  ]
+}
