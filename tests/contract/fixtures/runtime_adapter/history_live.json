@@ -1,0 +1,14 @@
+{
+  "epoch": 1,
+  "history": [
+    { "kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:00:01Z", "body": "plan the change" },
+    { "kind": "tool_call", "sequence": 2, "emitted_at": "2026-08-10T09:00:02Z", "body": "read file" },
+    { "kind": "message", "sequence": 3, "emitted_at": "2026-08-10T09:00:03Z", "body": "apply the edit" },
+    { "kind": "log", "sequence": 4, "emitted_at": "2026-08-10T09:00:04Z", "body": "edit applied" }
+  ],
+  "live": [
+    { "kind": "message", "sequence": 5, "emitted_at": "2026-08-10T09:00:05Z", "body": "run the suite" },
+    { "kind": "tool_call", "sequence": 6, "emitted_at": "2026-08-10T09:00:06Z", "body": "cargo test" },
+    { "kind": "message", "sequence": 7, "emitted_at": "2026-08-10T09:00:07Z", "body": "suite is green" }
+  ]
+}

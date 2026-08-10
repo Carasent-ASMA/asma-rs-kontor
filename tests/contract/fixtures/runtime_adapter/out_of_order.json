@@ -1,0 +1,12 @@
+{
+  "epoch": 1,
+  "history": [
+    { "kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:00:01Z", "body": "first" },
+    { "kind": "message", "sequence": 2, "emitted_at": "2026-08-10T09:00:02Z", "body": "second" }
+  ],
+  "live": [
+    { "kind": "message", "sequence": 3, "emitted_at": "2026-08-10T09:00:03Z", "body": "third" },
+    { "kind": "message", "sequence": 2, "emitted_at": "2026-08-10T09:00:02Z", "body": "second" },
+    { "kind": "message", "sequence": 4, "emitted_at": "2026-08-10T09:00:04Z", "body": "fourth" }
+  ]
+}

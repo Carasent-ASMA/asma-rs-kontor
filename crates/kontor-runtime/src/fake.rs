@@ -1,0 +1,1443 @@
+//! A deterministic, scripted runtime that implements the whole contract.
+//!
+//! It exists so the control plane's hard cases can be proved without Paseo, AO,
+//! Codex or any installed provider: there is no clock, no randomness, no
+//! network and no child process here. Tests supply generations, native ids,
+//! sequences, timestamps and faults; the same inputs always produce the same
+//! outputs.
+//!
+//! What it can be told to do covers the failures that actually break control
+//! planes: a lost acknowledgement after the effect committed, duplicate and
+//! out-of-order events, epoch and sequence gaps, permission waits, orphan and
+//! adoptable sessions, declared limits, a cancellation that is requested but
+//! never observed, a stream that closes without a verdict, and a restart into a
+//! new generation.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Mutex;
+
+use async_trait::async_trait;
+use kontor_core::id::{
+    AgentRunId, CanonicalDocument, ExternalId, ExternalName, RuntimeBindingId, RuntimeKindKey,
+    TeamRunId, Timestamp, parse_utc_timestamp,
+};
+use kontor_core::repository::RuntimeBinding;
+use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
+use serde::Deserialize;
+
+use crate::adapter::{
+    LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
+};
+use crate::capability::{
+    IssuedBinding, LimitDemand, OperationContext, RuntimeBindingSnapshot, RuntimeCapabilities,
+    RuntimeCapability, RuntimeLimits, preflight,
+};
+use crate::observation::{
+    ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
+    ReconciliationReport, reconcile,
+};
+use crate::request::{
+    AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
+    LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest, SendMessageRequest,
+};
+use crate::timeline::{
+    Admission, EventSubject, HistoryCursor, HistoryPage, LiveSubscription, MessageLedger,
+    PermissionLedger, SessionEvent, SessionEventKind, TimelineBreak, TimelinePosition,
+};
+use crate::workspace::{
+    WorkspaceBinding, WorkspaceBindingSnapshot, WorkspaceCorrelationEvidence, WorkspaceOutcome,
+    WorkspacePrepareRequest, WorkspaceRoot,
+};
+
+/// One deliberate deviation from the happy path.
+///
+/// The queue is matched strictly: the head must belong to the operation being
+/// called, otherwise the call is refused with a structural mismatch that names
+/// only the two operations and never the request content.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum ScriptStep {
+    /// The next launch reports this raw correlation text instead of the label
+    /// Kontor planted. Use it to prove a native id cannot stand in for a run id.
+    EchoCorrelation {
+        /// The raw text the runtime claims.
+        text: String,
+    },
+    /// The next send commits its effect and then loses the acknowledgement.
+    LoseSendAck,
+    /// The next cancel returns an authoritatively observed cancellation instead
+    /// of a bare acknowledgement.
+    CancelObservedTerminal,
+    /// The next live subscription ends without the session reaching a terminal
+    /// state.
+    CloseStreamWithoutTerminal,
+    /// The next call of `operation` fails at the transport.
+    TransportFailure {
+        /// The operation that must be called next.
+        operation: RuntimeCapability,
+    },
+}
+
+impl ScriptStep {
+    /// The operation this step belongs to.
+    const fn operation(&self) -> RuntimeCapability {
+        match self {
+            Self::EchoCorrelation { .. } => RuntimeCapability::Launch,
+            Self::LoseSendAck => RuntimeCapability::SendMessage,
+            Self::CancelObservedTerminal => RuntimeCapability::Cancel,
+            Self::CloseStreamWithoutTerminal => RuntimeCapability::LiveEvents,
+            Self::TransportFailure { operation } => *operation,
+        }
+    }
+}
+
+/// Which call of an operation a scripted step answers.
+///
+/// Naming the operation is not enough to make a script strict: two roles of one
+/// team run call `launch` the same way, and a step queued for the first would
+/// otherwise be spent on whichever reached the runtime first. A key pins the
+/// step to one request.
+///
+/// It is only ever a *Kontor* identifier, or — for the two runtime-wide reads
+/// that address nothing — the name of the read itself. A step can say which
+/// call it belongs to without a script, a match or a refusal ever touching a
+/// prompt, a message body or anything else the runtime carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestKey {
+    /// Any call of the step's operation.
+    Any,
+    /// Exactly the capability read. Both discovery calls declare
+    /// [`RuntimeCapability::Discovery`], so naming the operation alone would
+    /// let a step queued for one be spent on the other.
+    Capabilities,
+    /// Exactly the session enumeration.
+    Sessions,
+    /// Exactly this run — launch and adopt.
+    Run(AgentRunId),
+    /// Exactly this team run — workspace preparation.
+    TeamRun(TeamRunId),
+    /// Exactly this binding — resume, cancel, inspect, history and live events.
+    Binding(RuntimeBindingId),
+    /// Exactly this message or response — send and permission response.
+    Message(MessageId),
+}
+
+impl RequestKey {
+    /// What disagreed, for a refusal that carries no value.
+    const fn subject(self) -> &'static str {
+        match self {
+            Self::Any => "request",
+            Self::Capabilities | Self::Sessions => "discovery",
+            Self::Run(_) => "run",
+            Self::TeamRun(_) => "team run",
+            Self::Binding(_) => "binding",
+            Self::Message(_) => "message",
+        }
+    }
+
+    /// Whether a step pinned to `self` may answer the call keyed `actual`.
+    fn admits(self, actual: Self) -> bool {
+        self == Self::Any || self == actual
+    }
+}
+
+/// One queued deviation, and the call it is allowed to answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QueuedStep {
+    step: ScriptStep,
+    expected: RequestKey,
+}
+
+/// One scripted event of session content.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventScript {
+    /// What kind of thing happened.
+    pub kind: SessionEventKind,
+    /// Its position inside the epoch.
+    pub sequence: u64,
+    /// An epoch other than the session's, to inject a renumbering.
+    #[serde(default)]
+    pub epoch: Option<u64>,
+    /// A permission request id this event is about.
+    #[serde(default)]
+    pub permission_id: Option<String>,
+    /// The runtime's own event id.
+    #[serde(default)]
+    pub native_event_id: Option<String>,
+    /// When the runtime emitted it, in canonical UTC.
+    pub emitted_at: String,
+    /// The payload body.
+    #[serde(default)]
+    pub body: String,
+}
+
+/// One scripted native session that discovery reports.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionScript {
+    /// The runtime's own session id.
+    pub native_id: String,
+    /// Offset from the runtime's current generation. `-1` makes the session
+    /// belong to a generation Kontor no longer talks to.
+    #[serde(default)]
+    pub generation_delta: i64,
+    /// Index into the correlation labels supplied when the script is loaded.
+    #[serde(default)]
+    pub correlation_slot: Option<usize>,
+    /// Raw correlation text, for a session that reports something that is not a
+    /// Kontor label at all.
+    #[serde(default)]
+    pub correlation_text: Option<String>,
+    /// What the runtime says the session is doing.
+    pub state: ObservedRunState,
+    /// When it was discovered, in canonical UTC.
+    pub observed_at: String,
+}
+
+/// A declarative description of everything a scenario feeds the fake.
+///
+/// Fixtures describe *runtime input only*: content, sessions, limits and
+/// deviations. Every assertion stays in Rust.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeScript {
+    /// The content epoch sessions start in.
+    #[serde(default)]
+    pub epoch: Option<u64>,
+    /// The runtime's shared root, which is never a valid task workspace.
+    #[serde(default)]
+    pub runtime_root: Option<String>,
+    /// Limits to declare instead of the ones the fake was built with.
+    #[serde(default)]
+    pub limits: Option<RuntimeLimits>,
+    /// Content a launched or adopted session already has.
+    #[serde(default)]
+    pub history: Vec<EventScript>,
+    /// Content a live subscription will deliver.
+    #[serde(default)]
+    pub live: Vec<EventScript>,
+    /// Native sessions discovery reports beyond the ones Kontor launched.
+    #[serde(default)]
+    pub sessions: Vec<SessionScript>,
+    /// Deviations from the happy path, in the order they must be consumed.
+    #[serde(default)]
+    pub steps: Vec<ScriptStep>,
+}
+
+/// What the fake was asked to do, in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdapterCall {
+    /// Capabilities were read.
+    DiscoverCapabilities,
+    /// A team run's task workspace was prepared.
+    PrepareWorkspace(TeamRunId),
+    /// A run was launched.
+    Launch(AgentRunId),
+    /// A binding was resumed.
+    Resume(RuntimeBindingId),
+    /// A message was delivered.
+    Send(RuntimeBindingId, MessageId),
+    /// A cancellation was requested.
+    Cancel(RuntimeBindingId),
+    /// A session was inspected.
+    Inspect(RuntimeBindingId),
+    /// A native session was adopted.
+    Adopt(AgentRunId),
+    /// Native sessions were enumerated.
+    DiscoverSessions,
+    /// A history page was read.
+    History(RuntimeBindingId),
+    /// A live subscription was opened.
+    SubscribeLive(RuntimeBindingId),
+    /// A permission request was answered.
+    RespondPermission(RuntimeBindingId),
+}
+
+/// One native session the fake owns.
+#[derive(Debug, Clone)]
+struct FakeSession {
+    agent_run_id: AgentRunId,
+    binding_id: RuntimeBindingId,
+    correlation_text: Option<String>,
+    state: ObservedRunState,
+    epoch: u64,
+    /// Every recorded event, in delivery order.
+    content: Vec<SessionEvent>,
+    /// How much of `content` history already returns.
+    history_len: usize,
+    messages: MessageLedger<MessageAck>,
+}
+
+impl FakeSession {
+    fn next_sequence(&self) -> u64 {
+        self.content
+            .iter()
+            .map(|event| event.position.sequence)
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    /// Append a recorded event and make it immediately part of history.
+    ///
+    /// Appending closes the gap between history and any content that is still
+    /// queued for live delivery, so a later history read stays contiguous.
+    fn append(
+        &mut self,
+        kind: SessionEventKind,
+        subject: EventSubject,
+        body: &str,
+        emitted_at: Timestamp,
+    ) -> RuntimeResult<TimelinePosition> {
+        let position = TimelinePosition {
+            epoch: self.epoch,
+            sequence: self.next_sequence(),
+        };
+        self.content.push(SessionEvent {
+            kind,
+            position,
+            subject,
+            native_event_id: None,
+            emitted_at,
+            payload: payload(kind, position.sequence, body)?,
+        });
+        self.history_len = self.content.len();
+        Ok(position)
+    }
+
+    /// Every permission request this session's content raises.
+    fn raised_permissions(&self) -> Vec<ExternalId> {
+        self.content
+            .iter()
+            .filter(|event| event.kind == SessionEventKind::PermissionRequest)
+            .filter_map(|event| match &event.subject {
+                EventSubject::Permission(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// A native session discovery reports but Kontor never launched.
+#[derive(Debug, Clone)]
+struct ScriptedSession {
+    native_id: ExternalId,
+    generation: u64,
+    correlation_text: Option<String>,
+    state: ObservedRunState,
+    observed_at: Timestamp,
+}
+
+#[derive(Debug)]
+struct FakeState {
+    runtime_kind: RuntimeKindKey,
+    host: ExternalName,
+    generation: u64,
+    epoch: u64,
+    capabilities: RuntimeCapabilities,
+    sessions: BTreeMap<ExternalId, FakeSession>,
+    scripted_sessions: Vec<ScriptedSession>,
+    staged_history: Vec<SessionEvent>,
+    staged_live: Vec<SessionEvent>,
+    steps: VecDeque<QueuedStep>,
+    calls: Vec<AdapterCall>,
+    minted: u64,
+    runtime_root: WorkspaceRoot,
+    /// One task workspace per team run, held as the *frozen snapshot* rather
+    /// than the bare binding. This is what makes preparation idempotent, what
+    /// makes a second root for the same team a conflict, and what keeps a
+    /// retry from re-grading a workspace against whatever the runtime happens
+    /// to advertise later.
+    workspaces: BTreeMap<TeamRunId, WorkspaceBindingSnapshot>,
+    /// Every binding this runtime has issued, held as the frozen snapshot it
+    /// handed back. It is the only copy nobody outside can edit, which is what
+    /// makes it — and not a caller's clone — the thing terminal evidence is
+    /// judged against.
+    bindings: BTreeMap<RuntimeBindingId, RuntimeBindingSnapshot>,
+    /// Permission requests are tracked runtime-wide, not per session, so
+    /// answering another session's request is refused as exactly that rather
+    /// than looking like an unknown request.
+    permissions: PermissionLedger,
+}
+
+impl FakeState {
+    fn identity(&self, native_id: ExternalId) -> NativeRuntimeIdentity {
+        NativeRuntimeIdentity {
+            runtime_kind: self.runtime_kind.clone(),
+            host: self.host.clone(),
+            generation: self.generation,
+            native_id,
+        }
+    }
+
+    /// Take the scripted deviation for this call, if the script has one.
+    ///
+    /// Every operation routes its script handling through here, which is what
+    /// makes a scripted transport failure a fact about *the channel* for all of
+    /// them rather than for the three that happened to check: a failure the
+    /// script queued must never be consumed and then quietly ignored, because a
+    /// silently-swallowed fault is a test that proves the opposite of what it
+    /// claims.
+    ///
+    /// # Errors
+    /// * [`RuntimeError::ScriptMismatch`] — the head of the queue belongs to a
+    ///   different operation.
+    /// * [`RuntimeError::ScriptRequestMismatch`] — it belongs to this operation
+    ///   but to a different request.
+    /// * [`RuntimeError::Transport`] — the step is a scripted transport
+    ///   failure. It is consumed, and the call produces no effect.
+    fn take_step(
+        &mut self,
+        operation: RuntimeCapability,
+        actual: RequestKey,
+    ) -> RuntimeResult<Option<ScriptStep>> {
+        let Some(head) = self.steps.front() else {
+            return Ok(None);
+        };
+        if head.step.operation() != operation {
+            return Err(RuntimeError::ScriptMismatch {
+                expected: head.step.operation().as_str(),
+                called: operation.as_str(),
+            });
+        }
+        if !head.expected.admits(actual) {
+            return Err(RuntimeError::ScriptRequestMismatch {
+                subject: head.expected.subject(),
+            });
+        }
+        let queued = self.steps.pop_front().expect("the head was just inspected");
+        if matches!(queued.step, ScriptStep::TransportFailure { .. }) {
+            return Err(RuntimeError::Transport {
+                rule: "channel failed before the runtime answered",
+            });
+        }
+        Ok(Some(queued.step))
+    }
+
+    /// The session a binding addresses, if the binding is one the runtime
+    /// issued for it.
+    ///
+    /// A native id *addresses* a session; it does not authorize one. Looking up
+    /// by native id alone would let any snapshot naming a live native id drive
+    /// that session, which is precisely the check a forged binding is built to
+    /// skip — so the registered binding and run are compared before the session
+    /// is handed out.
+    fn session(&mut self, snapshot: &RuntimeBindingSnapshot) -> RuntimeResult<&mut FakeSession> {
+        let binding_id = snapshot.binding_id();
+        let agent_run_id = snapshot.agent_run_id();
+        let session = self
+            .sessions
+            .get_mut(&snapshot.identity().native_id)
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime no longer owns this native session",
+            })?;
+        if session.binding_id != binding_id || session.agent_run_id != agent_run_id {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the runtime issued a different binding for this native session",
+            });
+        }
+        Ok(session)
+    }
+
+    /// Refuse a workspace snapshot this runtime never issued.
+    ///
+    /// [`crate::capability::preflight`] proves the claim is internally
+    /// consistent and in scope; only the runtime knows whether the workspace
+    /// exists here at all. Without this, a well-formed snapshot for a workspace
+    /// nobody prepared would launch work into an unverified tree.
+    fn ensure_registered_workspace(
+        &self,
+        claimed: Option<&WorkspaceBindingSnapshot>,
+    ) -> RuntimeResult<()> {
+        let Some(snapshot) = claimed else {
+            return Ok(());
+        };
+        match self.workspaces.get(&snapshot.binding.team_run_id) {
+            None => Err(RuntimeError::WorkspaceMismatch {
+                rule: "this runtime never prepared a task workspace for this team run",
+            }),
+            Some(registered) if registered.binding != snapshot.binding => {
+                Err(RuntimeError::WorkspaceMismatch {
+                    rule: "this is not the workspace binding the runtime issued",
+                })
+            }
+            Some(_) => Ok(()),
+        }
+    }
+}
+
+/// A runtime whose whole behavior comes from a script.
+#[derive(Debug)]
+pub struct ScriptedFakeRuntime {
+    state: Mutex<FakeState>,
+}
+
+impl ScriptedFakeRuntime {
+    /// A fake declaring `capabilities`, in generation 1 and content epoch 1.
+    ///
+    /// # Panics
+    /// Panics if the built-in runtime kind or host name is not a valid domain
+    /// value, which would be a bug in this crate rather than in a caller.
+    #[must_use]
+    pub fn new(capabilities: RuntimeCapabilities) -> Self {
+        Self {
+            state: Mutex::new(FakeState {
+                runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("valid runtime kind"),
+                host: ExternalName::parse("fake-host").expect("valid host name"),
+                generation: 1,
+                epoch: 1,
+                capabilities,
+                sessions: BTreeMap::new(),
+                scripted_sessions: Vec::new(),
+                staged_history: Vec::new(),
+                staged_live: Vec::new(),
+                steps: VecDeque::new(),
+                calls: Vec::new(),
+                minted: 0,
+                runtime_root: WorkspaceRoot::parse("/fake-runtime-root")
+                    .expect("valid runtime root"),
+                workspaces: BTreeMap::new(),
+                bindings: BTreeMap::new(),
+                permissions: PermissionLedger::new(),
+            }),
+        }
+    }
+
+    /// The shared root this runtime refuses to hand out as a task workspace.
+    #[must_use]
+    pub fn runtime_root(&self) -> WorkspaceRoot {
+        self.lock().runtime_root.clone()
+    }
+
+    /// How many distinct task workspaces the runtime has actually created.
+    ///
+    /// A repeated preparation must not move this number.
+    #[must_use]
+    pub fn workspace_count(&self) -> usize {
+        self.lock().workspaces.len()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, FakeState> {
+        self.state.lock().expect("the fake runtime lock is intact")
+    }
+
+    /// The runtime's current generation.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.lock().generation
+    }
+
+    /// The capabilities the runtime currently declares.
+    #[must_use]
+    pub fn capabilities(&self) -> RuntimeCapabilities {
+        self.lock().capabilities.clone()
+    }
+
+    /// Change what the runtime declares from now on.
+    ///
+    /// Bindings created earlier keep their frozen snapshot.
+    pub fn set_capabilities(&self, capabilities: RuntimeCapabilities) {
+        self.lock().capabilities = capabilities;
+    }
+
+    /// Restart the runtime into a new generation.
+    ///
+    /// Recorded effects survive — content, message ledgers and permission
+    /// ledgers are all still there — but every binding made in the old
+    /// generation is now stale, even though the native ids repeat.
+    pub fn restart(&self) {
+        let mut state = self.lock();
+        state.generation += 1;
+        state.steps.clear();
+    }
+
+    /// Queue one deviation from the happy path, for any call of its operation.
+    pub fn push_step(&self, step: ScriptStep) {
+        self.push_step_for(step, RequestKey::Any);
+    }
+
+    /// Queue one deviation pinned to the exact call it must answer.
+    ///
+    /// Use this whenever more than one request can reach the operation, so the
+    /// step cannot be spent on the wrong one.
+    pub fn push_step_for(&self, step: ScriptStep, expected: RequestKey) {
+        self.lock().steps.push_back(QueuedStep { step, expected });
+    }
+
+    /// Load a declarative script.
+    ///
+    /// `correlations` resolves each scripted session's `correlation_slot`, so a
+    /// fixture can describe "this session belongs to the second run" without
+    /// hard-coding a generated identifier.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::Domain`] when the script carries a timestamp,
+    /// identifier or payload the domain refuses, and when a slot has no label.
+    pub fn load_script(
+        &self,
+        script: &RuntimeScript,
+        correlations: &[CorrelationLabel],
+    ) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        if let Some(epoch) = script.epoch {
+            state.epoch = epoch;
+        }
+        if let Some(root) = &script.runtime_root {
+            state.runtime_root = WorkspaceRoot::parse(root)?;
+        }
+        if let Some(limits) = script.limits {
+            state.capabilities.limits = limits;
+        }
+        let epoch = state.epoch;
+        state.staged_history = build_events(&script.history, epoch)?;
+        state.staged_live = build_events(&script.live, epoch)?;
+        state.scripted_sessions = script
+            .sessions
+            .iter()
+            .map(|session| {
+                let correlation_text = match session.correlation_slot {
+                    Some(slot) => Some(
+                        correlations
+                            .get(slot)
+                            .ok_or_else(|| {
+                                kontor_core::DomainError::invalid(
+                                    "SessionScript",
+                                    "names a correlation slot the test did not supply",
+                                )
+                            })?
+                            .to_string(),
+                    ),
+                    None => session.correlation_text.clone(),
+                };
+                Ok(ScriptedSession {
+                    native_id: ExternalId::parse(&session.native_id)?,
+                    generation: state
+                        .generation
+                        .saturating_add_signed(session.generation_delta),
+                    correlation_text,
+                    state: session.state,
+                    observed_at: parse_utc_timestamp(&session.observed_at)?,
+                })
+            })
+            .collect::<RuntimeResult<Vec<_>>>()?;
+        // A fixture cannot name an identifier the test generates at run time,
+        // so a loaded step answers any call of its operation. Pin one with
+        // [`ScriptedFakeRuntime::push_step_for`] when that matters.
+        state.steps = script
+            .steps
+            .iter()
+            .map(|step| QueuedStep {
+                step: step.clone(),
+                expected: RequestKey::Any,
+            })
+            .collect();
+        Ok(())
+    }
+
+    /// Everything the fake has been asked to do, in order.
+    #[must_use]
+    pub fn calls(&self) -> Vec<AdapterCall> {
+        self.lock().calls.clone()
+    }
+
+    /// Take the recorded calls and start a fresh log.
+    pub fn take_calls(&self) -> Vec<AdapterCall> {
+        std::mem::take(&mut self.lock().calls)
+    }
+
+    /// Every recorded event of the session behind `binding`.
+    #[must_use]
+    pub fn content(&self, binding: &RuntimeBindingSnapshot) -> Vec<SessionEvent> {
+        self.lock()
+            .sessions
+            .get(&binding.identity().native_id)
+            .map(|session| session.content.clone())
+            .unwrap_or_default()
+    }
+
+    /// The permission requests the runtime is still waiting on.
+    #[must_use]
+    pub fn pending_permissions(&self) -> BTreeSet<ExternalId> {
+        self.lock().permissions.pending()
+    }
+
+    /// How many distinct messages the session behind `binding` committed.
+    #[must_use]
+    pub fn committed_messages(&self, binding: &RuntimeBindingSnapshot) -> usize {
+        self.lock()
+            .sessions
+            .get(&binding.identity().native_id)
+            .map_or(0, |session| session.messages.len())
+    }
+
+    /// Bind a native session to a run, freezing the capabilities of the moment.
+    fn bind(
+        state: &FakeState,
+        agent_run_id: AgentRunId,
+        binding_id: RuntimeBindingId,
+        identity: NativeRuntimeIdentity,
+        reported_correlation: &str,
+        at: Timestamp,
+    ) -> RuntimeResult<RuntimeBindingSnapshot> {
+        let correlation = CorrelationEvidence::establish(
+            agent_run_id,
+            reported_correlation,
+            identity.clone(),
+            at,
+        )?;
+        Ok(RuntimeBindingSnapshot {
+            binding: RuntimeBinding {
+                id: binding_id,
+                agent_run_id,
+                identity,
+                bound_at: at,
+            },
+            capabilities: state.capabilities.clone(),
+            correlation,
+        })
+    }
+
+    fn observation(
+        snapshot: &RuntimeBindingSnapshot,
+        contact: RuntimeContact,
+        state: ObservedRunState,
+        source: ObservationSource,
+        native_sequence: u64,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        Ok(ControlPlaneObservation {
+            agent_run_id: snapshot.agent_run_id(),
+            contact,
+            state,
+            identity: snapshot.identity().clone(),
+            native_event_id: None,
+            native_sequence,
+            observed_at: at,
+            evidence: CanonicalDocument::from_serializable(&serde_json::json!({
+                "schema_version": 1,
+                "observed_state": state.as_str(),
+                "contact": contact.as_str(),
+                "source": source,
+            }))?,
+            source,
+        })
+    }
+}
+
+fn payload(kind: SessionEventKind, sequence: u64, body: &str) -> RuntimeResult<CanonicalDocument> {
+    Ok(CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "kind": kind,
+        "sequence": sequence,
+        "body": body,
+    }))?)
+}
+
+fn build_events(scripts: &[EventScript], epoch: u64) -> RuntimeResult<Vec<SessionEvent>> {
+    scripts
+        .iter()
+        .map(|script| {
+            let subject = match &script.permission_id {
+                Some(id) => EventSubject::Permission(ExternalId::parse(id)?),
+                None => EventSubject::None,
+            };
+            let native_event_id = script
+                .native_event_id
+                .as_deref()
+                .map(ExternalId::parse)
+                .transpose()?;
+            Ok(SessionEvent {
+                kind: script.kind,
+                position: TimelinePosition {
+                    epoch: script.epoch.unwrap_or(epoch),
+                    sequence: script.sequence,
+                },
+                subject,
+                native_event_id,
+                emitted_at: parse_utc_timestamp(&script.emitted_at)?,
+                payload: payload(script.kind, script.sequence, &script.body)?,
+            })
+        })
+        .collect()
+}
+
+#[async_trait]
+impl RuntimeAdapter for ScriptedFakeRuntime {
+    /// The claim is compared against the registry *whole* — grade, limits,
+    /// correlation and all — so a clone with a better trust grade written into
+    /// it is refused rather than quietly corrected.
+    async fn issued_binding(
+        &self,
+        claimed: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<IssuedBinding> {
+        let state = self.lock();
+        match state.bindings.get(&claimed.binding_id()) {
+            None => Err(RuntimeError::StaleBinding {
+                rule: "this runtime never issued this binding",
+            }),
+            Some(issued) if issued != claimed => Err(RuntimeError::StaleBinding {
+                rule: "this is not the binding the runtime issued",
+            }),
+            Some(issued) => IssuedBinding::attest(issued.clone()),
+        }
+    }
+
+    async fn discover_capabilities(&self) -> RuntimeResult<RuntimeCapabilities> {
+        let mut state = self.lock();
+        // Capability discovery is the one operation with nothing to preflight —
+        // it is what a preflight is made of — but it is still a call over the
+        // channel, so it goes through the same choke point as the rest.
+        state.take_step(RuntimeCapability::Discovery, RequestKey::Capabilities)?;
+        state.calls.push(AdapterCall::DiscoverCapabilities);
+        Ok(state.capabilities.clone())
+    }
+
+    async fn prepare_workspace(
+        &self,
+        request: &WorkspacePrepareRequest,
+    ) -> RuntimeResult<WorkspaceOutcome> {
+        let mut state = self.lock();
+        // A repeated preparation is governed by the snapshot it will return,
+        // exactly as a bound session operation is governed by its own binding.
+        // A retry after a lost answer must not start failing because the
+        // runtime was downgraded in between: the work it re-answers for was
+        // already verified under the frozen capabilities.
+        let governing = state
+            .workspaces
+            .get(&request.team_run_id)
+            .map_or_else(|| state.capabilities.clone(), |it| it.capabilities.clone());
+        preflight(
+            &governing,
+            &OperationContext {
+                operation: RuntimeCapability::PrepareWorkspace,
+                autonomous: true,
+                account_pinned: false,
+                binding: None,
+                workspace: None,
+                current_generation: None,
+                demand: None,
+            },
+        )?;
+        state.take_step(
+            RuntimeCapability::PrepareWorkspace,
+            RequestKey::TeamRun(request.team_run_id),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::PrepareWorkspace(request.team_run_id));
+
+        request.root.ensure_task_scoped(&state.runtime_root)?;
+
+        // Preparation is idempotent per team run: the second call returns the
+        // snapshot the first one froze — binding, capabilities and correlation
+        // alike — so a retry after a lost answer cannot leave a second
+        // workspace behind and cannot silently re-grade an existing one.
+        // Asking for a different root for the same team run is a
+        // contradiction, not a retry.
+        if let Some(existing) = state.workspaces.get(&request.team_run_id) {
+            if existing.binding.root != request.root {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "this team run already has a task workspace at another root",
+                });
+            }
+            if existing.binding.task_id != request.task_id {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "this team run's workspace was prepared for another task",
+                });
+            }
+            return Ok(WorkspaceOutcome {
+                snapshot: existing.clone(),
+                created: false,
+            });
+        }
+
+        state.minted += 1;
+        let native_id = ExternalId::parse(&format!("native-workspace-{}", state.minted))?;
+        let identity = state.identity(native_id);
+        let correlation = WorkspaceCorrelationEvidence::establish(
+            request.team_run_id,
+            &request.correlation().to_string(),
+            identity.clone(),
+            request.requested_at,
+        )?;
+        let binding = WorkspaceBinding {
+            id: request.workspace_binding_id,
+            team_run_id: request.team_run_id,
+            task_id: request.task_id,
+            root: request.root.clone(),
+            identity,
+            bound_at: request.requested_at,
+        };
+        // The snapshot is frozen here, once, and every later answer for this
+        // team run is a clone of it.
+        let snapshot = WorkspaceBindingSnapshot {
+            binding,
+            capabilities: state.capabilities.clone(),
+            correlation,
+        };
+        state
+            .workspaces
+            .insert(request.team_run_id, snapshot.clone());
+        Ok(WorkspaceOutcome {
+            snapshot,
+            created: true,
+        })
+    }
+
+    async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Launch,
+                autonomous: true,
+                account_pinned: request.account_profile_id.is_some(),
+                binding: None,
+                workspace: Some(request.workspace_claim()),
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::ConcurrentSessions(
+                    state.sessions.len() as u32 + 1,
+                )),
+            },
+        )?;
+        // The preflight proves the claim is consistent and in scope; this
+        // proves the workspace is one this runtime actually made.
+        state.ensure_registered_workspace(request.workspace.as_ref())?;
+        let step = state.take_step(
+            RuntimeCapability::Launch,
+            RequestKey::Run(request.agent_run_id),
+        )?;
+        state.calls.push(AdapterCall::Launch(request.agent_run_id));
+
+        state.minted += 1;
+        let native_id = ExternalId::parse(&format!("native-session-{}", state.minted))?;
+        let identity = state.identity(native_id.clone());
+        let reported = match step {
+            Some(ScriptStep::EchoCorrelation { text }) => text,
+            _ => request.correlation().to_string(),
+        };
+        let snapshot = Self::bind(
+            &state,
+            request.agent_run_id,
+            request.binding_id,
+            identity,
+            &reported,
+            request.requested_at,
+        )?;
+
+        let epoch = state.epoch;
+        let mut content = state.staged_history.clone();
+        let history_len = content.len();
+        content.extend(state.staged_live.clone());
+        let session = FakeSession {
+            agent_run_id: request.agent_run_id,
+            binding_id: request.binding_id,
+            correlation_text: Some(reported),
+            state: ObservedRunState::Launching,
+            epoch,
+            content,
+            history_len,
+            messages: MessageLedger::new(),
+        };
+        let raised = session.raised_permissions();
+        state.sessions.insert(native_id, session);
+        // The runtime keeps its own copy of what it just issued. Everything a
+        // caller later presents is checked against this one.
+        state.bindings.insert(request.binding_id, snapshot.clone());
+        for permission_id in raised {
+            state.permissions.open(request.binding_id, permission_id);
+        }
+
+        let observation = Self::observation(
+            &snapshot,
+            RuntimeContact::Reachable,
+            ObservedRunState::Launching,
+            ObservationSource::CommandAck,
+            0,
+            request.requested_at,
+        )?;
+        Ok(LaunchOutcome {
+            snapshot,
+            observation,
+        })
+    }
+
+    async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Resume,
+                autonomous: true,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                workspace: None,
+                current_generation: Some(generation),
+                demand: None,
+            },
+        )?;
+        state.take_step(
+            RuntimeCapability::Resume,
+            RequestKey::Binding(request.binding.binding_id()),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::Resume(request.binding.binding_id()));
+        let session = state.session(&request.binding)?;
+        session.state = ObservedRunState::Running;
+        Self::observation(
+            &request.binding,
+            RuntimeContact::Reachable,
+            ObservedRunState::Running,
+            ObservationSource::CommandAck,
+            0,
+            request.requested_at,
+        )
+    }
+
+    async fn send(&self, request: &SendMessageRequest) -> RuntimeResult<MessageAck> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::SendMessage,
+                autonomous: true,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                workspace: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::MessageBytes(request.body_bytes())),
+            },
+        )?;
+        let step = state.take_step(
+            RuntimeCapability::SendMessage,
+            RequestKey::Message(request.message_id),
+        )?;
+        state.calls.push(AdapterCall::Send(
+            request.binding.binding_id(),
+            request.message_id,
+        ));
+
+        let binding_id = request.binding.binding_id();
+        let body_hash = request.body_hash();
+        let session = state.session(&request.binding)?;
+        if let Admission::Replay(original) =
+            session.messages.admit(&request.message_id, &body_hash)?
+        {
+            return Ok(original);
+        }
+        let position = session.append(
+            SessionEventKind::Message,
+            EventSubject::Message(request.message_id),
+            request.body.as_str(),
+            request.sent_at,
+        )?;
+        let acknowledgement = MessageAck {
+            message_id: request.message_id,
+            binding_id,
+            position,
+            accepted_at: request.sent_at,
+        };
+        // The ledger is written before the acknowledgement leaves, so a lost
+        // acknowledgement is answered from the ledger instead of by sending the
+        // message a second time.
+        session
+            .messages
+            .record(request.message_id, body_hash, acknowledgement.clone());
+        if matches!(step, Some(ScriptStep::LoseSendAck)) {
+            return Err(RuntimeError::Transport {
+                rule: "acknowledgement was lost after the message was committed",
+            });
+        }
+        Ok(acknowledgement)
+    }
+
+    async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Cancel,
+                autonomous: true,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                workspace: None,
+                current_generation: Some(generation),
+                demand: None,
+            },
+        )?;
+        let step = state.take_step(
+            RuntimeCapability::Cancel,
+            RequestKey::Binding(request.binding.binding_id()),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::Cancel(request.binding.binding_id()));
+        let observed = matches!(step, Some(ScriptStep::CancelObservedTerminal));
+        let session = state.session(&request.binding)?;
+        if observed {
+            session.state = ObservedRunState::Cancelled;
+        }
+        Self::observation(
+            &request.binding,
+            RuntimeContact::Reachable,
+            ObservedRunState::Cancelled,
+            if observed {
+                ObservationSource::AuthoritativeEvent
+            } else {
+                ObservationSource::CommandAck
+            },
+            0,
+            request.requested_at,
+        )
+    }
+
+    async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Inspect,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                workspace: None,
+                current_generation: Some(generation),
+                demand: None,
+            },
+        )?;
+        state.take_step(
+            RuntimeCapability::Inspect,
+            RequestKey::Binding(request.binding.binding_id()),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::Inspect(request.binding.binding_id()));
+        let observed = state.session(&request.binding)?.state;
+        Self::observation(
+            &request.binding,
+            RuntimeContact::Reachable,
+            observed,
+            ObservationSource::Inspect,
+            0,
+            request.requested_at,
+        )
+    }
+
+    async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Adopt,
+                autonomous: true,
+                account_pinned: false,
+                binding: None,
+                workspace: None,
+                current_generation: None,
+                demand: None,
+            },
+        )?;
+        state.take_step(
+            RuntimeCapability::Adopt,
+            RequestKey::Run(request.agent_run_id),
+        )?;
+        state.calls.push(AdapterCall::Adopt(request.agent_run_id));
+
+        if request.native.generation != state.generation {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the named session belongs to another runtime generation",
+            });
+        }
+        let native_id = request.native.native_id.clone();
+        let reported = match state.sessions.get(&native_id) {
+            Some(session) => session.correlation_text.clone(),
+            None => state
+                .scripted_sessions
+                .iter()
+                .find(|session| session.native_id == native_id)
+                .ok_or(RuntimeError::StaleBinding {
+                    rule: "the runtime does not own this native session",
+                })?
+                .correlation_text
+                .clone(),
+        };
+        let identity = state.identity(native_id.clone());
+        let snapshot = Self::bind(
+            &state,
+            request.agent_run_id,
+            request.binding_id,
+            identity,
+            reported.as_deref().unwrap_or_default(),
+            request.adopted_at,
+        )?;
+
+        let epoch = state.epoch;
+        let staged_history = state.staged_history.clone();
+        let staged_live = state.staged_live.clone();
+        let session = state.sessions.entry(native_id).or_insert_with(|| {
+            let history_len = staged_history.len();
+            let mut content = staged_history;
+            content.extend(staged_live);
+            FakeSession {
+                agent_run_id: request.agent_run_id,
+                binding_id: request.binding_id,
+                correlation_text: reported,
+                state: ObservedRunState::Running,
+                epoch,
+                content,
+                history_len,
+                messages: MessageLedger::new(),
+            }
+        });
+        // Adoption re-points an existing session at the adopting run without
+        // discarding anything it already recorded.
+        session.agent_run_id = request.agent_run_id;
+        session.binding_id = request.binding_id;
+        let raised = session.raised_permissions();
+        let observed = session.state;
+        state.bindings.insert(request.binding_id, snapshot.clone());
+        for permission_id in raised {
+            state.permissions.open(request.binding_id, permission_id);
+        }
+
+        let observation = Self::observation(
+            &snapshot,
+            RuntimeContact::Reachable,
+            observed,
+            ObservationSource::Inspect,
+            0,
+            request.adopted_at,
+        )?;
+        Ok(LaunchOutcome {
+            snapshot,
+            observation,
+        })
+    }
+
+    async fn discover_sessions(&self) -> RuntimeResult<Vec<NativeSession>> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Discovery,
+                autonomous: false,
+                account_pinned: false,
+                binding: None,
+                workspace: None,
+                current_generation: None,
+                demand: None,
+            },
+        )?;
+        state.take_step(RuntimeCapability::Discovery, RequestKey::Sessions)?;
+        state.calls.push(AdapterCall::DiscoverSessions);
+
+        let mut found: Vec<NativeSession> = state
+            .sessions
+            .iter()
+            .map(|(native_id, session)| NativeSession {
+                identity: state.identity(native_id.clone()),
+                correlation: session
+                    .correlation_text
+                    .as_deref()
+                    .and_then(|text| CorrelationLabel::parse(text).ok()),
+                state: session.state,
+                observed_at: session
+                    .content
+                    .last()
+                    .map_or(Timestamp::UNIX_EPOCH, |event| event.emitted_at),
+            })
+            .collect();
+        found.extend(state.scripted_sessions.iter().map(|session| {
+            NativeSession {
+                identity: NativeRuntimeIdentity {
+                    runtime_kind: state.runtime_kind.clone(),
+                    host: state.host.clone(),
+                    generation: session.generation,
+                    native_id: session.native_id.clone(),
+                },
+                correlation: session
+                    .correlation_text
+                    .as_deref()
+                    .and_then(|text| CorrelationLabel::parse(text).ok()),
+                state: session.state,
+                observed_at: session.observed_at,
+            }
+        }));
+        Ok(found)
+    }
+
+    async fn reconcile(
+        &self,
+        bindings: &[RuntimeBindingSnapshot],
+    ) -> RuntimeResult<ReconciliationReport> {
+        let sessions = self.discover_sessions().await?;
+        Ok(reconcile(bindings, &sessions, self.generation()))
+    }
+
+    async fn history(&self, request: &HistoryRequest) -> RuntimeResult<HistoryPage> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                workspace: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(request.page_size)),
+            },
+        )?;
+        state.take_step(
+            RuntimeCapability::History,
+            RequestKey::Binding(request.binding.binding_id()),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::History(request.binding.binding_id()));
+
+        let binding_id = request.binding.binding_id();
+        let session = state.session(&request.binding)?;
+        let epoch = session.epoch;
+        let start = match &request.cursor {
+            Some(cursor) => cursor.resolve(binding_id)?,
+            None => TimelinePosition::start_of(epoch),
+        };
+        if start.epoch != epoch {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        let recorded = &session.content[..session.history_len];
+        let items: Vec<SessionEvent> = recorded
+            .iter()
+            .filter(|event| event.position.sequence > start.sequence)
+            .take(request.page_size as usize)
+            .cloned()
+            .collect();
+        let end = items.last().map_or(start, |event| event.position);
+        let more = recorded
+            .iter()
+            .any(|event| event.position.sequence > end.sequence);
+        Ok(HistoryPage {
+            epoch,
+            items,
+            next: more.then(|| HistoryCursor::issue(binding_id, end)),
+            end,
+        })
+    }
+
+    async fn subscribe_live(
+        &self,
+        request: &LiveSubscribeRequest,
+    ) -> RuntimeResult<LiveSubscription> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::LiveEvents,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                workspace: None,
+                current_generation: Some(generation),
+                demand: None,
+            },
+        )?;
+        let step = state.take_step(
+            RuntimeCapability::LiveEvents,
+            RequestKey::Binding(request.binding.binding_id()),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::SubscribeLive(request.binding.binding_id()));
+
+        let session = state.session(&request.binding)?;
+        let queued: Vec<SessionEvent> = session
+            .content
+            .iter()
+            .filter(|event| event.position.sequence > request.strict_after.sequence)
+            .cloned()
+            .collect();
+        Ok(LiveSubscription::new(
+            request.kinds.clone(),
+            request.strict_after,
+            queued,
+            matches!(step, Some(ScriptStep::CloseStreamWithoutTerminal)),
+        ))
+    }
+
+    async fn respond_permission(
+        &self,
+        request: &PermissionResponseRequest,
+    ) -> RuntimeResult<PermissionAck> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::PermissionResponse,
+                autonomous: true,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                workspace: None,
+                current_generation: Some(generation),
+                demand: None,
+            },
+        )?;
+        state.take_step(
+            RuntimeCapability::PermissionResponse,
+            RequestKey::Message(request.response_id),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::RespondPermission(request.binding.binding_id()));
+
+        let binding_id = request.binding.binding_id();
+        if let Admission::Replay(original) = state.permissions.classify(
+            binding_id,
+            &request.permission_id,
+            request.response_id,
+            request.decision,
+        )? {
+            return Ok(original);
+        }
+        let position = state.session(&request.binding)?.append(
+            SessionEventKind::PermissionResolved,
+            EventSubject::Permission(request.permission_id.clone()),
+            request.decision_body(),
+            request.responded_at,
+        )?;
+        let acknowledgement = PermissionAck {
+            permission_id: request.permission_id.clone(),
+            response_id: request.response_id,
+            binding_id,
+            decision: request.decision,
+            position,
+            accepted_at: request.responded_at,
+        };
+        state
+            .permissions
+            .record(request.permission_id.clone(), acknowledgement.clone());
+        Ok(acknowledgement)
+    }
+}

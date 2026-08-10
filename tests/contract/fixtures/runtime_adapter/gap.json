@@ -1,0 +1,11 @@
+{
+  "epoch": 1,
+  "history": [
+    { "kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:00:01Z", "body": "first" },
+    { "kind": "message", "sequence": 2, "emitted_at": "2026-08-10T09:00:02Z", "body": "second" }
+  ],
+  "live": [
+    { "kind": "message", "sequence": 5, "emitted_at": "2026-08-10T09:00:05Z", "body": "jumped ahead" },
+    { "kind": "message", "sequence": 3, "emitted_at": "2026-08-10T09:00:03Z", "body": "arrives too late to help" }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "epoch": 1,
+  "history": [
+    { "kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:00:01Z", "body": "start the migration" },
+    {
+      "kind": "permission_request",
+      "sequence": 2,
+      "permission_id": "perm-write-migration",
+      "emitted_at": "2026-08-10T09:00:02Z",
+      "body": "may I write the migration file"
+    }
+  ],
+  "live": [
+    { "kind": "log", "sequence": 3, "emitted_at": "2026-08-10T09:00:03Z", "body": "waiting for a decision" }
+  ]
+}

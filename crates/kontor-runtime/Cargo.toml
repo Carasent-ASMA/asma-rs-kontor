@@ -12,9 +12,10 @@ description = "Adapter contract, capabilities and normalized events for agent ru
 workspace = true
 
 [dependencies]
-tokio = { workspace = true }
+# The exact version is the workspace's own package version. A bare path
+# dependency is a wildcard requirement, which `deny.toml` refuses.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 async-trait = { workspace = true }
-futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

@@ -1,0 +1,316 @@
+//! The replaceable execution contract: one trait, one error type, and the
+//! acknowledgements a runtime hands back.
+//!
+//! Implementing [`RuntimeAdapter`] is the *only* way a runtime enters Kontor.
+//! Two obligations come with it, and the shared contract suite exists to prove
+//! them:
+//!
+//! * Every method calls [`crate::capability::preflight`] **before** it produces
+//!   any effect, so an unsupported capability, an insufficient trust grade, a
+//!   stale binding, an unavailable account environment or an oversized request
+//!   is refused without touching the runtime.
+//! * Native identifiers appear only as correlation evidence. A native session
+//!   id never lands in a field that means "which run", "which binding" or
+//!   "which message".
+
+use async_trait::async_trait;
+use kontor_core::DomainError;
+use kontor_core::id::{RuntimeBindingId, Timestamp};
+
+use crate::capability::{
+    IssuedBinding, RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, TrustGrade,
+};
+use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
+use crate::request::{
+    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchRequest,
+    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
+    SendMessageRequest,
+};
+use crate::timeline::{HistoryPage, LiveSubscription, TimelineBreak, TimelinePosition};
+use crate::workspace::{WorkspaceOutcome, WorkspacePrepareRequest};
+
+/// Everything an adapter operation can refuse.
+///
+/// The payload is structural: static rules, capability names and positions. No
+/// variant carries a message body, a prompt or a runtime payload, so a refusal
+/// is safe to log.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RuntimeError {
+    /// The runtime never declared this capability.
+    #[error("runtime does not support {capability}")]
+    UnsupportedCapability {
+        /// The operation that was attempted.
+        capability: RuntimeCapability,
+    },
+    /// The runtime's trust grade may not be driven by Kontor's own authority.
+    #[error("trust grade {found} cannot autonomously {operation}: {rule}")]
+    InsufficientTrust {
+        /// The grade the runtime declared.
+        found: TrustGrade,
+        /// The operation that was attempted.
+        operation: RuntimeCapability,
+        /// The policy that refused.
+        rule: &'static str,
+    },
+    /// An account-pinned run through a runtime that cannot prove which account
+    /// it executes as.
+    #[error("runtime cannot prove a per-run account environment")]
+    AccountEnvironmentUnavailable,
+    /// The request is larger than the runtime declared it can take.
+    #[error("{subject} exceeds the runtime limit of {limit}")]
+    LimitExceeded {
+        /// What was too large.
+        subject: &'static str,
+        /// The declared bound.
+        limit: u64,
+    },
+    /// A launch presented no verified task workspace binding at all.
+    #[error("launch requires a prepared task workspace binding")]
+    WorkspaceBindingRequired,
+    /// The presented workspace is not the one this work belongs in.
+    #[error("task workspace mismatch: {rule}")]
+    WorkspaceMismatch {
+        /// Why the workspace was refused.
+        rule: &'static str,
+    },
+    /// The binding no longer names a live session in this runtime generation.
+    #[error("runtime binding is stale: {rule}")]
+    StaleBinding {
+        /// Why the binding cannot be used.
+        rule: &'static str,
+    },
+    /// The runtime did not prove that the native session belongs to the run.
+    #[error("native session is not correlated with the requested run")]
+    CorrelationFailed,
+    /// The session's content can no longer be followed and must be re-read.
+    #[error("timeline must be refetched: {reason}")]
+    TimelineRefetchRequired {
+        /// What broke.
+        reason: TimelineBreak,
+    },
+    /// The continuation cursor cannot be used.
+    #[error("history cursor is invalid: it {rule}")]
+    InvalidCursor {
+        /// Why the cursor was refused.
+        rule: &'static str,
+    },
+    /// The message identifier contradicts an effect it already committed.
+    #[error("message identifier {rule}")]
+    DuplicateMessage {
+        /// Why the identifier was refused.
+        rule: &'static str,
+    },
+    /// The permission request cannot be answered this way.
+    #[error("permission request {rule}")]
+    PermissionConflict {
+        /// Why the answer was refused.
+        rule: &'static str,
+    },
+    /// The runtime could not be talked to. This is a fact about the channel and
+    /// never about the work.
+    #[error("runtime transport failed: the {rule}")]
+    Transport {
+        /// What went wrong with the channel.
+        rule: &'static str,
+    },
+    /// A scripted adapter was called in a way its script does not describe.
+    #[error("script mismatch: the script expects {expected} but {called} was called")]
+    ScriptMismatch {
+        /// The operation the script expects next.
+        expected: &'static str,
+        /// The operation that was actually called.
+        called: &'static str,
+    },
+    /// A scripted step was pinned to one request and reached by another.
+    ///
+    /// The payload names only *which identifier* disagreed, never its value and
+    /// never the request body, so a scripted refusal is as safe to log as any
+    /// other.
+    #[error("script mismatch: the queued step belongs to another {subject}")]
+    ScriptRequestMismatch {
+        /// The identifier that did not match.
+        subject: &'static str,
+    },
+    /// A domain value was rejected before it reached the runtime.
+    #[error(transparent)]
+    Domain(#[from] DomainError),
+}
+
+/// Convenience alias for adapter operations.
+pub type RuntimeResult<T> = Result<T, RuntimeError>;
+
+/// What a launch or adoption produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchOutcome {
+    /// The binding, with the capabilities frozen at this moment and the
+    /// correlation evidence that ties the native session to the run.
+    pub snapshot: RuntimeBindingSnapshot,
+    /// The first normalized fact about the session. A launch acknowledgement is
+    /// an acknowledgement, not a completion.
+    pub observation: ControlPlaneObservation,
+}
+
+/// The runtime's answer to one delivered message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageAck {
+    /// The Kontor identifier the message was sent under.
+    pub message_id: MessageId,
+    /// The binding it was delivered into.
+    pub binding_id: RuntimeBindingId,
+    /// Where the message landed in the session's content.
+    pub position: TimelinePosition,
+    /// When the runtime accepted it.
+    pub accepted_at: Timestamp,
+}
+
+/// The runtime's answer to one permission response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionAck {
+    /// The runtime's own identifier for the request that was answered.
+    pub permission_id: kontor_core::id::ExternalId,
+    /// The Kontor identifier the answer was sent under.
+    pub response_id: MessageId,
+    /// The binding whose session raised the request.
+    pub binding_id: RuntimeBindingId,
+    /// The answer that was applied.
+    pub decision: PermissionDecision,
+    /// Where the resolution landed in the session's content.
+    pub position: TimelinePosition,
+    /// When the runtime accepted it.
+    pub accepted_at: Timestamp,
+}
+
+/// One agent runtime, reduced to what Kontor is willing to depend on.
+#[async_trait]
+pub trait RuntimeAdapter: Send + Sync {
+    /// What this runtime can currently prove.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::Transport`] when the runtime cannot be reached.
+    async fn discover_capabilities(&self) -> RuntimeResult<RuntimeCapabilities>;
+
+    /// Vouch for a binding this runtime issued, so it can be judged as
+    /// evidence.
+    ///
+    /// A [`RuntimeBindingSnapshot`] a caller is holding is a plain value with
+    /// public fields — a clone with a better trust grade written into it looks
+    /// exactly like the original. That is why closing a run
+    /// ([`ControlPlaneObservation::terminal_evidence`]) takes an
+    /// [`IssuedBinding`] and nothing else: only the runtime that issued a
+    /// binding knows what it issued, so only the runtime can hand one back.
+    ///
+    /// The vouched-for value is the runtime's own copy, never the one that was
+    /// presented.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::StaleBinding`] for a binding this runtime never
+    /// issued, and for one that does not match what it issued.
+    async fn issued_binding(
+        &self,
+        claimed: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<IssuedBinding>;
+
+    /// Make a team run's task workspace exist and be usable.
+    ///
+    /// This is **idempotent** per team run: preparing the same team run's
+    /// workspace again returns the original binding and creates nothing, so a
+    /// retry after a lost answer cannot leave a second workspace behind.
+    ///
+    /// # Errors
+    /// Refuses a workspace that is the runtime's shared root, and a second
+    /// preparation of the same team run at a different root.
+    async fn prepare_workspace(
+        &self,
+        request: &WorkspacePrepareRequest,
+    ) -> RuntimeResult<WorkspaceOutcome>;
+
+    /// Start a new native session for an agent run.
+    ///
+    /// # Errors
+    /// Refuses before dispatch on capability, trust, account environment, task
+    /// workspace and limits, and after dispatch when the session cannot be
+    /// correlated with the requested run. A launch with no verified workspace
+    /// binding, or one that claims a working directory other than the bound
+    /// root, is refused before the session exists.
+    async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome>;
+
+    /// Continue an existing native session in place.
+    ///
+    /// # Errors
+    /// Refuses a stale binding and every preflight failure.
+    async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation>;
+
+    /// Deliver one message into an existing native session.
+    ///
+    /// # Errors
+    /// Refuses an oversized body and an identifier reused for different
+    /// content. A retry of the same identifier and body replays the original
+    /// acknowledgement instead of delivering twice.
+    async fn send(&self, request: &SendMessageRequest) -> RuntimeResult<MessageAck>;
+
+    /// Ask an existing native session to stop.
+    ///
+    /// # Errors
+    /// Refuses every preflight failure. The returned observation acknowledges
+    /// the request; it does not evidence that the run closed.
+    async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation>;
+
+    /// Read the current authoritative state of one native session.
+    ///
+    /// # Errors
+    /// Refuses every preflight failure.
+    async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation>;
+
+    /// Bind an already-running native session to an agent run.
+    ///
+    /// # Errors
+    /// Refuses a session that does not already carry this run's correlation
+    /// label, and one from another runtime generation.
+    async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome>;
+
+    /// Enumerate the native sessions the runtime currently owns.
+    ///
+    /// The result carries no Kontor identity: discovery reports what is there,
+    /// it does not decide what it belongs to.
+    ///
+    /// # Errors
+    /// Refuses when discovery is unsupported or the runtime is unreachable.
+    async fn discover_sessions(&self) -> RuntimeResult<Vec<NativeSession>>;
+
+    /// Classify the given bindings against what the runtime currently owns.
+    ///
+    /// # Errors
+    /// As [`RuntimeAdapter::discover_sessions`].
+    async fn reconcile(
+        &self,
+        bindings: &[RuntimeBindingSnapshot],
+    ) -> RuntimeResult<ReconciliationReport>;
+
+    /// Read one page of a session's recorded content.
+    ///
+    /// # Errors
+    /// Refuses an oversized page, a foreign or malformed cursor, and every
+    /// preflight failure.
+    async fn history(&self, request: &HistoryRequest) -> RuntimeResult<HistoryPage>;
+
+    /// Follow a session's content strictly after a validated history position.
+    ///
+    /// # Errors
+    /// Refuses every preflight failure. Continuity failures surface per event
+    /// from [`LiveSubscription::next_event`].
+    async fn subscribe_live(
+        &self,
+        request: &LiveSubscribeRequest,
+    ) -> RuntimeResult<LiveSubscription>;
+
+    /// Answer a permission request raised inside a session.
+    ///
+    /// # Errors
+    /// Refuses an unknown request, one raised by another session, and a second
+    /// answer that contradicts the first.
+    async fn respond_permission(
+        &self,
+        request: &PermissionResponseRequest,
+    ) -> RuntimeResult<PermissionAck>;
+}
