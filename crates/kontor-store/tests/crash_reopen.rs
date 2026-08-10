@@ -13,7 +13,7 @@ use std::process::Command;
 
 use kontor_core::id::{ExternalName, ProjectId, Timestamp, parse_utc_timestamp};
 use kontor_core::repository::{NewProject, ProjectRepository};
-use kontor_store::SqliteStore;
+use kontor_store::{SCHEMA_VERSION, SqliteStore};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -98,7 +98,7 @@ fn committed_work_survives_an_abrupt_exit_and_an_interrupted_transaction_does_no
     );
 
     let store = SqliteStore::open(&path).expect("the database reopens");
-    assert_eq!(store.schema_version().expect("readable"), 1);
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
     assert!(
         store
             .get_project(ProjectId::parse(COMMITTED).expect("a canonical id"))
@@ -132,7 +132,7 @@ fn two_connections_may_share_one_file() {
 
     let first = SqliteStore::open(&path).expect("the first connection opens");
     let second = SqliteStore::open(&path).expect("the second connection opens");
-    assert_eq!(second.schema_version().expect("readable"), 1);
+    assert_eq!(second.schema_version().expect("readable"), SCHEMA_VERSION);
     assert!(
         second.foreign_keys_enabled().expect("readable"),
         "the second connection must enforce references too"
@@ -237,7 +237,7 @@ fn an_interrupted_migration_leaves_no_schema_or_realm_and_reopens_cleanly() {
     // Reopening the wreckage is an ordinary first open: it migrates cleanly and
     // mints a brand-new realm rather than resurrecting the aborted one.
     let store = SqliteStore::open(&path).expect("the database reopens and migrates");
-    assert_eq!(store.schema_version().expect("readable"), 1);
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
     assert_ne!(
         store.realm_id().to_string(),
         "0193f000-0000-7000-8000-0000000000d1",

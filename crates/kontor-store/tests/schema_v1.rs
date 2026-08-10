@@ -16,6 +16,8 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use kontor_core::id::{AccountProfileId, ProjectId};
+use kontor_core::repository::{ProjectRepository, RepositoryError};
 use kontor_store::{SCHEMA_VERSION, SqliteStore, StoreError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use tempfile::TempDir;
@@ -72,6 +74,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "work_calendars",
     "work_profiles",
 ];
+
+/// The frozen v1 script, so the upgrade test can build a genuine v1 file.
+const MIGRATION_0001: &str = include_str!("../migrations/0001_init.sql");
 
 /// A minimal project → task → workflow → team run → agent run chain, inserted
 /// with direct SQL so the schema's own constraints are what is under test.
@@ -145,14 +150,342 @@ fn table_names(connection: &Connection) -> BTreeSet<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_empty_database_migrates_to_schema_version_one() {
+fn an_empty_database_migrates_to_the_current_schema_version() {
     let directory = temp();
     let store = open(&directory);
     assert_eq!(
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 1);
+    assert_eq!(SCHEMA_VERSION, 2);
+}
+
+/// A database left at schema v1 is brought forward on open, keeping the Realm it
+/// already has. This is the upgrade path an existing file actually takes, and it
+/// is the one place a second Realm could be minted by mistake.
+#[test]
+fn a_schema_v1_database_is_upgraded_in_place_and_keeps_its_realm() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+
+    // Build a genuine v1 file from the frozen v1 script, rather than degrading a
+    // v2 one: this is byte-for-byte what a v1 binary would have left behind.
+    const REALM_BEFORE: &str = "0193f000-0000-7000-8000-0000000000c1";
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        connection
+            .execute_batch(MIGRATION_0001)
+            .expect("the v1 migration runs");
+        connection
+            .execute(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, ?1, 1, '2026-08-09T10:00:00Z', NULL)",
+                [REALM_BEFORE],
+            )
+            .expect("the v1 realm row is written");
+    }
+    let realm_before = REALM_BEFORE.to_owned();
+
+    let store = SqliteStore::open(&path).expect("a v1 database is upgraded, not refused");
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
+    assert_eq!(
+        store.realm_id().to_string(),
+        realm_before,
+        "an upgrade must not mint a second Realm identity"
+    );
+
+    let connection = raw(&directory);
+    let realms: i64 = connection
+        .query_row("SELECT count(*) FROM realm_metadata", [], |row| row.get(0))
+        .expect("readable");
+    assert_eq!(realms, 1);
+    let triggers: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE type = 'trigger' AND name LIKE 'account_profiles%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("readable");
+    assert_eq!(triggers, 3, "the v2 triggers are re-created by the upgrade");
+}
+
+/// Migration 0002 adds no default to *any* column, so a row it did not write
+/// keeps saying so.
+///
+/// This is the whole point of the migration: `enabled = 1` would be a launch
+/// policy decision and `revision = 1` a concurrency claim, and a schema change
+/// is not entitled to make either on a row's behalf. The mutant this kills is
+/// re-adding `NOT NULL DEFAULT 1` to those two columns.
+#[test]
+fn a_migrated_v1_account_profile_carries_no_invented_state() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+
+    // A genuine v1 file with a genuine v1 account profile: the five columns
+    // schema v1 had, and nothing else.
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        connection
+            .execute_batch(MIGRATION_0001)
+            .expect("the v1 migration runs");
+        connection
+            .execute_batch(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, '0193f000-0000-7000-8000-0000000000c2', 1,
+                         '2026-08-09T10:00:00Z', NULL);
+                 INSERT INTO projects (id, name, root_path, revision, created_at)
+                 VALUES ('0193f000-0000-7000-8000-000000000001', 'P', '/tmp/p', 1,
+                         '2026-08-09T10:00:00Z');
+                 INSERT INTO account_profiles
+                     (id, project_id, label, external_account_id, created_at)
+                 VALUES ('0193f000-0000-7000-8000-0000000000a1',
+                         '0193f000-0000-7000-8000-000000000001', 'Legacy', NULL,
+                         '2026-08-09T10:00:00Z');",
+            )
+            .expect("the v1 rows are written");
+    }
+
+    let store = SqliteStore::open(&path).expect("the v1 database is upgraded");
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
+
+    // Every column migration 0002 added is NULL on that row — including the two
+    // it would have been most tempting to guess.
+    let connection = raw(&directory);
+    for column in [
+        "harness",
+        "credential_ref_kind",
+        "credential_ref_alias",
+        "environment_refs",
+        "environment_refs_hash",
+        "routing",
+        "routing_hash",
+        "capability",
+        "capability_hash",
+        "provider_identity",
+        "enabled",
+        "revision",
+        "updated_at",
+    ] {
+        let nulls: i64 = connection
+            .query_row(
+                &format!("SELECT count(*) FROM account_profiles WHERE {column} IS NULL"),
+                [],
+                |row| row.get(0),
+            )
+            .expect("readable");
+        assert_eq!(
+            nulls, 1,
+            "migration 0002 must not invent a value for `{column}`"
+        );
+    }
+
+    // The schema itself declares no default, so even a bare insert of the v1
+    // columns would produce NULLs rather than picking them up implicitly.
+    let defaults: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('account_profiles')
+             WHERE name IN ('enabled', 'revision') AND dflt_value IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("readable");
+    assert_eq!(
+        defaults, 0,
+        "`enabled` and `revision` must carry no column default"
+    );
+    let not_null: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('account_profiles')
+             WHERE name IN ('enabled', 'revision') AND \"notnull\" = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("readable");
+    assert_eq!(
+        not_null, 0,
+        "`enabled` and `revision` must be nullable, so an unwritten row stays unwritten"
+    );
+
+    // And the incomplete row is inert rather than half-usable: the repository
+    // refuses to load it instead of returning a profile with guessed state.
+    let error = store
+        .get_account_profile(
+            ProjectId::parse("0193f000-0000-7000-8000-000000000001").expect("a canonical id"),
+            AccountProfileId::parse("0193f000-0000-7000-8000-0000000000a1")
+                .expect("a canonical id"),
+        )
+        .expect_err("an incomplete profile must not load");
+    assert!(
+        matches!(error, RepositoryError::Conflict { .. }),
+        "expected an incomplete-profile conflict, got {error:?}"
+    );
+}
+
+/// The other half of the no-default contract: because nothing is defaulted, a
+/// new row has to supply every column explicitly, and the insert trigger is what
+/// makes that non-optional.
+#[test]
+fn an_account_profile_insert_without_explicit_state_is_refused() {
+    let directory = temp();
+    let store = open(&directory);
+    drop(store);
+    let connection = raw(&directory);
+    connection
+        .execute(
+            "INSERT INTO projects (id, name, root_path, revision, created_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', 'P', '/tmp/p', 1,
+                     '2026-08-09T10:00:00Z')",
+            [],
+        )
+        .expect("the project is created");
+
+    // Everything the trigger needs except the two columns under test.
+    const COMPLETE: &str = "INSERT INTO account_profiles
+        (id, project_id, label, created_at, harness, credential_ref_kind,
+         credential_ref_alias, environment_refs, environment_refs_hash, routing,
+         routing_hash, capability, capability_hash, enabled, revision, updated_at)
+     VALUES ('0193f000-0000-7000-8000-0000000000a2',
+             '0193f000-0000-7000-8000-000000000001', 'New', '2026-08-09T10:00:00Z',
+             'zz.codex', 'config_home', 'zz-alpha', '{}',
+             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}',
+             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}',
+             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+             ENABLED, REVISION, '2026-08-09T10:00:00Z')";
+
+    // Omitting either one is refused rather than defaulted.
+    for (label, enabled, revision) in [
+        ("enabled", "NULL", "1"),
+        ("revision", "1", "NULL"),
+        ("both", "NULL", "NULL"),
+    ] {
+        let statement = COMPLETE
+            .replace("ENABLED", enabled)
+            .replace("REVISION", revision);
+        connection.execute(&statement, []).unwrap_err_with(label);
+    }
+
+    // Supplying both explicitly is accepted, so the refusals above are about the
+    // missing values and not about the rest of the statement.
+    let statement = COMPLETE.replace("ENABLED", "1").replace("REVISION", "1");
+    connection
+        .execute(&statement, [])
+        .expect("a fully explicit insert is accepted");
+}
+
+/// The reader refuses a missing `enabled`/`revision` on their own account, not
+/// merely as a side effect of some other column also being absent.
+///
+/// The migrated-v1 test above cannot show this: that row is missing its harness
+/// too, so the load fails before it ever looks at these two. Here the row is
+/// complete apart from them — which takes dropping the insert trigger, because
+/// the schema will not otherwise let such a row exist. The mutant this kills is
+/// a reader that answers `unwrap_or(1)`: a defaulted `enabled = true` would arm
+/// a profile for launch that no writer ever enabled.
+#[test]
+fn a_profile_missing_only_its_enabled_or_revision_still_refuses_to_load() {
+    const PROJECT: &str = "0193f000-0000-7000-8000-000000000001";
+    const PROFILE: &str = "0193f000-0000-7000-8000-0000000000a3";
+
+    for (label, enabled, revision) in [("enabled", "NULL", "1"), ("revision", "1", "NULL")] {
+        let directory = temp();
+        let path = directory.path().join("kontor.db");
+        drop(open(&directory));
+        let connection = raw(&directory);
+        connection
+            .execute_batch(&format!(
+                "DROP TRIGGER account_profiles_identity_required;
+                 INSERT INTO projects (id, name, root_path, revision, created_at)
+                 VALUES ('{PROJECT}', 'P', '/tmp/p', 1, '2026-08-09T10:00:00Z');
+                 INSERT INTO account_profiles
+                     (id, project_id, label, created_at, harness, credential_ref_kind,
+                      credential_ref_alias, environment_refs, environment_refs_hash,
+                      routing, routing_hash, capability, capability_hash,
+                      enabled, revision, updated_at)
+                 VALUES ('{PROFILE}', '{PROJECT}', 'Half', '2026-08-09T10:00:00Z',
+                         'zz.codex', 'config_home', 'zz-alpha',
+                         '{{\"schema_version\":1}}',
+                         '{HASH}', '{{\"schema_version\":1}}', '{HASH}',
+                         '{{\"schema_version\":1}}', '{HASH}',
+                         {enabled}, {revision}, '2026-08-09T10:00:00Z');",
+                HASH = content_hash_of(r#"{"schema_version":1}"#),
+            ))
+            .expect("the half-written row is inserted");
+        drop(connection);
+
+        let store = SqliteStore::open(&path).expect("the store reopens");
+        let error = store
+            .get_account_profile(
+                ProjectId::parse(PROJECT).expect("a canonical id"),
+                AccountProfileId::parse(PROFILE).expect("a canonical id"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, RepositoryError::Conflict { .. }),
+            "a profile with no `{label}` must refuse to load, got {error:?}"
+        );
+    }
+}
+
+/// The digest the store stores alongside a canonical document.
+fn content_hash_of(json: &str) -> String {
+    kontor_core::id::ContentHash::of(json.as_bytes())
+        .as_str()
+        .to_owned()
+}
+
+/// `Result::unwrap_err` with a label, so a loop reports *which* case passed when
+/// it should have failed.
+trait UnwrapErrWith {
+    fn unwrap_err_with(self, label: &str);
+}
+
+impl<T> UnwrapErrWith for Result<T, rusqlite::Error> {
+    fn unwrap_err_with(self, label: &str) {
+        assert!(
+            self.is_err(),
+            "an insert omitting `{label}` must be refused, not defaulted"
+        );
+    }
+}
+
+/// A failure in the *second* migration rolls the first one back with it. Both
+/// run in one transaction precisely so a two-step upgrade cannot stop half way.
+#[test]
+fn a_failure_in_the_second_migration_rolls_the_first_one_back() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+
+    // A trigger that migration 0002 also creates: the batch fails on the
+    // duplicate, after 0001 has already created every table.
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE decoy (id TEXT);
+                 CREATE TRIGGER account_profiles_identity_required
+                 BEFORE INSERT ON decoy BEGIN SELECT 1; END;",
+            )
+            .expect("the conflicting trigger is created");
+    }
+
+    SqliteStore::open(&path).expect_err("the second migration must fail");
+
+    let connection = Connection::open(&path).expect("a raw connection opens");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("readable");
+    assert_eq!(
+        version, 0,
+        "a failure in 0002 must roll 0001 back to version zero"
+    );
+    let tables = table_names(&connection);
+    assert!(
+        !tables.contains("account_profiles"),
+        "0001's tables must have been rolled back with 0002, found {tables:?}"
+    );
 }
 
 #[test]
@@ -250,21 +583,22 @@ fn a_failing_migration_leaves_version_zero_and_no_partial_schema() {
 fn a_newer_schema_is_refused_rather_than_downgraded() {
     let directory = temp();
     let path = directory.path().join("kontor.db");
+    let too_new = SCHEMA_VERSION + 1;
     {
         let store = SqliteStore::open(&path).expect("the store migrates");
-        assert_eq!(store.schema_version().expect("readable"), 1);
+        assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
     }
     {
         let connection = Connection::open(&path).expect("a raw connection opens");
         connection
-            .pragma_update(None, "user_version", 2_i64)
+            .pragma_update(None, "user_version", too_new)
             .expect("the version can be forced forward");
     }
 
     let error = SqliteStore::open(&path).expect_err("a newer schema must be refused");
     match error {
         StoreError::DatabaseTooNew { found, expected } => {
-            assert_eq!(found, 2);
+            assert_eq!(found, too_new);
             assert_eq!(expected, SCHEMA_VERSION);
         }
         other => panic!("expected DatabaseTooNew, got {other:?}"),
@@ -276,7 +610,10 @@ fn a_newer_schema_is_refused_rather_than_downgraded() {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("readable");
-    assert_eq!(version, 2, "a refused open must not rewrite the version");
+    assert_eq!(
+        version, too_new,
+        "a refused open must not rewrite the version"
+    );
 }
 
 // ---------------------------------------------------------------------------

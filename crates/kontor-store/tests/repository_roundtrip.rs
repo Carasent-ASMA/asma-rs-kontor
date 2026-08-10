@@ -26,12 +26,12 @@ use kontor_core::calendar::{
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash,
-    CurrencyCode, EventCursor, ExternalId, ExternalIssueTypeKey, ExternalName, GateKey,
-    IdempotencyKey, IntakeReceiptId, MiniProjectId, Money, PhaseKey, ProjectId, RoleKey,
-    RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, ScheduleOverrideId, SemanticMilestoneKey,
-    SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
-    TeamTemplateId, TicketLinkId, TicketObservationId, Timestamp, TriggerKey, WorkCalendarId,
-    WorkProfileKey, parse_utc_timestamp,
+    CredentialAlias, CurrencyCode, EventCursor, ExternalId, ExternalIssueTypeKey, ExternalName,
+    GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, Money, PhaseKey, ProjectId, RealmId,
+    RoleKey, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, ScheduleOverrideId,
+    SemanticMilestoneKey, SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId,
+    TeamRunId, TeamTemplateId, TicketLinkId, TicketObservationId, Timestamp, TriggerKey,
+    WorkCalendarId, WorkProfileKey, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope};
 use kontor_core::receipt::{
@@ -39,8 +39,9 @@ use kontor_core::receipt::{
 };
 use kontor_core::repository::RealmRepository;
 use kontor_core::repository::{
-    AccountProfile, CalendarRepository, CommandRepository, ConnectorSpecSelector, IntakeOutcome,
-    IntakeRepository, NewAgentRun, NewCommandIntent, NewGateEvaluation, NewIntakeReevaluation,
+    AccountProfileUpdate, CalendarRepository, CommandRepository, ConnectorSpecSelector,
+    CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository,
+    NewAccountProfile, NewAgentRun, NewCommandIntent, NewGateEvaluation, NewIntakeReevaluation,
     NewMiniProject, NewObservation, NewProject, NewRuntimeEvent, NewSourceEvent, NewTask,
     NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance,
     ProjectRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RunClosure,
@@ -222,6 +223,29 @@ fn document(marker: &str) -> CanonicalDocument {
     .expect("a canonical document")
 }
 
+/// A complete non-secret account profile. Every credential-bearing field is an
+/// opaque alias or a canonical document, so the fixture itself demonstrates that
+/// nothing resolvable is persisted.
+fn account_profile(id: AccountProfileId, project_id: ProjectId, label: &str) -> NewAccountProfile {
+    NewAccountProfile {
+        id,
+        project_id,
+        label: name(label),
+        external_account_id: Some(external("acct-1")),
+        harness: RuntimeKindKey::parse("zz.runtime").expect("a valid runtime key"),
+        credential_ref: CredentialReference {
+            kind: CredentialReferenceKind::ConfigHome,
+            alias: CredentialAlias::parse("zz-alpha").expect("a valid alias"),
+        },
+        environment: document("environment"),
+        routing: document("routing"),
+        capability: document("capability"),
+        provider_identity: Some(external("provider-alpha")),
+        enabled: true,
+        created_at: now(),
+    }
+}
+
 fn budget() -> BudgetBounds {
     BudgetBounds {
         max_tokens: 1_000,
@@ -377,13 +401,7 @@ fn fixture() -> Fixture {
 
     let account = AccountProfileId::generate();
     store
-        .create_account_profile(&AccountProfile {
-            id: account,
-            project_id: project,
-            label: name("Account"),
-            external_account_id: Some(external("acct-1")),
-            created_at: now(),
-        })
+        .create_account_profile(&account_profile(account, project, "Account"))
         .expect("an account profile is created");
 
     Fixture {
@@ -5084,5 +5102,337 @@ fn an_empty_ledger_snapshot_resumes_without_a_gap_or_an_overlap() {
             .expect("the read succeeds")
             .is_empty(),
         "resuming at the newest event delivers it no second time"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Account profiles
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_account_profile_round_trips_through_a_reopen() {
+    let fixture = fixture();
+    let id = AccountProfileId::generate();
+    let created = fixture
+        .store
+        .create_account_profile(&account_profile(id, fixture.project, "Alpha"))
+        .expect("the profile is created");
+    assert_eq!(created.revision, AggregateRevision::INITIAL);
+    assert_eq!(created.updated_at, created.created_at);
+
+    // Reopening proves the fields are on disk rather than in the returned value.
+    drop(fixture.store);
+    let store = SqliteStore::open(&fixture.path).expect("the store reopens");
+    let loaded = store
+        .get_account_profile(fixture.project, id)
+        .expect("the read succeeds")
+        .expect("the profile survives a reopen");
+    assert_eq!(loaded, created);
+    assert_eq!(loaded.credential_ref.alias.as_str(), "zz-alpha");
+    assert_eq!(
+        loaded.credential_ref.kind,
+        CredentialReferenceKind::ConfigHome
+    );
+    assert!(loaded.enabled);
+}
+
+#[test]
+fn account_profiles_are_listed_and_read_per_project() {
+    let fixture = fixture();
+    let mine = AccountProfileId::generate();
+    let theirs = AccountProfileId::generate();
+    fixture
+        .store
+        .create_account_profile(&account_profile(mine, fixture.project, "Mine"))
+        .expect("the profile is created");
+    fixture
+        .store
+        .create_account_profile(&account_profile(theirs, fixture.other_project, "Theirs"))
+        .expect("the profile is created");
+
+    // A valid id belonging to another project resolves to nothing, in both the
+    // point read and the list.
+    assert!(
+        fixture
+            .store
+            .get_account_profile(fixture.project, theirs)
+            .expect("the read succeeds")
+            .is_none()
+    );
+    let listed: Vec<AccountProfileId> = fixture
+        .store
+        .list_account_profiles(fixture.project)
+        .expect("the list succeeds")
+        .into_iter()
+        .map(|profile| profile.id)
+        .collect();
+    assert!(listed.contains(&mine));
+    assert!(!listed.contains(&theirs));
+    assert!(listed.contains(&fixture.account));
+}
+
+#[test]
+fn an_account_profile_update_is_a_compare_and_swap() {
+    let fixture = fixture();
+    let id = AccountProfileId::generate();
+    fixture
+        .store
+        .create_account_profile(&account_profile(id, fixture.project, "Alpha"))
+        .expect("the profile is created");
+
+    let update = AccountProfileUpdate {
+        project_id: fixture.project,
+        id,
+        expected_revision: AggregateRevision::INITIAL,
+        label: name("Alpha renamed"),
+        enabled: false,
+        updated_at: now(),
+    };
+    let updated = fixture
+        .store
+        .update_account_profile(&update)
+        .expect("the first update succeeds");
+    assert_eq!(updated.label.as_str(), "Alpha renamed");
+    assert!(!updated.enabled);
+    assert_eq!(updated.revision.get(), 2);
+
+    // Replaying the same expected revision now conflicts, and writes nothing.
+    let error = fixture
+        .store
+        .update_account_profile(&update)
+        .expect_err("a stale revision must be refused");
+    assert!(
+        matches!(
+            error,
+            RepositoryError::Domain(kontor_core::DomainError::RevisionConflict {
+                expected: 1,
+                found: 2,
+                ..
+            })
+        ),
+        "expected a revision conflict, got {error:?}"
+    );
+    let unchanged = fixture
+        .store
+        .get_account_profile(fixture.project, id)
+        .expect("the read succeeds")
+        .expect("the profile is still there");
+    assert_eq!(unchanged, updated, "a refused update writes nothing");
+}
+
+#[test]
+fn an_account_profile_from_another_project_is_never_updated() {
+    let fixture = fixture();
+    let id = AccountProfileId::generate();
+    fixture
+        .store
+        .create_account_profile(&account_profile(id, fixture.other_project, "Theirs"))
+        .expect("the profile is created");
+
+    let error = fixture
+        .store
+        .update_account_profile(&AccountProfileUpdate {
+            project_id: fixture.project,
+            id,
+            expected_revision: AggregateRevision::INITIAL,
+            label: name("Stolen"),
+            enabled: false,
+            updated_at: now(),
+        })
+        .expect_err("a profile in another project must not resolve");
+    assert!(matches!(error, RepositoryError::NotFound { .. }));
+    assert!(
+        fixture
+            .store
+            .get_account_profile(fixture.other_project, id)
+            .expect("the read succeeds")
+            .expect("the profile is untouched")
+            .enabled
+    );
+}
+
+#[test]
+fn a_referenced_account_profile_cannot_be_deleted() {
+    // `with_run` pins its agent run to `fixture.account`, so the schema's
+    // `ON DELETE RESTRICT` reference is what refuses the delete.
+    let RunFixture { fixture, .. } = with_run(false);
+
+    let error = fixture
+        .store
+        .delete_account_profile(fixture.project, fixture.account, AggregateRevision::INITIAL)
+        .expect_err("a referenced profile must not be deleted");
+    assert!(
+        matches!(error, RepositoryError::Conflict { .. }),
+        "expected a conflict, got {error:?}"
+    );
+    assert!(
+        fixture
+            .store
+            .get_account_profile(fixture.project, fixture.account)
+            .expect("the read succeeds")
+            .is_some(),
+        "a refused delete leaves the profile in place"
+    );
+
+    // Disabling it is the supported retirement path, and it still works.
+    fixture
+        .store
+        .update_account_profile(&AccountProfileUpdate {
+            project_id: fixture.project,
+            id: fixture.account,
+            expected_revision: AggregateRevision::INITIAL,
+            label: name("Account"),
+            enabled: false,
+            updated_at: now(),
+        })
+        .expect("a referenced profile may be disabled");
+}
+
+#[test]
+fn an_unreferenced_account_profile_is_deleted_under_a_compare_and_swap() {
+    let fixture = fixture();
+    let id = AccountProfileId::generate();
+    fixture
+        .store
+        .create_account_profile(&account_profile(id, fixture.project, "Spare"))
+        .expect("the profile is created");
+
+    let stale = AggregateRevision::parse(9).expect("a positive revision");
+    let error = fixture
+        .store
+        .delete_account_profile(fixture.project, id, stale)
+        .expect_err("a stale revision must be refused");
+    assert!(
+        matches!(
+            error,
+            RepositoryError::Domain(kontor_core::DomainError::RevisionConflict { .. })
+        ),
+        "expected a revision conflict, got {error:?}"
+    );
+    assert!(
+        fixture
+            .store
+            .get_account_profile(fixture.project, id)
+            .expect("the read succeeds")
+            .is_some()
+    );
+
+    fixture
+        .store
+        .delete_account_profile(fixture.project, id, AggregateRevision::INITIAL)
+        .expect("an unreferenced profile at the expected revision is deleted");
+    assert!(
+        fixture
+            .store
+            .get_account_profile(fixture.project, id)
+            .expect("the read succeeds")
+            .is_none()
+    );
+}
+
+#[test]
+fn an_account_profile_credential_identity_cannot_be_edited_by_direct_sql() {
+    let fixture = fixture();
+    let id = AccountProfileId::generate();
+    fixture
+        .store
+        .create_account_profile(&account_profile(id, fixture.project, "Alpha"))
+        .expect("the profile is created");
+    drop(fixture.store);
+
+    let connection = rusqlite::Connection::open(&fixture.path).expect("a raw connection opens");
+    for statement in [
+        "UPDATE account_profiles SET harness = 'zz.other', revision = revision + 1",
+        "UPDATE account_profiles SET credential_ref_alias = 'zz-beta', revision = revision + 1",
+        "UPDATE account_profiles SET credential_ref_kind = 'keychain', revision = revision + 1",
+        "UPDATE account_profiles SET environment_refs_hash = \
+         'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', \
+         revision = revision + 1",
+        // Even a legitimate field change must move the revision exactly one step.
+        "UPDATE account_profiles SET label = 'Sneaky'",
+        "UPDATE account_profiles SET label = 'Sneaky', revision = revision + 5",
+        // Nulling a frozen column out is the edit a `<>` comparison would have
+        // waved through: `NULL <> 'zz.runtime'` is `NULL`, which a trigger's
+        // `WHEN` clause reads as "no violation". The trigger uses `IS NOT`.
+        "UPDATE account_profiles SET harness = NULL, revision = revision + 1",
+        "UPDATE account_profiles SET credential_ref_alias = NULL, revision = revision + 1",
+        "UPDATE account_profiles SET revision = NULL",
+        "UPDATE account_profiles SET enabled = NULL, revision = revision + 1",
+    ] {
+        connection
+            .execute(statement, [])
+            .expect_err("the immutability trigger must refuse this");
+    }
+
+    // An insert that omits the non-secret identity is refused outright, so a
+    // v1-shaped row cannot be created by a v2 binary.
+    connection
+        .execute(
+            "INSERT INTO account_profiles (id, project_id, label, created_at)
+             VALUES ('0193f000-0000-7000-8000-0000000000e1', ?1, 'Bare', '2026-08-09T10:00:00Z')",
+            [fixture.project.to_string()],
+        )
+        .expect_err("a profile without its credential identity must be refused");
+}
+
+#[test]
+fn an_account_profile_change_from_a_foreign_realm_is_refused_before_any_write() {
+    let fixture = fixture();
+    let id = AccountProfileId::generate();
+    fixture
+        .store
+        .create_account_profile(&account_profile(id, fixture.project, "Alpha"))
+        .expect("the profile is created");
+
+    let foreign = ReceiptEnvelope::new(
+        RealmId::generate(),
+        AccountProfileUpdate {
+            project_id: fixture.project,
+            id,
+            expected_revision: AggregateRevision::INITIAL,
+            label: name("Foreign"),
+            enabled: false,
+            updated_at: now(),
+        },
+    );
+    let error = fixture
+        .store
+        .update_account_profile_in_realm(&foreign)
+        .expect_err("a foreign realm must be refused");
+    assert!(matches!(
+        error,
+        RepositoryError::Domain(kontor_core::DomainError::RealmMismatch { .. })
+    ));
+
+    let unchanged = fixture
+        .store
+        .get_account_profile(fixture.project, id)
+        .expect("the read succeeds")
+        .expect("the profile is untouched");
+    assert_eq!(unchanged.revision, AggregateRevision::INITIAL);
+    assert!(unchanged.enabled);
+
+    // The same change under this store's own Realm is applied.
+    let local = ReceiptEnvelope::new(fixture.store.realm_id(), foreign.value);
+    let updated = fixture
+        .store
+        .update_account_profile_in_realm(&local)
+        .expect("the local realm is accepted");
+    assert_eq!(updated.revision.get(), 2);
+
+    // And the snapshot leaves the Realm qualified.
+    let snapshot = fixture
+        .store
+        .snapshot_account_profile(fixture.project, id)
+        .expect("the snapshot succeeds");
+    assert_eq!(snapshot.realm_id, fixture.store.realm_id());
+    assert_eq!(
+        snapshot
+            .peek(fixture.store.realm_id())
+            .expect("the realm matches")
+            .as_ref()
+            .expect("the profile exists")
+            .revision,
+        updated.revision
     );
 }

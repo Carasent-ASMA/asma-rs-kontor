@@ -19,12 +19,12 @@ use crate::calendar::{
 };
 use crate::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash, EventCursor,
-    ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, IdempotencyKey,
-    IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey, ProjectId, RealmId,
-    RoleKey, RuntimeBindingId, ScheduleOverrideId, SourceEventId, SpecVersion, StatusConflictId,
-    TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TriggerKey,
-    WorkCalendarId, WorkProfileKey,
+    CalendarProfileId, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash,
+    CredentialAlias, EventCursor, ExternalId, ExternalIssueTypeKey, ExternalName,
+    ExternalProjectKey, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey,
+    PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey,
+    ScheduleOverrideId, SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId,
+    TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId, WorkProfileKey,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -186,10 +186,111 @@ pub struct NewTask {
     pub created_at: Timestamp,
 }
 
+/// Which family of approved reference a credential alias is resolved through.
+///
+/// The set is closed on purpose. A reference is a *kind plus an alias*, never a
+/// URI, a path, a shell fragment or a keychain service/account pair, so nothing
+/// a profile carries can widen what the resolver is willing to look at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialReferenceKind {
+    /// An approved per-account configuration home the coding client reads its
+    /// own credentials out of. Kontor never opens the files inside it.
+    ConfigHome,
+    /// An approved OS-keychain entry, read through the resolver's narrow backend
+    /// port.
+    Keychain,
+}
+
+impl CredentialReferenceKind {
+    /// The stable spelling used in JSON and SQLite.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfigHome => "config_home",
+            Self::Keychain => "keychain",
+        }
+    }
+
+    /// Parse the stable spelling.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::Invalid`] for any other text.
+    pub fn parse(text: &str) -> DomainResult<Self> {
+        match text {
+            "config_home" => Ok(Self::ConfigHome),
+            "keychain" => Ok(Self::Keychain),
+            _ => Err(DomainError::invalid(
+                "CredentialReferenceKind",
+                "is not a known value",
+            )),
+        }
+    }
+}
+
+/// The whole of what Kontor persists about a profile's credentials.
+///
+/// Everything that would let a reader *use* the credential — the approved
+/// directory, the keychain service and account, the token itself — lives in the
+/// resolver's policy and never in this type, so persisting, listing, exporting
+/// or logging one of these cannot disclose credential material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialReference {
+    /// Which approved family the alias belongs to.
+    pub kind: CredentialReferenceKind,
+    /// The opaque alias. Meaningful only to a resolver policy that already
+    /// approves it.
+    pub alias: CredentialAlias,
+}
+
 /// A coding-account profile a run can be pinned to.
+///
+/// Every field here is non-secret by construction. The credential-affecting
+/// fields — harness, reference, environment map, routing, capability, provider
+/// identity — are immutable for the life of the profile: rotating any of them
+/// is a new [`AccountProfileId`], which is what keeps a queued, active or
+/// historical run's pin meaningful without storing a profile revision on the
+/// run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountProfile {
     /// The profile.
+    pub id: AccountProfileId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Human label. Mutable under a compare-and-swap.
+    pub label: ExternalName,
+    /// The external account id this profile authenticates as, if any.
+    pub external_account_id: Option<ExternalId>,
+    /// The runtime family this account authenticates against. Immutable.
+    pub harness: RuntimeKindKey,
+    /// The opaque approved reference the resolver looks the credential up
+    /// under. Immutable.
+    pub credential_ref: CredentialReference,
+    /// Environment variable *names* mapped to opaque reference aliases — never
+    /// to values. Immutable.
+    pub environment: CanonicalDocument,
+    /// Non-secret routing metadata (provider, model preferences, …). Immutable.
+    pub routing: CanonicalDocument,
+    /// Non-secret declared account capabilities. Immutable.
+    pub capability: CanonicalDocument,
+    /// A non-secret provider identity hint, if the deployment records one.
+    /// Immutable.
+    pub provider_identity: Option<ExternalId>,
+    /// Whether launches may select this profile. Mutable under a
+    /// compare-and-swap.
+    pub enabled: bool,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// When it was created.
+    pub created_at: Timestamp,
+    /// When it last changed.
+    pub updated_at: Timestamp,
+}
+
+/// A new account profile. Persisted at [`AggregateRevision::INITIAL`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAccountProfile {
+    /// The id to use.
     pub id: AccountProfileId,
     /// Owning project.
     pub project_id: ProjectId,
@@ -197,8 +298,43 @@ pub struct AccountProfile {
     pub label: ExternalName,
     /// The external account id this profile authenticates as, if any.
     pub external_account_id: Option<ExternalId>,
-    /// When it was created.
+    /// The runtime family this account authenticates against.
+    pub harness: RuntimeKindKey,
+    /// The opaque approved reference.
+    pub credential_ref: CredentialReference,
+    /// Environment variable names mapped to opaque reference aliases.
+    pub environment: CanonicalDocument,
+    /// Non-secret routing metadata.
+    pub routing: CanonicalDocument,
+    /// Non-secret declared account capabilities.
+    pub capability: CanonicalDocument,
+    /// A non-secret provider identity hint, if any.
+    pub provider_identity: Option<ExternalId>,
+    /// Whether launches may select it from the start.
+    pub enabled: bool,
+    /// Creation instant.
     pub created_at: Timestamp,
+}
+
+/// A revision-checked change to the only two mutable fields a profile has.
+///
+/// There is deliberately no variant of this that can reach a credential-bearing
+/// field: rotating one is a new profile, so a queued run's pin cannot change
+/// meaning underneath it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountProfileUpdate {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The profile.
+    pub id: AccountProfileId,
+    /// The revision the caller believes is current.
+    pub expected_revision: AggregateRevision,
+    /// The label to store.
+    pub label: ExternalName,
+    /// Whether launches may select it.
+    pub enabled: bool,
+    /// When the change happened.
+    pub updated_at: Timestamp,
 }
 
 /// The resolved work profile a task is running.
@@ -807,7 +943,56 @@ pub trait ProjectRepository {
     ///
     /// # Errors
     /// Refuses a duplicate id or a cross-project reference.
-    fn create_account_profile(&self, profile: &AccountProfile) -> RepositoryResult<()>;
+    fn create_account_profile(
+        &self,
+        request: &NewAccountProfile,
+    ) -> RepositoryResult<AccountProfile>;
+
+    /// Read a coding-account profile inside a project.
+    ///
+    /// # Errors
+    /// Backend failures only; a profile from another project is `Ok(None)`.
+    fn get_account_profile(
+        &self,
+        project_id: ProjectId,
+        id: AccountProfileId,
+    ) -> RepositoryResult<Option<AccountProfile>>;
+
+    /// List a project's coding-account profiles.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_account_profiles(&self, project_id: ProjectId)
+    -> RepositoryResult<Vec<AccountProfile>>;
+
+    /// Change a profile's label and enabled state under a compare-and-swap.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] for an unknown profile in this
+    /// project and [`DomainError::RevisionConflict`] when the revision moved.
+    /// On refusal no column is written.
+    fn update_account_profile(
+        &self,
+        request: &AccountProfileUpdate,
+    ) -> RepositoryResult<AccountProfile>;
+
+    /// Physically delete an *unreferenced* profile under a compare-and-swap.
+    ///
+    /// A profile any run, gate evaluation or override still names is retained:
+    /// the schema's `ON DELETE RESTRICT` references refuse the delete, and the
+    /// only supported way to retire such a profile is to disable it. Deleting
+    /// it would strand the audit trail of every run pinned to it.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] for an unknown profile,
+    /// [`DomainError::RevisionConflict`] for a stale revision and
+    /// [`RepositoryError::Conflict`] when the profile is still referenced.
+    fn delete_account_profile(
+        &self,
+        project_id: ProjectId,
+        id: AccountProfileId,
+        expected_revision: AggregateRevision,
+    ) -> RepositoryResult<()>;
 }
 
 /// Immutable specification revisions.
@@ -1487,4 +1672,28 @@ pub trait RealmRepository {
         project_id: ProjectId,
         agent_run_id: AgentRunId,
     ) -> RepositoryResult<SnapshotEnvelope<Option<AgentRun>>>;
+
+    /// Take a Realm-qualified snapshot of one account profile.
+    ///
+    /// The carried value is the non-secret stored record, which is the same
+    /// thing a later API, doctor or export projection is built from — there is
+    /// no second, richer shape that a cross-boundary reader could ask for.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn snapshot_account_profile(
+        &self,
+        project_id: ProjectId,
+        id: AccountProfileId,
+    ) -> RepositoryResult<SnapshotEnvelope<Option<AccountProfile>>>;
+
+    /// Apply a profile change carried in a Realm-qualified envelope.
+    ///
+    /// # Errors
+    /// Refuses a foreign Realm before any write, then as
+    /// `update_account_profile`.
+    fn update_account_profile_in_realm(
+        &self,
+        envelope: &ReceiptEnvelope<AccountProfileUpdate>,
+    ) -> RepositoryResult<AccountProfile>;
 }

@@ -1,9 +1,61 @@
 //! `kontor-accounts` — Non-secret account profiles, credential references and routing
 //!
-//! Scaffold placeholder created by KON-MVP-02. The owning ticket
-//! (`KON-MVP-07`) implements the real API in this crate; until then this
-//! crate only fixes the workspace member list and its dependency pins so later
-//! tickets never edit the root manifest (CON-007).
+//! A run is pinned to exactly one [`kontor_core::id::AccountProfileId`], and
+//! that pin is the only
+//! thing that decides which coding account the run executes as. This crate owns
+//! what that pin means: the durable non-secret profile, the approved reference
+//! it resolves through, the admission decision that lets a launch use it, and
+//! the explicit successor run that a rotation produces.
+//!
+//! # The one invariant
+//!
+//! **A resolved secret is never persisted, serialized, logged, exported, put in
+//! process arguments, or returned through a projection.** Three separate things
+//! enforce it, and none of them is "remember not to":
+//!
+//! 1. *Nothing resolvable is stored.* [`kontor_core::repository::AccountProfile`]
+//!    holds a closed reference kind plus an opaque alias. The alias means
+//!    nothing without a [`ResolverPolicy`], and the policy is built in memory at
+//!    composition time from trusted local operator configuration — it is never
+//!    written to SQLite and never exported. There is therefore no persisted
+//!    value that could leak, only a name for one.
+//!
+//! 2. *Resolved material has no serialized form.* [`ResolvedAccountEnvironment`]
+//!    has private fields, no `Serialize`, and redacted `Debug`/`Display`. The
+//!    only way a value leaves it is
+//!    [`ResolvedAccountEnvironment::apply`], which writes it into a child
+//!    process environment through [`std::process::Command::env`] — never into
+//!    `std::env::set_var`, a shell fragment, a command flag, a prompt or argv.
+//!
+//! 3. *Errors carry reason codes, not values.* A resolver, keychain or
+//!    filesystem failure is mapped to a closed reason before it is returned, so
+//!    no source error whose `Display` might contain a path, a keychain target or
+//!    a token is ever wrapped.
+//!
+//! # What this crate is not
+//!
+//! It contains no runtime adapter, scheduler, API, export engine or `asma fleet`
+//! transport. The runtime contract stays authoritative for capability
+//! enforcement — an account-pinned launch is refused by
+//! [`kontor_runtime::capability::preflight`] itself, not by a second copy of
+//! that rule here — and `asma fleet` stays authoritative for cooldown mechanics,
+//! which arrive here as a typed [`AvailabilityObservation`] this crate never
+//! goes looking for on disk.
 
-/// Marker documenting the scaffold origin of this crate.
-pub const SCAFFOLDED_BY: &str = "KON-MVP-02";
+mod launch;
+mod profile;
+mod resolver;
+
+pub use launch::{
+    AccountAvailability, AccountLaunchReceipt, AdmittedLaunch, AvailabilityObservation,
+    FailoverOutcome, FailoverReason, FailoverRefusal, FailoverRequest, LaunchAdmissionRequest,
+    LaunchRefusal, MAX_OBSERVATION_AGE_SECONDS, admit_pinned_launch, fail_over_to_new_run,
+};
+pub use profile::{
+    AccountEnvironmentMap, AccountError, AccountProfileDraft, AccountService, ENVIRONMENT_SCHEMA,
+};
+pub use resolver::{
+    AccountResolver, KeychainBackend, KeychainFailure, KeychainTarget, PolicyError,
+    ResolutionError, ResolutionReason, ResolvedAccountEnvironment, ResolverPolicy,
+    ResolverPolicyBuilder, SystemKeychain,
+};

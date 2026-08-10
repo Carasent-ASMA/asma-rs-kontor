@@ -306,6 +306,14 @@ open_keys! {
     EventSchemaKey,
     /// Names a simulated persona used by a persona scenario.
     PersonaKey,
+    /// Names one approved credential reference, and nothing about where it
+    /// resolves to.
+    ///
+    /// The alias is the *whole* stored reference: a config-home directory, a
+    /// keychain service/account pair and a token value are resolver-owned and
+    /// never persisted. An alias that the resolver policy does not already
+    /// approve resolves to nothing, so an alias is not a capability.
+    CredentialAlias,
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +421,65 @@ impl ExternalId {
     }
 }
 
+/// The *name* of one environment variable a child process is given.
+///
+/// A name is not a value: this type exists so that the one non-secret half of a
+/// credential mapping has somewhere to live that can be persisted, listed and
+/// put in a receipt, while the value it will carry never has a persisted type at
+/// all.
+///
+/// The rule is the POSIX portable one — `[A-Z_][A-Z0-9_]*`, at most
+/// [`MAX_KEY_LEN`] characters — which rules out `=`, whitespace, path
+/// separators and the lowercase spellings a shell treats differently.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EnvironmentVariableName(String);
+
+impl EnvironmentVariableName {
+    /// Parse an environment variable name.
+    ///
+    /// # Errors
+    /// Rejects empty, oversized, lowercase, digit-leading and punctuation-
+    /// bearing input, and anything [`reject_sensitive_text`] refuses.
+    pub fn parse(text: &str) -> DomainResult<Self> {
+        if text.is_empty() {
+            return Err(DomainError::invalid(
+                "EnvironmentVariableName",
+                "must not be empty",
+            ));
+        }
+        if text.chars().count() > MAX_KEY_LEN {
+            return Err(DomainError::invalid(
+                "EnvironmentVariableName",
+                "longer than 128 characters",
+            ));
+        }
+        let mut characters = text.chars();
+        let first = characters.next().unwrap_or('\0');
+        if !first.is_ascii_uppercase() && first != '_' {
+            return Err(DomainError::invalid(
+                "EnvironmentVariableName",
+                "must start with an uppercase ASCII letter or '_'",
+            ));
+        }
+        for character in characters {
+            if !character.is_ascii_uppercase() && !character.is_ascii_digit() && character != '_' {
+                return Err(DomainError::invalid(
+                    "EnvironmentVariableName",
+                    "may contain only uppercase ASCII letters, digits and '_'",
+                ));
+            }
+        }
+        reject_sensitive_text("EnvironmentVariableName", text)?;
+        Ok(Self(text.to_owned()))
+    }
+
+    /// Borrow the name text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// A bounded free-text value (a field body, a comment body, a label).
 ///
 /// Line endings are normalized to `\n` so the same content always hashes the
@@ -491,7 +558,13 @@ macro_rules! bounded_string_serde {
     };
 }
 
-bounded_string_serde!(ExternalName, ExternalId, BoundedText, IdempotencyKey);
+bounded_string_serde!(
+    ExternalName,
+    ExternalId,
+    BoundedText,
+    IdempotencyKey,
+    EnvironmentVariableName
+);
 
 // ---------------------------------------------------------------------------
 // Versions, revisions, cursors
