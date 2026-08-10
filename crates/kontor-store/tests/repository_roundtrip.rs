@@ -1993,33 +1993,56 @@ fn an_unknown_dispatch_result_blocks_a_retry_until_it_is_reconciled() {
         })
         .expect("the intent is recorded");
 
-    let advance = |to: CommandReceiptState, correlation: Option<&str>, evidence| ReceiptAdvance {
+    let advance = |to: CommandReceiptState,
+                   correlation: Option<&str>,
+                   evidence,
+                   result_ref: Option<&str>| ReceiptAdvance {
         project_id: fixture.project,
         receipt_id,
         to,
         correlation: correlation.map(external),
         native_identity: None,
-        result_ref: None,
+        result_ref: result_ref.map(external),
         no_effect: evidence,
         occurred_at: now(),
     };
 
+    // The dispatch correlation is minted by the claim, not by the caller: it is
+    // the outbox entry's durable token, and every later step reuses it.
+    let claims = fixture
+        .store
+        .claim_due(fixture.project, now(), 10)
+        .expect("the outbox is claimable");
+    let correlation = claims
+        .into_iter()
+        .find(|claim| claim.receipt_id == receipt_id)
+        .expect("the due entry is claimed")
+        .correlation;
+
+    // A correlation the outbox never claimed is refused, whichever door it
+    // arrives through.
+    assert!(
+        fixture
+            .store
+            .advance_receipt(&advance(
+                CommandReceiptState::Dispatched,
+                Some("corr-invented"),
+                None,
+                None
+            ))
+            .is_err(),
+        "a caller may not replace the persisted correlation"
+    );
+
     fixture
         .store
-        .advance_receipt(&advance(CommandReceiptState::DispatchPending, None, None))
-        .expect("the dispatch is claimed");
-    fixture
-        .store
-        .advance_receipt(&advance(
-            CommandReceiptState::Dispatched,
-            Some("corr-1"),
-            None,
-        ))
+        .advance_receipt(&advance(CommandReceiptState::Dispatched, None, None, None))
         .expect("the dispatch happens");
     let unknown = fixture
         .store
         .advance_receipt(&advance(
             CommandReceiptState::ConfirmationUnknown,
+            None,
             None,
             None,
         ))
@@ -2031,7 +2054,12 @@ fn an_unknown_dispatch_result_blocks_a_retry_until_it_is_reconciled() {
     assert!(
         fixture
             .store
-            .advance_receipt(&advance(CommandReceiptState::DispatchPending, None, None))
+            .advance_receipt(&advance(
+                CommandReceiptState::DispatchPending,
+                None,
+                None,
+                None
+            ))
             .is_err(),
         "a retry without reconciliation must be refused"
     );
@@ -2049,13 +2077,14 @@ fn an_unknown_dispatch_result_blocks_a_retry_until_it_is_reconciled() {
             .advance_receipt(&advance(
                 CommandReceiptState::DispatchPending,
                 None,
-                Some(wrong)
+                Some(wrong),
+                None
             ))
             .is_err()
     );
 
     let evidence = NoEffectEvidence {
-        correlation: external("corr-1"),
+        correlation: correlation.clone(),
         searched_identity: Some(identity(1)),
         reconciled_at: now(),
         evidence_hash: ContentHash::of(b"lookup"),
@@ -2066,36 +2095,93 @@ fn an_unknown_dispatch_result_blocks_a_retry_until_it_is_reconciled() {
             CommandReceiptState::DispatchPending,
             None,
             Some(evidence),
+            None,
         ))
         .expect("reconciliation authorizes one retry");
     assert_eq!(retried.state, CommandReceiptState::DispatchPending);
     assert_eq!(
         retried.correlation,
-        Some(external("corr-1")),
+        Some(correlation.clone()),
         "the original correlation is retained"
     );
 
     // Acknowledgement is not completion.
     fixture
         .store
-        .advance_receipt(&advance(CommandReceiptState::Dispatched, None, None))
+        .advance_receipt(&advance(CommandReceiptState::Dispatched, None, None, None))
         .expect("a second dispatch happens");
     let acknowledged = fixture
         .store
-        .advance_receipt(&advance(CommandReceiptState::Acknowledged, None, None))
+        .advance_receipt(&advance(
+            CommandReceiptState::Acknowledged,
+            None,
+            None,
+            None,
+        ))
         .expect("the target acknowledges");
     assert!(!acknowledged.state.is_terminal());
+
+    // Confirmation is the one thing the legacy door cannot do on its word alone.
+    assert!(
+        fixture
+            .store
+            .advance_receipt(&advance(CommandReceiptState::Confirmed, None, None, None))
+            .is_err(),
+        "a confirmation must cite the evidence for it"
+    );
     let confirmed = fixture
         .store
-        .advance_receipt(&advance(CommandReceiptState::Confirmed, None, None))
+        .advance_receipt(&advance(
+            CommandReceiptState::Confirmed,
+            None,
+            None,
+            Some("native-confirmation-1"),
+        ))
         .expect("the effect is confirmed");
     assert!(confirmed.state.is_terminal());
     assert!(
         fixture
             .store
-            .advance_receipt(&advance(CommandReceiptState::DispatchPending, None, None))
+            .advance_receipt(&advance(
+                CommandReceiptState::DispatchPending,
+                None,
+                None,
+                None
+            ))
             .is_err(),
         "a settled receipt never moves again"
+    );
+
+    // The legacy request shape is translated, not exempted: every step it took
+    // left a durable history row behind.
+    let history = fixture
+        .store
+        .receipt_history(fixture.project, receipt_id)
+        .expect("the history reads");
+    assert_eq!(
+        history
+            .iter()
+            .map(|entry| entry.state)
+            .collect::<Vec<CommandReceiptState>>(),
+        vec![
+            CommandReceiptState::IntentPersisted,
+            CommandReceiptState::DispatchPending,
+            CommandReceiptState::Dispatched,
+            CommandReceiptState::ConfirmationUnknown,
+            CommandReceiptState::DispatchPending,
+            CommandReceiptState::Dispatched,
+            CommandReceiptState::Acknowledged,
+            CommandReceiptState::Confirmed,
+        ],
+        "the trait method appends the same history the protocol does"
+    );
+    assert_eq!(
+        history
+            .last()
+            .expect("a confirmed receipt has history")
+            .evidence_ref,
+        Some(external("native-confirmation-1")),
+        "the confirmation's evidence is durable, not just its state"
     );
     assert_eq!(
         fixture

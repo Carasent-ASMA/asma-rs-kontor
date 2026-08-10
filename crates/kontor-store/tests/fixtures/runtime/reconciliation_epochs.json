@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "comment": "Four censuses of one runtime generation, run in order against the same two bound runs (`session-1`, `session-2`). `authoritative` is whether the sweep actually covered the generation; only an authoritative one may conclude anything from absence, and the only thing it may conclude is lost contact.",
+  "epochs": [
+    {
+      "name": "both_sessions_present",
+      "reconciliation_key": "sweep-1",
+      "authoritative": true,
+      "items": [
+        { "native_id": "session-1", "native_sequence": 2, "observed": "running" },
+        { "native_id": "session-2", "native_sequence": 2, "observed": "running" }
+      ],
+      "expect": { "present": 2, "lost_contact": 0, "orphaned": 0 }
+    },
+    {
+      "name": "partial_sweep_proves_nothing",
+      "reconciliation_key": "sweep-2",
+      "authoritative": false,
+      "items": [
+        { "native_id": "session-1", "native_sequence": 3, "observed": "running" }
+      ],
+      "expect": { "present": 0, "lost_contact": 0, "orphaned": 0 }
+    },
+    {
+      "name": "one_session_missing_and_one_orphan",
+      "reconciliation_key": "sweep-3",
+      "authoritative": true,
+      "items": [
+        { "native_id": "session-1", "native_sequence": 4, "observed": "running" },
+        { "native_id": "session-unknown", "native_sequence": 4, "observed": "running" }
+      ],
+      "expect": { "present": 1, "lost_contact": 1, "orphaned": 1 }
+    },
+    {
+      "name": "positive_evidence_returns",
+      "reconciliation_key": "sweep-4",
+      "authoritative": true,
+      "items": [
+        { "native_id": "session-1", "native_sequence": 5, "observed": "running" },
+        { "native_id": "session-2", "native_sequence": 5, "observed": "running" }
+      ],
+      "expect": { "present": 2, "lost_contact": 0, "orphaned": 0 }
+    }
+  ]
+}

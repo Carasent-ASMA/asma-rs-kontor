@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "comment": "Every durable boundary a dispatcher can die at, from intent commit through native confirmation. `native_effect` is what really happened out there, which the local database cannot see; `authorizes_launch` is what a restart may do about it. Exactly one row may launch, and it is the one that proves nothing was ever sent.",
+  "crash_points": [
+    {
+      "name": "after_intent_commit",
+      "reached_state": "intent_persisted",
+      "native_effect": "none",
+      "authorizes_launch": true
+    },
+    {
+      "name": "after_outbox_claim_and_correlation_commit",
+      "reached_state": "dispatch_pending",
+      "native_effect": "none",
+      "authorizes_launch": false
+    },
+    {
+      "name": "immediately_before_native_call",
+      "reached_state": "dispatch_pending",
+      "native_effect": "none",
+      "authorizes_launch": false
+    },
+    {
+      "name": "after_native_acceptance_before_local_dispatched",
+      "reached_state": "dispatch_pending",
+      "native_effect": "launched",
+      "authorizes_launch": false
+    },
+    {
+      "name": "after_dispatched",
+      "reached_state": "dispatched",
+      "native_effect": "launched",
+      "authorizes_launch": false
+    },
+    {
+      "name": "after_acknowledgement",
+      "reached_state": "acknowledged",
+      "native_effect": "launched",
+      "authorizes_launch": false
+    },
+    {
+      "name": "after_unknown_dispatch_result",
+      "reached_state": "confirmation_unknown",
+      "native_effect": "launched",
+      "authorizes_launch": false
+    },
+    {
+      "name": "after_native_confirmation_before_local_confirmed",
+      "reached_state": "acknowledged",
+      "native_effect": "launched",
+      "authorizes_launch": false
+    },
+    {
+      "name": "after_confirmed",
+      "reached_state": "confirmed",
+      "native_effect": "launched",
+      "authorizes_launch": false
+    }
+  ]
+}
