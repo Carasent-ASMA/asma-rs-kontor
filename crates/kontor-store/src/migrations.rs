@@ -1,14 +1,26 @@
 //! Connection pragmas, the ordered schema migration and Realm initialization.
 //!
-//! There is deliberately no migration framework here. One `include_str!`, one
-//! `user_version` dispatch and one `BEGIN IMMEDIATE` transaction is the whole
-//! mechanism, and it is enough: either every object in `0001_init.sql` exists,
-//! `user_version` is 1 **and** exactly one Realm row exists, or none of that
-//! does and `user_version` is still 0.
+//! There is deliberately no migration framework here. An ordered array of
+//! `include_str!`, one `user_version` dispatch and one `BEGIN IMMEDIATE`
+//! transaction is the whole mechanism, and it is enough: either every object of
+//! every migration up to [`SCHEMA_VERSION`] exists, `user_version` says so
+//! **and** exactly one Realm row exists, or the database is still exactly as it
+//! was before the open.
+//!
+//! Every pending migration runs inside the *same* transaction, so a two-step
+//! upgrade cannot stop half way: a failure in `0002` rolls `0001` back with it
+//! and leaves `user_version` at 0. Each script ends with its own
+//! `PRAGMA user_version = N`, which is transactional, so the recorded version
+//! and the objects it describes commit or roll back together.
 //!
 //! Realm creation is part of that same transaction on purpose. A database with a
 //! schema but no identity, or an identity but no schema, is not a state this
 //! code can produce — and it is never repaired after the fact.
+//!
+//! The Realm row's own `schema_version` column is *not* this version. It records
+//! the envelope contract a Realm was created under
+//! ([`kontor_core::id::SCHEMA_VERSION`]), which a later numbered migration never
+//! rewrites; this constant is how far the persisted tables have been brought.
 
 use std::time::{Duration, Instant};
 
@@ -19,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -39,9 +51,25 @@ fn is_busy(error: &rusqlite::Error) -> bool {
     )
 }
 
-/// Schema v1. Pre-release and therefore still correctable; byte-frozen from the
-/// first accepted KON-MVP-03 commit onward.
-const MIGRATION_0001: &str = include_str!("../migrations/0001_init.sql");
+/// The migrations, in order. `MIGRATIONS[n]` brings a database from
+/// `user_version` `n` to `n + 1`, and each one ends with the
+/// `PRAGMA user_version` that records it.
+///
+/// The list is the whole dispatch table: the index *is* the version it upgrades
+/// from, so a migration can only ever be appended, and `SCHEMA_VERSION` is
+/// asserted against its length below rather than maintained by hand.
+const MIGRATIONS: &[&str] = &[
+    // Schema v1. Byte-frozen from the first accepted KON-MVP-03 commit onward.
+    include_str!("../migrations/0001_init.sql"),
+    // Schema v2. The non-secret account profile: harness, opaque credential
+    // reference, environment/routing/capability documents, enabled, revision.
+    include_str!("../migrations/0002_account_profiles_expanded.sql"),
+];
+
+const _: () = assert!(
+    MIGRATIONS.len() == SCHEMA_VERSION as usize,
+    "every schema version needs exactly one migration script"
+);
 
 /// Apply and verify the connection-level pragmas.
 ///
@@ -102,11 +130,14 @@ pub(crate) fn read_user_version(connection: &Connection) -> Result<i64, StoreErr
 
 /// Bring the database to [`SCHEMA_VERSION`] and return its Realm identity.
 ///
-/// * `0` — create schema v1 and exactly one Realm row inside one
+/// * `0` — create every schema generation and exactly one Realm row inside one
 ///   `BEGIN IMMEDIATE` transaction.
-/// * `1` — load and validate the existing Realm; opening is idempotent.
-/// * `> 1` — refuse. A newer schema is never downgraded, truncated or guessed
-///   at.
+/// * `1..SCHEMA_VERSION` — apply the remaining migrations in the same single
+///   transaction. The Realm already exists and is never touched.
+/// * `SCHEMA_VERSION` — load and validate the existing Realm; opening is
+///   idempotent.
+/// * `> SCHEMA_VERSION` — refuse. A newer schema is never downgraded, truncated
+///   or guessed at.
 pub(crate) fn migrate(connection: &mut Connection) -> Result<RealmMetadata, StoreError> {
     let version = read_user_version(connection)?;
     if version > SCHEMA_VERSION {
@@ -120,7 +151,8 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<RealmMetadata, Stor
     }
 
     // The Realm identity is generated here, in Rust, so it is a real UUIDv7 with
-    // a real creation instant rather than something SQLite invented.
+    // a real creation instant rather than something SQLite invented. It is only
+    // used when this open is the one that creates the database.
     let realm = RealmMetadata::create(RealmId::generate(), Timestamp::now());
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -128,10 +160,12 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<RealmMetadata, Stor
     // Re-read the version now that the write lock is actually held. The first
     // read above was unlocked: with two processes opening the same new file at
     // once, the loser can wait out the whole busy timeout here and only then
-    // acquire the lock — by which point the winner has already committed schema
-    // v1 and a Realm. Running `0001` again would fail on the first duplicate
-    // object, so without this check a concurrent first open is a hard error
-    // instead of the idempotent open it should be.
+    // acquire the lock — by which point the winner has already committed the
+    // schema and a Realm. Running an applied migration again would fail on the
+    // first duplicate object, so without this check a concurrent first open is a
+    // hard error instead of the idempotent open it should be. The same read also
+    // covers a concurrent *upgrade*: the loser sees the newer version and skips
+    // the scripts the winner already ran.
     let version = read_user_version(&transaction)?;
     if version > SCHEMA_VERSION {
         return Err(StoreError::DatabaseTooNew {
@@ -140,24 +174,37 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<RealmMetadata, Stor
         });
     }
     if version == SCHEMA_VERSION {
-        // Someone else initialized it while we waited. Their Realm is the
+        // Someone else brought it up to date while we waited. Their Realm is the
         // Realm; the one generated above is discarded unused.
         drop(transaction);
         return load_realm(connection);
     }
 
-    // The batch ends with `PRAGMA user_version = 1`, which is transactional:
-    // any failure above rolls the version back to 0 along with every object.
-    transaction.execute_batch(MIGRATION_0001)?;
-    transaction.execute(
-        "INSERT INTO realm_metadata (singleton, realm_id, schema_version, created_at, display_label)
-         VALUES (1, ?1, ?2, ?3, NULL)",
-        params![
-            realm.realm_id.to_string(),
-            i64::from(realm.schema_version.get()),
-            realm.created_at.to_string()
-        ],
-    )?;
+    // Every pending script runs here, in order, in this one transaction. Each
+    // ends with its own `PRAGMA user_version`, which is transactional: any
+    // failure rolls the version back to where it started along with every object
+    // any of the scripts created.
+    let pending = usize::try_from(version).map_err(|_| StoreError::Pragma {
+        pragma: "user_version",
+    })?;
+    for migration in &MIGRATIONS[pending..] {
+        transaction.execute_batch(migration)?;
+    }
+
+    // The Realm is created exactly once, by the open that created the schema. An
+    // upgrade from an existing generation finds it already there and must not
+    // mint a second identity for a database that already has one.
+    if version == 0 {
+        transaction.execute(
+            "INSERT INTO realm_metadata (singleton, realm_id, schema_version, created_at, display_label)
+             VALUES (1, ?1, ?2, ?3, NULL)",
+            params![
+                realm.realm_id.to_string(),
+                i64::from(realm.schema_version.get()),
+                realm.created_at.to_string()
+            ],
+        )?;
+    }
     let rows: i64 =
         transaction.query_row("SELECT count(*) FROM realm_metadata", [], |row| row.get(0))?;
     if rows != 1 {

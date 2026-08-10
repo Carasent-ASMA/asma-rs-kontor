@@ -20,20 +20,21 @@ use kontor_core::calendar::{
 };
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CommandReceiptId, ContentHash, CurrencyCode, EventCursor,
-    ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey,
-    Money, PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleKey, RuntimeBindingId,
-    RuntimeKindKey, ScheduleOverrideId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId,
-    TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId, WorkProfileKey,
-    format_utc_timestamp, parse_utc_timestamp,
+    CalendarProfileId, CanonicalDocument, CommandReceiptId, ContentHash, CredentialAlias,
+    CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId,
+    MiniProjectId, ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleKey,
+    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SpecVersion, StatusConflictId, TaskId,
+    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId,
+    WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
     AggregateRef, CommandKind, CommandOutboxEntry, CommandReceipt, ReceiptAuthority,
 };
 use kontor_core::repository::{
-    AccountProfile, AgentRun, CalendarRepository, CommandRepository, ConnectorSpecSelector,
-    GateEvaluation, IntakeOutcome, IntakeRepository, MiniProject, NewAgentRun, NewCommandIntent,
+    AccountProfile, AccountProfileUpdate, AgentRun, CalendarRepository, CommandRepository,
+    ConnectorSpecSelector, CredentialReference, CredentialReferenceKind, GateEvaluation,
+    IntakeOutcome, IntakeRepository, MiniProject, NewAccountProfile, NewAgentRun, NewCommandIntent,
     NewGateEvaluation, NewIntakeReevaluation, NewMiniProject, NewObservation, NewProject,
     NewRuntimeEvent, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun,
     NewTicketLink, PhaseAdvance, Project, ProjectRepository, RealmRepository, ReceiptAdvance,
@@ -61,6 +62,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::SqliteStore;
+use crate::events::append::stored_payload;
 
 /// Maximum length of an agent-run parent chain that is walked when checking for
 /// a lineage cycle.
@@ -283,6 +285,127 @@ fn read_task(row: &Row<'_>) -> RepositoryResult<Task> {
 const TASK_COLUMNS: &str =
     "id, project_id, mini_project_id, title, module_key, state, revision, created_at, updated_at";
 
+const ACCOUNT_PROFILE_COLUMNS: &str = "id, project_id, label, external_account_id, created_at, \
+     harness, credential_ref_kind, credential_ref_alias, environment_refs, environment_refs_hash, \
+     routing, routing_hash, capability, capability_hash, provider_identity, enabled, revision, \
+     updated_at";
+
+/// A column that schema v2 requires but a schema v1 row never had.
+///
+/// A row missing one of these is not repaired and not defaulted: an account
+/// profile with no harness, no credential reference, no enabled flag or no
+/// revision is not a profile anything may launch through, and inventing the
+/// missing half here would be exactly the silent fallback the migration refused
+/// to make. Reading fails loudly instead — including in `list`, because quietly
+/// omitting a profile from a security-relevant listing is worse than an error.
+fn required_account_column<T>(value: Option<T>) -> RepositoryResult<T> {
+    value.ok_or(RepositoryError::Conflict {
+        subject: "account profile",
+        rule: "the stored profile predates its non-secret credential identity",
+    })
+}
+
+fn read_account_profile(row: &Row<'_>) -> RepositoryResult<AccountProfile> {
+    let external_account_id: Option<String> = row.get(3).map_err(backend)?;
+    let harness: Option<String> = row.get(5).map_err(backend)?;
+    let kind: Option<String> = row.get(6).map_err(backend)?;
+    let alias: Option<String> = row.get(7).map_err(backend)?;
+    let environment: Option<String> = row.get(8).map_err(backend)?;
+    let environment_hash: Option<String> = row.get(9).map_err(backend)?;
+    let routing: Option<String> = row.get(10).map_err(backend)?;
+    let routing_hash: Option<String> = row.get(11).map_err(backend)?;
+    let capability: Option<String> = row.get(12).map_err(backend)?;
+    let capability_hash: Option<String> = row.get(13).map_err(backend)?;
+    let provider_identity: Option<String> = row.get(14).map_err(backend)?;
+    let enabled: Option<i64> = row.get(15).map_err(backend)?;
+    let revision: Option<i64> = row.get(16).map_err(backend)?;
+    let updated_at: Option<String> = row.get(17).map_err(backend)?;
+
+    Ok(AccountProfile {
+        id: AccountProfileId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        label: ExternalName::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+        external_account_id: external_account_id
+            .as_deref()
+            .map(ExternalId::parse)
+            .transpose()?,
+        harness: RuntimeKindKey::parse(&required_account_column(harness)?)?,
+        credential_ref: CredentialReference {
+            kind: CredentialReferenceKind::parse(&required_account_column(kind)?)?,
+            alias: CredentialAlias::parse(&required_account_column(alias)?)?,
+        },
+        // Each document is re-admitted through its recorded digest, so a row
+        // edited underneath the store fails to load instead of being trusted.
+        environment: stored_payload(
+            &required_account_column(environment)?,
+            &required_account_column(environment_hash)?,
+        )?,
+        routing: stored_payload(
+            &required_account_column(routing)?,
+            &required_account_column(routing_hash)?,
+        )?,
+        capability: stored_payload(
+            &required_account_column(capability)?,
+            &required_account_column(capability_hash)?,
+        )?,
+        provider_identity: provider_identity
+            .as_deref()
+            .map(ExternalId::parse)
+            .transpose()?,
+        enabled: required_account_column(enabled)? != 0,
+        revision: revision_of(required_account_column(revision)?)?,
+        created_at: read_timestamp(&row.get::<_, String>(4).map_err(backend)?)?,
+        updated_at: read_timestamp(&required_account_column(updated_at)?)?,
+    })
+}
+
+/// Read a profile from inside an open transaction, so a write and the value it
+/// returns come from the same unit of work.
+fn read_account_profile_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    id: AccountProfileId,
+) -> RepositoryResult<Option<AccountProfile>> {
+    transaction
+        .query_row(
+            &format!(
+                "SELECT {ACCOUNT_PROFILE_COLUMNS} FROM account_profiles
+                 WHERE project_id = ?1 AND id = ?2"
+            ),
+            params![project_id.to_string(), id.to_string()],
+            |row| Ok(read_account_profile(row)),
+        )
+        .optional()
+        .map_err(backend)?
+        .transpose()
+}
+
+/// The stored revision of one profile, for telling "absent" from "moved" after
+/// a compare-and-swap wrote nothing.
+///
+/// Three outcomes, not two. A row migrated forward from schema v1 has a `NULL`
+/// revision, which no compare-and-swap can ever match — so it is neither absent
+/// nor moved, and it is reported as the same incomplete-profile conflict that
+/// reading it produces rather than being flattened into either.
+fn account_profile_revision(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    id: AccountProfileId,
+) -> RepositoryResult<Option<AggregateRevision>> {
+    let found: Option<Option<i64>> = transaction
+        .query_row(
+            "SELECT revision FROM account_profiles WHERE project_id = ?1 AND id = ?2",
+            params![project_id.to_string(), id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    match found {
+        None => Ok(None),
+        Some(revision) => Ok(Some(revision_of(required_account_column(revision)?)?)),
+    }
+}
+
 impl ProjectRepository for SqliteStore {
     fn create_project(&self, request: &NewProject) -> RepositoryResult<Project> {
         let transaction = self.begin()?;
@@ -468,22 +591,194 @@ impl ProjectRepository for SqliteStore {
         Ok(())
     }
 
-    fn create_account_profile(&self, profile: &AccountProfile) -> RepositoryResult<()> {
+    fn create_account_profile(
+        &self,
+        request: &NewAccountProfile,
+    ) -> RepositoryResult<AccountProfile> {
         let transaction = self.begin()?;
         transaction
             .execute(
                 "INSERT INTO account_profiles
-                     (id, project_id, label, external_account_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                     (id, project_id, label, external_account_id, created_at,
+                      harness, credential_ref_kind, credential_ref_alias,
+                      environment_refs, environment_refs_hash, routing, routing_hash,
+                      capability, capability_hash, provider_identity,
+                      enabled, revision, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                         ?16, 1, ?5)",
                 params![
-                    profile.id.to_string(),
-                    profile.project_id.to_string(),
-                    profile.label.as_str(),
-                    profile.external_account_id.as_ref().map(ExternalId::as_str),
-                    text(profile.created_at)
+                    request.id.to_string(),
+                    request.project_id.to_string(),
+                    request.label.as_str(),
+                    request.external_account_id.as_ref().map(ExternalId::as_str),
+                    text(request.created_at),
+                    request.harness.as_str(),
+                    request.credential_ref.kind.as_str(),
+                    request.credential_ref.alias.as_str(),
+                    request.environment.json(),
+                    request.environment.hash().as_str(),
+                    request.routing.json(),
+                    request.routing.hash().as_str(),
+                    request.capability.json(),
+                    request.capability.hash().as_str(),
+                    request.provider_identity.as_ref().map(ExternalId::as_str),
+                    i64::from(request.enabled),
                 ],
             )
             .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(AccountProfile {
+            id: request.id,
+            project_id: request.project_id,
+            label: request.label.clone(),
+            external_account_id: request.external_account_id.clone(),
+            harness: request.harness.clone(),
+            credential_ref: request.credential_ref.clone(),
+            environment: request.environment.clone(),
+            routing: request.routing.clone(),
+            capability: request.capability.clone(),
+            provider_identity: request.provider_identity.clone(),
+            enabled: request.enabled,
+            revision: AggregateRevision::INITIAL,
+            created_at: request.created_at,
+            updated_at: request.created_at,
+        })
+    }
+
+    fn get_account_profile(
+        &self,
+        project_id: ProjectId,
+        id: AccountProfileId,
+    ) -> RepositoryResult<Option<AccountProfile>> {
+        self.connection
+            .query_row(
+                &format!(
+                    "SELECT {ACCOUNT_PROFILE_COLUMNS} FROM account_profiles
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_account_profile(row)),
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
+    }
+
+    fn list_account_profiles(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AccountProfile>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {ACCOUNT_PROFILE_COLUMNS} FROM account_profiles
+                 WHERE project_id = ?1 ORDER BY created_at, id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut profiles = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            profiles.push(read_account_profile(row)?);
+        }
+        Ok(profiles)
+    }
+
+    fn update_account_profile(
+        &self,
+        request: &AccountProfileUpdate,
+    ) -> RepositoryResult<AccountProfile> {
+        let transaction = self.begin()?;
+        // The revision comparison lives in the `WHERE` clause, so the read and
+        // the write are the same statement and nothing can move between them.
+        // A profile that is absent and a profile whose revision moved are
+        // distinguished afterwards, from inside the same transaction.
+        let changed = transaction
+            .execute(
+                "UPDATE account_profiles
+                 SET label = ?1, enabled = ?2, updated_at = ?3, revision = revision + 1
+                 WHERE project_id = ?4 AND id = ?5 AND revision = ?6",
+                params![
+                    request.label.as_str(),
+                    i64::from(request.enabled),
+                    text(request.updated_at),
+                    request.project_id.to_string(),
+                    request.id.to_string(),
+                    revision_column(request.expected_revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            let found = account_profile_revision(&transaction, request.project_id, request.id)?;
+            // Rolls back nothing, because nothing was written — but the drop is
+            // explicit so the refusal cannot be read as a partial success.
+            drop(transaction);
+            return match found {
+                None => Err(RepositoryError::NotFound {
+                    subject: "account profile",
+                }),
+                Some(found) => Err(found
+                    .expect("account profile", request.expected_revision)
+                    .expect_err("a matching revision would have updated exactly one row")
+                    .into()),
+            };
+        }
+        let profile = read_account_profile_in(&transaction, request.project_id, request.id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "account profile",
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(profile)
+    }
+
+    fn delete_account_profile(
+        &self,
+        project_id: ProjectId,
+        id: AccountProfileId,
+        expected_revision: AggregateRevision,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        // The revision is compared in the `DELETE` itself for the same reason
+        // the update compares it in the `UPDATE`. Referential safety is not
+        // checked here at all: the four `ON DELETE RESTRICT` references schema
+        // v1 already declares are what refuse a profile some run, gate
+        // evaluation or override still names, and re-implementing that check in
+        // Rust would be a second, weaker copy of it.
+        let deleted = match transaction.execute(
+            "DELETE FROM account_profiles
+             WHERE project_id = ?1 AND id = ?2 AND revision = ?3",
+            params![
+                project_id.to_string(),
+                id.to_string(),
+                revision_column(expected_revision)?,
+            ],
+        ) {
+            Ok(deleted) => deleted,
+            Err(error) => {
+                drop(transaction);
+                return Err(match backend(error) {
+                    RepositoryError::Conflict { .. } => conflict(
+                        "account profile",
+                        "a referenced profile is disabled, never deleted",
+                    ),
+                    other => other,
+                });
+            }
+        };
+        if deleted != 1 {
+            let found = account_profile_revision(&transaction, project_id, id)?;
+            drop(transaction);
+            return match found {
+                None => Err(RepositoryError::NotFound {
+                    subject: "account profile",
+                }),
+                Some(found) => Err(found
+                    .expect("account profile", expected_revision)
+                    .expect_err("a matching revision would have deleted exactly one row")
+                    .into()),
+            };
+        }
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -3696,5 +3991,33 @@ impl RealmRepository for SqliteStore {
             .map_err(backend)?;
         let cursor = EventCursor::parse(highest.max(1))?;
         Ok(SnapshotEnvelope::new(self.realm_id(), cursor, run))
+    }
+
+    fn snapshot_account_profile(
+        &self,
+        project_id: ProjectId,
+        id: AccountProfileId,
+    ) -> RepositoryResult<SnapshotEnvelope<Option<AccountProfile>>> {
+        let transaction = self.begin()?;
+        let profile = read_account_profile_in(&transaction, project_id, id)?;
+        let highest: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(cursor), 0) FROM runtime_events WHERE project_id = ?1",
+                params![project_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        let cursor = EventCursor::parse(highest.max(1))?;
+        Ok(SnapshotEnvelope::new(self.realm_id(), cursor, profile))
+    }
+
+    fn update_account_profile_in_realm(
+        &self,
+        envelope: &ReceiptEnvelope<AccountProfileUpdate>,
+    ) -> RepositoryResult<AccountProfile> {
+        // The Realm is proved before `update_account_profile` opens its
+        // transaction, so a foreign envelope never reaches a `WHERE` clause.
+        let request = envelope.peek(self.realm_id())?;
+        self.update_account_profile(request)
     }
 }
