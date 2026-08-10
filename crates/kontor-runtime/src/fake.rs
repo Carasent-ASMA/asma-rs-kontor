@@ -605,12 +605,12 @@ impl FakeState {
             messages: MessageLedger::new(),
         };
         let raised = session.raised_permissions();
-        // The reservation is spent in the same critical section that creates
-        // the session, under the lock this method has held throughout. There is
-        // therefore no instant at which a session exists and its seat is still
-        // reservable, and no refusal above can leave a seat spent for a launch
-        // that never happened.
-        self.admissions.occupy(request, native_id.clone());
+        // The claim becomes the session in the same critical section that creates
+        // it, under the lock this method has held throughout. There is therefore
+        // no instant at which a session exists and its seat is still reservable,
+        // and no refusal above can leave a seat spent for a launch that never
+        // happened.
+        self.admissions.occupy(request, native_id.clone())?;
         self.sessions.insert(native_id, session);
         // The runtime keeps its own copy of what it just issued. Everything a
         // caller later presents is checked against this one.
@@ -1133,17 +1133,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         //
         // A `LaunchRequest` is a value: it can be held and presented twice. What
         // it cannot do is restate a fact about *this runtime*, and whether this
-        // seat is holding an unspent reservation is exactly such a fact. A
-        // replay finds it spent; an authority for another seat finds the wrong
-        // one; freshly minted run and binding ids do not help, because the seat
-        // is the key. Reading the table is not an effect, so a refusal here
-        // leaves nothing to undo.
-        state.admissions.ensure_admitted(request)?;
+        // seat is still holding the reservation this authority was issued from is
+        // exactly such a fact. A replay finds it spent; a caller racing another
+        // finds it claimed; an authority for another seat finds the wrong one;
+        // freshly minted run and binding ids do not help, because the seat is the
+        // key. Taking the reservation is part of the same call, so no second
+        // launch can pass this line on the strength of a reservation the first is
+        // already spending.
+        state.admissions.claim(request)?;
 
-        // From here the reservation is spent, so every remaining refusal has to
+        // From here the reservation is claimed, so every remaining refusal has to
         // give the seat back. A refused launch leaves no session and no native
         // effect either way; what it must not also leave is a seat holding a
-        // reservation nobody can ever spend or replace.
+        // claim nobody can ever spend or replace.
         let outcome = state.launch_admitted(request);
         if outcome.is_err() {
             state.admissions.release(request);

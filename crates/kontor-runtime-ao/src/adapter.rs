@@ -43,7 +43,7 @@ use kontor_runtime::adapter::{
     LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
-    AdmissionLedger, AdmissionOutcome, AdmissionRequest, OccupiedSeat, SeatFacts,
+    AdmissionLedger, AdmissionOutcome, AdmissionRequest, ClaimedSeat, OccupiedSeat, SeatFacts,
 };
 use kontor_runtime::capability::{
     IssuedBinding, IssuedBindingRegistry, LimitDemand, OperationContext, RuntimeBindingSnapshot,
@@ -490,11 +490,22 @@ pub struct AoCheckpoint {
     ///
     /// Persisted because AC-4 is a rule about seats and a binding does not name
     /// one: without this, a restarted adapter would admit a second launch into a
-    /// seat that is already working. Only *occupied* seats round-trip — a
-    /// reservation exists only between an admission and the launch that spends
-    /// it, and its authority cannot be serialized either, so a caller that
-    /// restarts mid-admission asks again.
+    /// seat that is already working.
     pub seats: Vec<OccupiedSeat>,
+    /// Every seat whose launch was in flight when this was taken.
+    ///
+    /// A launch spends time between claiming its seat and owning a session — it
+    /// contains the spawn — and a checkpoint taken in that window must not describe
+    /// the seat as vacant, because a session for it may exist by the time the
+    /// adapter is rebuilt. These carry no ticket and restore as a shut seat rather
+    /// than a reservation: see [`AdmissionLedger::restore_claimed`] for what it
+    /// takes to resolve one.
+    ///
+    /// A standing *reservation* is in neither list. It exists only between an
+    /// admission and the launch that claims it, nothing has happened on it yet, and
+    /// its authority cannot be serialized — so a caller that restarts mid-admission
+    /// simply asks again.
+    pub claims: Vec<ClaimedSeat>,
     /// The message ledger, in commit order.
     pub deliveries: Vec<(MessageId, ContentHash, AoDelivery)>,
     /// The next adapter-local content position per binding.
@@ -511,6 +522,7 @@ impl AoCheckpoint {
             last_event_digest: None,
             bindings: Vec::new(),
             seats: Vec::new(),
+            claims: Vec::new(),
             deliveries: Vec::new(),
             positions: Vec::new(),
         }
@@ -612,6 +624,15 @@ impl AoAdapter {
                 },
                 admissions: {
                     let mut ledger = AdmissionLedger::new();
+                    // Claims first, so a recorded session wins over a claim for the
+                    // same seat. The adapter's own checkpoint cannot contain both —
+                    // a seat holds one thing — but this value is reassembled from
+                    // separate storage, and of the two readings the occupancy is
+                    // the evidenced one: it names a session, and it still refuses
+                    // every second launch while letting its own run resume.
+                    for claim in checkpoint.claims.iter().cloned() {
+                        ledger.restore_claimed(claim);
+                    }
                     for seat in checkpoint.seats.iter().cloned() {
                         ledger.restore_occupied(seat);
                     }
@@ -646,6 +667,7 @@ impl AoAdapter {
             last_event_digest: state.events.last_digest.clone(),
             bindings: state.bindings.snapshots().cloned().collect(),
             seats: state.admissions.occupied_seats().collect(),
+            claims: state.admissions.claimed_seats().collect(),
             deliveries: state.deliveries.clone(),
             positions: state.positions.iter().map(|(k, v)| (*k, *v)).collect(),
         }
@@ -1112,6 +1134,21 @@ impl AoAdapter {
         generation: u64,
         held: usize,
     ) -> RuntimeResult<LaunchOutcome> {
+        // The run-keyed companion, which the seat rule does not imply: one run
+        // admitted into two *different* seats passes admission twice. It sits here,
+        // behind the claim, so its refusal hands the seat back like every other —
+        // and so the seat rule is what answers a replay, rather than this.
+        if self
+            .lock()
+            .bindings
+            .snapshots()
+            .any(|snapshot| snapshot.agent_run_id() == request.agent_run_id())
+        {
+            return Err(RuntimeError::SessionAlreadyBound {
+                rule: "recovery launches a successor run, never the same run twice",
+            });
+        }
+
         preflight(
             capabilities,
             &OperationContext {
@@ -1198,12 +1235,12 @@ impl AoAdapter {
             // command acknowledgement can never close a run.
             ObservationSource::CommandAck,
         )?;
-        // The reservation is spent in the same critical section that records the
-        // binding, so there is no instant at which this adapter owns a session and
-        // its seat is still reservable.
+        // The claim becomes the session in the same critical section that records
+        // the binding, so there is no instant at which this adapter owns a session
+        // and its seat is still reservable.
         {
             let state = &mut *self.lock();
-            state.admissions.occupy(request, view.native_id()?);
+            state.admissions.occupy(request, view.native_id()?)?;
             state.bindings.record(snapshot.clone());
         }
         Ok(LaunchOutcome {
@@ -1260,31 +1297,25 @@ impl RuntimeAdapter for AoAdapter {
     }
 
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
-        // Admission first, before the project read and long before the spawn.
+        // The seat is taken here: before the project read, long before the spawn,
+        // and in one step with the check that it was there to take.
         //
-        // A `LaunchRequest` is a value: it can be held and presented twice. What it
-        // cannot do is restate a fact about *this adapter* — whether this seat is
-        // still holding the reservation this authority was issued for. A replay
-        // finds it spent, an authority for another seat finds the wrong one, and
+        // A `LaunchRequest` is a value: it can be held and presented twice, and by
+        // two callers at once. What it cannot do is restate a fact about *this
+        // adapter* — whether this seat is still holding the reservation this
+        // authority was issued from. A replay finds it spent, a concurrent caller
+        // finds it claimed, an authority for another seat finds the wrong one, and
         // freshly minted run and binding ids do not help because the seat is the
-        // key. Reading the table is not an effect, so this refusal costs nothing
-        // and creates no session.
+        // key.
         //
-        // The run-keyed companion is checked alongside it: it is not implied by the
-        // seat rule, because one run admitted into two *different* seats passes
-        // admission twice.
+        // Splitting the check from the take is the whole of the defect this
+        // replaces: everything below runs with the lock released, because it has to
+        // — `spawn` is an `await` — so a launch that had only *read* its
+        // reservation would leave the seat reservable for the length of a native
+        // call, and two callers would each start a session.
         let (capabilities, generation, held) = {
-            let state = self.lock();
-            state.admissions.ensure_admitted(request)?;
-            if state
-                .bindings
-                .snapshots()
-                .any(|snapshot| snapshot.agent_run_id() == request.agent_run_id())
-            {
-                return Err(RuntimeError::SessionAlreadyBound {
-                    rule: "recovery launches a successor run, never the same run twice",
-                });
-            }
+            let state = &mut *self.lock();
+            state.admissions.claim(request)?;
             (
                 self.lane.capabilities(),
                 state.generation,
@@ -1292,11 +1323,11 @@ impl RuntimeAdapter for AoAdapter {
             )
         };
 
-        // From here the reservation is claimed, so every remaining refusal has to
-        // hand the seat back. A refused launch leaves no session either way; what
-        // it must not also leave is a seat holding a reservation nobody can spend
-        // or replace. One wrapper does it for every `?` below, because spelling the
-        // release out per path is how one of them ends up forgotten.
+        // From here the seat is claimed, so every remaining refusal has to hand it
+        // back. A refused launch leaves no session either way; what it must not
+        // also leave is a seat holding a claim nobody can spend or replace. One
+        // wrapper does it for every `?` below, because spelling the release out per
+        // path is how one of them ends up forgotten.
         let outcome = self
             .launch_admitted(request, &capabilities, generation, held)
             .await;

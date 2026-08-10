@@ -57,7 +57,7 @@ use kontor_runtime_ao::adapter::{
     AO_VERSION, AoAdapter, AoAttention, AoCheckpoint, AoDelivery, AoLane, UNSUPPORTED,
     normalize_lifecycle,
 };
-use kontor_runtime_ao::client::AoCall;
+use kontor_runtime_ao::client::{AoCall, AoReply, AoTransport};
 use kontor_runtime_ao::fixture::RecordedAo;
 use kontor_runtime_ao::wire::{
     AoActivityState, AoHarness, AoListAgentsResponse, AoListSessionsResponse, AoPermissionMode,
@@ -330,6 +330,77 @@ async fn admitted(ao: &AoAdapter, parts: LaunchParts) -> LaunchRequest {
 /// The common case: one run, its own seat, this lane's project.
 async fn launch_request(ao: &AoAdapter, agent_run_id: AgentRunId) -> LaunchRequest {
     admitted(ao, launch_parts(agent_run_id)).await
+}
+
+/// A hold on the first spawn, so a launch can be observed *while* it is in flight.
+///
+/// A launch's dangerous window is exactly one native call wide: the seat is taken,
+/// the lock is released, and the spawn is outstanding. Every claim about what
+/// another caller — or a checkpoint — sees during that window needs the window held
+/// open deterministically, which a recorded answer alone cannot do.
+///
+/// Only the *first* spawn waits. A second one goes straight through on purpose: a
+/// regression that starts two sessions has to fail this suite, not deadlock it.
+#[derive(Debug, Default)]
+struct SpawnGate {
+    spawns: std::sync::atomic::AtomicUsize,
+    reached: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl SpawnGate {
+    /// Wait until a launch is inside the spawn.
+    async fn wait_until_launching(&self) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), self.reached.notified())
+            .await
+            .expect(
+                "a launch reaches the spawn: one that never gets there is a failure, not a hang",
+            );
+    }
+
+    /// Let the held spawn answer.
+    fn let_the_spawn_answer(&self) {
+        self.release.notify_one();
+    }
+}
+
+/// The recorded daemon, behind that gate.
+#[derive(Debug)]
+struct GatedAo {
+    daemon: Arc<RecordedAo>,
+    gate: Arc<SpawnGate>,
+}
+
+#[async_trait::async_trait]
+impl AoTransport for GatedAo {
+    async fn call(&self, call: &AoCall) -> RuntimeResult<AoReply> {
+        let first_spawn = call.route() == AoCall::spawn(String::new()).route()
+            && self
+                .gate
+                .spawns
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0;
+        if first_spawn {
+            self.gate.reached.notify_one();
+            self.gate.release.notified().await;
+        }
+        self.daemon.call(call).await
+    }
+}
+
+/// An adapter whose first spawn the test controls, and handles on both halves.
+fn gated(harness: AoHarness) -> (AoAdapter, Arc<RecordedAo>, Arc<SpawnGate>) {
+    let daemon = Arc::new(daemon(SPAWN_CLAUDE, SESSION_LIVE));
+    let gate = Arc::new(SpawnGate::default());
+    let ao = AoAdapter::new(
+        lane(harness),
+        Box::new(GatedAo {
+            daemon: Arc::clone(&daemon),
+            gate: Arc::clone(&gate),
+        }),
+        AoCheckpoint::fresh(1),
+    );
+    (ao, daemon, gate)
 }
 
 /// Every lane, with the fixtures it launches and inspects through.
@@ -1555,6 +1626,116 @@ async fn a_replayed_launch_request_creates_no_second_session() {
         ao.checkpoint().seats.len(),
         1,
         "the seat holds exactly the session that was launched into it"
+    );
+}
+
+#[tokio::test]
+async fn two_concurrent_launches_of_one_admitted_request_start_exactly_one_session() {
+    // The replay above is the sequential case, and a check that merely *reads* the
+    // reservation passes it: by the time the second launch arrives the first has
+    // finished and written the seat. This is the case that separates them. Both
+    // launches present the same authority, and the second arrives while the first is
+    // still inside the spawn — the whole window in which the adapter holds no lock.
+    //
+    // One of them must be refused before it dispatches anything, which is only true
+    // if checking the reservation and taking it are one step.
+    let (ao, daemon, gate) = gated(AoHarness::ClaudeCode);
+    let spawn = AoCall::spawn(String::new());
+    let request = launch_request(&ao, run(RUN_CLAUDE)).await;
+
+    let (first, second) = tokio::join!(ao.launch(&request), async {
+        gate.wait_until_launching().await;
+        let outcome = ao.launch(&request).await;
+        gate.let_the_spawn_answer();
+        outcome
+    });
+
+    first.expect("the launch that took the seat runs to completion");
+    let refused = second.expect_err("the launch that did not take it starts nothing");
+    assert!(
+        matches!(refused, RuntimeError::LaunchNotAdmitted { .. }),
+        "a concurrent launch is refused as unadmitted, not by anything AO said, got {refused:?}"
+    );
+    assert_eq!(
+        daemon.count(&spawn),
+        1,
+        "one authority is one session, however many callers present it"
+    );
+    assert_eq!(
+        ao.checkpoint().bindings.len(),
+        1,
+        "and one binding, not two pointing at two agents"
+    );
+}
+
+#[tokio::test]
+async fn a_checkpoint_taken_mid_launch_restores_a_seat_that_refuses_a_second_launch() {
+    // The restart race. A checkpoint can be taken during that same in-flight
+    // window, and what it records about the seat is all a rebuilt adapter will know:
+    // the binding is not recorded yet, and neither is the occupancy. A checkpoint
+    // that says nothing about the seat therefore says "vacant", and the next
+    // admission would start a second session next to whatever the held spawn
+    // created.
+    //
+    // So the claim travels, and restores shut. It cannot restore as a reservation:
+    // that would need a ticket, and a ticket nobody can mint is exactly what makes
+    // authority worth checking.
+    let (ao, _daemon, gate) = gated(AoHarness::ClaudeCode);
+    let parts = launch_parts(run(RUN_CLAUDE));
+    let request = admitted(&ao, parts.clone()).await;
+    let slot = RoleSlotKey::new(parts.team_run_id, parts.role_slot_id.clone());
+
+    let (launched, checkpoint) = tokio::join!(ao.launch(&request), async {
+        gate.wait_until_launching().await;
+        let checkpoint = ao.checkpoint();
+        gate.let_the_spawn_answer();
+        checkpoint
+    });
+    launched.expect("the held launch finishes once it is let go");
+    assert!(
+        checkpoint.bindings.is_empty() && checkpoint.seats.is_empty(),
+        "mid-launch there is nothing else recorded about this seat, which is the point"
+    );
+    assert_eq!(
+        checkpoint
+            .claims
+            .iter()
+            .map(|claim| &claim.slot)
+            .collect::<Vec<_>>(),
+        vec![&slot],
+        "the in-flight claim is what the checkpoint carries"
+    );
+
+    // Rebuilt from it, with a fresh daemon, as a Kontor restart does.
+    let restarted = Fixture::restarted(
+        AoHarness::ClaudeCode,
+        daemon(SPAWN_CLAUDE, SESSION_LIVE),
+        checkpoint,
+    );
+    let refused = restarted
+        .admit_launch(&AdmissionRequest {
+            slot: slot.clone(),
+            agent_run_id: run(RUN_ADOPTABLE),
+            binding_id: RuntimeBindingId::generate(),
+            replaces: None,
+            requested_at: parts.requested_at,
+        })
+        .await
+        .expect_err("a seat whose launch may have landed is not a vacant seat");
+    assert!(
+        matches!(refused, RuntimeError::SlotAlreadyAdmitted { .. }),
+        "the restart must not reopen the seat, got {refused:?}"
+    );
+    // And it stays shut across the next checkpoint, rather than draining away on the
+    // restart that could not resolve it.
+    assert_eq!(
+        restarted.checkpoint().claims.len(),
+        1,
+        "an unresolved claim survives being persisted again"
+    );
+    assert!(
+        restarted.calls().is_empty(),
+        "none of which reached the daemon"
     );
 }
 

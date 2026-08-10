@@ -49,8 +49,8 @@ pub use adapter::{
     LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 pub use admission::{
-    AdmissionLedger, AdmissionOutcome, AdmissionRequest, AdmissionTicket, LaunchAuthority,
-    OccupiedSeat, ReplacedBinding, RoleSlotKey, SeatFacts,
+    AdmissionLedger, AdmissionOutcome, AdmissionRequest, AdmissionTicket, ClaimedSeat,
+    LaunchAuthority, OccupiedSeat, ReplacedBinding, RoleSlotKey, SeatFacts,
 };
 pub use capability::{
     IssuedBinding, IssuedBindingRegistry, LimitDemand, OperationContext, RuntimeBindingSnapshot,
