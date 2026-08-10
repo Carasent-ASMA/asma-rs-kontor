@@ -193,6 +193,18 @@ fn codex_session(json: &str) -> String {
         .replace("\"claude-code\"", "\"codex\"")
 }
 
+/// The Claude spawn fixture, re-addressed to another run and another session.
+///
+/// Both have to move together for a second launch against one recorded daemon to
+/// be legitimate: the branch is the correlation label the adapter checks against
+/// the run it asked for, and a repeated native id would describe one session
+/// sitting in two seats.
+fn spawn_for(agent_run_id: AgentRunId, native_id: &str) -> String {
+    SPAWN_CLAUDE
+        .replace(RUN_CLAUDE, &agent_run_id.to_string())
+        .replace("ses_claude_1", native_id)
+}
+
 /// The native id a session or spawn fixture is about.
 fn native_of(json: &str) -> &'static str {
     // The four lane sessions are the only ones a fixture spawns or inspects, so
@@ -1669,6 +1681,81 @@ async fn two_concurrent_launches_of_one_admitted_request_start_exactly_one_sessi
 }
 
 #[tokio::test]
+async fn two_concurrent_launches_of_one_run_into_two_seats_start_exactly_one_session() {
+    // The same-seat race above is not the only one. Two *different* seats each
+    // holding their own reservation for one run pass the seat rule twice over, and
+    // the sequential version of this is caught only because the first launch has
+    // already recorded a binding by the time the second asks. Concurrently there is
+    // no binding yet — the first launch is inside the spawn — so the run rule has to
+    // be decided from the claim state, in the step that takes it.
+    let (ao, daemon, gate) = gated(AoHarness::ClaudeCode);
+    let spawn = AoCall::spawn(String::new());
+    let here = launch_parts(run(RUN_CLAUDE));
+    let there = launch_parts(run(RUN_CLAUDE));
+    let second_seat = RoleSlotKey::new(there.team_run_id, there.role_slot_id.clone());
+    assert_ne!(
+        RoleSlotKey::new(here.team_run_id, here.role_slot_id.clone()),
+        second_seat,
+        "two seats, one run: each is admitted on its own merits"
+    );
+    let first = admitted(&ao, here).await;
+    let second = admitted(&ao, there.clone()).await;
+
+    let (won, lost) = tokio::join!(ao.launch(&first), async {
+        gate.wait_until_launching().await;
+        let before = daemon.calls();
+        let outcome = ao.launch(&second).await;
+        // Before transport, and non-vacuously: the launch that is holding the spawn
+        // open cannot make progress while this runs, so anything new on the ledger
+        // here was dispatched by the launch that must not have dispatched at all.
+        assert_eq!(
+            daemon.calls(),
+            before,
+            "the refused launch reached no AO surface"
+        );
+        gate.let_the_spawn_answer();
+        outcome
+    });
+
+    won.expect("the launch that claimed first runs to completion");
+    let refused = lost.expect_err("the second seat starts nothing for a run already launching");
+    assert!(
+        matches!(refused, RuntimeError::SessionAlreadyBound { .. }),
+        "the refusal names the run, not the seat, got {refused:?}"
+    );
+    assert_eq!(
+        daemon.count(&spawn),
+        1,
+        "one run is one session, however many seats hold a reservation for it"
+    );
+    assert_eq!(
+        ao.checkpoint().bindings.len(),
+        1,
+        "and one binding, not two pointing at two agents"
+    );
+
+    // The losing seat is handed back rather than wedged. Its reservation was this
+    // run's, this run may never spend it, and nothing else removes one — so without
+    // the release the seat would be unfillable forever. A different run may have it;
+    // `one_run_cannot_own_two_live_sessions_even_in_two_seats` carries the released
+    // seat through an actual launch.
+    let released = ao
+        .admit_launch(&AdmissionRequest {
+            slot: second_seat,
+            agent_run_id: run(RUN_ADOPTABLE),
+            binding_id: RuntimeBindingId::generate(),
+            replaces: None,
+            requested_at: there.requested_at,
+        })
+        .await
+        .expect("the released seat admits the next attempt");
+    assert!(
+        released.resumed().is_none(),
+        "a released seat is vacant, not a session to resume"
+    );
+}
+
+#[tokio::test]
 async fn a_checkpoint_taken_mid_launch_restores_a_seat_that_refuses_a_second_launch() {
     // The restart race. A checkpoint can be taken during that same in-flight
     // window, and what it records about the seat is all a rebuilt adapter will know:
@@ -1785,15 +1872,25 @@ async fn one_run_cannot_own_two_live_sessions_even_in_two_seats() {
     // The run-keyed companion, which the seat rule does not imply: one run admitted
     // into two *different* seats passes admission twice. Recovery launches a
     // successor run, never the same run again.
-    let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
     let spawn = AoCall::spawn(String::new());
+    let successor = run(RUN_ADOPTABLE);
+    let ao = Fixture::new(
+        AoHarness::ClaudeCode,
+        // Two spawns in order, because this test ends with a legitimate second
+        // session: the run that was turned away, then the run that takes the seat it
+        // gave back.
+        daemon(SPAWN_CLAUDE, SESSION_LIVE)
+            .then_answering(&spawn, SPAWN_CLAUDE)
+            .then_answering(&spawn, &spawn_for(successor, "ses_claude_2")),
+    );
     ao.launch_run(run(RUN_CLAUDE))
         .await
         .expect("the first seat launches");
 
     // A second seat, admitted on its own merits, for a run that already has a
     // session.
-    let elsewhere = launch_request(&ao, run(RUN_CLAUDE)).await;
+    let second_seat = launch_parts(run(RUN_CLAUDE));
+    let elsewhere = admitted(&ao, second_seat.clone()).await;
     let error = ao
         .launch(&elsewhere)
         .await
@@ -1805,6 +1902,92 @@ async fn one_run_cannot_own_two_live_sessions_even_in_two_seats() {
     );
     assert_eq!(ao.count(&spawn), 1, "and must create no second session");
     assert_eq!(ao.checkpoint().bindings.len(), 1);
+
+    // A refusal past the seat's yes has to give the seat back. Nothing but a launch
+    // that succeeds removes a reservation, and this run can never spend the one it
+    // was holding, so left in place it would hold that seat against every future
+    // attempt: no live session in it, no spendable reservation, and no replacement
+    // possible either, because there is no session to observe terminal.
+    let checkpoint = ao.checkpoint();
+    assert_eq!(
+        checkpoint.seats.len(),
+        1,
+        "one seat, holding the one session that was launched"
+    );
+    assert!(
+        checkpoint.claims.is_empty(),
+        "and no claim left over the launch that was refused"
+    );
+
+    // Free has to mean usable, not merely un-reserved: a *different* run takes the
+    // released seat all the way through a launch.
+    let mut retried = launch_parts(successor);
+    retried.team_run_id = second_seat.team_run_id;
+    retried.role_slot_id = second_seat.role_slot_id;
+    let taken = admitted(&ao, retried).await;
+    let launched = ao
+        .launch(&taken)
+        .await
+        .expect("the released seat starts the run it was released for");
+    assert_eq!(launched.snapshot.agent_run_id(), successor);
+    assert_eq!(
+        ao.count(&spawn),
+        2,
+        "which is the second session, not a third"
+    );
+}
+
+#[tokio::test]
+async fn a_binding_whose_seat_was_not_persisted_still_stops_its_run_launching_again() {
+    // The registry's half of the run rule, for a session the seats cannot answer
+    // for. A checkpoint is reassembled from separate KON-MVP-03 tables, so an
+    // adapter can come back holding a binding whose seat record did not survive
+    // with it — and then the seat scan sees an empty table and the run would be
+    // handed a second agent.
+    let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
+    let request = launch_request(&ao, run(RUN_CLAUDE)).await;
+    ao.launch(&request).await.expect("the first launch lands");
+    let mut checkpoint = ao.checkpoint();
+    assert_eq!(checkpoint.bindings.len(), 1);
+    checkpoint.seats.clear();
+
+    let restarted = Fixture::restarted(
+        AoHarness::ClaudeCode,
+        daemon(SPAWN_CLAUDE, SESSION_LIVE),
+        checkpoint,
+    );
+    let parts = launch_parts(run(RUN_CLAUDE));
+    let seat = RoleSlotKey::new(parts.team_run_id, parts.role_slot_id.clone());
+    let elsewhere = admitted(&restarted, parts.clone()).await;
+    let refused = restarted
+        .launch(&elsewhere)
+        .await
+        .expect_err("the run this adapter is holding a binding for owns a session already");
+
+    assert!(
+        matches!(refused, RuntimeError::SessionAlreadyBound { .. }),
+        "the refusal names the run, got {refused:?}"
+    );
+    assert!(
+        restarted.calls().is_empty(),
+        "and it happened before anything was dispatched"
+    );
+    // Refused past the claim, so the claim goes back — this route must not be the
+    // one that strands one.
+    assert!(
+        restarted.checkpoint().claims.is_empty(),
+        "the claim it took to ask is handed back rather than wedging the seat"
+    );
+    restarted
+        .admit_launch(&AdmissionRequest {
+            slot: seat,
+            agent_run_id: run(RUN_ADOPTABLE),
+            binding_id: RuntimeBindingId::generate(),
+            replaces: None,
+            requested_at: parts.requested_at,
+        })
+        .await
+        .expect("so the seat still admits another run");
 }
 
 #[tokio::test]

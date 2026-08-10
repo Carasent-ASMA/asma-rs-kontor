@@ -537,18 +537,11 @@ impl FakeState {
     /// [`Self::release`] at the call site; spelling the release out on
     /// each path is how one of them ends up forgotten.
     fn launch_admitted(&mut self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
-        // The run-keyed companion. Not implied by the seat check: one run
-        // admitted into two different seats passes admission twice.
-        if self
-            .sessions
-            .values()
-            .any(|session| session.agent_run_id == request.agent_run_id())
-        {
-            return Err(RuntimeError::SessionAlreadyBound {
-                rule: "recovery launches a successor run, never the same run twice",
-            });
-        }
-
+        // The run-keyed half of AC-4 is not restated here. Every session below is
+        // created in the same step that marks its seat occupied, so a session this
+        // runtime holds is always a seat the shared ledger can see — and the ledger
+        // has already refused the run a second seat. A copy of that rule kept here
+        // would be a second place for it to be subtly different.
         let declared = self.capabilities.clone();
         let generation = self.generation;
         preflight(

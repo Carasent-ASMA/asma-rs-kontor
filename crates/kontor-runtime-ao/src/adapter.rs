@@ -1134,21 +1134,6 @@ impl AoAdapter {
         generation: u64,
         held: usize,
     ) -> RuntimeResult<LaunchOutcome> {
-        // The run-keyed companion, which the seat rule does not imply: one run
-        // admitted into two *different* seats passes admission twice. It sits here,
-        // behind the claim, so its refusal hands the seat back like every other —
-        // and so the seat rule is what answers a replay, rather than this.
-        if self
-            .lock()
-            .bindings
-            .snapshots()
-            .any(|snapshot| snapshot.agent_run_id() == request.agent_run_id())
-        {
-            return Err(RuntimeError::SessionAlreadyBound {
-                rule: "recovery launches a successor run, never the same run twice",
-            });
-        }
-
         preflight(
             capabilities,
             &OperationContext {
@@ -1313,9 +1298,32 @@ impl RuntimeAdapter for AoAdapter {
         // — `spawn` is an `await` — so a launch that had only *read* its
         // reservation would leave the seat reservable for the length of a native
         // call, and two callers would each start a session.
+        // The run-keyed half travels with it: one run admitted into two *different*
+        // seats satisfies the seat rule twice, and concurrently neither launch has a
+        // binding yet, so the table's claim state is the only thing that can tell
+        // them apart.
         let (capabilities, generation, held) = {
             let state = &mut *self.lock();
             state.admissions.claim(request)?;
+
+            // The registry's own answer to that same question, for a session no seat
+            // knows about. This value is reassembled from separate KON-MVP-03
+            // tables, so an adapter can come back holding a binding whose seat
+            // record did not survive with it; the seat scan sees nothing, and the
+            // run would be handed a second agent. It is asked inside the section
+            // that took the claim, so there is no gap between the two answers — and
+            // its refusal hands back that exact claim before the section ends,
+            // because nothing else removes one.
+            if state
+                .bindings
+                .snapshots()
+                .any(|snapshot| snapshot.agent_run_id() == request.agent_run_id())
+            {
+                state.admissions.release(request);
+                return Err(RuntimeError::SessionAlreadyBound {
+                    rule: "recovery launches a successor run, never the same run twice",
+                });
+            }
             (
                 self.lane.capabilities(),
                 state.generation,

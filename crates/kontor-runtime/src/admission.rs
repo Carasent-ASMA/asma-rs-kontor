@@ -26,7 +26,9 @@
 //! * [`crate::adapter::RuntimeAdapter::launch`] *claims* the reservation before
 //!   its first native effect — checking it and taking it are one step — so an
 //!   authority that is spent, superseded, aimed at another seat, or being spent
-//!   right now by another caller buys nothing.
+//!   right now by another caller buys nothing. The same step decides the
+//!   run-keyed half of AC-4, because a run committed to one seat is a fact about
+//!   the whole table rather than about the seat being asked for.
 //!
 //! Fabricating a fresh [`kontor_core::id::AgentRunId`] and
 //! [`kontor_core::id::RuntimeBindingId`] does not help, because the key admission
@@ -365,7 +367,12 @@ pub trait SeatFacts {
     ) -> bool;
 }
 
-/// One runtime's reservation table: the seat rule, in one place.
+/// One runtime's reservation table: both halves of AC-4, in one place.
+///
+/// One seat holds one launch, and one run owns one session. The second is a fact
+/// about the whole table, so it is decided here too rather than by each adapter
+/// counting its own sessions — an adapter that only knows about seats it has
+/// bindings for cannot see a claim that has not become one yet.
 ///
 /// Held by an adapter and read and written only under whatever lock that adapter
 /// already holds over its own state. That is what makes "look at the seat, then
@@ -558,10 +565,18 @@ impl AdmissionLedger {
     /// Looked up by the seat *the launch names*, not the one the authority claims:
     /// checking a value against itself proves nothing.
     ///
+    /// Two rules are decided here, and the second is not implied by the first: a
+    /// seat admits one launch, and a **run owns one session**. One run admitted
+    /// into two *different* seats satisfies the seat rule twice over, and both
+    /// launches are then racing to create that run a second agent — so the run is
+    /// checked across every seat in the same step, for the same reason.
+    ///
     /// # Errors
-    /// Returns [`RuntimeError::LaunchNotAdmitted`] when the seat holds no
-    /// reservation, holds a different one, is already being launched into, or when
-    /// the launch names a different run or binding than the reservation does.
+    /// * [`RuntimeError::LaunchNotAdmitted`] — the seat holds no reservation,
+    ///   holds a different one, is already being launched into, or the launch
+    ///   names a different run or binding than the reservation does.
+    /// * [`RuntimeError::SessionAlreadyBound`] — another seat is already holding
+    ///   this run's session, or a launch on its way to one.
     pub fn claim(&mut self, request: &LaunchRequest) -> RuntimeResult<()> {
         let slot = request.slot();
         match self.slots.get(&slot) {
@@ -600,6 +615,24 @@ impl AdmissionLedger {
                 });
             }
         }
+        // The run-keyed half, before the seat is transitioned, because a launch
+        // this run may not make must cost no native effect either.
+        if self.run_is_committed_elsewhere(request.agent_run_id(), &slot) {
+            // And the reservation it would have spent is abandoned rather than
+            // left standing. This run can never spend it — that is what was just
+            // decided — and nothing else removes one, so leaving it would hold the
+            // seat against every future attempt: neither a live session nor a
+            // spendable reservation, and no replacement possible either, because
+            // there is no session to observe terminal. A seat that can never be
+            // filled again fails AC-4 as squarely as one filled twice.
+            //
+            // Only the exact reservation validated above is removed, which is the
+            // one this launch was issued from.
+            self.slots.remove(&slot);
+            return Err(RuntimeError::SessionAlreadyBound {
+                rule: "recovery launches a successor run, never the same run twice",
+            });
+        }
         self.slots.insert(
             slot,
             SlotAdmission::Launching {
@@ -609,6 +642,39 @@ impl AdmissionLedger {
             },
         );
         Ok(())
+    }
+
+    /// Whether a seat other than `excluding` is already committed to this run.
+    ///
+    /// Committed means a native session, or a launch on its way to one — including
+    /// a restored [`SlotAdmission::Unresolved`], whose whole meaning is that a
+    /// session for that run may exist.
+    ///
+    /// A [`SlotAdmission::Reserved`] elsewhere is deliberately not a conflict. It
+    /// is a question nobody has spent yet, and treating it as one would refuse
+    /// *both* launches of a run that was admitted in two seats, leaving it unable
+    /// to start anywhere. The first claim wins, and the reservation the loser is
+    /// holding is what gets turned away when it tries to spend it.
+    fn run_is_committed_elsewhere(
+        &self,
+        agent_run_id: AgentRunId,
+        excluding: &RoleSlotKey,
+    ) -> bool {
+        self.slots.iter().any(|(slot, admission)| {
+            slot != excluding
+                && match admission {
+                    SlotAdmission::Launching {
+                        agent_run_id: held, ..
+                    }
+                    | SlotAdmission::Occupied {
+                        agent_run_id: held, ..
+                    }
+                    | SlotAdmission::Unresolved {
+                        agent_run_id: held, ..
+                    } => *held == agent_run_id,
+                    SlotAdmission::Reserved { .. } => false,
+                }
+        })
     }
 
     /// Turn this launch's claim into the session it created.
@@ -849,6 +915,90 @@ mod tests {
 
     fn native(text: &str) -> ExternalId {
         ExternalId::parse(text).expect("a valid native id")
+    }
+
+    /// The three ways another seat can already be committed to a run: a launch in
+    /// flight, the session it became, and one whose fate a restart could not
+    /// settle. Every one of them means a native session for that run may exist.
+    fn committed_states(agent_run_id: AgentRunId) -> [SlotAdmission; 3] {
+        let binding_id = RuntimeBindingId::generate();
+        [
+            SlotAdmission::Launching {
+                ticket: AdmissionTicket::mint(),
+                agent_run_id,
+                binding_id,
+            },
+            SlotAdmission::Occupied {
+                agent_run_id,
+                binding_id,
+                native_id: native("native-session-1"),
+            },
+            SlotAdmission::Unresolved {
+                agent_run_id,
+                binding_id,
+            },
+        ]
+    }
+
+    /// One run owns one session, which the seat rule does not imply: two seats
+    /// each holding their own reservation for one run pass the seat check twice.
+    ///
+    /// Stated here, over each state that counts as committed, because only the
+    /// table can see them all — an adapter counting its own bindings cannot see a
+    /// claim that has not become one yet.
+    #[test]
+    fn a_run_committed_in_one_seat_cannot_claim_another() {
+        let here = seat();
+        let request = launch_request(&here);
+
+        for elsewhere in committed_states(request.agent_run_id()) {
+            let mut ledger = AdmissionLedger::new();
+            ledger.slots.insert(seat(), elsewhere.clone());
+            reserve(&mut ledger, &request);
+
+            let refused = ledger
+                .claim(&request)
+                .expect_err("a run already committed to a seat may not take a second one");
+
+            assert!(
+                matches!(refused, RuntimeError::SessionAlreadyBound { .. }),
+                "the refusal names the run rather than the seat, got {refused:?} against \
+                 {elsewhere:?}"
+            );
+            assert!(
+                !ledger.is_reserved(&here),
+                "and the reservation this run can never spend is abandoned rather than left \
+                 to wedge the seat"
+            );
+        }
+    }
+
+    /// A reservation elsewhere is a question, not a session.
+    ///
+    /// Counting one as a conflict would refuse *both* launches of a run admitted
+    /// in two seats, leaving it unable to start anywhere. The first claim wins.
+    #[test]
+    fn a_reservation_in_another_seat_does_not_block_a_claim() {
+        let here = seat();
+        let there = seat();
+        let request = launch_request(&here);
+        let mut ledger = AdmissionLedger::new();
+        reserve(&mut ledger, &request);
+        ledger.slots.insert(
+            there.clone(),
+            SlotAdmission::Reserved {
+                ticket: AdmissionTicket::mint(),
+                agent_run_id: request.agent_run_id(),
+                binding_id: RuntimeBindingId::generate(),
+            },
+        );
+
+        ledger.claim(&request).expect("the first claim wins");
+
+        assert!(
+            ledger.is_reserved(&there),
+            "the seat it did not claim keeps its unspent question"
+        );
     }
 
     /// One reservation admits one launch, even when two launches present it.
