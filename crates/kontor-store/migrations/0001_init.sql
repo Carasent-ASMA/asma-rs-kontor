@@ -720,16 +720,23 @@ CREATE TABLE runtime_bindings (
         REFERENCES agent_runs (project_id, id) ON DELETE RESTRICT
 ) STRICT;
 
--- The single persisted event-cursor space. It keeps its architecture v1 name
--- while carrying two shapes: trusted runtime observations, and the command
--- intents that must commit atomically with their receipt and outbox entry.
+-- The single persisted **control-plane cursor** space. It keeps its architecture
+-- v1 name while carrying two shapes: trusted runtime observations, and the
+-- command intents that must commit atomically with their receipt and outbox
+-- entry.
+--
+-- This cursor counts *control-plane* facts and nothing else. It is not the
+-- runtime's own `native_sequence`, and it is not a session-content sequence:
+-- those live in their own columns and their own gap tables, so a gap in one is
+-- never mistaken for a gap in another.
 CREATE TABLE runtime_events (
-    -- AUTOINCREMENT guarantees a monotonic, never-reused cursor even after
-    -- deletes, so a subscriber can always resume strictly after what it saw.
+    -- AUTOINCREMENT allocates the control-plane cursor inside the writing
+    -- transaction and never reuses a committed value, so a subscriber can always
+    -- resume strictly after what it saw. No caller ever computes MAX(cursor)+1.
     cursor             INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     project_id         TEXT    NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
     event_kind         TEXT    NOT NULL CHECK (event_kind IN
-                               ('runtime_observation', 'command_intent')),
+                               ('runtime_observation', 'census_observation', 'command_intent')),
     agent_run_id       TEXT    NULL,
     runtime_kind       TEXT    NULL CHECK (runtime_kind IS NULL OR length(runtime_kind) BETWEEN 1 AND 128),
     host               TEXT    NULL CHECK (host IS NULL OR length(host) BETWEEN 1 AND 512),
@@ -741,6 +748,19 @@ CREATE TABLE runtime_events (
     observed_state     TEXT    NULL CHECK (observed_state IS NULL OR observed_state IN
                                ('unknown', 'queued', 'launching', 'running', 'waiting_input',
                                 'blocked', 'succeeded', 'failed', 'cancelled')),
+    -- The normalized control-plane fields a reduction actually reads. They are
+    -- written in the same INSERT as the immutable raw payload below, so a
+    -- consequence can never exist without the evidence row it was derived from,
+    -- and a stored effect can always be re-checked against its own source.
+    contact            TEXT    NULL CHECK (contact IS NULL OR contact IN
+                               ('reachable', 'unavailable', 'process_missing', 'stream_closed')),
+    freshness          TEXT    NULL CHECK (freshness IS NULL OR freshness IN
+                               ('fresh', 'stale', 'unknown')),
+    -- An opaque reference to the runtime's own record of this observation. It is
+    -- a pointer for an audit, never the content: no whitespace, so a transcript
+    -- cannot be smuggled through it.
+    audit_ref          TEXT    NULL CHECK (audit_ref IS NULL OR
+                               (length(audit_ref) BETWEEN 1 AND 256 AND audit_ref NOT GLOB '* *')),
     command_receipt_id TEXT    NULL,
     payload            TEXT    NOT NULL CHECK (json_valid(payload)),
     payload_hash       TEXT    NOT NULL
@@ -758,7 +778,30 @@ CREATE TABLE runtime_events (
            OR (command_receipt_id IS NOT NULL AND agent_run_id IS NULL
                AND runtime_kind IS NULL AND host IS NULL AND generation IS NULL
                AND native_id IS NULL AND native_event_id IS NULL
-               AND native_sequence IS NULL AND observed_state IS NULL)),
+               AND native_sequence IS NULL AND observed_state IS NULL
+               AND contact IS NULL AND freshness IS NULL AND audit_ref IS NULL)),
+    -- A census observation is what a sweep saw of a native session this Realm
+    -- holds no binding for. It carries exactly the same raw-plus-normalized
+    -- evidence as a bound observation, in the same cursor space, so an orphan's
+    -- consequence is preceded by its evidence like any other — but it names no
+    -- run, and there is no column here it could name one in. Attaching one is
+    -- precisely the certainty a census must refuse.
+    CHECK (event_kind <> 'census_observation'
+           OR (agent_run_id IS NULL AND command_receipt_id IS NULL
+               AND runtime_kind IS NOT NULL AND host IS NOT NULL
+               AND generation IS NOT NULL AND native_id IS NOT NULL
+               AND native_sequence IS NOT NULL AND observed_state IS NOT NULL
+               AND contact IS NOT NULL AND freshness IS NOT NULL
+               AND audit_ref IS NOT NULL)),
+    -- A normalized observation is all of it or none of it. The fields a
+    -- reduction reads cannot arrive one at a time, and no row may claim to be
+    -- normalized while missing the state, ordering or audit reference that makes
+    -- it reducible.
+    CHECK ((contact IS NULL) = (freshness IS NULL)),
+    CHECK (contact IS NULL
+           OR (event_kind IN ('runtime_observation', 'census_observation')
+               AND observed_state IS NOT NULL
+               AND native_sequence IS NOT NULL AND audit_ref IS NOT NULL)),
     UNIQUE (project_id, cursor),
     FOREIGN KEY (project_id, agent_run_id)
         REFERENCES agent_runs (project_id, id) ON DELETE RESTRICT,
@@ -766,8 +809,8 @@ CREATE TABLE runtime_events (
         REFERENCES command_receipts (project_id, id) ON DELETE RESTRICT
 ) STRICT;
 
--- Reserve cursor 1 as the "nothing has happened yet" origin, so the first real
--- event is 2.
+-- Reserve control-plane cursor 1 as the "nothing has happened yet" origin, so
+-- the first real event is 2.
 --
 -- A snapshot taken against an empty ledger has to report *some* position, and a
 -- subscriber resumes strictly after it. If the first event could also be 1, that
@@ -777,33 +820,223 @@ INSERT INTO sqlite_sequence (name, seq) VALUES ('runtime_events', 1);
 
 CREATE INDEX ix_runtime_events_run ON runtime_events (project_id, agent_run_id, cursor);
 
--- Deduplicate observations by native event id inside a runtime generation when
--- the runtime provides one, and by canonical payload digest per run when it
--- does not. Neither applies to command intents.
+-- Deduplicate observations by native event id inside one native session, on one
+-- host, in one generation, when the runtime provides one. This does not apply to
+-- command intents.
+--
+-- Every part of that key earns its place. The host, because a native id is only
+-- unique inside `(runtime_kind, host, generation)`, so leaving it out would make
+-- two hosts' events collide. And the native session, because an event id is the
+-- runtime's numbering *within a session*: two sessions of one generation may both
+-- number their first event `e-1`, and a key without `native_id` would silently
+-- discard the second as a duplicate of the first — collapsing two runs' evidence
+-- into one row and leaving a real observation unrecorded.
 CREATE UNIQUE INDEX ux_runtime_events_native
-    ON runtime_events (runtime_kind, generation, native_event_id)
+    ON runtime_events (runtime_kind, host, generation, native_id, native_event_id)
     WHERE event_kind = 'runtime_observation' AND native_event_id IS NOT NULL;
-CREATE UNIQUE INDEX ux_runtime_events_hash
-    ON runtime_events (agent_run_id, payload_hash)
-    WHERE event_kind = 'runtime_observation' AND native_event_id IS NULL;
+
+-- The continuity identity of a control-plane observation: one native sequence
+-- per native session per generation. A repeat of that identity is the same
+-- observation and maps back to its original cursor; a *different* payload
+-- claiming it is a conflict, not a second truth, and changes nothing.
+--
+-- It covers every normalized observation, and every observation the runtime gave
+-- no id of its own — the two cases with no other identity to be recognized by.
+-- Identity is never the canonical payload digest: two genuinely distinct reports
+-- may say byte-for-byte the same thing ("still running", twice), and collapsing
+-- those into one row would discard a real observation and, with it, the evidence
+-- a later reduction is entitled to read.
+CREATE UNIQUE INDEX ux_runtime_events_continuity
+    ON runtime_events (runtime_kind, host, generation, native_id, native_sequence)
+    WHERE event_kind = 'runtime_observation'
+      AND (contact IS NOT NULL OR native_event_id IS NULL);
+
+-- A census observation has the same continuity identity in its own space, so a
+-- later sweep reporting the same moment maps onto the row that already holds it
+-- instead of filing a second one. The two spaces are kept apart deliberately: an
+-- orphan's evidence must never be mistaken for a bound run's, nor block it.
+CREATE UNIQUE INDEX ux_runtime_events_census
+    ON runtime_events (runtime_kind, host, generation, native_id, native_sequence)
+    WHERE event_kind = 'census_observation';
 
 -- Exactly one intent event per command receipt.
 CREATE UNIQUE INDEX ux_runtime_events_intent
     ON runtime_events (command_receipt_id)
     WHERE event_kind = 'command_intent';
 
-CREATE TABLE runtime_reconciliation_epochs (
+-- A persisted control-plane paging checkpoint.
+--
+-- Stateless cursor-addressed replay stays available; this table is what makes a
+-- *consumer* resumable across a restart without keeping its position in memory.
+-- The origin is control-plane cursor 1, which names no row, so a brand-new
+-- consumer is delivered the very first event rather than skipping it.
+CREATE TABLE runtime_replay_consumers (
     project_id   TEXT    NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
-    runtime_kind TEXT    NOT NULL CHECK (length(runtime_kind) BETWEEN 1 AND 128),
-    host         TEXT    NOT NULL CHECK (length(host) BETWEEN 1 AND 512),
-    generation   INTEGER NOT NULL CHECK (generation >= 0),
-    started_at   TEXT    NOT NULL
-                         CHECK (started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
-    completed_at TEXT    NULL
-                         CHECK (completed_at IS NULL OR completed_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
-    status       TEXT    NOT NULL CHECK (status IN ('in_progress', 'completed', 'failed')),
-    PRIMARY KEY (project_id, runtime_kind, host, generation, started_at),
-    CHECK (status = 'in_progress' OR completed_at IS NOT NULL)
+    consumer_key TEXT    NOT NULL CHECK (length(consumer_key) BETWEEN 1 AND 128),
+    last_cursor  INTEGER NOT NULL CHECK (last_cursor >= 1),
+    updated_at   TEXT    NOT NULL
+                         CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
+    PRIMARY KEY (project_id, consumer_key)
+) STRICT;
+
+-- A missing **control-plane observation**: the runtime's own sequence jumped, so
+-- one or more facts Kontor should have seen never arrived.
+--
+-- This says nothing about session content, and nothing about the run's outcome.
+-- It is evidence of an interruption, and it deliberately has no route to a
+-- lifecycle or a terminal value.
+CREATE TABLE runtime_control_gaps (
+    id                TEXT    NOT NULL PRIMARY KEY
+                              CHECK (length(id) = 36 AND id NOT GLOB '*[^0-9a-f-]*'),
+    project_id        TEXT    NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
+    agent_run_id      TEXT    NOT NULL,
+    runtime_kind      TEXT    NOT NULL CHECK (length(runtime_kind) BETWEEN 1 AND 128),
+    host              TEXT    NOT NULL CHECK (length(host) BETWEEN 1 AND 512),
+    generation        INTEGER NOT NULL CHECK (generation >= 0),
+    native_id         TEXT    NOT NULL CHECK (length(native_id) BETWEEN 1 AND 256),
+    expected_sequence INTEGER NOT NULL CHECK (expected_sequence >= 0),
+    received_sequence INTEGER NOT NULL CHECK (received_sequence >= 0),
+    -- The control-plane cursor of the observation that revealed the jump. It is
+    -- a real, already-persisted row: a gap is detected *from* evidence.
+    detected_cursor   INTEGER NOT NULL CHECK (detected_cursor >= 1),
+    audit_ref         TEXT    NOT NULL
+                              CHECK (length(audit_ref) BETWEEN 1 AND 256 AND audit_ref NOT GLOB '* *'),
+    detected_at       TEXT    NOT NULL
+                              CHECK (detected_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
+    UNIQUE (project_id, id),
+    -- Replaying the same discontinuity records the same single fact.
+    UNIQUE (project_id, agent_run_id, runtime_kind, host, generation, native_id,
+            expected_sequence, received_sequence),
+    CHECK (received_sequence > expected_sequence),
+    FOREIGN KEY (project_id, agent_run_id)
+        REFERENCES agent_runs (project_id, id) ON DELETE RESTRICT,
+    FOREIGN KEY (project_id, detected_cursor)
+        REFERENCES runtime_events (project_id, cursor) ON DELETE RESTRICT
+) STRICT;
+
+-- A missing piece of **session content** — the runtime's own transcript epoch or
+-- sequence skipped. Kontor records that a refetch is owed and nothing else.
+--
+-- There is deliberately no payload, message, transcript, token or delta column
+-- here, and there never may be: the durable control-plane log stores bindings,
+-- receipts, continuity evidence and opaque audit references. The content itself
+-- stays owned by the runtime. `audit_ref` is constrained to a whitespace-free
+-- opaque token so prose cannot be smuggled through the one text column.
+--
+-- This table also has no foreign key to any closure evidence and no path to a
+-- run projection: a hole in a transcript is not a fact about whether the work
+-- finished.
+CREATE TABLE runtime_content_gaps (
+    id                        TEXT    NOT NULL PRIMARY KEY
+                                      CHECK (length(id) = 36 AND id NOT GLOB '*[^0-9a-f-]*'),
+    project_id                TEXT    NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
+    agent_run_id              TEXT    NOT NULL,
+    content_epoch             INTEGER NOT NULL CHECK (content_epoch >= 0),
+    expected_content_sequence INTEGER NOT NULL CHECK (expected_content_sequence >= 0),
+    received_content_sequence INTEGER NOT NULL CHECK (received_content_sequence >= 0),
+    -- The control-plane cursor the gap was noticed at. It is a position, not a
+    -- claim that a control-plane event is missing.
+    detected_cursor           INTEGER NOT NULL CHECK (detected_cursor >= 1),
+    audit_ref                 TEXT    NOT NULL
+                                      CHECK (length(audit_ref) BETWEEN 1 AND 256
+                                             AND audit_ref NOT GLOB '* *'),
+    detected_at               TEXT    NOT NULL
+                                      CHECK (detected_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
+    UNIQUE (project_id, id),
+    UNIQUE (project_id, agent_run_id, content_epoch, expected_content_sequence,
+            received_content_sequence),
+    FOREIGN KEY (project_id, agent_run_id)
+        REFERENCES agent_runs (project_id, id) ON DELETE RESTRICT
+) STRICT;
+
+-- One census of one runtime generation.
+--
+-- The epoch is addressed by a caller-stable `(runtime_kind, host, generation,
+-- reconciliation_key)`, so a restart in the middle of a census reopens the same
+-- epoch instead of starting a second one. `census_start_cursor` freezes the
+-- control-plane position the census was taken against, which is what makes
+-- "absent from this census" a statement about a known moment rather than about
+-- now.
+CREATE TABLE runtime_reconciliation_epochs (
+    epoch_id            TEXT    NOT NULL PRIMARY KEY
+                                CHECK (length(epoch_id) = 36 AND epoch_id NOT GLOB '*[^0-9a-f-]*'),
+    project_id          TEXT    NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
+    runtime_kind        TEXT    NOT NULL CHECK (length(runtime_kind) BETWEEN 1 AND 128),
+    host                TEXT    NOT NULL CHECK (length(host) BETWEEN 1 AND 512),
+    generation          INTEGER NOT NULL CHECK (generation >= 0),
+    reconciliation_key  TEXT    NOT NULL CHECK (length(reconciliation_key) BETWEEN 1 AND 256),
+    census_start_cursor INTEGER NOT NULL CHECK (census_start_cursor >= 1),
+    completion_cursor   INTEGER NULL CHECK (completion_cursor IS NULL OR completion_cursor >= 1),
+    started_at          TEXT    NOT NULL
+                                CHECK (started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
+    completed_at        TEXT    NULL
+                                CHECK (completed_at IS NULL OR completed_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
+    status              TEXT    NOT NULL CHECK (status IN ('in_progress', 'completed', 'failed')),
+    UNIQUE (project_id, epoch_id),
+    -- The idempotency key of a whole census.
+    UNIQUE (project_id, runtime_kind, host, generation, reconciliation_key),
+    CHECK (status = 'in_progress' OR completed_at IS NOT NULL),
+    -- Only a *completed* census has a completion position, and only a completed
+    -- census may ever be read as authoritative about absence.
+    CHECK ((status = 'completed') = (completion_cursor IS NOT NULL)),
+    CHECK (completion_cursor IS NULL OR completion_cursor >= census_start_cursor)
+) STRICT;
+
+-- What one census actually saw, one row per native session.
+--
+-- A member with no `agent_run_id` is an orphan: a native session this Realm has
+-- no binding for. It is recorded as evidence and deliberately not attached to
+-- any run — inventing a binding is exactly the certainty this ticket refuses.
+CREATE TABLE runtime_reconciliation_members (
+    project_id         TEXT    NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
+    epoch_id           TEXT    NOT NULL,
+    native_id          TEXT    NOT NULL CHECK (length(native_id) BETWEEN 1 AND 256),
+    agent_run_id       TEXT    NULL,
+    observation_cursor INTEGER NOT NULL CHECK (observation_cursor >= 1),
+    observed_state     TEXT    NOT NULL CHECK (observed_state IN
+                               ('unknown', 'queued', 'launching', 'running', 'waiting_input',
+                                'blocked', 'succeeded', 'failed', 'cancelled')),
+    recorded_at        TEXT    NOT NULL
+                               CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
+    -- One membership row per native session per epoch: a duplicate census item
+    -- records no second fact.
+    PRIMARY KEY (project_id, epoch_id, native_id),
+    -- Every member — bound or orphan — cites the persisted control-plane
+    -- observation it was seen in, and the column is NOT NULL so it cannot be
+    -- skipped. A membership row is a consequence, and no consequence in this
+    -- store may exist without the raw-plus-normalized evidence it came from: an
+    -- orphan gets a `census_observation` in `runtime_events` to cite, appended
+    -- before this row, not an exemption from the rule.
+    FOREIGN KEY (project_id, epoch_id)
+        REFERENCES runtime_reconciliation_epochs (project_id, epoch_id) ON DELETE RESTRICT,
+    FOREIGN KEY (project_id, agent_run_id)
+        REFERENCES agent_runs (project_id, id) ON DELETE RESTRICT,
+    FOREIGN KEY (project_id, observation_cursor)
+        REFERENCES runtime_events (project_id, cursor) ON DELETE RESTRICT
+) STRICT;
+
+-- What one census concluded about one bound run, with the revisions and cursors
+-- it moved between. Repeating a finished epoch finds its row already here and
+-- writes nothing, which is what makes reconciliation idempotent rather than
+-- merely repeatable.
+CREATE TABLE runtime_reconciliation_results (
+    project_id         TEXT    NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
+    epoch_id           TEXT    NOT NULL,
+    agent_run_id       TEXT    NOT NULL,
+    -- Every value is a statement about contact and freshness. None of them is a
+    -- terminal outcome, because absence is not a verdict.
+    outcome            TEXT    NOT NULL CHECK (outcome IN
+                               ('present', 'lost_contact', 'orphaned', 'unchanged')),
+    source_revision    INTEGER NOT NULL CHECK (source_revision >= 1),
+    resulting_revision INTEGER NOT NULL CHECK (resulting_revision >= source_revision),
+    source_cursor      INTEGER NULL CHECK (source_cursor IS NULL OR source_cursor >= 1),
+    recorded_at        TEXT    NOT NULL
+                               CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
+    PRIMARY KEY (project_id, epoch_id, agent_run_id),
+    FOREIGN KEY (project_id, epoch_id)
+        REFERENCES runtime_reconciliation_epochs (project_id, epoch_id) ON DELETE RESTRICT,
+    FOREIGN KEY (project_id, agent_run_id)
+        REFERENCES agent_runs (project_id, id) ON DELETE RESTRICT
 ) STRICT;
 
 CREATE TABLE guardrail_evaluations (
@@ -1093,6 +1326,43 @@ CREATE TABLE command_receipts (
 
 CREATE INDEX ix_command_receipts_state ON command_receipts (project_id, state);
 
+-- Every state a command receipt has ever been in, in order.
+--
+-- `command_receipts` stays the current projection; this is the history behind
+-- it, and the two are written in the same transaction. The history is what a
+-- restart reads: a projection alone says where a command *is*, while recovery
+-- needs to know what was durably promised before the process died — above all
+-- the correlation a dispatch was made under, without which a native lookup
+-- cannot ask "did my command already take effect?".
+CREATE TABLE command_receipt_transitions (
+    project_id      TEXT    NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
+    receipt_id      TEXT    NOT NULL,
+    sequence        INTEGER NOT NULL CHECK (sequence >= 1),
+    state           TEXT    NOT NULL CHECK (state IN (
+                                'intent_persisted', 'dispatch_pending', 'dispatched',
+                                'acknowledged', 'confirmation_unknown', 'confirmed', 'failed')),
+    -- The stable dispatch correlation. It is persisted *before* any native call
+    -- and never rewritten, so a crash at any point after it still leaves a
+    -- lookup key behind.
+    correlation     TEXT    NULL CHECK (correlation IS NULL OR length(correlation) BETWEEN 1 AND 256),
+    native_identity TEXT    NULL CHECK (native_identity IS NULL OR json_valid(native_identity)),
+    -- Where the proof lives. Confirmation and failure are the two states that
+    -- assert something about the outside world, so they may not be recorded
+    -- without one. Acknowledgement asserts only that the target received the
+    -- command, and is deliberately allowed — and required — to carry none.
+    evidence_ref    TEXT    NULL CHECK (evidence_ref IS NULL OR length(evidence_ref) BETWEEN 1 AND 256),
+    recorded_at     TEXT    NOT NULL
+                            CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
+    PRIMARY KEY (project_id, receipt_id, sequence),
+    CHECK (state NOT IN ('confirmed', 'failed') OR evidence_ref IS NOT NULL),
+    CHECK (state <> 'acknowledged' OR evidence_ref IS NULL),
+    -- A dispatch-bearing state without its correlation is unrecoverable by
+    -- construction, so SQL refuses to store one.
+    CHECK (state NOT IN ('dispatch_pending', 'dispatched') OR correlation IS NOT NULL),
+    FOREIGN KEY (project_id, receipt_id)
+        REFERENCES command_receipts (project_id, id) ON DELETE RESTRICT
+) STRICT;
+
 CREATE TABLE command_outbox (
     -- Project-scoped: a globally unique receipt id is not a substitute for
     -- proving the receipt belongs to this project.
@@ -1103,9 +1373,18 @@ CREATE TABLE command_outbox (
                           CHECK (length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'),
     not_before    TEXT    NOT NULL
                           CHECK (not_before GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
+    -- The durable claim. Claiming is a write, not a SELECT: two dispatchers
+    -- racing for the same entry cannot both come away believing they own it, and
+    -- the token they own is the same correlation the command is dispatched
+    -- under. It is written once and reused by every later attempt, so a retry is
+    -- always recognizable as the same command rather than a new one.
+    claim_token   TEXT    NULL CHECK (claim_token IS NULL OR length(claim_token) BETWEEN 1 AND 256),
+    claimed_at    TEXT    NULL
+                          CHECK (claimed_at IS NULL OR claimed_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
     dispatched_at TEXT    NULL
                           CHECK (dispatched_at IS NULL OR dispatched_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
     attempts      INTEGER NOT NULL CHECK (attempts >= 0),
+    CHECK ((claim_token IS NULL) = (claimed_at IS NULL)),
     FOREIGN KEY (project_id, receipt_id)
         REFERENCES command_receipts (project_id, id) ON DELETE RESTRICT
 ) STRICT;
@@ -1244,6 +1523,68 @@ CREATE TRIGGER runtime_events_no_update BEFORE UPDATE ON runtime_events
 BEGIN SELECT RAISE(ABORT, 'runtime events are append-only'); END;
 CREATE TRIGGER runtime_events_no_delete BEFORE DELETE ON runtime_events
 BEGIN SELECT RAISE(ABORT, 'runtime events are append-only'); END;
+
+-- Both gap ledgers are facts about what was missing at a moment. Editing one
+-- away would erase the very uncertainty it exists to keep.
+CREATE TRIGGER runtime_control_gaps_no_update BEFORE UPDATE ON runtime_control_gaps
+BEGIN SELECT RAISE(ABORT, 'control-plane gaps are append-only'); END;
+CREATE TRIGGER runtime_control_gaps_no_delete BEFORE DELETE ON runtime_control_gaps
+BEGIN SELECT RAISE(ABORT, 'control-plane gaps are append-only'); END;
+
+CREATE TRIGGER runtime_content_gaps_no_update BEFORE UPDATE ON runtime_content_gaps
+BEGIN SELECT RAISE(ABORT, 'content gaps are append-only'); END;
+CREATE TRIGGER runtime_content_gaps_no_delete BEFORE DELETE ON runtime_content_gaps
+BEGIN SELECT RAISE(ABORT, 'content gaps are append-only'); END;
+
+-- A receipt's history is the record a restart trusts; only the projection moves.
+CREATE TRIGGER command_receipt_transitions_no_update
+BEFORE UPDATE ON command_receipt_transitions
+BEGIN SELECT RAISE(ABORT, 'receipt transitions are append-only'); END;
+CREATE TRIGGER command_receipt_transitions_no_delete
+BEFORE DELETE ON command_receipt_transitions
+BEGIN SELECT RAISE(ABORT, 'receipt transitions are append-only'); END;
+
+-- What a census saw, and what it concluded, are both immutable once written.
+CREATE TRIGGER runtime_reconciliation_members_no_update
+BEFORE UPDATE ON runtime_reconciliation_members
+BEGIN SELECT RAISE(ABORT, 'epoch membership is append-only'); END;
+CREATE TRIGGER runtime_reconciliation_members_no_delete
+BEFORE DELETE ON runtime_reconciliation_members
+BEGIN SELECT RAISE(ABORT, 'epoch membership is append-only'); END;
+
+CREATE TRIGGER runtime_reconciliation_results_no_update
+BEFORE UPDATE ON runtime_reconciliation_results
+BEGIN SELECT RAISE(ABORT, 'epoch results are append-only'); END;
+CREATE TRIGGER runtime_reconciliation_results_no_delete
+BEFORE DELETE ON runtime_reconciliation_results
+BEGIN SELECT RAISE(ABORT, 'epoch results are append-only'); END;
+
+-- An epoch's identity, its census-start position and its completion are written
+-- once. A completed census cannot be reopened to say something else about the
+-- same moment, and a failed one cannot be quietly promoted to authoritative.
+CREATE TRIGGER runtime_reconciliation_epochs_immutable
+BEFORE UPDATE ON runtime_reconciliation_epochs
+WHEN OLD.status <> 'in_progress'
+     OR OLD.project_id <> NEW.project_id
+     OR OLD.runtime_kind <> NEW.runtime_kind
+     OR OLD.host <> NEW.host
+     OR OLD.generation <> NEW.generation
+     OR OLD.reconciliation_key <> NEW.reconciliation_key
+     OR OLD.census_start_cursor <> NEW.census_start_cursor
+     OR OLD.started_at <> NEW.started_at
+BEGIN SELECT RAISE(ABORT, 'a reconciliation epoch keeps its identity and census start'); END;
+
+CREATE TRIGGER runtime_reconciliation_epochs_no_delete
+BEFORE DELETE ON runtime_reconciliation_epochs
+BEGIN SELECT RAISE(ABORT, 'reconciliation epochs are not deletable'); END;
+
+-- A consumer checkpoint only ever moves forward. Rewinding it would re-deliver
+-- events a consumer has already acted on, which is indistinguishable from a
+-- duplicate delivery it cannot detect.
+CREATE TRIGGER runtime_replay_consumers_forward_only
+BEFORE UPDATE ON runtime_replay_consumers
+WHEN NEW.last_cursor < OLD.last_cursor
+BEGIN SELECT RAISE(ABORT, 'a replay checkpoint never moves backwards'); END;
 
 CREATE TRIGGER guardrail_evaluations_no_update BEFORE UPDATE ON guardrail_evaluations
 BEGIN SELECT RAISE(ABORT, 'guardrail evaluations are append-only'); END;
@@ -1404,11 +1745,15 @@ CREATE TRIGGER execution_authorization_tasks_no_delete
 BEFORE DELETE ON execution_authorization_tasks
 BEGIN SELECT RAISE(ABORT, 'an authorization task set is immutable'); END;
 
+-- The payload never changes, and neither does a claim once it exists: the claim
+-- token is the correlation every later attempt must reuse, so re-minting it
+-- would turn a retry into a command nobody can recognize.
 CREATE TRIGGER command_outbox_payload_immutable BEFORE UPDATE ON command_outbox
 WHEN OLD.payload <> NEW.payload
      OR OLD.payload_hash <> NEW.payload_hash
      OR OLD.receipt_id <> NEW.receipt_id
-BEGIN SELECT RAISE(ABORT, 'an outbox payload is immutable'); END;
+     OR (OLD.claim_token IS NOT NULL AND OLD.claim_token IS NOT NEW.claim_token)
+BEGIN SELECT RAISE(ABORT, 'an outbox payload and its claim token are immutable'); END;
 
 -- A revocation is recorded once and never edited away.
 CREATE TRIGGER schedule_overrides_revocation_immutable BEFORE UPDATE ON schedule_overrides

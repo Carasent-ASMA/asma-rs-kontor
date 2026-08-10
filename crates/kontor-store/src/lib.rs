@@ -10,8 +10,27 @@
 //! revision, specification and authority, writes every row, event and receipt it
 //! needs, and then commits. A failure leaves the aggregate revision, the event
 //! log and the outbox exactly as they were.
+//!
+//! Three modules carry the runtime-consistency protocol, and each owns one
+//! question a control plane gets wrong under crashes:
+//!
+//! * [`commands`] — *did this command already take effect?* Answered from the
+//!   durable receipt and the correlation persisted before the native call, never
+//!   from a restart or an expired lease.
+//! * [`events`] — *what did the runtime actually tell us, and in what order?*
+//!   Raw and normalized evidence lands before any consequence, duplicates map
+//!   back to their original cursor, and a missing control fact is recorded as a
+//!   gap rather than smoothed over.
+//! * [`reconciliation`] — *what does the runtime say exists right now?* Absence
+//!   from a completed census costs a run its freshness and nothing else.
+//!
+//! The rule they share is the one uncertainty always breaks: an absence, a
+//! timeout, a closed stream or a missing session is never a completion.
 
+mod commands;
+mod events;
 mod migrations;
+mod reconciliation;
 mod repository;
 
 use std::path::Path;
@@ -22,7 +41,19 @@ use kontor_core::realm::RealmMetadata;
 use kontor_core::repository::RepositoryError;
 use rusqlite::Connection;
 
+pub use commands::intent::DispatchClaim;
+pub use commands::receipts::{
+    CommandRecovery, CommandTransition, ReceiptTransition, RecordedTransition,
+};
+pub use events::types::{
+    ConsumerPage, ContentDiscontinuity, ContentGapOutcome, ControlGap, ControlObservation,
+    ControlObservationOutcome,
+};
 pub use migrations::SCHEMA_VERSION;
+pub use reconciliation::{
+    CensusItem, CensusOutcome, EpochKey, EpochStatus, EpochSummary, ReconciliationEpoch,
+    ReconciliationEpochId,
+};
 
 /// Everything the store can refuse.
 #[derive(Debug, thiserror::Error)]

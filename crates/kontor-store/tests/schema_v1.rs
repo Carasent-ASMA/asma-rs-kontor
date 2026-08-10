@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use kontor_store::{SCHEMA_VERSION, SqliteStore, StoreError};
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use tempfile::TempDir;
 
 /// Every table schema v1 owns. The list is spelled out so that adding or
@@ -28,6 +28,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "calendar_exceptions",
     "calendar_profiles",
     "command_outbox",
+    "command_receipt_transitions",
     "command_receipts",
     "command_targets",
     "context_packs",
@@ -47,8 +48,13 @@ const EXPECTED_TABLES: &[&str] = &[
     "realm_metadata",
     "resource_leases",
     "runtime_bindings",
+    "runtime_content_gaps",
+    "runtime_control_gaps",
     "runtime_events",
     "runtime_reconciliation_epochs",
+    "runtime_reconciliation_members",
+    "runtime_reconciliation_results",
+    "runtime_replay_consumers",
     "schedule_overrides",
     "source_events",
     "status_conflicts",
@@ -891,6 +897,472 @@ fn the_runtime_event_cursor_is_monotonic_and_never_reused() {
         .map(|_| connection.last_insert_rowid())
         .expect("a new generation is a new event");
     assert!(third > second);
+
+    // And a native event id is the runtime's numbering *inside one session*, so
+    // two sessions of one generation may both call their first event `n-1`. A key
+    // without the session would collapse them and lose one run's evidence.
+    let fourth = connection
+        .execute(
+            "INSERT INTO runtime_events
+                 (project_id, event_kind, agent_run_id, runtime_kind, host, generation,
+                  native_id, native_event_id, native_sequence, payload, payload_hash,
+                  observed_at, recorded_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', 'runtime_observation',
+                     '0193f000-0000-7000-8000-000000000040', 'generic.runtime', 'host-1', 1,
+                     'session-def', 'n-1', 1, '{}',
+                     'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                     '2026-08-09T10:00:00Z', '2026-08-09T10:00:01Z')",
+            [],
+        )
+        .map(|_| connection.last_insert_rowid())
+        .expect("another session's `n-1` is another event");
+    assert!(fourth > third);
+}
+
+/// One normalized control-plane observation, as direct SQL.
+///
+/// `native_event_id` is optional because plenty of runtimes number nothing: those
+/// observations are identified by their native sequence alone, and the schema has
+/// to recognize them by it.
+fn control_observation(
+    connection: &Connection,
+    native_event_id: Option<&str>,
+    sequence: i64,
+    hash: &str,
+    normalized: bool,
+) -> rusqlite::Result<i64> {
+    connection
+        .execute(
+            "INSERT INTO runtime_events
+                 (project_id, event_kind, agent_run_id, runtime_kind, host, generation,
+                  native_id, native_event_id, native_sequence, observed_state, contact, freshness,
+                  audit_ref, payload, payload_hash, observed_at, recorded_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', 'runtime_observation',
+                     '0193f000-0000-7000-8000-000000000040', 'generic.runtime', 'host-1', 1,
+                     'session-abc', ?1, ?2, 'running', ?3, ?4, ?5, '{}', ?6,
+                     '2026-08-09T10:00:00Z', '2026-08-09T10:00:01Z')",
+            rusqlite::params![
+                native_event_id,
+                sequence,
+                normalized.then_some("reachable"),
+                normalized.then_some("fresh"),
+                normalized.then_some("audit-1"),
+                hash
+            ],
+        )
+        .map(|_| connection.last_insert_rowid())
+}
+
+#[test]
+fn a_normalized_observation_cannot_be_stored_in_pieces_or_claim_a_used_sequence() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    connection
+        .execute_batch(RUN_FIXTURE)
+        .expect("the run fixture inserts");
+
+    let hash = |c: char| c.to_string().repeat(64);
+    control_observation(&connection, Some("n-1"), 1, &hash('a'), true)
+        .expect("a complete normalized observation stores");
+
+    // The continuity identity: one native sequence per session per generation.
+    // A second row claiming it — even under a different native event id — is a
+    // conflict, not a second truth.
+    assert!(
+        control_observation(&connection, Some("n-1b"), 1, &hash('b'), true).is_err(),
+        "two normalized observations must not claim one native sequence"
+    );
+
+    // Half a normalized observation is not storable: an effect derived from
+    // contact or freshness would otherwise have no evidence to cite.
+    for (contact, freshness, audit) in [
+        (Some("reachable"), None::<&str>, Some("audit-1")),
+        (None, Some("fresh"), Some("audit-1")),
+        (Some("reachable"), Some("fresh"), None),
+    ] {
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO runtime_events
+                         (project_id, event_kind, agent_run_id, runtime_kind, host, generation,
+                          native_id, native_event_id, native_sequence, observed_state, contact,
+                          freshness, audit_ref, payload, payload_hash, observed_at, recorded_at)
+                     VALUES ('0193f000-0000-7000-8000-000000000001', 'runtime_observation',
+                             '0193f000-0000-7000-8000-000000000040', 'generic.runtime', 'host-1',
+                             1, 'session-abc', 'n-partial', 9, 'running', ?1, ?2, ?3, '{}', ?4,
+                             '2026-08-09T10:00:00Z', '2026-08-09T10:00:01Z')",
+                    rusqlite::params![contact, freshness, audit, hash('c')],
+                )
+                .is_err(),
+            "a normalized observation is all of it or none of it"
+        );
+    }
+
+    // A normalized row without the state it normalizes is equally impossible.
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO runtime_events
+                     (project_id, event_kind, agent_run_id, runtime_kind, host, generation,
+                      native_id, native_event_id, native_sequence, contact, freshness, audit_ref,
+                      payload, payload_hash, observed_at, recorded_at)
+                 VALUES ('0193f000-0000-7000-8000-000000000001', 'runtime_observation',
+                         '0193f000-0000-7000-8000-000000000040', 'generic.runtime', 'host-1', 1,
+                         'session-abc', 'n-stateless', 11, 'reachable', 'fresh', 'audit-1', '{}',
+                         ?1, '2026-08-09T10:00:00Z', '2026-08-09T10:00:01Z')",
+                rusqlite::params![hash('d')],
+            )
+            .is_err(),
+        "a normalized observation must carry the state a reduction reads"
+    );
+
+    // The same native sequence on another host is a different session, and
+    // deduplication must not swallow it.
+    connection
+        .execute(
+            "INSERT INTO runtime_events
+                 (project_id, event_kind, agent_run_id, runtime_kind, host, generation,
+                  native_id, native_event_id, native_sequence, observed_state, contact, freshness,
+                  audit_ref, payload, payload_hash, observed_at, recorded_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', 'runtime_observation',
+                     '0193f000-0000-7000-8000-000000000040', 'generic.runtime', 'host-2', 1,
+                     'session-abc', 'n-1', 1, 'running', 'reachable', 'fresh', 'audit-2', '{}',
+                     ?1, '2026-08-09T10:00:00Z', '2026-08-09T10:00:01Z')",
+            rusqlite::params![hash('e')],
+        )
+        .expect("another host is another session");
+}
+
+#[test]
+fn an_observation_with_no_native_id_is_identified_by_its_sequence_not_its_payload() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    connection
+        .execute_batch(RUN_FIXTURE)
+        .expect("the run fixture inserts");
+
+    let same = "a".repeat(64);
+    control_observation(&connection, None, 5, &same, true)
+        .expect("an observation with no id of its own stores");
+
+    // Two contacts with the runtime that happened to report the same thing. The
+    // payload digest is identical and the observations are not: deduplicating on
+    // the digest would throw the second one away, and with it the evidence that
+    // the runtime was still answering at sequence 6.
+    control_observation(&connection, None, 6, &same, true)
+        .expect("an identical payload at a later sequence is a distinct observation");
+
+    // What *is* identity: the native sequence in this session and generation. A
+    // second row claiming sequence 6 is refused whether its payload matches or
+    // not, so one moment never carries two stories.
+    for payload in [&same, &"b".repeat(64)] {
+        assert!(
+            control_observation(&connection, None, 6, payload, true).is_err(),
+            "one native sequence carries one observation"
+        );
+    }
+
+    // The same holds for a bare, un-normalized observation: with no id of its own
+    // it is still recognized by its sequence rather than by its bytes.
+    control_observation(&connection, None, 7, &same, false)
+        .expect("a bare observation with no id stores");
+    assert!(
+        control_observation(&connection, None, 7, &"c".repeat(64), false).is_err(),
+        "one native sequence carries one observation, normalized or not"
+    );
+
+    let stored: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM runtime_events WHERE native_event_id IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("readable");
+    assert_eq!(stored, 3, "three distinct sequences, three rows");
+}
+
+/// What a reader may rely on when an appender allocates a cursor and then dies.
+///
+/// Note what is deliberately *not* claimed. SQLite keeps the AUTOINCREMENT
+/// counter in `sqlite_sequence`, an ordinary table that is rolled back with the
+/// transaction that moved it — so the integer a doomed append was handed can
+/// legally be issued again, and this test captures it to prove that rather than
+/// looking away. The guarantee readers depend on is narrower and does hold: a
+/// *committed* cursor is never reissued, and a rolled-back one was never
+/// committed and so never delivered to anybody, which is why reusing it costs no
+/// subscriber a delivery and duplicates none.
+#[test]
+fn rolled_back_cursor_is_never_reused_after_reopen() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    connection
+        .execute_batch(RUN_FIXTURE)
+        .expect("the run fixture inserts");
+    let hash = |c: char| c.to_string().repeat(64);
+
+    let committed = control_observation(&connection, Some("n-1"), 1, &hash('a'), true)
+        .expect("the first observation commits");
+
+    // A second appender allocates, then dies. Capture the cursor it was handed: a
+    // test that never looks at it cannot prove anything about reuse.
+    let doomed = {
+        let transaction = connection
+            .unchecked_transaction()
+            .expect("a transaction opens");
+        let allocated = control_observation(&connection, Some("n-2"), 2, &hash('b'), true)
+            .expect("the doomed observation allocates a cursor");
+        transaction.rollback().expect("the transaction rolls back");
+        allocated
+    };
+    assert!(
+        doomed > committed,
+        "the doomed append allocated ahead of the committed one"
+    );
+    drop(connection);
+
+    // Reopen the file, exactly as a restarted daemon would.
+    let _reopened = open(&directory);
+    let connection = raw(&directory);
+    let next = control_observation(&connection, Some("n-3"), 3, &hash('c'), true)
+        .expect("a later observation commits");
+
+    assert!(
+        next > committed,
+        "a committed cursor is never handed out twice"
+    );
+    let rolled_back: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM runtime_events WHERE native_event_id = 'n-2'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("readable");
+    assert_eq!(rolled_back, 0, "a rolled-back append leaves no row behind");
+
+    // The rolled-back allocation left no claim on its cursor either. If that
+    // cursor comes round again — and under SQLite's rollback of `sqlite_sequence`
+    // it does — it belongs to the committed event and to nothing else.
+    let occupant: Option<String> = connection
+        .query_row(
+            "SELECT native_event_id FROM runtime_events WHERE cursor = ?1",
+            rusqlite::params![doomed],
+            |row| row.get(0),
+        )
+        .optional()
+        .expect("readable");
+    assert_ne!(
+        occupant.as_deref(),
+        Some("n-2"),
+        "a rolled-back append never owns a cursor"
+    );
+    assert_eq!(
+        occupant.is_some(),
+        next == doomed,
+        "the reissued cursor, when it is reissued, is the committed event's"
+    );
+
+    // The counter itself never sits below the newest committed cursor, so the next
+    // allocation cannot land on one a subscriber has already been shown.
+    let sequence: i64 = connection
+        .query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'runtime_events'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the sequence is readable");
+    assert_eq!(
+        sequence, next,
+        "the cursor sequence never regresses below what is committed"
+    );
+
+    // Every committed cursor is distinct and ascending, so a subscriber that
+    // resumes after `committed` is delivered the later event exactly once.
+    let mut statement = connection
+        .prepare("SELECT cursor FROM runtime_events ORDER BY cursor")
+        .expect("readable");
+    let cursors: Vec<i64> = statement
+        .query_map([], |row| row.get(0))
+        .expect("readable")
+        .map(|cursor| cursor.expect("a cursor"))
+        .collect();
+    let distinct: BTreeSet<i64> = cursors.iter().copied().collect();
+    assert_eq!(distinct.len(), cursors.len(), "cursors are unique");
+    assert!(cursors.windows(2).all(|pair| pair[0] < pair[1]));
+    let after: Vec<i64> = cursors
+        .iter()
+        .copied()
+        .filter(|cursor| *cursor > committed)
+        .collect();
+    assert_eq!(
+        after,
+        vec![next],
+        "resuming after a committed cursor delivers each later event once"
+    );
+}
+
+#[test]
+fn a_replay_checkpoint_and_a_finished_census_never_move_backwards() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    connection
+        .execute_batch(RUN_FIXTURE)
+        .expect("the run fixture inserts");
+
+    connection
+        .execute(
+            "INSERT INTO runtime_replay_consumers
+                 (project_id, consumer_key, last_cursor, updated_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', 'projector', 5,
+                     '2026-08-09T10:00:00Z')",
+            [],
+        )
+        .expect("a checkpoint stores");
+    assert!(
+        connection
+            .execute(
+                "UPDATE runtime_replay_consumers SET last_cursor = 4 WHERE consumer_key = 'projector'",
+                [],
+            )
+            .is_err(),
+        "a checkpoint must not rewind"
+    );
+    connection
+        .execute(
+            "UPDATE runtime_replay_consumers SET last_cursor = 9 WHERE consumer_key = 'projector'",
+            [],
+        )
+        .expect("a checkpoint may advance");
+
+    // A census that has settled keeps the moment it was taken at.
+    connection
+        .execute(
+            "INSERT INTO runtime_reconciliation_epochs
+                 (epoch_id, project_id, runtime_kind, host, generation, reconciliation_key,
+                  census_start_cursor, started_at, status)
+             VALUES ('0193f000-0000-7000-8000-0000000000e1',
+                     '0193f000-0000-7000-8000-000000000001', 'generic.runtime', 'host-1', 1,
+                     'sweep-1', 3, '2026-08-09T10:00:00Z', 'in_progress')",
+            [],
+        )
+        .expect("an epoch begins");
+    assert!(
+        connection
+            .execute(
+                "UPDATE runtime_reconciliation_epochs SET census_start_cursor = 2
+                 WHERE epoch_id = '0193f000-0000-7000-8000-0000000000e1'",
+                [],
+            )
+            .is_err(),
+        "a census start position is fixed when the census begins"
+    );
+    // A completed census must record where it completed; a failed one must not
+    // be able to claim it was authoritative.
+    assert!(
+        connection
+            .execute(
+                "UPDATE runtime_reconciliation_epochs
+                 SET status = 'completed', completed_at = '2026-08-09T11:00:00Z'
+                 WHERE epoch_id = '0193f000-0000-7000-8000-0000000000e1'",
+                [],
+            )
+            .is_err(),
+        "a completed census must record its completion cursor"
+    );
+    connection
+        .execute(
+            "UPDATE runtime_reconciliation_epochs
+             SET status = 'completed', completed_at = '2026-08-09T11:00:00Z',
+                 completion_cursor = 7
+             WHERE epoch_id = '0193f000-0000-7000-8000-0000000000e1'",
+            [],
+        )
+        .expect("a census completes");
+    assert!(
+        connection
+            .execute(
+                "UPDATE runtime_reconciliation_epochs SET status = 'failed'
+                 WHERE epoch_id = '0193f000-0000-7000-8000-0000000000e1'",
+                [],
+            )
+            .is_err(),
+        "a settled census is immutable"
+    );
+}
+
+#[test]
+fn a_content_gap_has_nowhere_to_put_session_content() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+
+    // The table has no column for a transcript, a message, a token count or a
+    // delta, and none of the three referenced columns is one either.
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info('runtime_content_gaps')")
+        .expect("readable");
+    let columns: BTreeSet<String> = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("readable")
+        .map(|name| name.expect("a column name"))
+        .collect();
+    for forbidden in [
+        "payload",
+        "content",
+        "transcript",
+        "message",
+        "messages",
+        "body",
+        "text",
+        "tokens",
+        "token_delta",
+        "usage",
+    ] {
+        assert!(
+            !columns.contains(forbidden),
+            "`runtime_content_gaps` must not be able to store `{forbidden}`"
+        );
+    }
+
+    // A content gap never points at closure evidence: it has no foreign key to
+    // a receipt or to an event, so it cannot be cited as a reason a run ended.
+    let mut statement = connection
+        .prepare("SELECT \"table\" FROM pragma_foreign_key_list('runtime_content_gaps')")
+        .expect("readable");
+    let targets: BTreeSet<String> = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("readable")
+        .map(|name| name.expect("a table name"))
+        .collect();
+    assert!(
+        !targets.contains("command_receipts") && !targets.contains("runtime_events"),
+        "a content gap must not reference closure evidence"
+    );
+
+    connection
+        .execute_batch(RUN_FIXTURE)
+        .expect("the run fixture inserts");
+    // The one text column is an opaque reference. Prose cannot be smuggled
+    // through it.
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO runtime_content_gaps
+                     (id, project_id, agent_run_id, content_epoch, expected_content_sequence,
+                      received_content_sequence, detected_cursor, audit_ref, detected_at)
+                 VALUES ('0193f000-0000-7000-8000-0000000000f1',
+                         '0193f000-0000-7000-8000-000000000001',
+                         '0193f000-0000-7000-8000-000000000040', 1, 4, 9, 2,
+                         'the user asked me to delete the production database',
+                         '2026-08-09T10:00:00Z')",
+                [],
+            )
+            .is_err(),
+        "an audit reference is an opaque token, not a place for content"
+    );
 }
 
 #[test]
@@ -1624,6 +2096,61 @@ fn all_logical_relationships_are_project_scoped_and_fk_backed() {
             "command_targets",
             &["project_id", "target_work_calendar_id"],
             "work_calendars",
+            &["project_id", "id"],
+        ),
+        (
+            "command_receipt_transitions",
+            &["project_id", "receipt_id"],
+            "command_receipts",
+            &["project_id", "id"],
+        ),
+        // --- runtime consistency ---------------------------------------------
+        (
+            "runtime_control_gaps",
+            &["project_id", "agent_run_id"],
+            "agent_runs",
+            &["project_id", "id"],
+        ),
+        (
+            "runtime_control_gaps",
+            &["project_id", "detected_cursor"],
+            "runtime_events",
+            &["project_id", "cursor"],
+        ),
+        (
+            "runtime_content_gaps",
+            &["project_id", "agent_run_id"],
+            "agent_runs",
+            &["project_id", "id"],
+        ),
+        (
+            "runtime_reconciliation_members",
+            &["project_id", "epoch_id"],
+            "runtime_reconciliation_epochs",
+            &["project_id", "epoch_id"],
+        ),
+        (
+            "runtime_reconciliation_members",
+            &["project_id", "agent_run_id"],
+            "agent_runs",
+            &["project_id", "id"],
+        ),
+        (
+            "runtime_reconciliation_members",
+            &["project_id", "observation_cursor"],
+            "runtime_events",
+            &["project_id", "cursor"],
+        ),
+        (
+            "runtime_reconciliation_results",
+            &["project_id", "epoch_id"],
+            "runtime_reconciliation_epochs",
+            &["project_id", "epoch_id"],
+        ),
+        (
+            "runtime_reconciliation_results",
+            &["project_id", "agent_run_id"],
+            "agent_runs",
             &["project_id", "id"],
         ),
     ];

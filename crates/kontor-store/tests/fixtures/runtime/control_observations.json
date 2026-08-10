@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "comment": "One arrival order, replayed against one bound run. The run's desired state is run_requested throughout, so a fresh `running` observation confirms and a gapped one does not. `expected_sequence` is the adapter's continuity claim; `expect.gap` is whether that claim was broken.",
+  "observations": [
+    {
+      "name": "first_report",
+      "native_event_id": "n-2",
+      "native_sequence": 2,
+      "expected_sequence": 2,
+      "observed": "running",
+      "contact": "reachable",
+      "freshness": "fresh",
+      "marker": "running-2",
+      "expect": {
+        "appended": true,
+        "reduced": true,
+        "gap": false,
+        "observed": "running",
+        "derived": "confirmed"
+      }
+    },
+    {
+      "name": "exact_duplicate",
+      "native_event_id": "n-2",
+      "native_sequence": 2,
+      "expected_sequence": 2,
+      "observed": "running",
+      "contact": "reachable",
+      "freshness": "fresh",
+      "marker": "running-2",
+      "expect": {
+        "appended": false,
+        "reduced": false,
+        "gap": false,
+        "observed": "running",
+        "derived": "confirmed"
+      }
+    },
+    {
+      "name": "late_older_report",
+      "native_event_id": "n-1",
+      "native_sequence": 1,
+      "expected_sequence": 1,
+      "observed": "waiting_input",
+      "contact": "reachable",
+      "freshness": "fresh",
+      "marker": "waiting-1",
+      "expect": {
+        "appended": true,
+        "reduced": false,
+        "gap": false,
+        "observed": "running",
+        "derived": "confirmed"
+      }
+    },
+    {
+      "name": "forward_sequence_jump",
+      "native_event_id": "n-5",
+      "native_sequence": 5,
+      "expected_sequence": 3,
+      "observed": "running",
+      "contact": "reachable",
+      "freshness": "fresh",
+      "marker": "running-5",
+      "expect": {
+        "appended": true,
+        "reduced": true,
+        "gap": true,
+        "observed": "running",
+        "derived": "stale"
+      }
+    },
+    {
+      "name": "replayed_jump",
+      "native_event_id": "n-5",
+      "native_sequence": 5,
+      "expected_sequence": 3,
+      "observed": "running",
+      "contact": "reachable",
+      "freshness": "fresh",
+      "marker": "running-5",
+      "expect": {
+        "appended": false,
+        "reduced": false,
+        "gap": false,
+        "observed": "running",
+        "derived": "stale"
+      }
+    },
+    {
+      "name": "continuity_restored",
+      "native_event_id": "n-6",
+      "native_sequence": 6,
+      "expected_sequence": 6,
+      "observed": "running",
+      "contact": "reachable",
+      "freshness": "fresh",
+      "marker": "running-6",
+      "expect": {
+        "appended": true,
+        "reduced": true,
+        "gap": false,
+        "observed": "running",
+        "derived": "confirmed"
+      }
+    },
+    {
+      "name": "runtime_unreachable",
+      "native_event_id": "n-7",
+      "native_sequence": 7,
+      "expected_sequence": 7,
+      "observed": "running",
+      "contact": "unavailable",
+      "freshness": "fresh",
+      "marker": "running-7",
+      "expect": {
+        "appended": true,
+        "reduced": true,
+        "gap": false,
+        "observed": "running",
+        "derived": "runtime_unavailable"
+      }
+    },
+    {
+      "name": "process_gone",
+      "native_event_id": "n-8",
+      "native_sequence": 8,
+      "expected_sequence": 8,
+      "observed": "running",
+      "contact": "process_missing",
+      "freshness": "fresh",
+      "marker": "running-8",
+      "expect": {
+        "appended": true,
+        "reduced": true,
+        "gap": false,
+        "observed": "running",
+        "derived": "lost_contact"
+      }
+    }
+  ]
+}

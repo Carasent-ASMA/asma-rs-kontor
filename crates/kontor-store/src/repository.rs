@@ -29,8 +29,7 @@ use kontor_core::id::{
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
-    AggregateRef, CommandKind, CommandOutboxEntry, CommandReceipt, CommandReceiptState,
-    ReceiptAuthority, RevisionRule,
+    AggregateRef, CommandKind, CommandOutboxEntry, CommandReceipt, ReceiptAuthority,
 };
 use kontor_core::repository::{
     AccountProfile, AgentRun, CalendarRepository, CommandRepository, ConnectorSpecSelector,
@@ -49,10 +48,9 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{
     AbandonReceiptFacts, DerivedRunState, DesiredRunState, GateState, GateVerdict,
-    NativeRuntimeIdentity, ObservedRunState, RunDerivation, RunLifecycle, RunProjection,
-    RuntimeObservation, TaskState, TaskTransition, TeamChildEvidence, TeamEvidenceSource,
-    TeamTerminalEvidence, TerminalEvidence, TerminalEvidenceSource, TerminalOutcome,
-    plan_team_advance, plan_team_closure,
+    NativeRuntimeIdentity, ObservedRunState, RunLifecycle, RunProjection, TaskState,
+    TaskTransition, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
+    TerminalEvidenceSource, TerminalOutcome, plan_team_advance, plan_team_closure,
 };
 use kontor_core::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -72,7 +70,7 @@ const MAX_PARENT_CHAIN: usize = 1_024;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn backend(error: rusqlite::Error) -> RepositoryError {
+pub(crate) fn backend(error: rusqlite::Error) -> RepositoryError {
     if let rusqlite::Error::SqliteFailure(failure, _) = &error
         && failure.code == rusqlite::ErrorCode::ConstraintViolation
     {
@@ -89,38 +87,38 @@ fn backend(error: rusqlite::Error) -> RepositoryError {
     }
 }
 
-fn conflict(subject: &'static str, rule: &'static str) -> RepositoryError {
+pub(crate) fn conflict(subject: &'static str, rule: &'static str) -> RepositoryError {
     RepositoryError::Conflict { subject, rule }
 }
 
-fn text(timestamp: Timestamp) -> String {
+pub(crate) fn text(timestamp: Timestamp) -> String {
     format_utc_timestamp(timestamp)
 }
 
-fn read_timestamp(value: &str) -> RepositoryResult<Timestamp> {
+pub(crate) fn read_timestamp(value: &str) -> RepositoryResult<Timestamp> {
     Ok(parse_utc_timestamp(value)?)
 }
 
-fn to_json<T: Serialize>(value: &T) -> RepositoryResult<String> {
+pub(crate) fn to_json<T: Serialize>(value: &T) -> RepositoryResult<String> {
     serde_json::to_string(value).map_err(|_| RepositoryError::Backend {
         detail: "value could not be serialized as JSON".to_owned(),
     })
 }
 
-fn from_json<T: DeserializeOwned>(value: &str) -> RepositoryResult<T> {
+pub(crate) fn from_json<T: DeserializeOwned>(value: &str) -> RepositoryResult<T> {
     serde_json::from_str(value).map_err(|_| RepositoryError::Backend {
         detail: "stored JSON does not match the expected shape".to_owned(),
     })
 }
 
-fn revision_of(value: i64) -> RepositoryResult<AggregateRevision> {
+pub(crate) fn revision_of(value: i64) -> RepositoryResult<AggregateRevision> {
     let unsigned = u64::try_from(value).map_err(|_| RepositoryError::Backend {
         detail: "stored revision is negative".to_owned(),
     })?;
     Ok(AggregateRevision::parse(unsigned)?)
 }
 
-fn revision_column(revision: AggregateRevision) -> RepositoryResult<i64> {
+pub(crate) fn revision_column(revision: AggregateRevision) -> RepositoryResult<i64> {
     i64::try_from(revision.get()).map_err(|_| RepositoryError::Backend {
         detail: "revision exceeds the storable range".to_owned(),
     })
@@ -186,7 +184,7 @@ fn read_scope(
 
 /// Split a typed target into its discriminator and its seven mutually exclusive
 /// id columns.
-fn target_columns(target: &AggregateRef) -> (&'static str, [Option<String>; 7]) {
+pub(crate) fn target_columns(target: &AggregateRef) -> (&'static str, [Option<String>; 7]) {
     let mut columns: [Option<String>; 7] = Default::default();
     let kind = match target {
         AggregateRef::Project { project_id } => {
@@ -221,7 +219,7 @@ fn target_columns(target: &AggregateRef) -> (&'static str, [Option<String>; 7]) 
     (kind, columns)
 }
 
-fn target_project(target: &AggregateRef) -> Option<ProjectId> {
+pub(crate) fn target_project(target: &AggregateRef) -> Option<ProjectId> {
     match target {
         AggregateRef::Project { project_id } => Some(*project_id),
         _ => None,
@@ -229,8 +227,23 @@ fn target_project(target: &AggregateRef) -> Option<ProjectId> {
 }
 
 impl SqliteStore {
-    fn begin(&self) -> RepositoryResult<Transaction<'_>> {
-        self.connection.unchecked_transaction().map_err(backend)
+    /// Open one short transaction.
+    ///
+    /// `IMMEDIATE`, not the default deferred behaviour, and that matters under
+    /// concurrency rather than in a single-process test. A deferred transaction
+    /// takes its read snapshot first and only asks for the write lock when it
+    /// reaches its first write — and in WAL mode, if anyone committed in
+    /// between, SQLite refuses that upgrade with `SQLITE_BUSY` *immediately*,
+    /// without consulting the busy timeout, because retrying could deadlock.
+    /// Two appenders would then fail each other rather than queue.
+    ///
+    /// Taking the write lock up front means the second writer waits out the
+    /// bounded busy timeout and proceeds. Every transaction in this store is
+    /// short and none is held across a native call, so serializing them is the
+    /// cheap half of the trade.
+    pub(crate) fn begin(&self) -> RepositoryResult<Transaction<'_>> {
+        Transaction::new_unchecked(&self.connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)
     }
 }
 
@@ -1485,7 +1498,7 @@ const AGENT_RUN_COLUMNS: &str = "team_run_id, parent_agent_run_id, role_key, acc
 const AGENT_RUN_COLUMN_COUNT: usize = 18;
 
 #[allow(clippy::too_many_lines)]
-fn read_agent_run(
+pub(crate) fn read_agent_run(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
     id: AgentRunId,
@@ -1622,86 +1635,10 @@ fn read_agent_run(
     }))
 }
 
-fn generation_column(generation: u64) -> RepositoryResult<i64> {
+pub(crate) fn generation_column(generation: u64) -> RepositoryResult<i64> {
     i64::try_from(generation).map_err(|_| RepositoryError::Backend {
         detail: "runtime generation exceeds the storable range".to_owned(),
     })
-}
-
-fn append_event(
-    transaction: &Transaction<'_>,
-    request: &NewRuntimeEvent,
-    observed: Option<ObservedRunState>,
-) -> RepositoryResult<(EventCursor, bool)> {
-    let generation = generation_column(request.identity.generation)?;
-    let payload_hash = request.payload.hash().as_str().to_owned();
-    let native_sequence =
-        i64::try_from(request.native_sequence).map_err(|_| RepositoryError::Backend {
-            detail: "native sequence exceeds the storable range".to_owned(),
-        })?;
-    let inserted = transaction.execute(
-        "INSERT INTO runtime_events
-             (project_id, event_kind, agent_run_id, runtime_kind, host, generation, native_id,
-              native_event_id, native_sequence, observed_state, payload, payload_hash,
-              observed_at, recorded_at)
-         VALUES (?1, 'runtime_observation', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-        params![
-            request.project_id.to_string(),
-            request.agent_run_id.to_string(),
-            request.identity.runtime_kind.as_str(),
-            request.identity.host.as_str(),
-            generation,
-            request.identity.native_id.as_str(),
-            request.native_event_id.as_ref().map(ExternalId::as_str),
-            native_sequence,
-            observed.map(ObservedRunState::as_str),
-            request.payload.json(),
-            payload_hash.as_str(),
-            text(request.observed_at),
-            text(Timestamp::now())
-        ],
-    );
-    match inserted {
-        Ok(_) => Ok((EventCursor::parse(transaction.last_insert_rowid())?, true)),
-        Err(error) => {
-            // A replayed event is not an error: return the cursor it already
-            // has, and tell the caller it is a replay so nothing reduces twice.
-            let mapped = backend(error);
-            if !matches!(mapped, RepositoryError::Conflict { .. }) {
-                return Err(mapped);
-            }
-            let existing: Option<i64> = if let Some(native) = &request.native_event_id {
-                transaction
-                    .query_row(
-                        "SELECT cursor FROM runtime_events
-                         WHERE event_kind = 'runtime_observation' AND runtime_kind = ?1
-                           AND generation = ?2 AND native_event_id = ?3",
-                        params![
-                            request.identity.runtime_kind.as_str(),
-                            generation,
-                            native.as_str()
-                        ],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(backend)?
-            } else {
-                transaction
-                    .query_row(
-                        "SELECT cursor FROM runtime_events
-                         WHERE event_kind = 'runtime_observation' AND agent_run_id = ?1
-                           AND payload_hash = ?2",
-                        params![request.agent_run_id.to_string(), payload_hash.as_str()],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(backend)?
-            };
-            existing
-                .ok_or(mapped)
-                .and_then(|cursor| Ok((EventCursor::parse(cursor)?, false)))
-        }
-    }
 }
 
 impl RunRepository for SqliteStore {
@@ -2053,124 +1990,11 @@ impl RunRepository for SqliteStore {
     }
 
     fn append_runtime_event(&self, request: &NewRuntimeEvent) -> RepositoryResult<EventCursor> {
-        let transaction = self.begin()?;
-        let (cursor, _) = append_event(&transaction, request, None)?;
-        transaction.commit().map_err(backend)?;
-        Ok(cursor)
+        crate::events::append::append_runtime_event(self, request)
     }
 
     fn record_observation(&self, request: &NewObservation) -> RepositoryResult<RunProjection> {
-        let transaction = self.begin()?;
-        let project_id = request.event.project_id;
-        let run_id = request.event.agent_run_id;
-        let run =
-            read_agent_run(&transaction, project_id, run_id)?.ok_or(RepositoryError::NotFound {
-                subject: "agent run",
-            })?;
-        run.projection.ensure_open("agent run")?;
-        run.revision
-            .expect("agent run", request.expected_revision)?;
-
-        // A reducible observation must come from the run's own immutable
-        // binding. A different generation or identity is reconciliation input,
-        // never an overwrite of this run.
-        let binding = run.binding.as_ref().ok_or(DomainError::MissingEvidence {
-            subject: "observation",
-            rule: "an unbound run has nothing to reduce an observation against",
-        })?;
-        if !binding.identity.same_session(&request.event.identity) {
-            return Err(DomainError::MissingEvidence {
-                subject: "observation",
-                rule: "the event was not emitted by this run's binding",
-            }
-            .into());
-        }
-
-        // The raw event is appended first; the reduced state is derived from it,
-        // never the other way round.
-        let (cursor, stored) = append_event(&transaction, &request.event, Some(request.observed))?;
-
-        // Monotonic protection. A replay, or anything at or behind the highest
-        // sequence already applied, leaves the projection *exactly* as it was:
-        // no observed/derived change, no cursor move, no revision increment.
-        let applied: Option<i64> = transaction
-            .query_row(
-                "SELECT last_native_sequence FROM agent_runs WHERE project_id = ?1 AND id = ?2",
-                params![project_id.to_string(), run_id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(backend)?
-            .flatten();
-        let incoming =
-            i64::try_from(request.event.native_sequence).map_err(|_| RepositoryError::Backend {
-                detail: "native sequence exceeds the storable range".to_owned(),
-            })?;
-        let last_applied = applied.map(|value| u64::try_from(value).unwrap_or_default());
-        if !stored || !RunProjection::may_reduce(last_applied, request.event.native_sequence) {
-            // Committing is correct here: a genuinely new-but-older event has
-            // still been appended as evidence, and a replay wrote nothing.
-            transaction.commit().map_err(backend)?;
-            return Ok(run.projection);
-        }
-
-        let observation = RuntimeObservation {
-            agent_run_id: run_id,
-            state: request.observed,
-            identity: request.event.identity.clone(),
-            cursor,
-            observed_at: request.event.observed_at,
-            evidence_hash: request.event.payload.hash().clone(),
-        };
-        let derived = kontor_core::state::derive_run_state(&RunDerivation {
-            desired: run.projection.desired,
-            observation: Some(&observation),
-            binding: Some(&binding.identity),
-            freshness: request.freshness,
-            contact: request.contact,
-            terminal: None,
-        })?;
-        let confirmed_at = if derived == DerivedRunState::Confirmed {
-            Some(text(request.event.observed_at))
-        } else {
-            run.projection.last_confirmed_at.map(text)
-        };
-        let next_revision = run.revision.next()?;
-        let changed = transaction
-            .execute(
-                "UPDATE agent_runs
-                 SET observed_state = ?1, derived_state = ?2, last_confirmed_at = ?3,
-                     last_cursor = ?4, last_native_sequence = ?5, revision = ?6
-                 WHERE project_id = ?7 AND id = ?8 AND revision = ?9",
-                params![
-                    request.observed.as_str(),
-                    derived.as_str(),
-                    confirmed_at,
-                    cursor.get(),
-                    incoming,
-                    revision_column(next_revision)?,
-                    project_id.to_string(),
-                    run_id.to_string(),
-                    revision_column(run.revision)?
-                ],
-            )
-            .map_err(backend)?;
-        if changed != 1 {
-            return Err(conflict(
-                "agent run",
-                "the run revision moved during the write",
-            ));
-        }
-        transaction.commit().map_err(backend)?;
-
-        Ok(RunProjection {
-            lifecycle: run.projection.lifecycle,
-            desired: run.projection.desired,
-            observed: request.observed,
-            derived,
-            last_confirmed_at: confirmed_at.as_deref().map(read_timestamp).transpose()?,
-            last_cursor: Some(cursor),
-        })
+        crate::events::append::record_observation(self, request)
     }
 
     fn close_agent_run(&self, request: &RunClosure) -> RepositoryResult<()> {
@@ -2364,55 +2188,7 @@ impl RunRepository for SqliteStore {
         agent_run_id: AgentRunId,
         after: Option<EventCursor>,
     ) -> RepositoryResult<Vec<RuntimeEvent>> {
-        let mut statement = self
-            .connection
-            .prepare(
-                "SELECT cursor, runtime_kind, host, generation, native_id, native_event_id,
-                        payload, payload_hash, observed_at, recorded_at, native_sequence
-                 FROM runtime_events
-                 WHERE event_kind = 'runtime_observation'
-                   AND project_id = ?1 AND agent_run_id = ?2 AND cursor > ?3
-                 ORDER BY cursor",
-            )
-            .map_err(backend)?;
-        let mut rows = statement
-            .query(params![
-                project_id.to_string(),
-                agent_run_id.to_string(),
-                after.map_or(0, EventCursor::get)
-            ])
-            .map_err(backend)?;
-        let mut events = Vec::new();
-        while let Some(row) = rows.next().map_err(backend)? {
-            let native_event_id: Option<String> = row.get(5).map_err(backend)?;
-            let payload: String = row.get(6).map_err(backend)?;
-            let payload_hash: String = row.get(7).map_err(backend)?;
-            let digest = ContentHash::parse(&payload_hash)?;
-            let generation: i64 = row.get(3).map_err(backend)?;
-            events.push(RuntimeEvent {
-                cursor: EventCursor::parse(row.get(0).map_err(backend)?)?,
-                project_id,
-                agent_run_id,
-                identity: NativeRuntimeIdentity {
-                    runtime_kind: RuntimeKindKey::parse(
-                        &row.get::<_, String>(1).map_err(backend)?,
-                    )?,
-                    host: ExternalName::parse(&row.get::<_, String>(2).map_err(backend)?)?,
-                    generation: u64::try_from(generation).unwrap_or_default(),
-                    native_id: ExternalId::parse(&row.get::<_, String>(4).map_err(backend)?)?,
-                },
-                native_event_id: native_event_id
-                    .as_deref()
-                    .map(ExternalId::parse)
-                    .transpose()?,
-                native_sequence: u64::try_from(row.get::<_, i64>(10).map_err(backend)?)
-                    .unwrap_or_default(),
-                payload: CanonicalDocument::from_stored(&payload, &digest)?,
-                observed_at: read_timestamp(&row.get::<_, String>(8).map_err(backend)?)?,
-                recorded_at: read_timestamp(&row.get::<_, String>(9).map_err(backend)?)?,
-            });
-        }
-        Ok(events)
+        crate::events::replay::read_runtime_events(self, project_id, agent_run_id, after)
     }
 }
 
@@ -2722,191 +2498,13 @@ impl IntakeRepository for SqliteStore {
 // Commands and outbox
 // ---------------------------------------------------------------------------
 
-fn read_receipt(row: &Row<'_>) -> RepositoryResult<CommandReceipt> {
-    let intent: String = row.get(6).map_err(backend)?;
-    let intent_hash: String = row.get(7).map_err(backend)?;
-    let digest = ContentHash::parse(&intent_hash)?;
-    let native: Option<String> = row.get(10).map_err(backend)?;
-    let correlation: Option<String> = row.get(9).map_err(backend)?;
-    let result_ref: Option<String> = row.get(11).map_err(backend)?;
-    let attempts: i64 = row.get(12).map_err(backend)?;
-    Ok(CommandReceipt {
-        id: CommandReceiptId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
-        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
-        idempotency_key: IdempotencyKey::parse(&row.get::<_, String>(2).map_err(backend)?)?,
-        kind: CommandKind::parse(&row.get::<_, String>(3).map_err(backend)?)?,
-        target: from_json(&row.get::<_, String>(4).map_err(backend)?)?,
-        target_revision: revision_of(row.get::<_, i64>(5).map_err(backend)?)?,
-        intent: CanonicalDocument::from_stored(&intent, &digest)?,
-        state: CommandReceiptState::parse(&row.get::<_, String>(8).map_err(backend)?)?,
-        correlation: correlation.as_deref().map(ExternalId::parse).transpose()?,
-        native_identity: native
-            .map(|json| from_json::<NativeRuntimeIdentity>(&json))
-            .transpose()?,
-        result_ref: result_ref.as_deref().map(ExternalId::parse).transpose()?,
-        attempts: u32::try_from(attempts).unwrap_or(u32::MAX),
-        created_at: read_timestamp(&row.get::<_, String>(13).map_err(backend)?)?,
-        updated_at: read_timestamp(&row.get::<_, String>(14).map_err(backend)?)?,
-    })
-}
-
-const RECEIPT_COLUMNS: &str = "id, project_id, idempotency_key, kind, target, target_revision, \
+pub(crate) const RECEIPT_COLUMNS: &str = "id, project_id, idempotency_key, kind, target, target_revision, \
      intent, intent_hash, state, correlation, native_identity, result_ref, attempts, created_at, \
      updated_at";
 
 impl CommandRepository for SqliteStore {
     fn record_intent(&self, request: &NewCommandIntent) -> RepositoryResult<CommandReceipt> {
-        // The kind and the target are not two independently supplied facts that
-        // happen to be stored next to each other: one constrains the other, and
-        // the pair decides both the revision rule and the desired-state change.
-        // Refused here, before `begin`, so no effect of the five can survive.
-        let rule = request
-            .kind
-            .ensure_compatible(&request.target, request.desired)?;
-        if let Some(project) = target_project(&request.target)
-            && project != request.project_id
-        {
-            return Err(RepositoryError::CrossProject {
-                subject: "command target",
-            });
-        }
-        let transaction = self.begin()?;
-        let existing: Option<RepositoryResult<CommandReceipt>> = transaction
-            .query_row(
-                &format!(
-                    "SELECT {RECEIPT_COLUMNS} FROM command_receipts WHERE idempotency_key = ?1"
-                ),
-                params![request.idempotency_key.as_str()],
-                |row| Ok(read_receipt(row)),
-            )
-            .optional()
-            .map_err(backend)?;
-        if let Some(existing) = existing {
-            let existing = existing?;
-            // A byte-identical replay returns the original receipt; anything
-            // else fails atomically.
-            existing.ensure_replay(&request.target, &request.intent)?;
-            return Ok(existing);
-        }
-
-        let target = to_json(&request.target)?;
-        transaction
-            .execute(
-                "INSERT INTO command_receipts
-                     (id, project_id, idempotency_key, kind, target, target_revision, intent,
-                      intent_hash, state, attempts, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'intent_persisted', 0, ?9, ?9)",
-                params![
-                    request.receipt_id.to_string(),
-                    request.project_id.to_string(),
-                    request.idempotency_key.as_str(),
-                    request.kind.as_str(),
-                    target,
-                    revision_column(request.target_revision)?,
-                    request.intent.json(),
-                    request.intent.hash().as_str(),
-                    text(request.created_at)
-                ],
-            )
-            .map_err(backend)?;
-        // The normalized target row is what makes the canonical target JSON
-        // trustworthy: the same reference, expressed relationally, with a
-        // composite foreign key that cannot point outside this project.
-        let (kind, columns) = target_columns(&request.target);
-        transaction
-            .execute(
-                "INSERT INTO command_targets
-                     (project_id, receipt_id, target_kind, target_project_id,
-                      target_mini_project_id, target_task_id, target_team_run_id,
-                      target_agent_run_id, target_ticket_link_id, target_work_calendar_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    request.project_id.to_string(),
-                    request.receipt_id.to_string(),
-                    kind,
-                    columns[0],
-                    columns[1],
-                    columns[2],
-                    columns[3],
-                    columns[4],
-                    columns[5],
-                    columns[6]
-                ],
-            )
-            .map_err(backend)?;
-        transaction
-            .execute(
-                "INSERT INTO command_outbox
-                     (receipt_id, project_id, payload, payload_hash, not_before, attempts)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-                params![
-                    request.receipt_id.to_string(),
-                    request.project_id.to_string(),
-                    request.payload.json(),
-                    request.payload.hash().as_str(),
-                    text(request.not_before)
-                ],
-            )
-            .map_err(backend)?;
-
-        // Desired state moves in the same transaction as the intent and the
-        // outbox entry. Either all three exist or none of them do. Which
-        // commands get here is the matrix's decision, not this code's: the rule
-        // says compare-and-swap exactly when the target records a desired state
-        // and this command moves it.
-        if let (
-            RevisionRule::CompareAndSwap,
-            Some(desired),
-            AggregateRef::AgentRun { agent_run_id },
-        ) = (rule.revision, request.desired, request.target)
-        {
-            let changed = transaction
-                .execute(
-                    "UPDATE agent_runs SET desired_state = ?1, revision = revision + 1
-                     WHERE project_id = ?2 AND id = ?3 AND revision = ?4",
-                    params![
-                        desired.as_str(),
-                        request.project_id.to_string(),
-                        agent_run_id.to_string(),
-                        revision_column(request.target_revision)?
-                    ],
-                )
-                .map_err(backend)?;
-            if changed != 1 {
-                // Either the run does not exist in this project, or it moved
-                // since the intent was computed. Both refuse the whole
-                // transaction: intent, outbox entry and desired state are one
-                // unit of work.
-                return Err(conflict(
-                    "command target",
-                    "the target run is unknown in this project or its revision moved",
-                ));
-            }
-        }
-        // The intent event is the fifth effect, and it commits with the other
-        // four or not at all.
-        transaction
-            .execute(
-                "INSERT INTO runtime_events
-                     (project_id, event_kind, command_receipt_id, payload, payload_hash,
-                      observed_at, recorded_at)
-                 VALUES (?1, 'command_intent', ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    request.project_id.to_string(),
-                    request.receipt_id.to_string(),
-                    request.intent.json(),
-                    request.intent.hash().as_str(),
-                    text(request.created_at),
-                    text(Timestamp::now())
-                ],
-            )
-            .map_err(backend)?;
-        transaction.commit().map_err(backend)?;
-
-        self.get_receipt_by_key(&request.idempotency_key)?
-            .ok_or(RepositoryError::NotFound {
-                subject: "command receipt",
-            })
+        crate::commands::intent::record_intent(self, request)
     }
 
     fn get_receipt_by_key(&self, key: &IdempotencyKey) -> RepositoryResult<Option<CommandReceipt>> {
@@ -2916,7 +2514,7 @@ impl CommandRepository for SqliteStore {
                     "SELECT {RECEIPT_COLUMNS} FROM command_receipts WHERE idempotency_key = ?1"
                 ),
                 params![key.as_str()],
-                |row| Ok(read_receipt(row)),
+                |row| Ok(crate::commands::receipts::read_receipt_row(row)),
             )
             .optional()
             .map_err(backend)?
@@ -2924,102 +2522,7 @@ impl CommandRepository for SqliteStore {
     }
 
     fn advance_receipt(&self, request: &ReceiptAdvance) -> RepositoryResult<CommandReceipt> {
-        let transaction = self.begin()?;
-        let existing: Option<RepositoryResult<CommandReceipt>> = transaction
-            .query_row(
-                &format!(
-                    "SELECT {RECEIPT_COLUMNS} FROM command_receipts
-                     WHERE project_id = ?1 AND id = ?2"
-                ),
-                params![
-                    request.project_id.to_string(),
-                    request.receipt_id.to_string()
-                ],
-                |row| Ok(read_receipt(row)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let receipt = existing.ok_or(RepositoryError::NotFound {
-            subject: "command receipt",
-        })??;
-
-        let next = if request.to == CommandReceiptState::DispatchPending
-            && receipt.state == CommandReceiptState::ConfirmationUnknown
-        {
-            let evidence = request
-                .no_effect
-                .as_ref()
-                .ok_or(DomainError::MissingEvidence {
-                    subject: "command retry",
-                    rule: "an unknown dispatch result must be reconciled before retrying",
-                })?;
-            receipt.authorize_retry(evidence)?
-        } else {
-            receipt.transition(request.to)?
-        };
-
-        let attempts = if next == CommandReceiptState::Dispatched {
-            receipt.attempts.saturating_add(1)
-        } else {
-            receipt.attempts
-        };
-        let correlation = request
-            .correlation
-            .as_ref()
-            .map(ExternalId::as_str)
-            .map(str::to_owned)
-            .or_else(|| {
-                receipt
-                    .correlation
-                    .as_ref()
-                    .map(|value| value.as_str().to_owned())
-            });
-        let native = request
-            .native_identity
-            .as_ref()
-            .map(to_json)
-            .transpose()?
-            .or(receipt.native_identity.as_ref().map(to_json).transpose()?);
-        let changed = transaction
-            .execute(
-                "UPDATE command_receipts
-                 SET state = ?1, correlation = ?2, native_identity = ?3, result_ref = ?4,
-                     attempts = ?5, updated_at = ?6
-                 WHERE project_id = ?7 AND id = ?8 AND state = ?9",
-                params![
-                    next.as_str(),
-                    correlation,
-                    native,
-                    request.result_ref.as_ref().map(ExternalId::as_str),
-                    i64::from(attempts),
-                    text(request.occurred_at),
-                    request.project_id.to_string(),
-                    request.receipt_id.to_string(),
-                    receipt.state.as_str()
-                ],
-            )
-            .map_err(backend)?;
-        if changed != 1 {
-            return Err(conflict(
-                "command receipt",
-                "the receipt state moved during the write",
-            ));
-        }
-        if next == CommandReceiptState::Dispatched {
-            transaction
-                .execute(
-                    "UPDATE command_outbox
-                     SET dispatched_at = ?1, attempts = attempts + 1 WHERE receipt_id = ?2",
-                    params![text(request.occurred_at), request.receipt_id.to_string()],
-                )
-                .map_err(backend)?;
-        }
-        transaction.commit().map_err(backend)?;
-
-        self.get_receipt_by_key(&receipt.idempotency_key)?
-            .ok_or(RepositoryError::NotFound {
-                subject: "command receipt",
-            })
+        crate::commands::receipts::advance_receipt(self, request)
     }
 
     fn claim_outbox(
@@ -3028,34 +2531,7 @@ impl CommandRepository for SqliteStore {
         now: Timestamp,
         limit: u32,
     ) -> RepositoryResult<Vec<CommandOutboxEntry>> {
-        let mut statement = self
-            .connection
-            .prepare(
-                "SELECT receipt_id, payload, payload_hash, not_before, dispatched_at, attempts
-                 FROM command_outbox
-                 WHERE project_id = ?1 AND dispatched_at IS NULL AND not_before <= ?2
-                 ORDER BY not_before, receipt_id LIMIT ?3",
-            )
-            .map_err(backend)?;
-        let mut rows = statement
-            .query(params![project_id.to_string(), text(now), i64::from(limit)])
-            .map_err(backend)?;
-        let mut entries = Vec::new();
-        while let Some(row) = rows.next().map_err(backend)? {
-            let payload: String = row.get(1).map_err(backend)?;
-            let payload_hash: String = row.get(2).map_err(backend)?;
-            let digest = ContentHash::parse(&payload_hash)?;
-            let dispatched: Option<String> = row.get(4).map_err(backend)?;
-            let attempts: i64 = row.get(5).map_err(backend)?;
-            entries.push(CommandOutboxEntry {
-                receipt_id: CommandReceiptId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
-                payload: CanonicalDocument::from_stored(&payload, &digest)?,
-                not_before: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
-                dispatched_at: dispatched.as_deref().map(read_timestamp).transpose()?,
-                attempts: u32::try_from(attempts).unwrap_or(u32::MAX),
-            });
-        }
-        Ok(entries)
+        crate::commands::intent::read_outbox(self, project_id, now, limit)
     }
 }
 
