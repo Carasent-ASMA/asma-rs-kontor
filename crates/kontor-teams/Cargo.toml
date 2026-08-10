@@ -12,7 +12,18 @@ description = "Versioned team templates and run snapshots."
 workspace = true
 
 [dependencies]
+# The exact version is the workspace's own package version. A bare path
+# dependency is a wildcard requirement, which `deny.toml` refuses.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+# No feature is needed to build a launch: a `LaunchRequest` now comes from
+# runtime-issued admission, so this crate uses the same public surface as
+# everybody else.
+kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-uuid = { workspace = true }
-thiserror = { workspace = true }
+
+[dev-dependencies]
+# The team contract suite drives the sealed slot API against the deterministic
+# fake runtime `kontor-runtime` already ships, so it needs only an async
+# executor on top of the dependencies above.
+tokio = { workspace = true }

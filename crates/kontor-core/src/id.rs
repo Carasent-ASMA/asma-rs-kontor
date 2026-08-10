@@ -316,6 +316,68 @@ open_keys! {
     CredentialAlias,
 }
 
+/// The stable address of one concrete seat in one team run.
+///
+/// A *logical role* ([`RoleKey`]) is a reusable definition — `researcher` — that
+/// a template refers to and a work profile hands work to. A *role slot* is one
+/// concrete seat in one team — `researcher-a` — and is the only thing that ever
+/// becomes an agent run's `role`. Declaring the same logical role twice is
+/// therefore legal and is spelled with two slots; it is never spelled by
+/// launching a slot twice.
+///
+/// It is a transparent wrapper around [`RoleKey`] because a run's `role` is the
+/// persisted slot address in this MVP. The wrapper exists so a logical role and
+/// a slot cannot be passed to each other by accident, and the conversion back
+/// into storage happens at exactly one place ([`RoleSlotId::as_role_key`]).
+///
+/// It lives in the core rather than in `kontor-teams` because a slot is half of
+/// the address a runtime admits a launch on — the other half being
+/// [`TeamRunId`] — so both the team layer and the runtime layer must be able to
+/// name it without depending on each other.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RoleSlotId(RoleKey);
+
+impl RoleSlotId {
+    /// Address a slot by an already-validated key.
+    #[must_use]
+    pub const fn new(key: RoleKey) -> Self {
+        Self(key)
+    }
+
+    /// Parse a slot id.
+    ///
+    /// # Errors
+    /// As [`RoleKey::parse`]: the slot id obeys the one open-key lexical rule.
+    pub fn parse(text: &str) -> DomainResult<Self> {
+        RoleKey::parse(text).map(Self)
+    }
+
+    /// The storage form of this slot address.
+    #[must_use]
+    pub const fn as_role_key(&self) -> &RoleKey {
+        &self.0
+    }
+
+    /// Consume the wrapper, yielding the storage form.
+    #[must_use]
+    pub fn into_role_key(self) -> RoleKey {
+        self.0
+    }
+
+    /// Borrow the slot id text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Display for RoleSlotId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // External (foreign-owned) strings
 // ---------------------------------------------------------------------------

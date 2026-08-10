@@ -28,6 +28,10 @@ use serde::Deserialize;
 use crate::adapter::{
     LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
+use crate::admission::{
+    AdmissionOutcome, AdmissionRequest, AdmissionTicket, LaunchAuthority, ReplacedBinding,
+    RoleSlotKey,
+};
 use crate::capability::{
     IssuedBinding, LimitDemand, OperationContext, RuntimeBindingSnapshot, RuntimeCapabilities,
     RuntimeCapability, RuntimeLimits, preflight,
@@ -319,6 +323,27 @@ impl FakeSession {
     }
 }
 
+/// What one seat is currently holding.
+///
+/// The two variants are the whole of AC-4 as this runtime sees it: a seat has
+/// either an unspent reservation or a native binding, never both and never two
+/// of either.
+#[derive(Debug, Clone)]
+enum SlotAdmission {
+    /// Authority has been issued for this seat and not yet spent.
+    Reserved {
+        ticket: AdmissionTicket,
+        agent_run_id: AgentRunId,
+        binding_id: RuntimeBindingId,
+    },
+    /// A native session was launched into this seat.
+    Occupied {
+        agent_run_id: AgentRunId,
+        binding_id: RuntimeBindingId,
+        native_id: ExternalId,
+    },
+}
+
 /// A native session discovery reports but Kontor never launched.
 #[derive(Debug, Clone)]
 struct ScriptedSession {
@@ -359,6 +384,10 @@ struct FakeState {
     /// answering another session's request is refused as exactly that rather
     /// than looking like an unknown request.
     permissions: PermissionLedger,
+    /// One entry per seat, and the reason AC-4 holds. Every read and write of
+    /// it happens under the single state lock, so "check the seat, then claim
+    /// it" has no interleaving for a second caller to slip into.
+    admissions: BTreeMap<RoleSlotKey, SlotAdmission>,
 }
 
 impl FakeState {
@@ -465,6 +494,302 @@ impl FakeState {
             Some(_) => Ok(()),
         }
     }
+
+    /// Decide one admission request and, when it is granted, claim the seat.
+    ///
+    /// The caller holds the state lock for the whole of this, which is what
+    /// makes "look at the seat, then take it" one step. Every refusal returns
+    /// before the table is touched.
+    fn admit(&mut self, request: &AdmissionRequest) -> RuntimeResult<AdmissionOutcome> {
+        match self.admissions.get(&request.slot).cloned() {
+            None => {
+                // Nothing here to replace. Granting a citation that names a
+                // session this seat never held would make the replacement rule
+                // decorative.
+                if request.replaces.is_some() {
+                    return Err(RuntimeError::ReplacementNotEvidenced {
+                        rule: "this seat holds no session to replace",
+                    });
+                }
+            }
+            Some(SlotAdmission::Reserved {
+                ticket,
+                agent_run_id,
+                binding_id,
+            }) => {
+                // The same question asked twice is one reservation, not two: a
+                // caller that lost the answer can ask again, and a caller
+                // asking for anything else is refused while this one stands.
+                if agent_run_id == request.agent_run_id && binding_id == request.binding_id {
+                    return Ok(AdmissionOutcome::Admitted(LaunchAuthority::issue(
+                        ticket,
+                        request.slot.clone(),
+                        agent_run_id,
+                        binding_id,
+                    )));
+                }
+                return Err(RuntimeError::SlotAlreadyAdmitted {
+                    rule: "another launch is already reserved for this seat",
+                });
+            }
+            Some(SlotAdmission::Occupied {
+                agent_run_id,
+                binding_id,
+                native_id,
+            }) => match &request.replaces {
+                None => {
+                    // Compatible work: the seat already holds this very run's
+                    // session, so there is nothing to launch. Handing back the
+                    // runtime's own binding is what turns a duplicate launch
+                    // attempt into a resume instead of a refusal.
+                    if agent_run_id == request.agent_run_id && binding_id == request.binding_id {
+                        let snapshot = self.bindings.get(&binding_id).cloned().ok_or(
+                            RuntimeError::StaleBinding {
+                                rule: "the seat's binding is no longer registered",
+                            },
+                        )?;
+                        return Ok(AdmissionOutcome::Resumed(Box::new(snapshot)));
+                    }
+                    return Err(RuntimeError::SlotAlreadyAdmitted {
+                        rule: "this seat already holds a live native session",
+                    });
+                }
+                Some(cited) => self.ensure_replaceable(
+                    cited,
+                    request.agent_run_id,
+                    agent_run_id,
+                    binding_id,
+                    &native_id,
+                )?,
+            },
+        }
+
+        let ticket = AdmissionTicket::mint();
+        self.admissions.insert(
+            request.slot.clone(),
+            SlotAdmission::Reserved {
+                ticket,
+                agent_run_id: request.agent_run_id,
+                binding_id: request.binding_id,
+            },
+        );
+        Ok(AdmissionOutcome::Admitted(LaunchAuthority::issue(
+            ticket,
+            request.slot.clone(),
+            request.agent_run_id,
+            request.binding_id,
+        )))
+    }
+
+    /// Agree, or refuse to agree, that a seat's holder is finished.
+    ///
+    /// Kontor's citation is checked against what this runtime owns, in both
+    /// directions: the citation must name the session that is actually here, and
+    /// this runtime must have seen that session finish. Either half alone would
+    /// admit a replacement over a live seat.
+    fn ensure_replaceable(
+        &self,
+        cited: &ReplacedBinding,
+        successor: AgentRunId,
+        held_run: AgentRunId,
+        held_binding: RuntimeBindingId,
+        native_id: &ExternalId,
+    ) -> RuntimeResult<()> {
+        if cited.binding_id != held_binding {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the cited binding is not the one this seat holds",
+            });
+        }
+        if cited.agent_run_id != held_run {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the cited predecessor is not the run this seat holds",
+            });
+        }
+        if cited.successor_agent_run_id != successor {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the recorded successor is not the run asking to be admitted",
+            });
+        }
+        // Terminal *as this runtime observed it*, never as the caller reports
+        // it. A binding from an older generation is retired rather than
+        // finished, and both are equally unable to keep the seat.
+        let finished = match self.sessions.get(native_id) {
+            None => true,
+            Some(session) => session.state.observed_terminal_outcome().is_some(),
+        };
+        let retired = match self.bindings.get(&held_binding) {
+            None => true,
+            Some(snapshot) => snapshot.identity().generation != self.generation,
+        };
+        if !finished && !retired {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the session this seat holds has not been observed finished",
+            });
+        }
+        Ok(())
+    }
+
+    /// Prove this launch is the reservation this seat is holding.
+    ///
+    /// Looked up by the seat *the launch names*, not the one the authority
+    /// claims: checking a value against itself proves nothing.
+    fn ensure_admitted(&self, request: &LaunchRequest) -> RuntimeResult<()> {
+        let Some(SlotAdmission::Reserved {
+            ticket,
+            agent_run_id,
+            binding_id,
+        }) = self.admissions.get(&request.slot())
+        else {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "this seat is holding no reservation to spend",
+            });
+        };
+        if *ticket != request.authority().ticket() {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "this authority is not the reservation this seat is holding",
+            });
+        }
+        if *agent_run_id != request.agent_run_id() || *binding_id != request.binding_id() {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "the launch names a different run or binding than the reservation",
+            });
+        }
+        Ok(())
+    }
+
+    /// Hand a seat back after a launch that was admitted and then refused.
+    ///
+    /// A reservation has exactly two ends: it becomes a session, or it comes
+    /// back here. Without the second, any refusal between admission and the
+    /// first native effect would wedge the seat forever — nothing else removes
+    /// a `Reserved` entry, so the seat would hold neither a binding nor a
+    /// launchable reservation, which is precisely the state AC-4 forbids.
+    ///
+    /// Only the reservation *this* launch was spending is released. An
+    /// `Occupied` seat is holding a session that has every right to it, and a
+    /// reservation carrying another ticket was never this launch's to free.
+    fn release(&mut self, request: &LaunchRequest) {
+        let slot = request.slot();
+        let ours = matches!(
+            self.admissions.get(&slot),
+            Some(SlotAdmission::Reserved { ticket, .. })
+                if *ticket == request.authority().ticket()
+        );
+        if ours {
+            self.admissions.remove(&slot);
+        }
+    }
+
+    /// Everything a launch does once its seat has agreed to it.
+    ///
+    /// Separate from [`crate::RuntimeAdapter::launch`] so that one place decides what
+    /// a failure costs. Each `?` below is a refusal that happens after
+    /// admission, and all of them are answered by the single
+    /// [`Self::release`] at the call site; spelling the release out on
+    /// each path is how one of them ends up forgotten.
+    fn launch_admitted(&mut self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
+        // The run-keyed companion. Not implied by the seat check: one run
+        // admitted into two different seats passes admission twice.
+        if self
+            .sessions
+            .values()
+            .any(|session| session.agent_run_id == request.agent_run_id())
+        {
+            return Err(RuntimeError::SessionAlreadyBound {
+                rule: "recovery launches a successor run, never the same run twice",
+            });
+        }
+
+        let declared = self.capabilities.clone();
+        let generation = self.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Launch,
+                autonomous: true,
+                account_pinned: request.account_profile_id().is_some(),
+                binding: None,
+                workspace: Some(request.workspace_claim()),
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::ConcurrentSessions(
+                    self.sessions.len() as u32 + 1,
+                )),
+            },
+        )?;
+        // The preflight proves the claim is consistent and in scope; this
+        // proves the workspace is one this runtime actually made.
+        self.ensure_registered_workspace(request.workspace())?;
+        let step = self.take_step(
+            RuntimeCapability::Launch,
+            RequestKey::Run(request.agent_run_id()),
+        )?;
+        self.calls.push(AdapterCall::Launch(request.agent_run_id()));
+
+        self.minted += 1;
+        let native_id = ExternalId::parse(&format!("native-session-{}", self.minted))?;
+        let identity = self.identity(native_id.clone());
+        let reported = match step {
+            Some(ScriptStep::EchoCorrelation { text }) => text,
+            _ => request.correlation().to_string(),
+        };
+        let snapshot = ScriptedFakeRuntime::bind(
+            self,
+            request.agent_run_id(),
+            request.binding_id(),
+            identity,
+            &reported,
+            request.requested_at(),
+        )?;
+
+        let epoch = self.epoch;
+        let mut content = self.staged_history.clone();
+        let history_len = content.len();
+        content.extend(self.staged_live.clone());
+        let session = FakeSession {
+            agent_run_id: request.agent_run_id(),
+            binding_id: request.binding_id(),
+            correlation_text: Some(reported),
+            state: ObservedRunState::Launching,
+            epoch,
+            content,
+            history_len,
+            messages: MessageLedger::new(),
+        };
+        let raised = session.raised_permissions();
+        // The reservation is spent in the same critical section that creates
+        // the session, under the lock this method has held throughout. There is
+        // therefore no instant at which a session exists and its seat is still
+        // reservable, and no refusal above can leave a seat spent for a launch
+        // that never happened.
+        self.admissions.insert(
+            request.slot(),
+            SlotAdmission::Occupied {
+                agent_run_id: request.agent_run_id(),
+                binding_id: request.binding_id(),
+                native_id: native_id.clone(),
+            },
+        );
+        self.sessions.insert(native_id, session);
+        // The runtime keeps its own copy of what it just issued. Everything a
+        // caller later presents is checked against this one.
+        self.bindings.insert(request.binding_id(), snapshot.clone());
+        for permission_id in raised {
+            self.permissions.open(request.binding_id(), permission_id);
+        }
+
+        let observation = ScriptedFakeRuntime::observation(
+            &snapshot,
+            RuntimeContact::Reachable,
+            ObservedRunState::Launching,
+            ObservationSource::CommandAck,
+            0,
+            request.requested_at(),
+        )?;
+        Ok(LaunchOutcome {
+            snapshot,
+            observation,
+        })
+    }
 }
 
 /// A runtime whose whole behavior comes from a script.
@@ -500,6 +825,7 @@ impl ScriptedFakeRuntime {
                 workspaces: BTreeMap::new(),
                 bindings: BTreeMap::new(),
                 permissions: PermissionLedger::new(),
+                admissions: BTreeMap::new(),
             }),
         }
     }
@@ -550,6 +876,40 @@ impl ScriptedFakeRuntime {
         let mut state = self.lock();
         state.generation += 1;
         state.steps.clear();
+    }
+
+    /// Make the runtime observe one of its sessions finish.
+    ///
+    /// The fixture equivalent of an authoritative terminal event arriving. It
+    /// exists because "has this session finished" is the runtime's own answer,
+    /// and a test about replacement has to be able to set it without pretending
+    /// a cancellation happened.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::StaleBinding`] for a session this runtime does
+    /// not own, and [`RuntimeError::Domain`] for a state that is not terminal —
+    /// an observation that does not close a run cannot be used to say one
+    /// closed.
+    pub fn observe_terminal(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        state: ObservedRunState,
+    ) -> RuntimeResult<()> {
+        if state.observed_terminal_outcome().is_none() {
+            return Err(RuntimeError::Domain(kontor_core::DomainError::invalid(
+                "ObservedRunState",
+                "does not evidence a terminal outcome",
+            )));
+        }
+        let mut owned = self.lock();
+        let session = owned
+            .sessions
+            .get_mut(&binding.identity().native_id)
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "this runtime owns no session behind that binding",
+            })?;
+        session.state = state;
+        Ok(())
     }
 
     /// Queue one deviation from the happy path, for any call of its operation.
@@ -660,6 +1020,43 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn pending_permissions(&self) -> BTreeSet<ExternalId> {
         self.lock().permissions.pending()
+    }
+
+    /// How many native sessions this runtime owns for one seat.
+    ///
+    /// The AC-4 criterion is stated on this number: whatever a caller replays,
+    /// races or mints fresh identifiers for, it never rises above one.
+    #[must_use]
+    pub fn sessions_in(&self, slot: &RoleSlotKey) -> usize {
+        let state = self.lock();
+        let occupying = match state.admissions.get(slot) {
+            Some(SlotAdmission::Occupied { native_id, .. }) => Some(native_id.clone()),
+            _ => None,
+        };
+        state
+            .sessions
+            .keys()
+            .filter(|native| Some(*native) == occupying.as_ref())
+            .count()
+    }
+
+    /// Whether this runtime is holding an unspent reservation for one seat.
+    #[must_use]
+    pub fn is_reserved(&self, slot: &RoleSlotKey) -> bool {
+        matches!(
+            self.lock().admissions.get(slot),
+            Some(SlotAdmission::Reserved { .. })
+        )
+    }
+
+    /// How many native sessions this runtime owns for one agent run.
+    #[must_use]
+    pub fn sessions_for(&self, agent_run_id: AgentRunId) -> usize {
+        self.lock()
+            .sessions
+            .values()
+            .filter(|session| session.agent_run_id == agent_run_id)
+            .count()
     }
 
     /// How many distinct messages the session behind `binding` committed.
@@ -885,86 +1282,38 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         })
     }
 
-    async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
-        let mut state = self.lock();
-        let declared = state.capabilities.clone();
-        let generation = state.generation;
-        preflight(
-            &declared,
-            &OperationContext {
-                operation: RuntimeCapability::Launch,
-                autonomous: true,
-                account_pinned: request.account_profile_id.is_some(),
-                binding: None,
-                workspace: Some(request.workspace_claim()),
-                current_generation: Some(generation),
-                demand: Some(LimitDemand::ConcurrentSessions(
-                    state.sessions.len() as u32 + 1,
-                )),
-            },
-        )?;
-        // The preflight proves the claim is consistent and in scope; this
-        // proves the workspace is one this runtime actually made.
-        state.ensure_registered_workspace(request.workspace.as_ref())?;
-        let step = state.take_step(
-            RuntimeCapability::Launch,
-            RequestKey::Run(request.agent_run_id),
-        )?;
-        state.calls.push(AdapterCall::Launch(request.agent_run_id));
-
-        state.minted += 1;
-        let native_id = ExternalId::parse(&format!("native-session-{}", state.minted))?;
-        let identity = state.identity(native_id.clone());
-        let reported = match step {
-            Some(ScriptStep::EchoCorrelation { text }) => text,
-            _ => request.correlation().to_string(),
-        };
-        let snapshot = Self::bind(
-            &state,
-            request.agent_run_id,
-            request.binding_id,
-            identity,
-            &reported,
-            request.requested_at,
-        )?;
-
-        let epoch = state.epoch;
-        let mut content = state.staged_history.clone();
-        let history_len = content.len();
-        content.extend(state.staged_live.clone());
-        let session = FakeSession {
-            agent_run_id: request.agent_run_id,
-            binding_id: request.binding_id,
-            correlation_text: Some(reported),
-            state: ObservedRunState::Launching,
-            epoch,
-            content,
-            history_len,
-            messages: MessageLedger::new(),
-        };
-        let raised = session.raised_permissions();
-        state.sessions.insert(native_id, session);
-        // The runtime keeps its own copy of what it just issued. Everything a
-        // caller later presents is checked against this one.
-        state.bindings.insert(request.binding_id, snapshot.clone());
-        for permission_id in raised {
-            state.permissions.open(request.binding_id, permission_id);
-        }
-
-        let observation = Self::observation(
-            &snapshot,
-            RuntimeContact::Reachable,
-            ObservedRunState::Launching,
-            ObservationSource::CommandAck,
-            0,
-            request.requested_at,
-        )?;
-        Ok(LaunchOutcome {
-            snapshot,
-            observation,
-        })
+    /// Admission is bookkeeping about seats, not an operation on a session: it
+    /// starts nothing, reaches no native surface, and is deliberately not
+    /// recorded in [`ScriptedFakeRuntime::calls`], so "the runtime was never
+    /// called" keeps meaning what it says.
+    async fn admit_launch(&self, request: &AdmissionRequest) -> RuntimeResult<AdmissionOutcome> {
+        self.lock().admit(request)
     }
 
+    async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
+        let mut state = self.lock();
+
+        // THE AC-4 GUARANTEE, and the first thing this method does.
+        //
+        // A `LaunchRequest` is a value: it can be held and presented twice. What
+        // it cannot do is restate a fact about *this runtime*, and whether this
+        // seat is holding an unspent reservation is exactly such a fact. A
+        // replay finds it spent; an authority for another seat finds the wrong
+        // one; freshly minted run and binding ids do not help, because the seat
+        // is the key. Reading the table is not an effect, so a refusal here
+        // leaves nothing to undo.
+        state.ensure_admitted(request)?;
+
+        // From here the reservation is spent, so every remaining refusal has to
+        // give the seat back. A refused launch leaves no session and no native
+        // effect either way; what it must not also leave is a seat holding a
+        // reservation nobody can ever spend or replace.
+        let outcome = state.launch_admitted(request);
+        if outcome.is_err() {
+            state.release(request);
+        }
+        outcome
+    }
     async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation> {
         let mut state = self.lock();
         let declared = state.capabilities.clone();
@@ -1439,5 +1788,122 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .permissions
             .record(request.permission_id.clone(), acknowledgement.clone());
         Ok(acknowledgement)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kontor_core::id::{BoundedText, RoleSlotId, TaskId};
+
+    use super::*;
+    use crate::capability::TrustGrade;
+    use crate::request::LaunchParts;
+
+    fn runtime() -> ScriptedFakeRuntime {
+        ScriptedFakeRuntime::new(RuntimeCapabilities {
+            trust_grade: TrustGrade::A,
+            supported: RuntimeCapability::ALL.iter().copied().collect(),
+            account_env: false,
+            limits: RuntimeLimits {
+                max_message_bytes: 4096,
+                max_history_page: 64,
+                max_concurrent_sessions: 16,
+            },
+        })
+    }
+
+    fn seat() -> RoleSlotKey {
+        RoleSlotKey::new(
+            TeamRunId::generate(),
+            RoleSlotId::parse("slot-a").expect("a valid slot id"),
+        )
+    }
+
+    /// A launch aimed at `slot`, carrying authority issued for it.
+    fn launch_request(slot: &RoleSlotKey) -> LaunchRequest {
+        let agent_run_id = AgentRunId::generate();
+        let binding_id = RuntimeBindingId::generate();
+        let authority = LaunchAuthority::issue(
+            AdmissionTicket::mint(),
+            slot.clone(),
+            agent_run_id,
+            binding_id,
+        );
+        authority.into_request(LaunchParts {
+            agent_run_id,
+            team_run_id: slot.team_run_id,
+            role_slot_id: slot.role_slot_id.clone(),
+            task_id: TaskId::generate(),
+            binding_id,
+            workspace: None,
+            cwd: WorkspaceRoot::parse("/w/task-1").expect("an absolute path"),
+            account_profile_id: None,
+            prompt: BoundedText::parse("do the work").expect("bounded text"),
+            requested_at: parse_utc_timestamp("2026-08-10T09:00:00Z").expect("a canonical time"),
+        })
+    }
+
+    /// Releasing hands back a reservation, never a seat with a session in it.
+    ///
+    /// [`FakeState::release`] runs on refusal paths only, and every refusal that
+    /// can reach it today happens before the seat is claimed — no scripted
+    /// launch can fail after the `Occupied` entry exists. That ordering is a
+    /// fact about this fake; the guarantee is the check against what the seat is
+    /// actually holding, which survives someone adding a fallible step later.
+    /// Stated here because no launch-level test can reach it.
+    #[test]
+    fn releasing_never_evicts_a_seat_that_holds_a_session() {
+        let runtime = runtime();
+        let slot = seat();
+        let request = launch_request(&slot);
+
+        let mut state = runtime.lock();
+        state.admissions.insert(
+            slot.clone(),
+            SlotAdmission::Occupied {
+                agent_run_id: request.agent_run_id(),
+                binding_id: request.binding_id(),
+                native_id: ExternalId::parse("native-session-1").expect("a valid native id"),
+            },
+        );
+        state.release(&request);
+
+        assert!(
+            matches!(
+                state.admissions.get(&slot),
+                Some(SlotAdmission::Occupied { .. })
+            ),
+            "a live session keeps its seat"
+        );
+    }
+
+    /// And never another attempt's reservation.
+    ///
+    /// Same reasoning: the seat is right and the run and binding agree, so only
+    /// the ticket tells this reservation from the one the launch was issued.
+    #[test]
+    fn releasing_leaves_another_attempts_reservation_alone() {
+        let runtime = runtime();
+        let slot = seat();
+        let request = launch_request(&slot);
+
+        let mut state = runtime.lock();
+        state.admissions.insert(
+            slot.clone(),
+            SlotAdmission::Reserved {
+                ticket: AdmissionTicket::mint(),
+                agent_run_id: request.agent_run_id(),
+                binding_id: request.binding_id(),
+            },
+        );
+        state.release(&request);
+
+        assert!(
+            matches!(
+                state.admissions.get(&slot),
+                Some(SlotAdmission::Reserved { .. })
+            ),
+            "a reservation this launch was never issued is not its to spend or free"
+        );
     }
 }

@@ -12,9 +12,13 @@ description = "Composable versioned work profiles, team templates and persona sc
 workspace = true
 
 [dependencies]
+# The exact version is the workspace's own package version. A bare path
+# dependency is a wildcard requirement, which `deny.toml` refuses.
+#
+# Canonicalization and hashing come from `kontor-core`'s `CanonicalDocument`,
+# so this crate needs no direct `sha2`/`hex` edge: a second hashing path would
+# be a second way for the same document to get two digests.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+kontor-teams = { path = "../kontor-teams", version = "=0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-uuid = { workspace = true }
-thiserror = { workspace = true }

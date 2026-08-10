@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "teams": [
+    {
+      "schema_version": 1,
+      "template_id": "01936f5a-0000-7000-8000-000000000001",
+      "version": 1,
+      "name": "Plan, build and verify",
+      "roles": [
+        { "role": { "role": "architect", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "builder", "version": 1 }, "min_slots": 1, "max_slots": 2 },
+        { "role": { "role": "tester", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "inspector", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "therapist-verifier", "version": 1 }, "min_slots": 1, "max_slots": 1 }
+      ],
+      "slots": [
+        {
+          "id": "architect",
+          "role": { "role": "architect", "version": 1 },
+          "skills": [{ "skill": "planning", "version": 1 }],
+          "context": { "template": "team-brief", "version": 1 },
+          "may_evaluate": [
+            "release-gate",
+            "final-audit-gate",
+            "layout-release-gate",
+            "docs-final-gate"
+          ],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "builder",
+          "role": { "role": "builder", "version": 1 },
+          "skills": [{ "skill": "implementation", "version": 1 }],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "tester",
+          "role": { "role": "tester", "version": 1 },
+          "skills": [{ "skill": "verification", "version": 1 }],
+          "context": null,
+          "may_evaluate": ["qa-gate", "functionality-qa-gate"],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "inspector",
+          "role": { "role": "inspector", "version": 1 },
+          "skills": [{ "skill": "inspection", "version": 1 }],
+          "context": null,
+          "may_evaluate": [
+            "code-review-gate",
+            "design-review-gate",
+            "layout-code-review-gate",
+            "design-qa-gate",
+            "technical-review-gate"
+          ],
+          "may_waive": ["release-gate"],
+          "waiver_policy": null
+        },
+        {
+          "id": "verifier",
+          "role": { "role": "therapist-verifier", "version": 1 },
+          "skills": [{ "skill": "clinical-simulation", "version": 1 }],
+          "context": null,
+          "may_evaluate": ["functionality-qa-gate"],
+          "may_waive": [],
+          "waiver_policy": {
+            "authorized_roles": ["architect"],
+            "required_evidence": ["waiver-rationale"]
+          }
+        }
+      ],
+      "handoffs": [
+        {
+          "from_slot": "architect",
+          "to_slot": "builder",
+          "after_phase": null,
+          "required_artifacts": []
+        },
+        {
+          "from_slot": "builder",
+          "to_slot": "inspector",
+          "after_phase": null,
+          "required_artifacts": []
+        },
+        {
+          "from_slot": "inspector",
+          "to_slot": "tester",
+          "after_phase": null,
+          "required_artifacts": []
+        },
+        {
+          "from_slot": "tester",
+          "to_slot": "verifier",
+          "after_phase": null,
+          "required_artifacts": []
+        }
+      ],
+      "max_successor_depth": 3,
+      "max_handoff_depth": 8
+    },
+    {
+      "schema_version": 1,
+      "template_id": "01936f5a-0000-7000-8000-000000000002",
+      "version": 1,
+      "name": "Research spike",
+      "roles": [
+        { "role": { "role": "researcher", "version": 1 }, "min_slots": 2, "max_slots": 2 },
+        { "role": { "role": "judge", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "synthesizer", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "reviewer", "version": 1 }, "min_slots": 1, "max_slots": 1 }
+      ],
+      "slots": [
+        {
+          "id": "researcher-a",
+          "role": { "role": "researcher", "version": 1 },
+          "skills": [{ "skill": "research-method", "version": 1 }],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "researcher-b",
+          "role": { "role": "researcher", "version": 1 },
+          "skills": [{ "skill": "research-method", "version": 1 }],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": {
+            "authorized_roles": ["judge"],
+            "required_evidence": ["waiver-rationale"]
+          }
+        },
+        {
+          "id": "judge",
+          "role": { "role": "judge", "version": 1 },
+          "skills": [{ "skill": "inspection", "version": 1 }],
+          "context": null,
+          "may_evaluate": ["evidence-gate", "synthesis-gate"],
+          "may_waive": ["research-final-gate"],
+          "waiver_policy": null
+        },
+        {
+          "id": "synthesizer",
+          "role": { "role": "synthesizer", "version": 1 },
+          "skills": [{ "skill": "synthesis", "version": 1 }],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "final-reviewer",
+          "role": { "role": "reviewer", "version": 1 },
+          "skills": [{ "skill": "editorial", "version": 1 }],
+          "context": null,
+          "may_evaluate": ["research-final-gate"],
+          "may_waive": [],
+          "waiver_policy": null
+        }
+      ],
+      "handoffs": [
+        {
+          "from_slot": "researcher-a",
+          "to_slot": "judge",
+          "after_phase": null,
+          "required_artifacts": []
+        },
+        {
+          "from_slot": "researcher-b",
+          "to_slot": "judge",
+          "after_phase": null,
+          "required_artifacts": []
+        },
+        {
+          "from_slot": "judge",
+          "to_slot": "synthesizer",
+          "after_phase": null,
+          "required_artifacts": []
+        },
+        {
+          "from_slot": "synthesizer",
+          "to_slot": "final-reviewer",
+          "after_phase": null,
+          "required_artifacts": []
+        }
+      ],
+      "max_successor_depth": 3,
+      "max_handoff_depth": 8
+    }
+  ]
+}

@@ -10,14 +10,15 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, BoundedText, ContentHash, ExternalId, RuntimeBindingId, TaskId,
-    TeamRunId, Timestamp,
+    AccountProfileId, AgentRunId, BoundedText, ContentHash, ExternalId, RoleSlotId,
+    RuntimeBindingId, TaskId, TeamRunId, Timestamp,
 };
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::admission::{LaunchAuthority, RoleSlotKey};
 use crate::capability::RuntimeBindingSnapshot;
 use crate::timeline::{HistoryCursor, SessionEventKind, TimelinePosition};
 use crate::workspace::{WorkspaceBindingSnapshot, WorkspaceClaim, WorkspaceRoot};
@@ -125,18 +126,21 @@ impl fmt::Display for MessageId {
     }
 }
 
-/// Start a new native session for an agent run.
+/// Everything a launch names, before anything has authorized it.
 ///
-/// Every role of a same-runtime team run launches through the *same* verified
-/// task workspace binding, and says where it will work. Both are checked before
-/// the session exists, because an edit in the wrong tree cannot be undone by
-/// noticing it afterwards.
+/// This is a plain value and building one is deliberately harmless: it names a
+/// run, a seat, a workspace and a prompt, and it cannot be launched. Only
+/// pairing it with a runtime-issued [`LaunchAuthority`] produces a
+/// [`LaunchRequest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaunchRequest {
+pub struct LaunchParts {
     /// The run being launched.
     pub agent_run_id: AgentRunId,
     /// The team run the role belongs to.
     pub team_run_id: TeamRunId,
+    /// The seat this launch fills. Together with `team_run_id` it is the key
+    /// admission is decided on.
+    pub role_slot_id: RoleSlotId,
     /// The task the role serves.
     pub task_id: TaskId,
     /// The binding id Kontor has already minted for the session to come.
@@ -155,21 +159,137 @@ pub struct LaunchRequest {
     pub requested_at: Timestamp,
 }
 
+/// Start a new native session for an agent run.
+///
+/// Every role of a same-runtime team run launches through the *same* verified
+/// task workspace binding, and says where it will work. Both are checked before
+/// the session exists, because an edit in the wrong tree cannot be undone by
+/// noticing it afterwards.
+///
+/// ## Where this comes from, and why it cannot come from anywhere else
+///
+/// The only way to obtain one is [`LaunchAuthority::into_request`], and the only
+/// way to obtain a [`LaunchAuthority`] is
+/// [`crate::adapter::RuntimeAdapter::admit_launch`] — a runtime call that
+/// atomically claims the seat this launch names. There is no struct literal
+/// (every field is private), no `Clone`, no `Deserialize`, and no feature that
+/// unlocks a back door.
+///
+/// That closes the construction hole, but it is not what the guarantee rests on.
+/// A request is still a value: it can be held and handed to
+/// [`crate::adapter::RuntimeAdapter::launch`] twice. The guarantee rests on the
+/// runtime re-reading its reservation table before its first native effect and
+/// consuming the reservation there, so the second call finds nothing to spend —
+/// see [`crate::admission`].
+#[derive(Debug, PartialEq, Eq)]
+pub struct LaunchRequest {
+    authority: LaunchAuthority,
+    parts: LaunchParts,
+}
+
 impl LaunchRequest {
+    /// Pair runtime-issued authority with what the launch says.
+    ///
+    /// Crate-private and reached through [`LaunchAuthority::into_request`]: the
+    /// authority is consumed, so one admission produces one request.
+    ///
+    /// It deliberately does *not* validate `parts` against `authority`. The
+    /// comparison belongs where the reservation table is, so an adapter that
+    /// skipped the table cannot look correct.
+    pub(crate) const fn admitted(authority: LaunchAuthority, parts: LaunchParts) -> Self {
+        Self { authority, parts }
+    }
+
+    /// The authority this launch is spending.
+    #[must_use]
+    pub const fn authority(&self) -> &LaunchAuthority {
+        &self.authority
+    }
+
+    /// The seat this launch claims to fill, as *the launch* names it.
+    ///
+    /// Read from [`LaunchParts`], never from the authority: the two are compared
+    /// by the runtime, so reading the answer off the thing being checked would
+    /// make the check vacuous.
+    #[must_use]
+    pub fn slot(&self) -> RoleSlotKey {
+        RoleSlotKey::new(self.parts.team_run_id, self.parts.role_slot_id.clone())
+    }
+
+    /// The seat this launch fills.
+    #[must_use]
+    pub const fn role_slot_id(&self) -> &RoleSlotId {
+        &self.parts.role_slot_id
+    }
+
+    /// The run being launched.
+    #[must_use]
+    pub const fn agent_run_id(&self) -> AgentRunId {
+        self.parts.agent_run_id
+    }
+
+    /// The team run the role belongs to.
+    #[must_use]
+    pub const fn team_run_id(&self) -> TeamRunId {
+        self.parts.team_run_id
+    }
+
+    /// The task the role serves.
+    #[must_use]
+    pub const fn task_id(&self) -> TaskId {
+        self.parts.task_id
+    }
+
+    /// The binding id Kontor minted for the session to come.
+    #[must_use]
+    pub const fn binding_id(&self) -> RuntimeBindingId {
+        self.parts.binding_id
+    }
+
+    /// The verified task workspace this launch presents, if any.
+    #[must_use]
+    pub const fn workspace(&self) -> Option<&WorkspaceBindingSnapshot> {
+        self.parts.workspace.as_ref()
+    }
+
+    /// Where this role says it will work.
+    #[must_use]
+    pub const fn cwd(&self) -> &WorkspaceRoot {
+        &self.parts.cwd
+    }
+
+    /// The coding account this run is pinned to, if any.
+    #[must_use]
+    pub const fn account_profile_id(&self) -> Option<AccountProfileId> {
+        self.parts.account_profile_id
+    }
+
+    /// What the session starts with.
+    #[must_use]
+    pub const fn prompt(&self) -> &BoundedText {
+        &self.parts.prompt
+    }
+
+    /// When the launch was requested.
+    #[must_use]
+    pub const fn requested_at(&self) -> Timestamp {
+        self.parts.requested_at
+    }
+
     /// The label the runtime must report back for this launch.
     #[must_use]
     pub const fn correlation(&self) -> CorrelationLabel {
-        CorrelationLabel::for_run(self.agent_run_id)
+        CorrelationLabel::for_run(self.parts.agent_run_id)
     }
 
     /// What this role claims about where it will work.
     #[must_use]
     pub fn workspace_claim(&self) -> WorkspaceClaim<'_> {
         WorkspaceClaim {
-            binding: self.workspace.as_ref(),
-            team_run_id: self.team_run_id,
-            task_id: self.task_id,
-            cwd: &self.cwd,
+            binding: self.parts.workspace.as_ref(),
+            team_run_id: self.parts.team_run_id,
+            task_id: self.parts.task_id,
+            cwd: &self.parts.cwd,
         }
     }
 }

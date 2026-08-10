@@ -6,7 +6,7 @@
 //! code and no transport: Paseo, AO and Codex adapters implement
 //! [`adapter::RuntimeAdapter`] and change nothing here.
 //!
-//! Seven invariants hold across every module, and the contract suite exists to
+//! Eight invariants hold across every module, and the contract suite exists to
 //! keep them holding:
 //!
 //! 1. **An undeclared capability produces no effect.** Every operation passes
@@ -30,8 +30,14 @@
 //! 7. **Uncertainty is not completion.** A command acknowledgement, a closed
 //!    stream, an unreachable runtime or a Grade C report never closes a run.
 //!    Only a matching authoritative event or a fresh inspect result can.
+//! 8. **One seat, one session.** A launch exists only because a runtime admitted
+//!    it: [`admission`] keys that decision on the team run and role slot, claims
+//!    it atomically, and consumes it before the first native effect. Replay, a
+//!    concurrent caller, freshly minted run and binding ids, borrowed authority
+//!    and a restart race all end in a typed refusal with nothing started.
 
 pub mod adapter;
+pub mod admission;
 pub mod capability;
 pub mod fake;
 pub mod observation;
@@ -41,6 +47,10 @@ pub mod workspace;
 
 pub use adapter::{
     LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
+};
+pub use admission::{
+    AdmissionOutcome, AdmissionRequest, AdmissionTicket, LaunchAuthority, ReplacedBinding,
+    RoleSlotKey,
 };
 pub use capability::{
     IssuedBinding, LimitDemand, OperationContext, RuntimeBindingSnapshot, RuntimeCapabilities,
@@ -52,9 +62,9 @@ pub use observation::{
     ReconciliationAction, ReconciliationFinding, ReconciliationReport, reconcile,
 };
 pub use request::{
-    AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
-    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
-    SendMessageRequest,
+    AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchParts,
+    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
+    ResumeRequest, SendMessageRequest,
 };
 pub use timeline::{
     HistoryCursor, HistoryPage, HistoryReader, LiveSubscription, SessionEvent, SessionEventKind,

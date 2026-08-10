@@ -56,7 +56,7 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{
     DerivedRunState, DesiredRunState, Freshness, GateVerdict, NativeRuntimeIdentity,
-    ObservedRunState, RunLifecycle, RuntimeContact, TaskState, TeamChildEvidence,
+    ObservedRunState, RunLifecycle, RuntimeContact, TaskState, TaskTeamClosure, TeamChildEvidence,
     TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence, TerminalEvidenceSource,
     TerminalOutcome,
 };
@@ -1022,6 +1022,9 @@ fn a_task_closes_only_when_its_pinned_profile_says_it_may() {
         completed_phases: [phase("zz.one"), phase("zz.two"), phase("zz.three")]
             .into_iter()
             .collect(),
+        // This fixture's profile pins no team, so there are no role slots to
+        // answer for.
+        team_closure: TaskTeamClosure::NoTeam,
         occurred_at: now(),
     };
 
