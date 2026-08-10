@@ -1,0 +1,11 @@
+Copyright (c) 2026 Carasent ASMA
+
+Kontor source code is licensed under the MIT License and the Apache License,
+Version 2.0, at your option (SPDX: `MIT OR Apache-2.0`). Full license texts are
+in `LICENSE-MIT` and `LICENSE-APACHE`.
+
+This distribution contains no code from the separately installed agent
+runtimes (Paseo, Agent Orchestrator, Codex) or from the `asma` CLI; those
+remain separate installations and retain their own licenses. Third-party Rust
+and JavaScript dependencies are licensed by their respective authors; see
+`THIRD_PARTY_NOTICES.md` for the boundary and the audit mechanism.

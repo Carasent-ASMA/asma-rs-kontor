@@ -1,0 +1,19 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Tauri generated schemas (regenerated at build time; never commit)
+/apps/desktop/src-tauri/gen/schemas/
+
+# Node / console
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

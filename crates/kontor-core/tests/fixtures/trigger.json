@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "trigger.inbound-request",
+  "version": 1,
+  "source_kind": "webhook",
+  "source_connection": "conn.alpha",
+  "event_schema": "schema.request-created",
+  "event_schema_version": 4,
+  "filter": [{ "pointer": "/kind", "equals": "request.created" }],
+  "dedup": { "pointers": ["/kind", "/external_id"] },
+  "work_profile": "q7.delivery",
+  "work_profile_version": 3,
+  "team_template": {
+    "template_id": "0193f000-0000-7000-8000-00000000b001",
+    "version": 1
+  },
+  "context_template": { "template": "context.default", "version": 1 },
+  "approval": { "kind": "approval_required" },
+  "limits": {
+    "priority": 50,
+    "max_concurrency": 2,
+    "budget": {
+      "max_tokens": 100000,
+      "max_commands": 40,
+      "max_duration_seconds": 1800,
+      "max_cost": { "minor_units": 1500, "currency": "NOK" }
+    }
+  },
+  "calendar_policy": null
+}

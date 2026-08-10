@@ -1,0 +1,19 @@
+[package]
+name = "kontor-integrations-asma"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "asma fleet and asma jira sync subprocess boundaries."
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }

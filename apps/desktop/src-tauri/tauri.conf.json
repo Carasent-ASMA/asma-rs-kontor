@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "kontor-desktop",
+  "version": "0.1.0",
+  "identifier": "io.github.carasent-asma.kontor.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm --filter kontor-console dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm --filter kontor-console build",
+    "frontendDist": "../../console/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Kontor",
+        "width": 1200,
+        "height": 800
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png"]
+  }
+}
