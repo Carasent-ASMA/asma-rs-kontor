@@ -1,0 +1,14 @@
+{
+  "projects": [
+    {
+      "id": "prj_epic",
+      "name": "Epic ASMA-7744 Kontor MVP",
+      "projectKey": "asma-modules"
+    },
+    {
+      "id": "prj_other_epic",
+      "name": "Epic ASMA-9999 Something else",
+      "projectKey": "asma-modules"
+    }
+  ]
+}

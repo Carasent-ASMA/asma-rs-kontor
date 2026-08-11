@@ -1,0 +1,9 @@
+{
+  "projects": [
+    {
+      "id": "prj_epic",
+      "name": "kontor mvp (old name)",
+      "projectKey": "asma-modules"
+    }
+  ]
+}

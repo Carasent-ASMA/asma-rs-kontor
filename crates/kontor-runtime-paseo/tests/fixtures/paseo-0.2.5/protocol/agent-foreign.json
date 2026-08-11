@@ -1,0 +1,11 @@
+{
+  "id": "agt_foreign",
+  "workspaceId": "wks_task11",
+  "projectId": "prj_epic",
+  "cwd": "/w/epic/task-11",
+  "parentAgentId": "agt_orchestrator",
+  "title": "somebody's own session",
+  "labels": {},
+  "status": "idle",
+  "providerSessionId": "prov_sess_foreign"
+}
