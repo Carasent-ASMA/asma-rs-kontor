@@ -30,6 +30,7 @@
 mod commands;
 mod events;
 mod migrations;
+mod policy;
 mod reconciliation;
 mod repository;
 
@@ -50,6 +51,10 @@ pub use events::types::{
     ControlObservationOutcome,
 };
 pub use migrations::SCHEMA_VERSION;
+pub use policy::{
+    EvaluationBinding, GateRejection, NewArtifactEvidence, NewGateWaiver, ParkPlan, ParkedRecovery,
+    RejectionOutcome, StoredRecoveryStep,
+};
 pub use reconciliation::{
     CensusItem, CensusOutcome, EpochKey, EpochStatus, EpochSummary, ReconciliationEpoch,
     ReconciliationEpochId,

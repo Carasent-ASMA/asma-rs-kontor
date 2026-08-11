@@ -19,6 +19,10 @@ path = "runtime_adapter.rs"
 name = "profiles_teams"
 path = "profiles_teams.rs"
 
+[[test]]
+name = "guardrails"
+path = "guardrails.rs"
+
 [dependencies]
 # KON-MVP-05/KON-MVP-12: the reusable, capability-aware contract harness lives in
 # `src/lib.rs` so a real adapter crate can run the *same* assertions as the
@@ -33,6 +37,7 @@ kontor-runtime = { path = "../../crates/kontor-runtime", version = "=0.1.0" }
 # KON-MVP-08: the profiles/teams contract exercises the sealed slot API against
 # the real store and the same scripted fake, rather than against mock sessions.
 kontor-profiles = { path = "../../crates/kontor-profiles", version = "=0.1.0" }
+kontor-policy = { path = "../../crates/kontor-policy", version = "=0.1.0" }
 kontor-store = { path = "../../crates/kontor-store", version = "=0.1.0" }
 kontor-teams = { path = "../../crates/kontor-teams", version = "=0.1.0" }
 tokio = { workspace = true }

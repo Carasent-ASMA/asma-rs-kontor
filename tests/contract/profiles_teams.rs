@@ -430,6 +430,13 @@ impl World {
                     evaluator_role: gate.evaluator_roles[0].clone(),
                     evaluator_account: account,
                     evidence: gate.required_evidence.clone(),
+                    // This fixture is about profile and team structure, not
+                    // about reviewer identity: it records no principal, and a
+                    // verdict attributable to nobody counts towards nobody's
+                    // rejection stream.
+                    agent_run_id: None,
+                    reviewer_principal: None,
+                    policy_evaluation_id: None,
                     recorded_at: now(),
                 })
                 .expect("an authorized evaluator passes the gate");

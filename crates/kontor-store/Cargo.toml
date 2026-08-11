@@ -15,6 +15,10 @@ workspace = true
 # The exact version is the workspace's own package version. A bare path
 # dependency is a wildcard requirement, which `deny.toml` refuses.
 kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+# KON-MVP-10: guardrail verdicts and the recovery state machine are decided in
+# `kontor-policy` and only *recorded* here, so this crate depends on the decision
+# types and never re-implements a rule.
+kontor-policy = { path = "../kontor-policy", version = "=0.1.0" }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,3 +30,6 @@ thiserror = { workspace = true }
 # through direct SQL, which the public store API deliberately does not expose.
 rusqlite = { workspace = true }
 tempfile = { workspace = true }
+# KON-MVP-10: the guardrail suite builds the verdicts it stores with the same
+# types the evaluator produces, rather than hand-rolling look-alike rows.
+kontor-policy = { path = "../kontor-policy", version = "=0.1.0" }

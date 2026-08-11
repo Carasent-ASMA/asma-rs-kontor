@@ -892,6 +892,9 @@ fn a_gate_may_only_be_decided_by_the_authority_the_profile_names() {
             evaluator_role: role(role_key),
             evaluator_account: fixture.account,
             evidence,
+            agent_run_id: None,
+            reviewer_principal: None,
+            policy_evaluation_id: None,
             recorded_at: now(),
         };
 
@@ -1053,6 +1056,9 @@ fn a_task_closes_only_when_its_pinned_profile_says_it_may() {
             evaluator_role: role("zz.reviewer"),
             evaluator_account: fixture.account,
             evidence: vec![artifact("zz.output")],
+            agent_run_id: None,
+            reviewer_principal: None,
+            policy_evaluation_id: None,
             recorded_at: now(),
         })
         .expect("the gate passes");
@@ -1699,6 +1705,9 @@ fn every_refused_write_leaves_zero_partial_rows_revisions_events_or_outbox_entri
                 evaluator_role: role("zz.maker"),
                 evaluator_account: fixture.account,
                 evidence: vec![artifact("zz.output")],
+                agent_run_id: None,
+                reviewer_principal: None,
+                policy_evaluation_id: None,
                 recorded_at: now(),
             })
             .is_err()
@@ -3658,6 +3667,9 @@ fn the_gate_state_map_reduces_the_whole_append_only_history() {
                 evaluator_role: role(role_key),
                 evaluator_account: fixture.account,
                 evidence,
+                agent_run_id: None,
+                reviewer_principal: None,
+                policy_evaluation_id: None,
                 recorded_at: now(),
             })
             .expect("the evaluation is appended")
