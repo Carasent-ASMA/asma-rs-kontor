@@ -1,0 +1,11 @@
+{
+  "version": "0.3.0",
+  "features": [
+    "stableProjectIdentity",
+    "projectList",
+    "projectAdd",
+    "workspaceMultiplicity",
+    "selectiveAgentTimeline"
+  ],
+  "serverId": "srv_dev_1"
+}

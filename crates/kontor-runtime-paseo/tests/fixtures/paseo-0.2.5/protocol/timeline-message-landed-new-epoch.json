@@ -1,0 +1,14 @@
+{
+  "agentId": "agt_implement",
+  "epoch": "8f2b1c34-0000-4000-8000-000000000002",
+  "entries": [
+    {
+      "seq": 1,
+      "type": "user_message",
+      "at": "2026-08-10T09:30:00Z",
+      "span": 1,
+      "entryId": "ent_1",
+      "messageId": "01890000-0000-7000-8000-000000000011"
+    }
+  ]
+}

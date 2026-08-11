@@ -1,0 +1,15 @@
+{
+  "id": "wks_task11",
+  "projectId": "prj_epic",
+  "cwd": "/w/epic/task-11",
+  "workspaceKind": "worktree",
+  "isPaseoOwnedWorktree": false,
+  "title": "KON-MVP-11 Paseo adapter",
+  "labels": {
+    "kontor.team_run": "kontor-team-01890000-0000-7000-8000-0000000000a1",
+    "kontor.ticket": "01890000-0000-7000-8000-0000000000b1",
+    "kontor.project_id": "kon-mini-1",
+    "jira.issue": "KON-MVP-11",
+    "kontor.worktree": "/w/epic/task-11"
+  }
+}
