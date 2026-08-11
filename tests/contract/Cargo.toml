@@ -23,6 +23,10 @@ path = "profiles_teams.rs"
 name = "guardrails"
 path = "guardrails.rs"
 
+[[test]]
+name = "scheduling"
+path = "scheduling.rs"
+
 [dependencies]
 # KON-MVP-05/KON-MVP-12: the reusable, capability-aware contract harness lives in
 # `src/lib.rs` so a real adapter crate can run the *same* assertions as the
@@ -38,8 +42,13 @@ kontor-runtime = { path = "../../crates/kontor-runtime", version = "=0.1.0" }
 # the real store and the same scripted fake, rather than against mock sessions.
 kontor-profiles = { path = "../../crates/kontor-profiles", version = "=0.1.0" }
 kontor-policy = { path = "../../crates/kontor-policy", version = "=0.1.0" }
+# KON-MVP-09: the scheduling contract runs the real pass over what the real store
+# holds, so the seam between deciding and committing is proved rather than assumed.
+kontor-scheduler = { path = "../../crates/kontor-scheduler", version = "=0.1.0" }
 kontor-store = { path = "../../crates/kontor-store", version = "=0.1.0" }
 kontor-teams = { path = "../../crates/kontor-teams", version = "=0.1.0" }
+jiff = { workspace = true }
+rusqlite = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

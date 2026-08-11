@@ -33,6 +33,7 @@ mod migrations;
 mod policy;
 mod reconciliation;
 mod repository;
+mod scheduler;
 
 use std::path::Path;
 
@@ -58,6 +59,10 @@ pub use policy::{
 pub use reconciliation::{
     CensusItem, CensusOutcome, EpochKey, EpochStatus, EpochSummary, ReconciliationEpoch,
     ReconciliationEpochId,
+};
+pub use scheduler::{
+    AdmissionCommit, AdmissionOutcome, LeaseEventKind, LeaseKind, LeaseRelease, LeaseRenewal,
+    RecordedRejection, ResourceLease,
 };
 
 /// Everything the store can refuse.

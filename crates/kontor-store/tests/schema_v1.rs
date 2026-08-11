@@ -47,6 +47,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "holiday_sources",
     "intake_receipts",
     "jira_links",
+    "lease_events",
     "mini_projects",
     "persona_scenarios",
     "policy_evaluations",
@@ -65,6 +66,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "runtime_reconciliation_results",
     "runtime_replay_consumers",
     "schedule_overrides",
+    "scheduler_admission_events",
     "source_events",
     "status_conflicts",
     "status_transition_receipts",
@@ -164,7 +166,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 3);
+    assert_eq!(SCHEMA_VERSION, 4);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
