@@ -949,3 +949,77 @@ fn summarize(
         orphaned: u32::try_from(orphaned).unwrap_or(u32::MAX),
     })
 }
+
+/// One binding a restart must ask the runtime about before anything is scheduled.
+///
+/// It is the persisted half of the pair the adapter contract works in: the
+/// binding as this Realm recorded it, plus the run and revision a reconciliation
+/// result would be applied against. The frozen capability snapshot is *not* here
+/// — that is the runtime's to vouch for, and a restart re-discovers it rather
+/// than trusting a copy of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenBinding {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The run the binding serves.
+    pub agent_run_id: AgentRunId,
+    /// The binding as it was persisted.
+    pub binding: kontor_core::repository::RuntimeBinding,
+    /// The run revision a result must be applied against.
+    pub revision: kontor_core::id::AggregateRevision,
+}
+
+impl SqliteStore {
+    /// Every binding of a still-open run in this Realm, oldest first.
+    ///
+    /// Closed runs are excluded because there is nothing left to reconcile about
+    /// them: their outcome is already evidenced, and a census that cannot find
+    /// their session must not be able to reopen that question.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Backend`] on backend failure.
+    pub fn open_bindings(&self) -> RepositoryResult<Vec<OpenBinding>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT binding.project_id, binding.agent_run_id, binding.id,
+                        binding.runtime_kind, binding.host, binding.generation,
+                        binding.native_id, binding.bound_at, run.revision
+                 FROM runtime_bindings AS binding
+                 JOIN agent_runs AS run
+                   ON run.project_id = binding.project_id AND run.id = binding.agent_run_id
+                 WHERE run.closed_at IS NULL
+                 ORDER BY binding.bound_at, binding.id",
+            )
+            .map_err(backend)?;
+        let mut rows = statement.query([]).map_err(backend)?;
+        let mut bindings = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let agent_run_id = AgentRunId::parse(&row.get::<_, String>(1).map_err(backend)?)?;
+            bindings.push(OpenBinding {
+                project_id: ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+                agent_run_id,
+                binding: kontor_core::repository::RuntimeBinding {
+                    id: kontor_core::id::RuntimeBindingId::parse(
+                        &row.get::<_, String>(2).map_err(backend)?,
+                    )?,
+                    agent_run_id,
+                    identity: NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(
+                            &row.get::<_, String>(3).map_err(backend)?,
+                        )?,
+                        host: ExternalName::parse(&row.get::<_, String>(4).map_err(backend)?)?,
+                        generation: u64::try_from(row.get::<_, i64>(5).map_err(backend)?)
+                            .unwrap_or_default(),
+                        native_id: ExternalId::parse(&row.get::<_, String>(6).map_err(backend)?)?,
+                    },
+                    bound_at: crate::repository::read_timestamp(
+                        &row.get::<_, String>(7).map_err(backend)?,
+                    )?,
+                },
+                revision: crate::repository::revision_of(row.get(8).map_err(backend)?)?,
+            });
+        }
+        Ok(bindings)
+    }
+}

@@ -34,12 +34,13 @@ use kontor_core::receipt::{
 use kontor_core::repository::{
     AccountProfile, AccountProfileUpdate, AgentRun, CalendarRepository, CommandRepository,
     ConnectorSpecSelector, CredentialReference, CredentialReferenceKind, GateEvaluation,
-    IntakeOutcome, IntakeRepository, MiniProject, NewAccountProfile, NewAgentRun, NewCommandIntent,
-    NewGateEvaluation, NewIntakeReevaluation, NewMiniProject, NewObservation, NewProject,
-    NewRuntimeEvent, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun,
-    NewTicketLink, PhaseAdvance, Project, ProjectRepository, RealmRepository, ReceiptAdvance,
-    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunRepository,
-    RuntimeBinding, RuntimeEvent, SpecRepository, Task, TaskTransitionRequest, TaskWorkflow,
+    HistoryGapKind, HistoryGapMarker, IntakeOutcome, IntakeRepository, MiniProject,
+    NewAccountProfile, NewAgentRun, NewCommandIntent, NewGateEvaluation, NewIntakeReevaluation,
+    NewMiniProject, NewObservation, NewProject, NewRuntimeEvent, NewSourceEvent, NewTask,
+    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
+    ProjectRepository, RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome,
+    RepositoryError, RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding,
+    RuntimeEvent, SpecRepository, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow,
     TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, WorkflowRepository,
     validate_dependency_graph,
 };
@@ -64,6 +65,7 @@ use serde::de::DeserializeOwned;
 
 use crate::SqliteStore;
 use crate::events::append::stored_payload;
+use crate::events::replay::{EVENT_COLUMNS, read_event};
 
 /// Maximum length of an agent-run parent chain that is walked when checking for
 /// a lineage cycle.
@@ -4014,6 +4016,91 @@ fn ensure_receipt_authorizes(
 // Realm ingress
 // ---------------------------------------------------------------------------
 
+/// The control-plane positions this Realm still holds, read inside `transaction`.
+///
+/// `(oldest, newest)`, both clamped to the reserved origin (cursor 1, which names
+/// no row) so an empty log answers with a position rather than with nothing.
+fn control_window(transaction: &Transaction<'_>) -> RepositoryResult<(EventCursor, EventCursor)> {
+    let (oldest, newest): (i64, i64) = transaction
+        .query_row(
+            "SELECT COALESCE(MIN(cursor), 0), COALESCE(MAX(cursor), 0) FROM runtime_events",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(backend)?;
+    Ok((
+        EventCursor::parse(oldest.max(1))?,
+        EventCursor::parse(newest.max(1))?,
+    ))
+}
+
+/// Every discontinuity recorded against one run, oldest first.
+///
+/// Control and content gaps are read together and stay labelled: a caller is
+/// owed both markers, and merging them would turn "refetch this transcript" into
+/// "a control fact is missing", which is a different and much stronger claim.
+fn read_gaps(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    agent_run_id: AgentRunId,
+) -> RepositoryResult<Vec<HistoryGapMarker>> {
+    let mut markers = Vec::new();
+    let mut control = transaction
+        .prepare(
+            "SELECT expected_sequence, received_sequence, detected_cursor, detected_at
+             FROM runtime_control_gaps
+             WHERE project_id = ?1 AND agent_run_id = ?2 ORDER BY detected_cursor",
+        )
+        .map_err(backend)?;
+    let mut rows = control
+        .query(params![project_id.to_string(), agent_run_id.to_string()])
+        .map_err(backend)?;
+    while let Some(row) = rows.next().map_err(backend)? {
+        markers.push(HistoryGapMarker {
+            kind: HistoryGapKind::Control,
+            content_epoch: None,
+            expected_sequence: stored_sequence(row.get(0).map_err(backend)?),
+            received_sequence: stored_sequence(row.get(1).map_err(backend)?),
+            detected_cursor: EventCursor::parse(row.get(2).map_err(backend)?)?,
+            detected_at: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
+        });
+    }
+    drop(rows);
+
+    let mut content = transaction
+        .prepare(
+            "SELECT content_epoch, expected_content_sequence, received_content_sequence,
+                    detected_cursor, detected_at
+             FROM runtime_content_gaps
+             WHERE project_id = ?1 AND agent_run_id = ?2 ORDER BY detected_cursor",
+        )
+        .map_err(backend)?;
+    let mut rows = content
+        .query(params![project_id.to_string(), agent_run_id.to_string()])
+        .map_err(backend)?;
+    while let Some(row) = rows.next().map_err(backend)? {
+        markers.push(HistoryGapMarker {
+            kind: HistoryGapKind::Content,
+            content_epoch: Some(stored_sequence(row.get(0).map_err(backend)?)),
+            expected_sequence: stored_sequence(row.get(1).map_err(backend)?),
+            received_sequence: stored_sequence(row.get(2).map_err(backend)?),
+            detected_cursor: EventCursor::parse(row.get(3).map_err(backend)?)?,
+            detected_at: read_timestamp(&row.get::<_, String>(4).map_err(backend)?)?,
+        });
+    }
+    markers.sort_by_key(|marker| marker.detected_cursor);
+    Ok(markers)
+}
+
+/// Read a stored non-negative sequence column back into its domain width.
+///
+/// Every one of these columns carries `CHECK (… >= 0)`, so a negative value is
+/// not a case to interpret; it is a database this binary did not write, and 0 is
+/// the honest reading of it rather than a wrapped-around maximum.
+fn stored_sequence(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or_default()
+}
+
 impl RealmRepository for SqliteStore {
     fn realm(&self) -> RealmId {
         self.realm_id()
@@ -4144,5 +4231,221 @@ impl RealmRepository for SqliteStore {
         // transaction, so a foreign envelope never reaches a `WHERE` clause.
         let request = envelope.peek(self.realm_id())?;
         self.update_account_profile(request)
+    }
+
+    fn realm_event_page(
+        &self,
+        after: Option<RealmCursor>,
+        limit: u32,
+    ) -> RepositoryResult<RealmEventPage> {
+        let realm = self.realm_id();
+        let resolved = after.map(|cursor| cursor.resolve(realm)).transpose()?;
+        let limit = crate::events::types::page_limit(limit)?;
+        // The page and the window are read in one transaction: a caller decides
+        // "caught up" versus "that position no longer exists" from them together,
+        // and two reads could disagree about a commit that landed between them.
+        let transaction = self.begin()?;
+        let (oldest_retained, newest) = control_window(&transaction)?;
+        // Only the kinds a `RuntimeEvent` can express are delivered. A command
+        // intent row carries no native identity and an orphan census row carries
+        // no run, so neither can be reconstructed into one — and inventing a
+        // placeholder identity to fit them into the shape would be a lie in a
+        // durable feed.
+        let mut statement = transaction
+            .prepare(&format!(
+                "SELECT {EVENT_COLUMNS} FROM runtime_events
+                 WHERE event_kind IN ('runtime_observation', 'census_observation')
+                   AND agent_run_id IS NOT NULL
+                   AND cursor > ?1
+                 ORDER BY cursor LIMIT ?2"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![resolved.map_or(0, EventCursor::get), limit])
+            .map_err(backend)?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let event = read_event(row)?;
+            events.push(EventEnvelope::new(realm, event.cursor, event));
+        }
+        Ok(RealmEventPage {
+            events,
+            oldest_retained: RealmCursor::new(realm, oldest_retained),
+            newest: RealmCursor::new(realm, newest),
+        })
+    }
+
+    fn snapshot_run_inspection(
+        &self,
+        agent_run_id: AgentRunId,
+    ) -> RepositoryResult<SnapshotEnvelope<Option<RunInspection>>> {
+        let transaction = self.begin()?;
+        // The run's own id resolves its project inside the same transaction the
+        // rest of the snapshot is read in, so the scope cannot move underneath
+        // the reads that follow it.
+        let project: Option<String> = transaction
+            .query_row(
+                "SELECT project_id FROM agent_runs WHERE id = ?1",
+                params![agent_run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let (_, newest) = control_window(&transaction)?;
+        let realm = self.realm_id();
+        let Some(project) = project else {
+            return Ok(SnapshotEnvelope::new(realm, newest, None));
+        };
+        let project_id = ProjectId::parse(&project)?;
+        let Some(run) = read_agent_run(&transaction, project_id, agent_run_id)? else {
+            return Ok(SnapshotEnvelope::new(realm, newest, None));
+        };
+        let team_template: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT snapshot, snapshot_hash FROM team_runs WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), run.team_run_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let team_template = team_template
+            .map(|(json, hash)| team_run_snapshot(&json, &hash))
+            .transpose()?
+            .map(|snapshot| (snapshot.template_id, snapshot.template_version));
+        let gaps = read_gaps(&transaction, project_id, agent_run_id)?;
+        Ok(SnapshotEnvelope::new(
+            realm,
+            newest,
+            Some(RunInspection {
+                project_id,
+                run,
+                team_template,
+                gaps,
+            }),
+        ))
+    }
+
+    fn snapshot_task_inspection(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<SnapshotEnvelope<Option<TaskInspection>>> {
+        let transaction = self.begin()?;
+        let task: Option<RepositoryResult<Task>> = transaction
+            .query_row(
+                &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 AND id = ?2"),
+                params![project_id.to_string(), task_id.to_string()],
+                |row| Ok(read_task(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let (_, newest) = control_window(&transaction)?;
+        let realm = self.realm_id();
+        let Some(task) = task.transpose()? else {
+            return Ok(SnapshotEnvelope::new(realm, newest, None));
+        };
+        let workflow_id: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM task_workflows
+                 WHERE project_id = ?1 AND task_id = ?2 AND active = 1",
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let (workflow, gates) = match workflow_id {
+            None => (None, BTreeMap::new()),
+            Some(id) => {
+                let id = TaskWorkflowId::parse(&id)?;
+                let (workflow, _) = load_workflow(&transaction, project_id, id)?;
+                let gates = reduce_gate_states(&transaction, project_id, id)?;
+                (Some(workflow), gates)
+            }
+        };
+        // A task carries at most one persona snapshot per scenario revision; the
+        // newest is the one in force, and it is read here rather than by scenario
+        // id because a reader inspecting a task does not yet know which scenario
+        // was frozen onto it.
+        let persona: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT snapshot, snapshot_hash FROM task_persona_snapshots
+                 WHERE project_id = ?1 AND task_id = ?2
+                 ORDER BY version DESC, scenario_id LIMIT 1",
+                params![project_id.to_string(), task_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let persona = persona
+            .map(|(json, hash)| stored_document::<PersonaScenarioSnapshot>(&json, &hash))
+            .transpose()?;
+        Ok(SnapshotEnvelope::new(
+            realm,
+            newest,
+            Some(TaskInspection {
+                task,
+                workflow,
+                gates,
+                persona,
+            }),
+        ))
+    }
+
+    fn snapshot_target_revision(
+        &self,
+        project_id: ProjectId,
+        target: &AggregateRef,
+    ) -> RepositoryResult<SnapshotEnvelope<Option<AggregateRevision>>> {
+        // One row per target kind, addressed relationally exactly as
+        // `command_targets` addresses it, so this read cannot resolve a target
+        // the write path would refuse.
+        let (sql, id) = match target {
+            // The row has to be *both* the addressed project and the acting one:
+            // a command naming another project's row is refused by finding
+            // nothing, the same way every other target is.
+            AggregateRef::Project {
+                project_id: target_project,
+            } => (
+                "SELECT revision FROM projects WHERE id = ?2 AND id = ?1",
+                target_project.to_string(),
+            ),
+            AggregateRef::MiniProject { mini_project_id } => (
+                "SELECT revision FROM mini_projects WHERE project_id = ?1 AND id = ?2",
+                mini_project_id.to_string(),
+            ),
+            AggregateRef::Task { task_id } => (
+                "SELECT revision FROM tasks WHERE project_id = ?1 AND id = ?2",
+                task_id.to_string(),
+            ),
+            AggregateRef::TeamRun { team_run_id } => (
+                "SELECT revision FROM team_runs WHERE project_id = ?1 AND id = ?2",
+                team_run_id.to_string(),
+            ),
+            AggregateRef::AgentRun { agent_run_id } => (
+                "SELECT revision FROM agent_runs WHERE project_id = ?1 AND id = ?2",
+                agent_run_id.to_string(),
+            ),
+            AggregateRef::TicketLink { link_id } => (
+                "SELECT revision FROM jira_links WHERE project_id = ?1 AND id = ?2",
+                link_id.to_string(),
+            ),
+            // A calendar assignment has no revision column: it is retired and
+            // replaced rather than updated in place, so its witness can only ever
+            // be the initial one. Reporting the initial revision for a row that
+            // exists is the honest reading; inventing a moving number would
+            // suggest a compare-and-swap that has nothing to swap.
+            AggregateRef::WorkCalendar { work_calendar_id } => (
+                "SELECT 1 FROM work_calendars WHERE project_id = ?1 AND id = ?2",
+                work_calendar_id.to_string(),
+            ),
+        };
+        let transaction = self.begin()?;
+        let found: Option<i64> = transaction
+            .query_row(sql, params![project_id.to_string(), id], |row| row.get(0))
+            .optional()
+            .map_err(backend)?;
+        let (_, newest) = control_window(&transaction)?;
+        let revision = found.map(revision_of).transpose()?;
+        Ok(SnapshotEnvelope::new(self.realm_id(), newest, revision))
     }
 }

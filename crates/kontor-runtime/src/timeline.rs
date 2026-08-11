@@ -315,6 +315,23 @@ impl HistoryReader {
         }
     }
 
+    /// Resume reading `binding_id` strictly after a position an earlier page
+    /// ended at.
+    ///
+    /// A reader that could only start at the beginning of an epoch cannot
+    /// validate a page fetched with a continuation cursor: the page's first item
+    /// is legitimately far past sequence 0, and a from-the-start guard would call
+    /// that a gap. The position comes from resolving the caller's own cursor
+    /// against this binding, so a resumed reader still cannot be pointed at a
+    /// position no runtime issued.
+    #[must_use]
+    pub fn resuming(binding_id: RuntimeBindingId, after: TimelinePosition) -> Self {
+        Self {
+            binding_id,
+            guard: TimelineGuard::starting_after(after),
+        }
+    }
+
     /// Validate one page, drop anything already covered, and advance the
     /// anchor.
     ///

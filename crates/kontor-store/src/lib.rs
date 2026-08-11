@@ -56,8 +56,8 @@ pub use policy::{
     RejectionOutcome, StoredRecoveryStep,
 };
 pub use reconciliation::{
-    CensusItem, CensusOutcome, EpochKey, EpochStatus, EpochSummary, ReconciliationEpoch,
-    ReconciliationEpochId,
+    CensusItem, CensusOutcome, EpochKey, EpochStatus, EpochSummary, OpenBinding,
+    ReconciliationEpoch, ReconciliationEpochId,
 };
 
 /// Everything the store can refuse.

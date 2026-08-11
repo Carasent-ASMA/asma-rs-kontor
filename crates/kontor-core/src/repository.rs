@@ -856,6 +856,93 @@ pub struct ConnectorSpecSelector {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-boundary inspection
+// ---------------------------------------------------------------------------
+
+/// Which cursor space a recorded discontinuity belongs to.
+///
+/// The two are never merged. A control gap says a *control-plane fact* never
+/// arrived; a content gap says some transcript must be read again from the
+/// runtime. Only the first is evidence about the work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryGapKind {
+    /// A hole in the runtime's own control sequence.
+    Control,
+    /// A hole in the runtime's session-content epoch or sequence.
+    Content,
+}
+
+/// One recorded discontinuity, as the marker a reader is owed.
+///
+/// It carries positions and instants only: a gap is the statement that something
+/// is missing, never a copy of what it said.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryGapMarker {
+    /// Which cursor space the hole is in.
+    pub kind: HistoryGapKind,
+    /// The runtime's content epoch, for a content gap.
+    pub content_epoch: Option<u64>,
+    /// The sequence that was expected next.
+    pub expected_sequence: u64,
+    /// The sequence that actually arrived.
+    pub received_sequence: u64,
+    /// The control-plane position the hole was noticed at.
+    pub detected_cursor: EventCursor,
+    /// When it was noticed.
+    pub detected_at: Timestamp,
+}
+
+/// One page of this Realm's durable control-plane log, with the window it was
+/// read against.
+///
+/// The window is read in the *same* transaction as the page, so a caller can
+/// tell "you are caught up" from "the position you asked for is no longer
+/// retained" without a second, later read that could disagree with the first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RealmEventPage {
+    /// The events, ascending, all strictly after the requested position.
+    pub events: Vec<EventEnvelope<RuntimeEvent>>,
+    /// The oldest position still retained, or the reserved origin when the log
+    /// is empty.
+    pub oldest_retained: RealmCursor,
+    /// The newest allocated position, or the reserved origin when the log is
+    /// empty.
+    pub newest: RealmCursor,
+}
+
+/// Everything a cross-boundary reader is told about one agent run.
+///
+/// The parts are read together, so the projection, the binding, the pinned team
+/// revision and the recorded gaps all describe one moment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunInspection {
+    /// The project the run resolved into. A run is addressed by its own id and
+    /// answers with the scope it belongs to, so nothing downstream has to guess
+    /// which project's rows it may read.
+    pub project_id: ProjectId,
+    /// The run, with its binding, projection and revision.
+    pub run: AgentRun,
+    /// The team run's pinned template revision, when the team is readable.
+    pub team_template: Option<(TeamTemplateId, SpecVersion)>,
+    /// Every recorded discontinuity for this run, oldest first.
+    pub gaps: Vec<HistoryGapMarker>,
+}
+
+/// Everything a cross-boundary reader is told about one task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskInspection {
+    /// The task, with its state and revision.
+    pub task: Task,
+    /// The active workflow and the profile revision it pinned.
+    pub workflow: Option<TaskWorkflow>,
+    /// The gate states reduced from the workflow's append-only evaluations.
+    pub gates: BTreeMap<GateKey, GateState>,
+    /// The persona scenario frozen onto the task, when there is one.
+    pub persona: Option<PersonaScenarioSnapshot>,
+}
+
+// ---------------------------------------------------------------------------
 // Dependency graph
 // ---------------------------------------------------------------------------
 
@@ -1729,4 +1816,63 @@ pub trait RealmRepository {
         &self,
         envelope: &ReceiptEnvelope<AccountProfileUpdate>,
     ) -> RepositoryResult<AccountProfile>;
+
+    /// Read one page of this Realm's whole control-plane log, strictly after a
+    /// Realm-qualified cursor.
+    ///
+    /// This is the Realm-wide companion to `read_events_after`, which pages one
+    /// run. A durable subscriber follows the Realm — it has no run to name before
+    /// it has read the events that mention one — and it needs the retained window
+    /// alongside the page to know whether the position it asked for still exists.
+    ///
+    /// # Errors
+    /// Refuses a cursor from another Realm before reading, and
+    /// [`DomainError::Invalid`] for a page limit of zero.
+    fn realm_event_page(
+        &self,
+        after: Option<RealmCursor>,
+        limit: u32,
+    ) -> RepositoryResult<RealmEventPage>;
+
+    /// Take a Realm-qualified inspection snapshot of one agent run.
+    ///
+    /// The run is addressed by its own id rather than by `(project, run)`,
+    /// because a session is addressed that way at every boundary above this one
+    /// and a Realm *is* the isolation boundary — a run id from another Realm has
+    /// no row here. The resolved [`ProjectId`] travels in the answer, so every
+    /// later read is project-scoped as usual.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn snapshot_run_inspection(
+        &self,
+        agent_run_id: AgentRunId,
+    ) -> RepositoryResult<SnapshotEnvelope<Option<RunInspection>>>;
+
+    /// Take a Realm-qualified inspection snapshot of one task.
+    ///
+    /// # Errors
+    /// Backend failures only; a task from another project is `Ok(None)`.
+    fn snapshot_task_inspection(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<SnapshotEnvelope<Option<TaskInspection>>>;
+
+    /// The revision one command target currently stands at, or `None` when the
+    /// target does not exist in this project.
+    ///
+    /// A caller that presents a stale revision is owed the current one, and it
+    /// has to be readable for *every* target kind — otherwise a conflict on one
+    /// aggregate would answer with a number and a conflict on another with a
+    /// shrug. The compare-and-swap inside the write is still what makes the
+    /// refusal safe; this only makes it informative.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn snapshot_target_revision(
+        &self,
+        project_id: ProjectId,
+        target: &AggregateRef,
+    ) -> RepositoryResult<SnapshotEnvelope<Option<AggregateRevision>>>;
 }

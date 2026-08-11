@@ -681,3 +681,34 @@ impl SqliteStore {
         }
     }
 }
+
+impl SqliteStore {
+    /// Every command receipt in this Realm that is not yet settled, oldest first.
+    ///
+    /// This is the *inventory* a restart recovers from, and it is deliberately
+    /// only that: what may be done about each one is
+    /// [`SqliteStore::classify_command_recovery`]'s answer, read from the durable
+    /// receipt. Listing a receipt here is never permission to dispatch it.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Backend`] on backend failure.
+    pub fn unsettled_receipts(&self) -> RepositoryResult<Vec<(ProjectId, CommandReceiptId)>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT project_id, id FROM command_receipts
+                 WHERE state NOT IN ('confirmed', 'failed')
+                 ORDER BY created_at, id",
+            )
+            .map_err(backend)?;
+        let mut rows = statement.query([]).map_err(backend)?;
+        let mut receipts = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            receipts.push((
+                ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+                CommandReceiptId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+            ));
+        }
+        Ok(receipts)
+    }
+}

@@ -17,10 +17,10 @@ use crate::events::types::{ConsumerPage, page_limit};
 use crate::repository::{backend, read_timestamp, text};
 
 /// The columns every reconstructed [`RuntimeEvent`] needs, in row order.
-const EVENT_COLUMNS: &str = "cursor, project_id, agent_run_id, runtime_kind, host, generation, \
+pub(crate) const EVENT_COLUMNS: &str = "cursor, project_id, agent_run_id, runtime_kind, host, generation, \
      native_id, native_event_id, native_sequence, payload, payload_hash, observed_at, recorded_at";
 
-fn read_event(row: &Row<'_>) -> RepositoryResult<RuntimeEvent> {
+pub(crate) fn read_event(row: &Row<'_>) -> RepositoryResult<RuntimeEvent> {
     let native_event_id: Option<String> = row.get(7).map_err(backend)?;
     let payload: String = row.get(9).map_err(backend)?;
     let payload_hash: String = row.get(10).map_err(backend)?;
