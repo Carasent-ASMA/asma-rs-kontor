@@ -1022,6 +1022,12 @@ closed_enum! {
         /// Someone else holds the ticket.
         OwnershipMismatch => "ownership_mismatch",
         /// A terminal ticket's ownership changed while the policy preserves it.
+        ///
+        /// [`reconcile`] never produces this under
+        /// [`OwnershipAction::Preserve`] — preserving an owner and reporting
+        /// that owner as a violation are contradictory. The value stays in the
+        /// closed set because a stricter terminal action recorded it before, and
+        /// a persisted conflict must still be readable.
         TerminalOwnershipViolation => "terminal_ownership_violation",
     }
 }
@@ -1107,12 +1113,10 @@ pub fn reconcile(input: &ReconciliationInput<'_>) -> ReconciliationOutcome {
     if current_class.is_terminal()
         && input.spec.ownership.terminal_action == OwnershipAction::Preserve
     {
-        let held_by_principal =
-            input.observation.assignee_account_id.as_ref() == Some(&input.principal.account_id);
-        if !held_by_principal && input.observation.assignee_account_id.is_some() {
-            return Conflict(StatusConflictKind::TerminalOwnershipViolation);
-        }
-        // Preserve means exactly that: no assignment is ever planned here.
+        // `preserve` preserves *every* holder, not only the principal. An
+        // unassigned, self-held and other-held closed ticket all converge to
+        // the same nothing: no assignment, no clear, and no conflict about who
+        // holds a ticket the policy has already promised not to touch.
         return NoOp;
     }
 
@@ -1134,25 +1138,32 @@ pub fn reconcile(input: &ReconciliationInput<'_>) -> ReconciliationOutcome {
         input.observation.assignee_account_id.as_ref() == Some(&input.principal.account_id);
 
     if takes_ownership && !assignee_matches {
-        if input.observation.assignee_account_id.is_some()
-            && input.spec.ownership.mismatch == OwnershipMismatchBehavior::RaiseConflict
-        {
-            return Conflict(StatusConflictKind::OwnershipMismatch);
+        if input.observation.assignee_account_id.is_some() {
+            // Somebody else holds the ticket. Under `raise_conflict` that is a
+            // conflict for a human; under `accept_external` the existing owner
+            // is *preserved* and the status still converges — replanning the
+            // assignee to the principal here would be a takeover, which is the
+            // one thing `accept_external` says not to do.
+            if input.spec.ownership.mismatch == OwnershipMismatchBehavior::RaiseConflict {
+                return Conflict(StatusConflictKind::OwnershipMismatch);
+            }
+        } else {
+            // Nobody holds it. Assignment is a prerequisite: converge the
+            // assignee first and let the next observation decide whether the
+            // status still needs to move. This is also the assignee-only
+            // convergence path, so an already-applied status transition is
+            // never retried.
+            return Transition(Box::new(TransitionPlan {
+                milestone: rule.milestone.clone(),
+                target: rule.target.clone(),
+                transition: None,
+                assignment: Some(AssignmentPlan {
+                    assign_to: Some(input.principal.account_id.clone()),
+                    action: OwnershipAction::ReassignToPrincipal,
+                }),
+                assignment_prerequisite: true,
+            }));
         }
-        // Assignment is a prerequisite: converge the assignee first and let the
-        // next observation decide whether the status still needs to move. This
-        // is also the assignee-only convergence path, so an already-applied
-        // status transition is never retried.
-        return Transition(Box::new(TransitionPlan {
-            milestone: rule.milestone.clone(),
-            target: rule.target.clone(),
-            transition: None,
-            assignment: Some(AssignmentPlan {
-                assign_to: Some(input.principal.account_id.clone()),
-                action: OwnershipAction::ReassignToPrincipal,
-            }),
-            assignment_prerequisite: true,
-        }));
     }
 
     if input.observation.status.status_id == rule.target.status_id {
