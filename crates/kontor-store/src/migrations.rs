@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -68,6 +68,10 @@ const MIGRATIONS: &[&str] = &[
     // bounded recovery episodes and steps, and the reviewer principal a
     // rejection counter is derived from.
     include_str!("../migrations/0003_guardrails_and_recovery.sql"),
+    // Schema v4. Durable scheduler leases — expiry, fencing token, holder and
+    // kind on the v1 lease — realm-wide module contention, append-only lease
+    // history and the canonical admission decision.
+    include_str!("../migrations/0004_scheduler_admission.sql"),
 ];
 
 const _: () = assert!(

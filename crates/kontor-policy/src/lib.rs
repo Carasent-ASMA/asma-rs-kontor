@@ -48,7 +48,9 @@ pub mod evaluator;
 pub mod model;
 pub mod recovery;
 
-pub use evaluator::{REJECTIONS_BEFORE_PARK, decide, evaluate, rejections_since_pass};
+pub use evaluator::{
+    REJECTIONS_BEFORE_PARK, decide, evaluate, module_isolated_by_worktree, rejections_since_pass,
+};
 pub use model::{
     ActionDomain, ActionEffect, ActionIntent, ActorContext, ApprovalReceipt, ApprovalReceiptId,
     ApprovalScopeKind, ArtifactEvidence, ArtifactEvidenceId, AuthoritySource, Decision,

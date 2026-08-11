@@ -30,7 +30,8 @@ use std::collections::BTreeSet;
 
 use kontor_core::DomainResult;
 use kontor_core::id::{
-    ArtifactKey, CanonicalDocument, ExternalId, GateKey, GuardrailEvaluationId, RoleKey,
+    ArtifactKey, CanonicalDocument, ExternalId, ExternalName, GateKey, GuardrailEvaluationId,
+    RoleKey,
 };
 use kontor_core::repository::GateEvaluation;
 use kontor_core::spec::GateSpec;
@@ -38,7 +39,7 @@ use kontor_core::state::GateVerdict;
 
 use crate::model::{
     ActionEffect, ActionIntent, Decision, EvaluationRequest, EvaluationSubject, EvidenceRef,
-    GuardrailEvaluation, GuardrailRuleKey, PolicyVerdict, ReasonCode, SubjectKind,
+    GuardrailEvaluation, GuardrailRuleKey, ModuleClaim, PolicyVerdict, ReasonCode, SubjectKind,
 };
 
 /// The number of rejections by one reviewer on one gate that parks the work.
@@ -207,6 +208,32 @@ fn worktree_sticky(request: &EvaluationRequest) -> Decision {
 // 2. module_collision
 // ---------------------------------------------------------------------------
 
+/// Whether holding `mine` keeps this work apart from every contender.
+///
+/// Isolation is only isolation when *both* sides have a tree and the trees
+/// differ. A contender with no recorded worktree is not isolated from anything,
+/// and neither are we — so "some of the contenders are in other trees" is not
+/// isolation either, which is why this is `all` and not `any`.
+///
+/// It is public because the same question is asked twice about the same fact, at
+/// two moments: a guardrail asks it about an action inside a run
+/// ([`module_collision`]), and the scheduler asks it about a task it is about to
+/// admit, against the module leases held across the whole Realm. Those are
+/// different inputs, and it is the same rule — so it is one function rather than
+/// two that agree until one of them is edited.
+#[must_use]
+pub fn module_isolated_by_worktree<'a>(
+    mine: Option<&ExternalName>,
+    contenders: impl IntoIterator<Item = &'a ModuleClaim>,
+) -> bool {
+    let Some(mine) = mine else {
+        return false;
+    };
+    contenders
+        .into_iter()
+        .all(|claim| claim.worktree.as_ref().is_some_and(|theirs| theirs != mine))
+}
+
 /// Two tasks do not hold the same module unless separate worktrees keep them
 /// apart.
 ///
@@ -236,20 +263,12 @@ fn module_collision(request: &EvaluationRequest) -> Decision {
         })
         .collect();
 
-    // Isolation is only isolation when *both* sides have a tree and the trees
-    // differ. A contender with no recorded worktree is not isolated from
-    // anything, and neither are we.
     let mine = request
         .run
         .recorded_worktree
         .as_ref()
         .or(request.workspace.claimed_worktree.as_ref());
-    let isolated = mine.is_some_and(|mine| {
-        contenders
-            .iter()
-            .all(|claim| claim.worktree.as_ref().is_some_and(|theirs| theirs != mine))
-    });
-    if isolated {
+    if module_isolated_by_worktree(mine, contenders.iter().copied()) {
         Decision::with_evidence(
             PolicyVerdict::Pass,
             ReasonCode::ModuleIsolatedByWorktree,

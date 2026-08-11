@@ -19,6 +19,10 @@ kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 # `kontor-policy` and only *recorded* here, so this crate depends on the decision
 # types and never re-implements a rule.
 kontor-policy = { path = "../kontor-policy", version = "=0.1.0" }
+# KON-MVP-09: the ready-batch decision is made in `kontor-scheduler`; this crate
+# makes one of those decisions durable and never re-decides it. Same split as
+# `kontor-policy` above.
+kontor-scheduler = { path = "../kontor-scheduler", version = "=0.1.0" }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,6 +34,10 @@ thiserror = { workspace = true }
 # through direct SQL, which the public store API deliberately does not expose.
 rusqlite = { workspace = true }
 tempfile = { workspace = true }
+# KON-MVP-09: the lease suite injects its clock, so it needs to say "five minutes
+# after the fixture instant" rather than parse a second literal for every step.
+jiff = { workspace = true }
+serde_json = { workspace = true }
 # KON-MVP-10: the guardrail suite builds the verdicts it stores with the same
 # types the evaluator produces, rather than hand-rolling look-alike rows.
 kontor-policy = { path = "../kontor-policy", version = "=0.1.0" }
