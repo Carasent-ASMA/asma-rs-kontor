@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "connector": "connector.jira",
+  "project": "asma",
+  "issue_type": "task",
+  "version": 1,
+  "mappings": [
+    {
+      "key": "summary",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "summary",
+        "field_type": "text",
+        "encoding": "plain_text",
+        "options": []
+      },
+      "required": false
+    },
+    {
+      "key": "description",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "description",
+        "field_type": "rich_text",
+        "encoding": "structured_document",
+        "options": []
+      },
+      "required": false
+    },
+    {
+      "key": "acceptance_criteria",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "customfield_10220",
+        "field_type": "rich_text",
+        "encoding": "structured_document",
+        "options": []
+      },
+      "required": false
+    },
+    {
+      "key": "product",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "customfield_10251",
+        "field_type": "single_select",
+        "encoding": "plain_text",
+        "options": [
+          { "id": "10330", "name": "Samhandling" },
+          { "id": "10331", "name": "Ad Opus Web" },
+          { "id": "10459", "name": "Both" }
+        ]
+      },
+      "required": false
+    },
+    {
+      "key": "service_name",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "customfield_10310",
+        "field_type": "single_select",
+        "encoding": "plain_text",
+        "options": [
+          { "id": "10393", "name": "adopus-app-directory" },
+          { "id": "10394", "name": "activities" },
+          { "id": "10395", "name": "artifact" },
+          { "id": "10396", "name": "calendar" },
+          { "id": "10397", "name": "chat" },
+          { "id": "10398", "name": "consents" },
+          { "id": "10399", "name": "crm" },
+          { "id": "10400", "name": "devextreme" },
+          { "id": "10401", "name": "directory" },
+          { "id": "10402", "name": "notification" },
+          { "id": "10403", "name": "office" },
+          { "id": "10485", "name": "auth" },
+          { "id": "10486", "name": "shell" },
+          { "id": "10487", "name": "advoca" },
+          { "id": "11121", "name": "storage" },
+          { "id": "11226", "name": "qnreditor" }
+        ]
+      },
+      "required": false
+    },
+    {
+      "key": "repro_steps",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "customfield_10225",
+        "field_type": "rich_text",
+        "encoding": "structured_document",
+        "options": []
+      },
+      "required": false
+    },
+    {
+      "key": "severity",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "customfield_10227",
+        "field_type": "single_select",
+        "encoding": "plain_text",
+        "options": [
+          { "id": "10488", "name": "Critical" },
+          { "id": "10300", "name": "High" },
+          { "id": "10301", "name": "Medium" },
+          { "id": "10302", "name": "Low" }
+        ]
+      },
+      "required": false
+    },
+    {
+      "key": "agent_status",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "customfield_10328",
+        "field_type": "rich_text",
+        "encoding": "structured_document",
+        "options": []
+      },
+      "required": false
+    }
+  ]
+}

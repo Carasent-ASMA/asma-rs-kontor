@@ -29,10 +29,10 @@ use kontor_core::ticket::{
     AssigneeIdentitySource, CommentPolicy, ExternalCommentRevision, ExternalFieldMapping,
     ExternalFieldOption, ExternalFieldType, ExternalTicketObservation, ExternalWorkflowSpec,
     FieldDirection, FieldEncoding, FieldOwner, FieldValue, InternalPredicate, InternalTaskFacts,
-    LiveTransition, OwnershipAction, ProjectedField, ReconciliationInput, ReconciliationOutcome,
-    SelectedTransition, SemanticStatusClass, StatusConflictKind, StatusSelector, TicketFieldKey,
-    TicketFieldMapping, TicketFieldSpec, TicketPrincipal, TicketSyncProjection, TransitionPlan,
-    reconcile,
+    LiveTransition, OwnershipAction, OwnershipMismatchBehavior, ProjectedField,
+    ReconciliationInput, ReconciliationOutcome, SelectedTransition, SemanticStatusClass,
+    StatusConflictKind, StatusSelector, TicketFieldKey, TicketFieldMapping, TicketFieldSpec,
+    TicketPrincipal, TicketSyncProjection, TransitionPlan, reconcile,
 };
 
 const WORKFLOW_ONE: &str = include_str!("fixtures/external_workflow_asma.json");
@@ -908,36 +908,166 @@ fn an_externally_closed_ticket_without_internal_evidence_is_a_conflict() {
 
 #[test]
 fn preserve_never_clears_a_terminal_assignee() {
+    // All three holders of a closed ticket — nobody, the principal, a stranger
+    // — converge to the same nothing. `preserve` means the assignee is not
+    // Kontor's to write, so there is no assignment, no clear, and no conflict
+    // about a value the policy already promised not to touch.
     for spec in workflows() {
         assert_eq!(spec.ownership.terminal_action, OwnershipAction::Preserve);
 
-        // Kontor holds the closed ticket: nothing at all is planned.
-        let outcome = reconcile(&ReconciliationInput {
-            spec: &spec,
-            observation: &observation(&terminal_status(&spec), Some(&principal().account_id)),
-            freshness: Freshness::Fresh,
-            facts: &facts(TaskState::Done, true, Some(TerminalOutcome::Succeeded)),
-            live_transitions: &[],
-            principal: &principal(),
-        });
-        assert_eq!(
-            outcome,
-            ReconciliationOutcome::NoOp,
-            "preserve must plan no assignment at all, least of all a clear"
-        );
+        let holders = [
+            (None, "an unassigned closed ticket"),
+            (Some(principal().account_id), "a self-held closed ticket"),
+            (Some(external("acct-other")), "an other-held closed ticket"),
+        ];
+        for (holder, described) in holders {
+            let outcome = reconcile(&ReconciliationInput {
+                spec: &spec,
+                observation: &observation(&terminal_status(&spec), holder.as_ref()),
+                freshness: Freshness::Fresh,
+                facts: &facts(TaskState::Done, true, Some(TerminalOutcome::Succeeded)),
+                live_transitions: &[],
+                principal: &principal(),
+            });
+            assert_eq!(
+                outcome,
+                ReconciliationOutcome::NoOp,
+                "{described} must plan no assignment at all, least of all a clear"
+            );
+        }
+    }
+}
 
-        // Somebody else holds the closed ticket: report, never rewrite.
+/// The same specification with `accept_external` instead of `raise_conflict`.
+///
+/// The mismatch behavior is the *only* thing that changes, so a difference in
+/// outcome can only come from that policy value and never from a status name.
+fn accepting_workflows() -> Vec<ExternalWorkflowSpec> {
+    workflows()
+        .into_iter()
+        .map(|mut spec| {
+            spec.ownership.mismatch = OwnershipMismatchBehavior::AcceptExternal;
+            spec.validate().expect("only the mismatch behavior changed");
+            spec
+        })
+        .collect()
+}
+
+#[test]
+fn accept_external_preserves_an_existing_owner_and_still_converges_the_status() {
+    for spec in accepting_workflows() {
+        let target = target_of(&spec, "milestone.development-started");
+        let current = first_inbound(&spec);
+        let stranger = external("acct-someone-else");
+        let observed = observation(&current, Some(&stranger));
+        let transitions = vec![
+            LiveTransition {
+                transition_id: external("t-noise"),
+                to: hold_status(&spec),
+            },
+            LiveTransition {
+                transition_id: external("t-correct"),
+                to: target.clone(),
+            },
+        ];
         let outcome = reconcile(&ReconciliationInput {
             spec: &spec,
-            observation: &observation(&terminal_status(&spec), Some(&external("acct-other"))),
+            observation: &observed,
             freshness: Freshness::Fresh,
-            facts: &facts(TaskState::Done, true, Some(TerminalOutcome::Succeeded)),
+            facts: &facts(TaskState::InProgress, false, None),
+            live_transitions: &transitions,
+            principal: &principal(),
+        });
+        match outcome {
+            ReconciliationOutcome::Transition(plan) => {
+                assert!(
+                    plan.assignment.is_none(),
+                    "accept_external must not replan the assignee onto the principal"
+                );
+                assert!(
+                    !plan.assignment_prerequisite,
+                    "there is no assignment to wait for"
+                );
+                assert_eq!(
+                    plan.transition,
+                    Some(SelectedTransition {
+                        transition_id: external("t-correct"),
+                        to: target,
+                    }),
+                    "the status still converges under the external owner"
+                );
+            }
+            other => panic!("expected a transition plan under accept_external, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn accept_external_still_assigns_an_unassigned_ticket_to_the_principal() {
+    // `accept_external` is about an owner that already exists. With nobody
+    // holding the ticket there is no external value to accept, so the ownership
+    // milestone still takes ownership — and still waits for confirmation.
+    for spec in accepting_workflows() {
+        let observed = observation(&first_inbound(&spec), None);
+        let outcome = reconcile(&ReconciliationInput {
+            spec: &spec,
+            observation: &observed,
+            freshness: Freshness::Fresh,
+            facts: &facts(TaskState::InProgress, false, None),
             live_transitions: &[],
             principal: &principal(),
         });
+        match outcome {
+            ReconciliationOutcome::Transition(plan) => {
+                let assignment = plan.assignment.expect("an assignment is planned");
+                assert_eq!(assignment.action, OwnershipAction::ReassignToPrincipal);
+                assert_eq!(assignment.assign_to, Some(principal().account_id));
+                assert!(plan.assignment_prerequisite);
+                assert!(plan.transition.is_none());
+            }
+            other => panic!("expected an assignment plan, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn accept_external_never_writes_an_assignee_it_did_not_have_to() {
+    // Every non-terminal ownership shape under `accept_external`, in one place:
+    // an assignment is planned for exactly one of them, and its value can only
+    // ever be the principal's own account id.
+    for spec in accepting_workflows() {
+        let target = target_of(&spec, "milestone.development-started");
+        let transitions = vec![LiveTransition {
+            transition_id: external("t-correct"),
+            to: target,
+        }];
+        let planned: Vec<Option<Option<ExternalId>>> = [
+            None,
+            Some(principal().account_id),
+            Some(external("acct-someone-else")),
+        ]
+        .into_iter()
+        .map(|holder| {
+            let outcome = reconcile(&ReconciliationInput {
+                spec: &spec,
+                observation: &observation(&first_inbound(&spec), holder.as_ref()),
+                freshness: Freshness::Fresh,
+                facts: &facts(TaskState::InProgress, false, None),
+                live_transitions: &transitions,
+                principal: &principal(),
+            });
+            match outcome {
+                ReconciliationOutcome::Transition(plan) => {
+                    plan.assignment.map(|assignment| assignment.assign_to)
+                }
+                other => panic!("expected a plan for every ownership shape, got {other:?}"),
+            }
+        })
+        .collect();
         assert_eq!(
-            outcome,
-            ReconciliationOutcome::Conflict(StatusConflictKind::TerminalOwnershipViolation)
+            planned,
+            vec![Some(Some(principal().account_id)), None, None],
+            "only the unassigned ticket may be assigned, and only to the principal"
         );
     }
 }

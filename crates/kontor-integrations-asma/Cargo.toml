@@ -12,6 +12,14 @@ description = "asma fleet and asma jira sync subprocess boundaries."
 workspace = true
 
 [dependencies]
+# The exact version is the workspace's own package version. A bare path
+# dependency is a wildcard requirement, which `deny.toml` refuses.
+#
+# The domain policy types, the pure evaluator and the receipt shapes all come
+# from `kontor-core`. This crate adds no DTO of its own for anything the core
+# already models, and it deliberately has no HTTP client and no filesystem
+# edge: every live effect crosses the `asma` executable boundary.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
