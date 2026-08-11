@@ -390,9 +390,11 @@ impl FakeAsma {
             record = record.display(),
             request = request.display(),
         );
-        std::fs::write(&executable, script).expect("the fake executable is writable");
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+        let temporary = directory.join("asma.tmp");
+        std::fs::write(&temporary, script).expect("the fake executable is writable");
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))
             .expect("the fake executable is markable executable");
+        std::fs::rename(temporary, &executable).expect("the fake executable is installable");
         Self {
             directory,
             executable,
