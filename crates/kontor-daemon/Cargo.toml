@@ -11,13 +11,51 @@ description = "Single-instance process and composition root for the Kontor contr
 [lints]
 workspace = true
 
+[lib]
+name = "kontor_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kontor-daemon"
+path = "src/main.rs"
+
 [dependencies]
+kontor-api = { path = "../kontor-api", version = "=0.1.0" }
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
+# The composition root is where a configured runtime family becomes a live
+# adapter, so it is the one crate that depends on the provider adapters. Nothing
+# below it does: `kontor-api` is stated against the port.
+kontor-runtime-ao = { path = "../kontor-runtime-ao", version = "=0.1.0" }
+kontor-runtime-paseo = { path = "../kontor-runtime-paseo", version = "=0.1.0" }
+kontor-store = { path = "../kontor-store", version = "=0.1.0" }
+axum = { workspace = true }
+clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 directories = { workspace = true }
 fs4 = { workspace = true }
+# The realm's bearer secrets are drawn from SQLite's OS-seeded PRNG rather than
+# from a new random-number dependency: the shared dependency set is owned by
+# KON-MVP-02 (CON-007), and this workspace already trusts this generator.
+rusqlite = { workspace = true }
+secrecy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# The black-box suite drives the real router through `tower::ServiceExt::oneshot`
+# and never binds a socket, launches this binary or spawns a child process
+# (TST-001). The runtime under test is always the scripted fake.
+kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
+# The harness seats a real team run, so it needs the bundled profile pack rather
+# than a hand-rolled team document no deployment would have.
+kontor-profiles = { path = "../kontor-profiles", version = "=0.1.0" }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }

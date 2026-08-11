@@ -57,8 +57,8 @@ pub use policy::{
     RejectionOutcome, StoredRecoveryStep,
 };
 pub use reconciliation::{
-    CensusItem, CensusOutcome, EpochKey, EpochStatus, EpochSummary, ReconciliationEpoch,
-    ReconciliationEpochId,
+    CensusItem, CensusOutcome, EpochKey, EpochStatus, EpochSummary, OpenBinding,
+    ReconciliationEpoch, ReconciliationEpochId,
 };
 pub use scheduler::{
     AdmissionCommit, AdmissionOutcome, LeaseEventKind, LeaseKind, LeaseRelease, LeaseRenewal,

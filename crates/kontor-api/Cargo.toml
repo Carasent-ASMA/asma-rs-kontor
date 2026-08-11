@@ -12,8 +12,17 @@ description = "Versioned loopback HTTP JSON and SSE contract."
 workspace = true
 
 [dependencies]
+# The HTTP surface is stated against the domain ports and the runtime adapter
+# contract, and it is handed a concrete open store by the composition root. It
+# deliberately declares no second abstraction over either: a trait here would be
+# one more thing to keep in agreement with the seam it wraps.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
+kontor-store = { path = "../kontor-store", version = "=0.1.0" }
 axum = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
@@ -21,6 +30,10 @@ utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 url = { workspace = true }
 bytes = { workspace = true }
+jiff = { workspace = true }
+# Bearer secrets are held as `SecretString`: redacted in `Debug`, zeroized on
+# drop, and readable only through `ExposeSecret` in one function.
+secrecy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
