@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -64,6 +64,10 @@ const MIGRATIONS: &[&str] = &[
     // Schema v2. The non-secret account profile: harness, opaque credential
     // reference, environment/routing/capability documents, enabled, revision.
     include_str!("../migrations/0002_account_profiles_expanded.sql"),
+    // Schema v3. Guardrail evaluations, artifact/waiver/approval evidence,
+    // bounded recovery episodes and steps, and the reviewer principal a
+    // rejection counter is derived from.
+    include_str!("../migrations/0003_guardrails_and_recovery.sql"),
 ];
 
 const _: () = assert!(

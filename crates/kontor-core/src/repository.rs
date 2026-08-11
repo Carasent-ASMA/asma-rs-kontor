@@ -21,10 +21,11 @@ use crate::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash,
     CredentialAlias, EventCursor, ExternalId, ExternalIssueTypeKey, ExternalName,
-    ExternalProjectKey, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey,
-    PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey,
-    ScheduleOverrideId, SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId,
-    TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId, WorkProfileKey,
+    ExternalProjectKey, GateKey, GuardrailEvaluationId, IdempotencyKey, IntakeReceiptId,
+    MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleKey,
+    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SourceEventId, SpecVersion,
+    StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
+    TriggerKey, WorkCalendarId, WorkProfileKey,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -409,6 +410,20 @@ pub struct GateEvaluation {
     pub evaluator_account: AccountProfileId,
     /// Artifacts cited as evidence.
     pub evidence: Vec<ArtifactKey>,
+    /// The agent run the reviewer was acting inside, when there was one.
+    ///
+    /// Correlation only. It is deliberately *not* the reviewer's identity: a
+    /// counter keyed on a run id resets itself every time the same reviewer is
+    /// relaunched, which is exactly the reset a rejection counter must not have.
+    pub agent_run_id: Option<AgentRunId>,
+    /// The stable authenticated principal that recorded this verdict.
+    ///
+    /// `None` for a row written before the principal was recorded. Such a row is
+    /// attributable to nobody, so it neither advances nor resets any reviewer's
+    /// rejection stream rather than being folded into a plausible one.
+    pub reviewer_principal: Option<ExternalId>,
+    /// The guardrail evaluation this verdict was recorded under, if any.
+    pub policy_evaluation_id: Option<GuardrailEvaluationId>,
     /// When it was recorded.
     pub recorded_at: Timestamp,
 }
@@ -430,6 +445,16 @@ pub struct NewGateEvaluation {
     pub evaluator_account: AccountProfileId,
     /// Artifacts cited as evidence.
     pub evidence: Vec<ArtifactKey>,
+    /// The agent run the reviewer was acting inside, when there was one.
+    pub agent_run_id: Option<AgentRunId>,
+    /// The stable authenticated principal recording it.
+    ///
+    /// Required for the verdict to count towards — or reset — a reviewer's
+    /// rejection stream. Omitting it records the verdict and attributes it to
+    /// nobody; it never silently falls back to the run or the display name.
+    pub reviewer_principal: Option<ExternalId>,
+    /// The guardrail evaluation this verdict was recorded under, if any.
+    pub policy_evaluation_id: Option<GuardrailEvaluationId>,
     /// When it was recorded.
     pub recorded_at: Timestamp,
 }

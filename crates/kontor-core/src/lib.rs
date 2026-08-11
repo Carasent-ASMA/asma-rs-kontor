@@ -25,6 +25,12 @@
 ///
 /// The spelling is the persistence and wire form; `parse` is the only way back,
 /// so an unknown value from SQL or JSON is rejected instead of defaulted.
+///
+/// Exported so the crates layered on top of this one declare their closed
+/// domains the same way rather than hand-rolling a second, subtly different
+/// parse/serialize pair. Every expansion refers to `$crate::DomainError`, so a
+/// downstream enum rejects an unknown spelling with exactly this crate's error.
+#[macro_export]
 macro_rules! closed_enum {
     (
         $(#[$meta:meta])*

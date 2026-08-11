@@ -119,10 +119,38 @@ pub(crate) fn record_intent(
     store: &SqliteStore,
     request: &NewCommandIntent,
 ) -> RepositoryResult<CommandReceipt> {
+    let transaction = store.begin()?;
+    if let Some(existing) = insert_intent(&transaction, request)? {
+        // A replay wrote nothing, so there is nothing to commit.
+        return Ok(existing);
+    }
+    transaction.commit().map_err(backend)?;
+
+    store
+        .get_receipt_by_key(&request.idempotency_key)?
+        .ok_or(RepositoryError::NotFound {
+            subject: "command receipt",
+        })
+}
+
+/// Write an intent's six rows inside a transaction the caller already owns.
+///
+/// Returns `Some(receipt)` when the idempotency key names a command that is
+/// already durable — a replay, which writes nothing — and `None` when this call
+/// is the one that recorded it.
+///
+/// This exists as its own function so that a caller which must record an intent
+/// *together with something else* — an approval being spent, say — writes it
+/// through exactly this code path rather than an inline near-copy of it. There is
+/// only one way an intent reaches storage, and it is this one.
+pub(crate) fn insert_intent(
+    transaction: &rusqlite::Transaction<'_>,
+    request: &NewCommandIntent,
+) -> RepositoryResult<Option<CommandReceipt>> {
     // The kind and the target are not two independently supplied facts that
     // happen to be stored next to each other: one constrains the other, and the
     // pair decides both the revision rule and the desired-state change. Refused
-    // here, before `begin`, so no effect of the six can survive.
+    // before any row is written, so no effect of the six can survive.
     let rule: TargetRule = request
         .kind
         .ensure_compatible(&request.target, request.desired)?;
@@ -133,7 +161,6 @@ pub(crate) fn record_intent(
             subject: "command target",
         });
     }
-    let transaction = store.begin()?;
     let existing: Option<RepositoryResult<CommandReceipt>> = transaction
         .query_row(
             &format!("SELECT {RECEIPT_COLUMNS} FROM command_receipts WHERE idempotency_key = ?1"),
@@ -146,8 +173,8 @@ pub(crate) fn record_intent(
         let existing = existing?;
         // A replay of the same durable command returns the original receipt;
         // anything else fails atomically.
-        ensure_same_command(&transaction, &existing, request)?;
-        return Ok(existing);
+        ensure_same_command(transaction, &existing, request)?;
+        return Ok(Some(existing));
     }
 
     let target = to_json(&request.target)?;
@@ -214,7 +241,7 @@ pub(crate) fn record_intent(
     // exists always has a first transition, so recovery never has to guess what
     // the earliest durable promise was.
     append_transition(
-        &transaction,
+        transaction,
         request.project_id,
         request.receipt_id,
         1,
@@ -273,13 +300,7 @@ pub(crate) fn record_intent(
             ],
         )
         .map_err(backend)?;
-    transaction.commit().map_err(backend)?;
-
-    store
-        .get_receipt_by_key(&request.idempotency_key)?
-        .ok_or(RepositoryError::NotFound {
-            subject: "command receipt",
-        })
+    Ok(None)
 }
 
 /// Read the outbox entries as they stand, without claiming anything.

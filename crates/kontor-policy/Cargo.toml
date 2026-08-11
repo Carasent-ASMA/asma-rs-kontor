@@ -12,7 +12,21 @@ description = "Guardrail evaluation and evidence bundles."
 workspace = true
 
 [dependencies]
+# The exact version is the workspace's own package version. A bare path
+# dependency is a wildcard requirement, which `deny.toml` refuses.
+#
+# `kontor-core` is the only dependency, and deliberately so: guardrail
+# evaluation is a pure function of the domain contract. No store, no runtime, no
+# adapter — a rule that needed one of those would be reaching for authority it is
+# not allowed to have.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# The rule suite builds its own profiles in code, with names no bundled pack
+# uses, so a rule that recognized a seed name fails here rather than in
+# production.
+serde_json = { workspace = true }

@@ -21,11 +21,11 @@ use kontor_core::calendar::{
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CommandReceiptId, ContentHash, CredentialAlias,
-    CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId,
-    MiniProjectId, ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleKey,
-    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SpecVersion, StatusConflictId, TaskId,
-    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId,
-    WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+    CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey, GuardrailEvaluationId,
+    IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money, PersonaScenarioId, PhaseKey,
+    ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SpecVersion,
+    StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
+    TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
@@ -1236,7 +1236,7 @@ impl SpecRepository for SqliteStore {
 // Workflows, gates and the task lifecycle
 // ---------------------------------------------------------------------------
 
-fn load_workflow(
+pub(crate) fn load_workflow(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
     workflow_id: TaskWorkflowId,
@@ -1510,8 +1510,9 @@ impl WorkflowRepository for SqliteStore {
             .execute(
                 "INSERT INTO task_gate_evaluations
                      (project_id, workflow_id, gate_key, sequence, verdict, evaluator_role,
-                      evaluator_account, evidence, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      evaluator_account, evidence, recorded_at, agent_run_id, reviewer_principal,
+                      policy_evaluation_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     request.project_id.to_string(),
                     request.workflow_id.to_string(),
@@ -1521,7 +1522,12 @@ impl WorkflowRepository for SqliteStore {
                     request.evaluator_role.as_str(),
                     request.evaluator_account.to_string(),
                     evidence,
-                    text(request.recorded_at)
+                    text(request.recorded_at),
+                    request.agent_run_id.map(|run| run.to_string()),
+                    request.reviewer_principal.as_ref().map(ExternalId::as_str),
+                    request
+                        .policy_evaluation_id
+                        .map(|evaluation| evaluation.to_string())
                 ],
             )
             .map_err(backend)?;
@@ -1549,7 +1555,8 @@ impl WorkflowRepository for SqliteStore {
             .connection
             .prepare(
                 "SELECT gate_key, sequence, verdict, evaluator_role, evaluator_account,
-                        evidence, recorded_at
+                        evidence, recorded_at, agent_run_id, reviewer_principal,
+                        policy_evaluation_id
                  FROM task_gate_evaluations
                  WHERE project_id = ?1 AND workflow_id = ?2
                  ORDER BY recorded_at, gate_key, sequence",
@@ -1561,6 +1568,9 @@ impl WorkflowRepository for SqliteStore {
         let mut evaluations = Vec::new();
         while let Some(row) = rows.next().map_err(backend)? {
             let sequence: i64 = row.get(1).map_err(backend)?;
+            let agent_run: Option<String> = row.get(7).map_err(backend)?;
+            let principal: Option<String> = row.get(8).map_err(backend)?;
+            let evaluation: Option<String> = row.get(9).map_err(backend)?;
             evaluations.push(GateEvaluation {
                 project_id,
                 workflow_id,
@@ -1572,6 +1582,12 @@ impl WorkflowRepository for SqliteStore {
                     &row.get::<_, String>(4).map_err(backend)?,
                 )?,
                 evidence: from_json(&row.get::<_, String>(5).map_err(backend)?)?,
+                agent_run_id: agent_run.as_deref().map(AgentRunId::parse).transpose()?,
+                reviewer_principal: principal.as_deref().map(ExternalId::parse).transpose()?,
+                policy_evaluation_id: evaluation
+                    .as_deref()
+                    .map(GuardrailEvaluationId::parse)
+                    .transpose()?,
                 recorded_at: read_timestamp(&row.get::<_, String>(6).map_err(backend)?)?,
             });
         }
@@ -3918,7 +3934,7 @@ fn read_team_child_evidence(
 /// Only *facts* are returned; whether they authorize the closure is decided by
 /// [`AbandonReceiptFacts::verify`] in the domain, so the agent and team paths
 /// cannot drift apart.
-fn read_abandon_receipt(
+pub(crate) fn read_abandon_receipt(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
     receipt_id: CommandReceiptId,

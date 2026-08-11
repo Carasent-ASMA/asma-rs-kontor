@@ -22,11 +22,13 @@ use kontor_store::{SCHEMA_VERSION, SqliteStore, StoreError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use tempfile::TempDir;
 
-/// Every table schema v1 owns. The list is spelled out so that adding or
-/// removing one is a deliberate, reviewed change.
+/// Every table the current schema owns, across all generations. The list is
+/// spelled out so that adding or removing one is a deliberate, reviewed change.
 const EXPECTED_TABLES: &[&str] = &[
     "account_profiles",
     "agent_runs",
+    "approval_receipts",
+    "artifact_evidence",
     "calendar_exceptions",
     "calendar_profiles",
     "command_outbox",
@@ -39,6 +41,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "external_comments",
     "external_ticket_observations",
     "external_workflow_specs",
+    "gate_waivers",
     "guardrail_evaluations",
     "handoffs",
     "holiday_sources",
@@ -46,9 +49,13 @@ const EXPECTED_TABLES: &[&str] = &[
     "jira_links",
     "mini_projects",
     "persona_scenarios",
+    "policy_evaluations",
     "projects",
     "realm_metadata",
+    "recovery_episodes",
+    "recovery_steps",
     "resource_leases",
+    "run_park_closures",
     "runtime_bindings",
     "runtime_content_gaps",
     "runtime_control_gaps",
@@ -157,7 +164,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 2);
+    assert_eq!(SCHEMA_VERSION, 3);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
