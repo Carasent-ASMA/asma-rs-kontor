@@ -66,16 +66,32 @@ impl CallerCapability {
     }
 }
 
+/// One generation of the Realm's three secrets.
+#[derive(Debug)]
+struct Secrets {
+    observer: SecretString,
+    operator: SecretString,
+    admin: SecretString,
+}
+
 /// The Realm's bearer secrets, one per authority tier.
 ///
 /// The values are [`SecretString`]s: they do not appear in `Debug`, they are
 /// zeroized on drop, and the only way to read one is [`ExposeSecret`], which
 /// happens in exactly one function in this crate.
+///
+/// # Why the set is behind a lock
+///
+/// Rotation replaces all three at once, in a running process, and it has to be
+/// *atomic with respect to a request*: a caller must be authorized against one
+/// whole generation, never against a mixture of the old admin secret and the
+/// new operator one. A single lock over the set is what makes that true, and it
+/// is why [`RealmCredentials::replace`] takes `&self` rather than `&mut self` —
+/// the credentials live inside a shared `ApiState` that no caller can get a
+/// unique borrow of.
 #[derive(Debug)]
 pub struct RealmCredentials {
-    observer: SecretString,
-    operator: SecretString,
-    admin: SecretString,
+    secrets: std::sync::RwLock<Secrets>,
 }
 
 impl RealmCredentials {
@@ -87,9 +103,11 @@ impl RealmCredentials {
     #[must_use]
     pub const fn new(observer: SecretString, operator: SecretString, admin: SecretString) -> Self {
         Self {
-            observer,
-            operator,
-            admin,
+            secrets: std::sync::RwLock::new(Secrets {
+                observer,
+                operator,
+                admin,
+            }),
         }
     }
 
@@ -101,17 +119,45 @@ impl RealmCredentials {
     /// nor how many leading bytes it got right.
     #[must_use]
     pub fn authority(&self, presented: &str) -> Option<CallerCapability> {
+        let held = self
+            .secrets
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut granted = None;
         for (secret, capability) in [
-            (&self.observer, CallerCapability::Observer),
-            (&self.operator, CallerCapability::Operator),
-            (&self.admin, CallerCapability::Admin),
+            (&held.observer, CallerCapability::Observer),
+            (&held.operator, CallerCapability::Operator),
+            (&held.admin, CallerCapability::Admin),
         ] {
             if constant_time_eq(secret.expose_secret().as_bytes(), presented.as_bytes()) {
                 granted = Some(capability);
             }
         }
         granted
+    }
+
+    /// Swap in a whole new generation of secrets.
+    ///
+    /// Every tier moves together, and the previous generation is dropped — and
+    /// therefore zeroized — as this returns. From the next authorization
+    /// onwards, every old token is simply not one of this Realm's secrets, which
+    /// is the same answer an invented one gets: there is no revocation list to
+    /// consult and no window in which an old token is "expiring".
+    ///
+    /// What this does *not* touch is deliberate. A native runtime session, its
+    /// binding and its command receipts are identified by the Realm's own ids,
+    /// not by the credential a client authenticated with, so rotation changes
+    /// who may call in and changes nothing about what is already running.
+    pub fn replace(&self, next: Self) {
+        let replacement = next
+            .secrets
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut held = self
+            .secrets
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *held = replacement;
     }
 }
 

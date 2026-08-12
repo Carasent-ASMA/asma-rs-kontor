@@ -221,7 +221,24 @@ Paseo, Agent Orchestrator, Codex and the `asma` CLI are separate installations;
 their code and licenses are not included here. Public release remains subject
 to the reviews listed in [Provenance](PROVENANCE.md).
 
-## FAQ
+## Backup, restore, export and security
+
+Operator runbook: [`RECOVERY.md`](RECOVERY.md). In short:
+
+```sh
+kontor-daemon --state-root <dir> snapshot          # VACUUM INTO, verified, pruned to 7
+kontor-daemon --state-root <dir> export --out f    # versioned, redacted, deterministic JSON
+kontor-daemon --state-root <dir> restore --snapshot f   # same realm only, realm stopped
+kontor-daemon --state-root <dir> import --from f --project <id>   # a *different* realm
+kill -HUP <pid>                                    # rotate a serving realm's credentials
+```
+
+Snapshot and export are safe while the realm serves; restore, import and the
+stopped-realm rotation take the state root's exclusive lock. A restore never
+overwrites a *different* initialized realm, and a restored realm keeps
+scheduling shut until it has reconciled.
+
+## License and provenance
 
 ### Is Kontor itself an agent runtime?
 

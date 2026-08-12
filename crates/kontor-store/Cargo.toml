@@ -41,3 +41,7 @@ serde_json = { workspace = true }
 # KON-MVP-10: the guardrail suite builds the verdicts it stores with the same
 # types the evaluator produces, rather than hand-rolling look-alike rows.
 kontor-policy = { path = "../kontor-policy", version = "=0.1.0" }
+# KON-MVP-19: the export/import suite seeds the specifications a real deployment
+# has, from the bundled pack, because the import path re-validates them through
+# the same domain types — a hand-rolled document would test a shape nobody runs.
+kontor-profiles = { path = "../kontor-profiles", version = "=0.1.0" }

@@ -3043,13 +3043,17 @@ dependencies = [
 name = "kontor-accounts"
 version = "0.1.0"
 dependencies = [
- "directories",
+ "jiff",
  "keyring",
+ "kontor-core",
+ "kontor-runtime",
+ "kontor-store",
+ "rusqlite",
  "secrecy",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
- "uuid",
  "zeroize",
 ]
 
@@ -3059,10 +3063,18 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "bytes",
+ "futures",
+ "jiff",
+ "kontor-core",
+ "kontor-runtime",
+ "kontor-scheduler",
+ "kontor-store",
+ "secrecy",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-stream",
  "tower",
  "tower-http 0.7.0",
  "tracing",
@@ -3091,9 +3103,12 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "kontor-core",
+ "kontor-mcp",
  "predicates",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "uuid",
@@ -3103,7 +3118,18 @@ dependencies = [
 name = "kontor-context"
 version = "0.1.0"
 dependencies = [
+ "kontor-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "kontor-core"
+version = "0.1.0"
+dependencies = [
  "hex",
+ "jiff",
+ "proptest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3112,26 +3138,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "kontor-core"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "uuid",
-]
-
-[[package]]
 name = "kontor-daemon"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "clap",
  "directories",
  "fs4",
+ "futures",
+ "kontor-api",
+ "kontor-core",
+ "kontor-profiles",
+ "kontor-runtime",
+ "kontor-runtime-ao",
+ "kontor-runtime-paseo",
+ "kontor-store",
+ "rusqlite",
+ "secrecy",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -3164,6 +3193,7 @@ dependencies = [
 name = "kontor-integrations-asma"
 version = "0.1.0"
 dependencies = [
+ "kontor-core",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -3175,12 +3205,19 @@ dependencies = [
 name = "kontor-mcp"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "futures",
+ "kontor-core",
+ "reqwest",
  "rmcp",
+ "secrecy",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -3188,6 +3225,7 @@ dependencies = [
 name = "kontor-policy"
 version = "0.1.0"
 dependencies = [
+ "kontor-core",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -3198,12 +3236,10 @@ dependencies = [
 name = "kontor-profiles"
 version = "0.1.0"
 dependencies = [
- "hex",
+ "kontor-core",
+ "kontor-teams",
  "serde",
  "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.20",
- "uuid",
 ]
 
 [[package]]
@@ -3211,11 +3247,10 @@ name = "kontor-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "futures",
+ "kontor-core",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "tokio",
  "uuid",
 ]
 
@@ -3223,23 +3258,29 @@ dependencies = [
 name = "kontor-runtime-ao"
 version = "0.1.0"
 dependencies = [
- "futures",
+ "async-trait",
+ "kontor-core",
+ "kontor-runtime",
+ "kontor-tests-contract",
  "reqwest",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
  "tokio",
- "tokio-stream",
- "uuid",
+ "url",
 ]
 
 [[package]]
 name = "kontor-runtime-codex"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "kontor-accounts",
+ "kontor-core",
+ "kontor-runtime",
+ "kontor-tests-contract",
+ "secrecy",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
  "tokio",
  "uuid",
 ]
@@ -3248,9 +3289,13 @@ dependencies = [
 name = "kontor-runtime-paseo"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "kontor-core",
+ "kontor-runtime",
+ "kontor-tests-contract",
+ "secrecy",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
  "tokio",
  "uuid",
 ]
@@ -3260,6 +3305,9 @@ name = "kontor-scheduler"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "kontor-core",
+ "kontor-policy",
+ "kontor-runtime",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -3271,9 +3319,15 @@ dependencies = [
 name = "kontor-store"
 version = "0.1.0"
 dependencies = [
+ "jiff",
+ "kontor-core",
+ "kontor-policy",
+ "kontor-profiles",
+ "kontor-scheduler",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "uuid",
 ]
@@ -3282,10 +3336,11 @@ dependencies = [
 name = "kontor-teams"
 version = "0.1.0"
 dependencies = [
+ "kontor-core",
+ "kontor-runtime",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
- "uuid",
+ "tokio",
 ]
 
 [[package]]
@@ -3294,9 +3349,20 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "insta",
+ "jiff",
+ "kontor-core",
+ "kontor-policy",
+ "kontor-profiles",
+ "kontor-runtime",
+ "kontor-scheduler",
+ "kontor-store",
+ "kontor-teams",
  "predicates",
  "proptest",
+ "rusqlite",
+ "serde_json",
  "tempfile",
+ "tokio",
  "wiremock",
 ]
 
