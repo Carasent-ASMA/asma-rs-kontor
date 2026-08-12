@@ -1,0 +1,47 @@
+{
+  "approved_environment": [
+    "CODEX_HOME"
+  ],
+  "both_seats_live_at_once": true,
+  "canary_scan_control": "PILOT-SCAN-CONTROL-MARKER",
+  "control_runtime_without_account_environment": "runtime cannot prove a per-run account environment",
+  "harness": "fake.runtime",
+  "resolution": {
+    "first": {
+      "profile_id": "019ff40e-78ee-7411-ad56-9a7fc0043f25",
+      "revision": 1,
+      "variables": [
+        "CODEX_HOME"
+      ]
+    },
+    "homes_are_distinct_and_not_crossed": true,
+    "second": {
+      "profile_id": "019ff40e-78ee-7411-ad56-9a8419029b8a",
+      "revision": 1,
+      "variables": [
+        "CODEX_HOME"
+      ]
+    }
+  },
+  "rule": "a profile stores a closed reference kind and an opaque alias; only an in-memory operator policy maps an alias to a real place, and the resolved value's single exit is a child process environment block",
+  "seats": [
+    {
+      "account_profile_id": "019ff40e-78ee-7411-ad56-9a7fc0043f25",
+      "agent_run_id": "019ff40e-78ee-7411-ad56-9ac09eaeb550",
+      "binding_id": "019ff40e-78ee-7411-ad56-9ae2174a09e0",
+      "label": "pilot-account-a",
+      "native_id": "native-session-2",
+      "reference_alias": "pilot-account-a",
+      "reference_kind": "config_home"
+    },
+    {
+      "account_profile_id": "019ff40e-78ee-7411-ad56-9a8419029b8a",
+      "agent_run_id": "019ff40e-78ee-7411-ad56-9ad143e85983",
+      "binding_id": "019ff40e-78ee-7411-ad56-9b07ce365ea5",
+      "label": "pilot-account-b",
+      "native_id": "native-session-3",
+      "reference_alias": "pilot-account-b",
+      "reference_kind": "config_home"
+    }
+  ]
+}

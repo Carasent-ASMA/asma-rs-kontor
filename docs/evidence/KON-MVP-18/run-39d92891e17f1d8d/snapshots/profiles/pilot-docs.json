@@ -1,0 +1,20 @@
+{
+  "bundle_hash": "b7072dfc59ccc3498eb7585641c89522b758cd84389597c8391d0f16f39f3704",
+  "category": "docs",
+  "definition_hash": "3652e49e1b4ee017b888e3b789f303106ed468821bd5ff75f443501242891bc4",
+  "gates": [
+    "technical-review-gate",
+    "docs-final-gate"
+  ],
+  "pack_id": "kontor-mvp",
+  "pack_version": 1,
+  "phases": [
+    "authoring",
+    "technical-review",
+    "final-review"
+  ],
+  "profile": "docs",
+  "profile_version": 1,
+  "task": "pilot-docs",
+  "team_template": "01936f5a-0000-7000-8000-000000000001"
+}
