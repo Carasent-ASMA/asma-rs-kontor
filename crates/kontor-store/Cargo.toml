@@ -23,6 +23,11 @@ kontor-policy = { path = "../kontor-policy", version = "=0.1.0" }
 # makes one of those decisions durable and never re-decides it. Same split as
 # `kontor-policy` above.
 kontor-scheduler = { path = "../kontor-scheduler", version = "=0.1.0" }
+# KON-MVP-21: a candidate's calendar answer is resolved in `kontor-calendar` from
+# rows this crate reads. Assembling a snapshot is this crate's job; deciding what
+# a window, a holiday or an override means is not, and re-deriving it here would
+# be the second resolver the whole design exists to avoid.
+kontor-calendar = { path = "../kontor-calendar", version = "=0.1.0" }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

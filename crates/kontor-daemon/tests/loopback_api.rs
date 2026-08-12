@@ -2206,15 +2206,10 @@ async fn a_plan_admits_nothing_and_queues_nothing() {
 }
 
 #[tokio::test]
-async fn a_project_with_no_work_calendar_is_planned_and_one_with_a_calendar_is_not() {
-    // Resolving a calendar into an effective window is KON-MVP-21, and the only
-    // dishonest default available to the plan route is to call the window open. So
-    // the route refuses a project that has an assignment.
-    //
-    // The harness seeds no assignment, so what is proved here is the other half: the
-    // flag the route branches on really is false, and the route really does answer.
-    // The refusal itself is proved in `kontor_store::query`'s own tests, where a row
-    // can be inserted without giving this crate a way into the connection.
+async fn a_project_with_no_work_calendar_is_planned_without_a_calendar_blocker() {
+    // Absence of a calendar is not a closed calendar, and it is not a reason to
+    // refuse an answer either. The harness seeds no assignment, so the plan route
+    // answers and no decision names `calendar` among its blockers.
     let world = World::open().await;
     with_workflow(&world).await;
     assert!(
@@ -2234,6 +2229,82 @@ async fn a_project_with_no_work_calendar_is_planned_and_one_with_a_calendar_is_n
         answer.status, 200,
         "a project with no calendar has no window to resolve: {}",
         answer.body
+    );
+    assert!(
+        !answer.body.contains("calendar_closed"),
+        "an unconfigured project is unrestricted, never closed: {}",
+        answer.body
+    );
+}
+
+/// A configured, currently closed calendar is resolved by KON-MVP-21 and reaches
+/// the plan route as an ordinary blocker — not as a refusal to answer.
+#[tokio::test]
+async fn a_project_whose_calendar_is_closed_is_planned_and_reports_the_calendar_blocker() {
+    let world = World::open().await;
+    with_workflow(&world).await;
+
+    // A calendar that is open for one minute a week, in a zone the bundled tzdb
+    // knows. Whenever this test runs, the calendar is almost certainly closed —
+    // and the assertion below only needs "not admitted because of the calendar",
+    // which is true for every instant outside that minute.
+    world.daemon.state().with_store(|store| {
+        use kontor_core::calendar::{
+            CalendarProfileSpec, HolidayMergePolicy, IanaTimeZone, Weekday, WeeklyWindow,
+            WorkCalendarAssignment,
+        };
+        use kontor_core::repository::{CalendarRepository, SpecRepository};
+
+        let profile = CalendarProfileSpec {
+            schema_version: kontor_core::id::SCHEMA_VERSION,
+            profile_id: kontor_core::id::CalendarProfileId::generate(),
+            version: kontor_core::id::SpecVersion::FIRST,
+            name: name("One minute a week"),
+            windows: vec![WeeklyWindow {
+                weekday: Weekday::Monday,
+                start: "03:00:00".parse().expect("a civil time"),
+                end: "03:01:00".parse().expect("a civil time"),
+            }],
+            holiday_merge: HolidayMergePolicy::TreatAsClosed,
+            drain_lead_minutes: 0,
+        };
+        store
+            .insert_calendar_profile(&profile)
+            .expect("the profile revision is stored");
+        store
+            .assign_calendar(&WorkCalendarAssignment {
+                id: kontor_core::id::WorkCalendarId::generate(),
+                project_id: world.project,
+                profile_id: profile.profile_id,
+                profile_version: profile.version,
+                timezone: IanaTimeZone::parse("Europe/Oslo").expect("a bundled tzdb zone"),
+                window_override: None,
+                active: true,
+                created_at: at("2026-08-10T09:00:00Z"),
+                retired_at: None,
+            })
+            .expect("the assignment is stored");
+    });
+
+    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        answer.status, 200,
+        "a configured calendar is resolved, not refused: {}",
+        answer.body
+    );
+    assert_eq!(
+        answer.json()["value"]["admitted"],
+        serde_json::json!(0),
+        "a closed calendar admits no new top-level work: {}",
+        answer.body
+    );
+    let blockers = answer.json()["value"]["decisions"][0]["blockers"].to_string();
+    assert!(
+        blockers.contains("calendar"),
+        "the calendar is one of the blockers a reader can see: {blockers}"
     );
 }
 

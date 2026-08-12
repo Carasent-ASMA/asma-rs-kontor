@@ -14,15 +14,15 @@
 //! exists.** Not one of them adds SQL, and not one of them reaches past the
 //! daemon into a store, a scheduler, a connector or a runtime the composition
 //! root did not hand over. Where the owning seam has not merged — ticket reads,
-//! calendar resolution, intake proposals, the scheduling plan — there is no route
-//! here at all, because a route that guessed would be worse than a missing one.
-//! `crate::query::STAGED` names each of those and the ticket that owns it.
+//! calendar administration, intake proposals, the scheduling plan — there is no
+//! route here at all, because a route that guessed would be worse than a missing
+//! one. `crate::query::STAGED` names each of those and the ticket that owns it.
 //!
 //! # What is *not* here, and why that is the honest answer
 //!
 //! | Absent surface | Why |
 //! | --- | --- |
-//! | calendar resolution, holidays, effective policy | `kontor-calendar` is a scaffold (KON-MVP-21) |
+//! | assigning a calendar, previewing or applying a holiday import | no command surface for it yet; the *resolved* policy travels with every candidate in [`crate::wired::scheduler_plan`] |
 //! | intake proposals, source lineage, replay | `kontor-intake` is a scaffold (KON-MVP-22) |
 //! | external-workflow mapping specifications | written by an onboarding path that has not merged |
 //! | session adoption | no `CommandKind` records the intent |
@@ -89,14 +89,13 @@ pub const STAGED: &[(&str, &str)] = &[
          intake work.",
     ),
     (
-        "calendar inspection: effective policy, windows, holidays and schedule overrides",
-        "KON-MVP-21. `kontor-calendar` is a scaffold with one constant in it. The \
-         `work_calendars`, `calendar_profiles`, `calendar_exceptions`, `holiday_sources` and \
-         `schedule_overrides` tables exist and `AssignWorkCalendar`, \
-         `ApproveScheduleOverride` and `RevokeScheduleOverride` are command kinds, but \
-         resolving a calendar into an effective window is what is missing — so \
-         `wired::scheduler_plan` refuses a project that has one rather than assuming it is \
-         open.",
+        "calendar administration: assigning a profile, previewing and applying a holiday import",
+        "KON-MVP-21 resolves a calendar and `wired::scheduler_plan` reports the resolved \
+         answer with every candidate, so the effective policy *is* observable. What is still \
+         absent is the administrative half: no route assigns a profile revision, previews a \
+         holiday import, applies one or approves an override, because a command surface for \
+         those is KON-MVP-15's to add and a read route that showed a preview nobody could \
+         apply would be advertising half a workflow.",
     ),
     (
         "external-workflow mapping: milestone-to-status specifications and their selection",

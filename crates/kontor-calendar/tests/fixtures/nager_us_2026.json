@@ -1,0 +1,15 @@
+[
+  {"date":"2026-01-01","localName":"New Year's Day","name":"New Year's Day","countryCode":"US","fixed":false,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-01-19","localName":"Martin Luther King, Jr. Day","name":"Martin Luther King, Jr. Day","countryCode":"US","fixed":false,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-02-16","localName":"Presidents Day","name":"Washington's Birthday","countryCode":"US","fixed":false,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-05-25","localName":"Memorial Day","name":"Memorial Day","countryCode":"US","fixed":false,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-06-19","localName":"Juneteenth","name":"Juneteenth National Independence Day","countryCode":"US","fixed":true,"global":true,"counties":null,"launchYear":2021,"types":["Public"]},
+  {"date":"2026-07-04","localName":"Independence Day","name":"Independence Day","countryCode":"US","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-09-07","localName":"Labor Day","name":"Labour Day","countryCode":"US","fixed":false,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-10-12","localName":"Columbus Day","name":"Columbus Day","countryCode":"US","fixed":false,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-11-11","localName":"Veterans Day","name":"Veterans Day","countryCode":"US","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-11-26","localName":"Thanksgiving Day","name":"Thanksgiving Day","countryCode":"US","fixed":false,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-12-25","localName":"Christmas Day","name":"Christmas Day","countryCode":"US","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-03-02","localName":"Texas Independence Day","name":"Texas Independence Day","countryCode":"US","fixed":true,"global":false,"counties":["US-TX"],"launchYear":null,"types":["Public"]},
+  {"date":"2026-02-14","localName":"Valentine's Day","name":"Valentine's Day","countryCode":"US","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Observance"]}
+]
