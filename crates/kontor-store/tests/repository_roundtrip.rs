@@ -45,8 +45,8 @@ use kontor_core::repository::{
     NewMiniProject, NewObservation, NewProject, NewRuntimeEvent, NewSourceEvent, NewTask,
     NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance,
     ProjectRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RunClosure,
-    RunRepository, RuntimeBinding, SpecRepository, TaskTransitionRequest, TeamRunAdvance,
-    TeamRunClosure, TicketRepository, WorkflowRepository,
+    RunRepository, RuntimeBinding, SourceEventIngest, SpecRepository, TaskTransitionRequest,
+    TeamRunAdvance, TeamRunClosure, TicketRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     ArtifactContentType, ArtifactContractSpec, BudgetBounds, CanonicalSourceEvent, DedupExpression,
@@ -4437,6 +4437,12 @@ fn cross_project_targets_tasks_evidence_pins_and_trigger_refs_fail_without_parti
     );
 
     // 3. An intake receipt pinned to a trigger revision that does not exist.
+    //
+    // The *decision* is refused, and the event it was about stays. Intake
+    // commits the canonical identity before anything evaluates it, so a failed
+    // evaluation leaves a stored, undecided event — which is the state a retry
+    // resumes from — rather than discarding evidence a source system already
+    // handed over. What must not appear is a receipt.
     let source = source_event(SourceEventId::generate(), "ext-pin", "payload");
     let receipt = intake(&source, "intake-pin");
     assert!(
@@ -4444,13 +4450,33 @@ fn cross_project_targets_tasks_evidence_pins_and_trigger_refs_fail_without_parti
             .store
             .record_source_event(&NewSourceEvent {
                 project_id: fixture.project,
-                event: source,
+                event: source.clone(),
                 receipt,
             })
             .is_err(),
         "a receipt must pin a trigger revision that exists"
     );
-    assert_unchanged(&before, &census(&fixture), "unpinned trigger reference");
+    let after_pin = census(&fixture);
+    assert_eq!(
+        after_pin.get("source_events"),
+        before.get("source_events").map(|count| count + 1).as_ref(),
+        "the event is durable even though the decision about it was refused"
+    );
+    assert_eq!(
+        after_pin.get("intake_receipts"),
+        before.get("intake_receipts"),
+        "no decision was recorded"
+    );
+    assert!(
+        matches!(
+            fixture
+                .store
+                .ingest_source_event(fixture.project, &source)
+                .expect("re-ingesting a stored event is not an error"),
+            SourceEventIngest::Unevaluated(_)
+        ),
+        "the stored event is resumable, not a duplicate of a decision nobody made"
+    );
 
     // 4. A persona snapshot whose task belongs to another project.
     let workflow = with_workflow(&fixture);

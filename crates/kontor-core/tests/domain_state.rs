@@ -1403,6 +1403,10 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("abandon_run", "team_run", "witness", None),
     ("resume_task", "task", "witness", None),
     ("record_gate_verdict", "task", "witness", None),
+    // A proposal is decided before the work it proposes exists, so the project
+    // is the only aggregate there is to name at that moment; approving an
+    // already-created graph still names that graph.
+    ("approve_intake", "project", "witness", None),
     ("approve_intake", "mini_project", "witness", None),
     ("approve_intake", "task", "witness", None),
     ("sync_ticket", "ticket_link", "witness", None),

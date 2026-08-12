@@ -27,7 +27,7 @@ path = "pilot_live.rs"
 # writer that needed the whole control plane to link would be a second place for
 # the proof to live.
 [dependencies]
-kontor-core = { path = "../../crates/kontor-core", version = "=0.1.0" }
+kontor-core = { path = "../../crates/kontor-core", version = "=0.1.0", features = ["deterministic-test-ids"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -44,6 +44,7 @@ kontor-cli = { path = "../../crates/kontor-cli", version = "=0.1.0" }
 kontor-context = { path = "../../crates/kontor-context", version = "=0.1.0" }
 kontor-daemon = { path = "../../crates/kontor-daemon", version = "=0.1.0" }
 kontor-integrations-asma = { path = "../../crates/kontor-integrations-asma", version = "=0.1.0" }
+kontor-intake = { path = "../../crates/kontor-intake", version = "=0.1.0" }
 kontor-mcp = { path = "../../crates/kontor-mcp", version = "=0.1.0" }
 kontor-policy = { path = "../../crates/kontor-policy", version = "=0.1.0" }
 kontor-profiles = { path = "../../crates/kontor-profiles", version = "=0.1.0" }

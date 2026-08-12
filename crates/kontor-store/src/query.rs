@@ -38,10 +38,11 @@ use kontor_core::id::{
     TicketLinkId, TicketProjectionId, Timestamp, WorkProfileKey,
 };
 use kontor_core::repository::{RepositoryResult, TaskWorkflow};
+use kontor_core::spec::IntakeResult;
 use kontor_core::state::{DesiredRunState, ObservedRunState, RunLifecycle};
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AuthorizationEvidence, CalendarAdmission, Candidate,
-    ExternalWorkEvidence, RuntimeAdmissionEvidence, TaskOrigin,
+    ExternalWorkEvidence, IntakeLineage, RuntimeAdmissionEvidence, TaskOrigin,
 };
 use rusqlite::{Row, params};
 
@@ -610,8 +611,14 @@ impl SqliteStore {
     /// # What is read and what is a stated default
     ///
     /// Read from rows: the task's state, revision, creation instant, goal, contended
-    /// module, its active workflow, its dependencies, and every execution
-    /// authorization in the project.
+    /// module, its active workflow, its dependencies, its intake lineage when
+    /// intake created it, and every execution authorization in the project.
+    ///
+    /// The origin is read, not assumed: a task with a row in `intake_created_work`
+    /// is [`TaskOrigin::Event`] carrying the receipt that armed it, and a task
+    /// without one is [`TaskOrigin::Manual`]. What the scheduler receives is the
+    /// resolved status — approved, or auto-armed with the authorization it acted
+    /// under — and never the envelope, the filter or the source kind behind it.
     ///
     /// Stated defaults, each because schema v1 has nothing to read:
     ///
@@ -619,8 +626,6 @@ impl SqliteStore {
     /// * **serialization peers** — empty. There is no `task_serializes_with` table,
     ///   so no peer set can be read. The scheduler's own `contention` blocker still
     ///   applies module claims, which *are* read.
-    /// * **origin** — [`TaskOrigin::Manual`]. Intake lineage is KON-MVP-22; claiming
-    ///   an event origin without a receipt would claim a provenance nobody recorded.
     /// * **account pin** — none. A task has no pinned account until a run is created
     ///   for it, and the scheduler reads an absent pin as "there is no account, so
     ///   there is nothing to prove about one" rather than as "any account will do".
@@ -649,6 +654,7 @@ impl SqliteStore {
         let dependencies = self.task_dependency_map(project_id)?;
         let authorizations = self.list_execution_authorizations(project_id)?;
         let calendar_assigned = self.has_calendar_assignment(project_id)?;
+        let intake = crate::intake::lineage_by_task(self, project_id)?;
 
         let mut candidates = Vec::new();
         let mut without_workflow = Vec::new();
@@ -670,7 +676,11 @@ impl SqliteStore {
                 worktree: None,
                 depends_on: dependencies.get(&task.id).cloned().unwrap_or_default(),
                 serializes_with: BTreeSet::new(),
-                origin: TaskOrigin::Manual,
+                origin: intake.get(&task.id).map_or(TaskOrigin::Manual, |lineage| {
+                    TaskOrigin::Event {
+                        lineage: Some(intake_lineage(lineage)),
+                    }
+                }),
                 // The narrowest authorization that covers this task, so a
                 // task-scoped grant is preferred over the project-wide one it sits
                 // inside. Which one is chosen changes only the evidence id in a
@@ -1034,6 +1044,31 @@ fn covering(
         .filter(covers)
         .min_by_key(|authorization| rank(authorization))
         .cloned()
+}
+
+/// The stored lineage of one intake-created task, as the scheduler reads it.
+///
+/// Two facts cross the boundary and no more: which receipt armed *this* task,
+/// and whether a human approved it or a bounded policy armed it under a named
+/// authorization. An approval carries no authorization because it needs none; an
+/// auto-arm is `proposed` plus its authorization, which is exactly the pair
+/// [`TaskOrigin::admits`] accepts. The envelope, the filter and the source kind
+/// stay on this side of the boundary.
+fn intake_lineage(lineage: &kontor_core::repository::IntakeCreatedWork) -> IntakeLineage {
+    use kontor_core::repository::IntakeDecisionOutcome;
+    IntakeLineage {
+        receipt_id: lineage.receipt_id,
+        result: match lineage.authority {
+            IntakeDecisionOutcome::Approved => IntakeResult::Approved,
+            IntakeDecisionOutcome::AutoArmed => IntakeResult::Proposed,
+            // A rejection creates no work, so the column's CHECK cannot hold
+            // this value. A row that somehow did would be work whose own
+            // lineage says it was refused, and it is reported as refused.
+            IntakeDecisionOutcome::Rejected => IntakeResult::Rejected,
+        },
+        armed_task_id: lineage.task_id,
+        auto_arm_authorization: lineage.execution_authorization,
+    }
 }
 
 /// One external-ticket link row.

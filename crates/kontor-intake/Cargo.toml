@@ -12,9 +12,16 @@ description = "Durable source-event intake, deduplication and trigger policies."
 workspace = true
 
 [dependencies]
+# The canonical envelope, the trigger vocabulary, the receipt shapes and the one
+# copy of the bounded auto-arm rule all live in the core; this crate decides
+# with them and stores nothing.
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

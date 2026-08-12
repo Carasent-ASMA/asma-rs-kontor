@@ -20,12 +20,12 @@ use crate::calendar::{
 use crate::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash,
-    CredentialAlias, EventCursor, ExternalId, ExternalIssueTypeKey, ExternalName,
-    ExternalProjectKey, GateKey, GuardrailEvaluationId, IdempotencyKey, IntakeReceiptId,
-    MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleKey,
-    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SourceEventId, SpecVersion,
-    StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
-    TriggerKey, WorkCalendarId, WorkProfileKey,
+    CredentialAlias, EventCursor, ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey,
+    ExternalName, ExternalProjectKey, GateKey, GuardrailEvaluationId, IdempotencyKey,
+    IntakeDecisionId, IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey,
+    ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId,
+    SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
+    TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId, WorkProfileKey,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -33,9 +33,9 @@ use crate::receipt::{
     NoEffectEvidence,
 };
 use crate::spec::{
-    CanonicalSourceEvent, IntakeReceipt, PersonaScenarioSnapshot, PersonaScenarioSpec,
-    ResolvedWorkProfileSnapshot, SourceIdentity, TeamRunSnapshot, TeamTemplateRevision,
-    TriggerSpec, WorkProfileSpec,
+    CanonicalSourceEvent, ExecutionCapability, IntakeReceipt, PersonaScenarioSnapshot,
+    PersonaScenarioSpec, ResolvedWorkProfileSnapshot, SourceIdentity, TeamRunSnapshot,
+    TeamTemplateRevision, TriggerSpec, WorkProfileSpec,
 };
 use crate::state::{
     DesiredRunState, GateState, GateVerdict, NativeRuntimeIdentity, RunLifecycle, RunProjection,
@@ -664,13 +664,53 @@ pub struct RunClosure {
 }
 
 /// A source event together with the intake decision it produced.
+///
+/// The two halves are *not* written in one transaction. Ingestion commits the
+/// canonical identity first ([`IntakeRepository::ingest_source_event`]) and the
+/// decision second ([`IntakeRepository::record_intake_decision`]), so a crash
+/// between them leaves a stored, unevaluated event rather than a lost one. This
+/// request is the composition of those two steps, and it validates the decision
+/// before either of them runs: an inconsistent receipt persists no event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewSourceEvent {
     /// Owning project.
     pub project_id: ProjectId,
     /// The canonical event.
     pub event: CanonicalSourceEvent,
-    /// The decision. Written in the same transaction as the event.
+    /// The decision, recorded once the event itself is durable.
+    pub receipt: IntakeReceipt,
+}
+
+/// What committing the canonical identity of a source event produced.
+///
+/// The three answers are the three states intake can resume from, and they are
+/// deliberately distinct: "I stored it, evaluate it", "someone stored it and
+/// nobody has evaluated it yet, evaluate it" and "this was already decided,
+/// here is that decision". Collapsing the middle one into either neighbour is
+/// how a crash between the two commits either loses evidence or creates a
+/// second work graph for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceEventIngest {
+    /// The event is new and now durable. Nothing has evaluated it.
+    Recorded(Box<CanonicalSourceEvent>),
+    /// The event was already stored and still carries no decision — a resumed
+    /// intake rather than a duplicate.
+    Unevaluated(Box<CanonicalSourceEvent>),
+    /// The event repeats one that has already been decided; this is that
+    /// original decision, and no second one is written.
+    Decided(Box<IntakeReceipt>),
+}
+
+/// One deterministic decision about an already-durable source event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewIntakeDecision {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The stored event being decided. It is never mutated.
+    pub source_event_id: SourceEventId,
+    /// The digest that event must still have.
+    pub source_event_hash: ContentHash,
+    /// The decision.
     pub receipt: IntakeReceipt,
 }
 
@@ -682,6 +722,233 @@ pub enum IntakeOutcome {
     /// The event repeated one already recorded; this is the *original*
     /// decision, and no second work graph was created.
     Duplicate(Box<IntakeReceipt>),
+}
+
+closed_enum! {
+    /// How a proposed intake receipt reached its terminal state.
+    IntakeDecisionOutcome, "IntakeDecisionOutcome" {
+        /// An authorized operator approved it, and work was created.
+        Approved => "approved",
+        /// An authorized operator rejected it. Terminal, and creates no work.
+        Rejected => "rejected",
+        /// The trigger's own bounded auto-arm policy armed it.
+        AutoArmed => "auto_armed",
+    }
+}
+
+/// Under what authority a proposal became terminal.
+///
+/// Every variant is receipt-backed: a decision that names no command receipt is
+/// an assertion, and an assertion is not evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntakeAuthority {
+    /// An authorized operator approved the proposal.
+    Approval {
+        /// Who approved.
+        authority: AccountProfileId,
+        /// The `ApproveIntake` receipt that recorded it.
+        command_receipt: CommandReceiptId,
+    },
+    /// An authorized operator rejected the proposal, terminally.
+    Rejection {
+        /// Who rejected.
+        authority: AccountProfileId,
+        /// The `RejectIntake` receipt that recorded it.
+        command_receipt: CommandReceiptId,
+        /// Why. Recorded so a rejection can be read years later.
+        reason: ExternalName,
+    },
+    /// The trigger's pinned bounded auto-arm policy armed the work itself.
+    BoundedAutoArm {
+        /// The account whose capability was exercised.
+        caller: AccountProfileId,
+        /// The receipt that recorded the arming.
+        command_receipt: CommandReceiptId,
+    },
+}
+
+impl IntakeAuthority {
+    /// Which terminal state this authority produces.
+    #[must_use]
+    pub const fn outcome(&self) -> IntakeDecisionOutcome {
+        match self {
+            Self::Approval { .. } => IntakeDecisionOutcome::Approved,
+            Self::Rejection { .. } => IntakeDecisionOutcome::Rejected,
+            Self::BoundedAutoArm { .. } => IntakeDecisionOutcome::AutoArmed,
+        }
+    }
+
+    /// The account that acted.
+    #[must_use]
+    pub const fn actor(&self) -> AccountProfileId {
+        match self {
+            Self::Approval { authority, .. }
+            | Self::Rejection { authority, .. }
+            | Self::BoundedAutoArm {
+                caller: authority, ..
+            } => *authority,
+        }
+    }
+
+    /// The command receipt backing it.
+    #[must_use]
+    pub const fn command_receipt(&self) -> CommandReceiptId {
+        match self {
+            Self::Approval {
+                command_receipt, ..
+            }
+            | Self::Rejection {
+                command_receipt, ..
+            }
+            | Self::BoundedAutoArm {
+                command_receipt, ..
+            } => *command_receipt,
+        }
+    }
+}
+
+/// The work one intake decision creates.
+///
+/// Intake creates work and lineage. It never launches a runtime: the created
+/// tasks are ordinary candidates that go through the scheduler's own admission
+/// like every other task in the project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntakeWorkPlan {
+    /// The goal to create, when the graph has one.
+    pub mini_project: Option<NewMiniProject>,
+    /// The tasks to create. At least one.
+    pub tasks: Vec<NewTask>,
+}
+
+/// A terminal decision about one proposed intake receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewIntakeDecisionRecord {
+    /// The decision's own id.
+    pub id: IntakeDecisionId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The proposal being decided. It is never mutated.
+    pub receipt_id: IntakeReceiptId,
+    /// Under what authority.
+    pub authority: IntakeAuthority,
+    /// The work to create, in the same transaction. Required for an approval or
+    /// a bounded auto-arm, and refused on a rejection.
+    pub work: Option<IntakeWorkPlan>,
+    /// When it was decided.
+    pub decided_at: Timestamp,
+}
+
+impl NewIntakeDecisionRecord {
+    /// Validate the decision's own shape, before any row is read.
+    ///
+    /// # Errors
+    /// Refuses a rejection that carries work, an approval or auto-arm that
+    /// carries none, an empty work plan and a cross-project graph.
+    pub fn validate(&self) -> DomainResult<()> {
+        match (&self.authority, &self.work) {
+            (IntakeAuthority::Rejection { .. }, Some(_)) => {
+                return Err(DomainError::invalid(
+                    "IntakeDecision",
+                    "a rejection is terminal and creates no work",
+                ));
+            }
+            (IntakeAuthority::Approval { .. } | IntakeAuthority::BoundedAutoArm { .. }, None) => {
+                return Err(DomainError::MissingEvidence {
+                    subject: "intake decision",
+                    rule: "an approval or a bounded auto-arm arms the work it names",
+                });
+            }
+            _ => {}
+        }
+        let Some(work) = &self.work else {
+            return Ok(());
+        };
+        if work.tasks.is_empty() {
+            return Err(DomainError::invalid(
+                "IntakeWorkPlan",
+                "must create at least one task",
+            ));
+        }
+        if work
+            .mini_project
+            .as_ref()
+            .is_some_and(|goal| goal.project_id != self.project_id)
+            || work
+                .tasks
+                .iter()
+                .any(|task| task.project_id != self.project_id)
+        {
+            return Err(DomainError::invalid(
+                "IntakeWorkPlan",
+                "creates work in another project",
+            ));
+        }
+        // A task may only be filed under the goal this very decision creates:
+        // attaching created work to a pre-existing goal would let one intake
+        // decision reach into a graph it did not author.
+        let goal = work.mini_project.as_ref().map(|goal| goal.id);
+        if work.tasks.iter().any(|task| task.mini_project_id != goal) {
+            return Err(DomainError::invalid(
+                "IntakeWorkPlan",
+                "every created task belongs to the goal the decision creates",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One task an intake decision created, and everything that authorized it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeCreatedWork {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The receipt the work came from.
+    pub receipt_id: IntakeReceiptId,
+    /// The decision that created it.
+    pub decision_id: IntakeDecisionId,
+    /// The goal it belongs to, if any.
+    pub mini_project_id: Option<MiniProjectId>,
+    /// The task.
+    pub task_id: TaskId,
+    /// The event that caused it.
+    pub source_event_id: SourceEventId,
+    /// That event's digest at the moment of the decision.
+    pub source_event_hash: ContentHash,
+    /// The trigger that decided.
+    pub trigger: TriggerKey,
+    /// The pinned trigger revision.
+    pub trigger_version: SpecVersion,
+    /// Whether an operator approved it or the trigger armed it.
+    pub authority: IntakeDecisionOutcome,
+    /// The execution authorization a bounded auto-arm acted under.
+    pub execution_authorization: Option<ExecutionAuthorizationId>,
+    /// When the work was created.
+    pub created_at: Timestamp,
+}
+
+/// One recorded terminal decision, with the work it created.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeDecisionRecord {
+    /// The decision's id.
+    pub id: IntakeDecisionId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The proposal it decided.
+    pub receipt_id: IntakeReceiptId,
+    /// What it decided.
+    pub outcome: IntakeDecisionOutcome,
+    /// Who acted.
+    pub actor: AccountProfileId,
+    /// The command receipt backing it.
+    pub command_receipt: CommandReceiptId,
+    /// Why, on a rejection.
+    pub reason: Option<ExternalName>,
+    /// The capability a bounded auto-arm exercised.
+    pub capability: Option<ExecutionCapability>,
+    /// The lineage of every task it created, task id ascending.
+    pub created_work: Vec<IntakeCreatedWork>,
+    /// When it was decided.
+    pub decided_at: Timestamp,
 }
 
 /// A persona scenario being frozen onto a task.
@@ -1429,7 +1696,48 @@ pub trait RunRepository {
 
 /// Inbound source events and intake decisions.
 pub trait IntakeRepository {
-    /// Persist a canonical source event and its intake decision atomically.
+    /// Commit the canonical identity of one source event, before anything has
+    /// evaluated it.
+    ///
+    /// This is the durability boundary of intake. The event is stored on its
+    /// own, so the answer to "did we already see this?" is a database
+    /// uniqueness constraint rather than a decision some evaluator may or may
+    /// not have reached: `(project, source kind, connection, external id)` and
+    /// `(project, connection, envelope digest)` are the two identities, and
+    /// SQLite is the concurrency authority for both.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the same source identity is
+    /// already stored carrying *different* canonical bytes — upstream changed
+    /// what it said under an id it had already used, which is a contradiction a
+    /// human has to look at rather than a replay.
+    fn ingest_source_event(
+        &self,
+        project_id: ProjectId,
+        event: &CanonicalSourceEvent,
+    ) -> RepositoryResult<SourceEventIngest>;
+
+    /// Record the deterministic decision about an already-durable event.
+    ///
+    /// Replaying the same `(event, trigger revision)` returns the stored
+    /// decision instead of writing a second one, and a *different* verdict
+    /// under the same revision is a conflict: one pinned revision deciding one
+    /// stored event twice, differently, is a contradiction.
+    ///
+    /// # Errors
+    /// Refuses an inconsistent decision, an unknown event, a changed digest and
+    /// a contradicting replay.
+    fn record_intake_decision(
+        &self,
+        request: &NewIntakeDecision,
+    ) -> RepositoryResult<IntakeOutcome>;
+
+    /// Persist a canonical source event and then its intake decision.
+    ///
+    /// The composition of [`IntakeRepository::ingest_source_event`] and
+    /// [`IntakeRepository::record_intake_decision`], in that order and in two
+    /// transactions. The decision is validated *before* either of them, so an
+    /// inconsistent receipt stores no event.
     ///
     /// A repeated source identity or a repeated canonical hash on the same
     /// connection returns the original decision and creates no second work
@@ -1438,6 +1746,49 @@ pub trait IntakeRepository {
     /// # Errors
     /// Refuses an inconsistent decision and a cross-project work graph.
     fn record_source_event(&self, request: &NewSourceEvent) -> RepositoryResult<IntakeOutcome>;
+
+    /// Commit a terminal decision about a proposal, with the work it creates.
+    ///
+    /// Approval, rejection and bounded auto-arm are all recorded here, and all
+    /// three are append-only: the proposal receipt is never rewritten. The
+    /// decision row, the created goal and tasks and one lineage row per task
+    /// commit together, so work without lineage — or lineage without a decision
+    /// — is not a state this method can produce. A replayed decision returns
+    /// the stored one and attaches no second graph.
+    ///
+    /// A bounded auto-arm is re-checked here against the trigger revision the
+    /// proposal pinned and the stored execution authorization, through the same
+    /// [`crate::spec::TriggerSpec::authorize_auto_arm`] the intake layer used to
+    /// decide: skipping the decision layer does not skip the bounds.
+    ///
+    /// # Errors
+    /// Refuses a rejection carrying work, an approval or auto-arm carrying
+    /// none, an unknown or already-decided proposal, a proposal that is not
+    /// `proposed`, and every [`crate::spec::AutoArmRefusal`].
+    fn commit_intake_decision(
+        &self,
+        request: &NewIntakeDecisionRecord,
+    ) -> RepositoryResult<IntakeDecisionRecord>;
+
+    /// Read the terminal decision about one proposal, if it has one.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_intake_decision(
+        &self,
+        project_id: ProjectId,
+        receipt_id: IntakeReceiptId,
+    ) -> RepositoryResult<Option<IntakeDecisionRecord>>;
+
+    /// The intake lineage of one task, if intake created it.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn intake_lineage_of_task(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<IntakeCreatedWork>>;
 
     /// Re-evaluate an already-stored source event under a newer trigger
     /// revision.

@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::calendar::ExecutionAuthorization;
 use crate::id::{
     AccountProfileId, ArtifactKey, CalendarProfileId, CanonicalDocument, ConnectorKey, ContentHash,
     EventSchemaKey, ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName,
@@ -1312,7 +1313,14 @@ pub struct ExecutionCapability {
     /// The account whose capability is exercised.
     pub granted_to: AccountProfileId,
     /// The execution authorization that bounds it.
-    pub authorization: ExecutionAuthorizationId,
+    ///
+    /// The field is *not* named `authorization`. Every route to a digest runs
+    /// [`crate::id::reject_sensitive_material`], whose `FORBIDDEN_KEYS` contains
+    /// `authorization` — the HTTP header — so a policy spelling it that way
+    /// validated and then could never be canonicalized, hashed, receipted or
+    /// stored. The scanner is the shared rule and stays exactly as it is; the
+    /// field carries the name that says what it actually is.
+    pub execution_authorization: ExecutionAuthorizationId,
 }
 
 /// Whether a trigger may arm work by itself.
@@ -1357,6 +1365,62 @@ impl AutoArmPolicy {
                 budget.validate()
             }
         }
+    }
+}
+
+closed_enum! {
+    /// Why a bounded auto-arm may not arm the work it proposes.
+    ///
+    /// Each value is one independent reason, so a refusal says which bound was
+    /// not met rather than that "something" was not. Nothing here is advisory:
+    /// a bounded auto-arm arms work only when every one of them passes.
+    AutoArmRefusal, "AutoArmRefusal" {
+        /// The pinned policy is `approval_required`; only a human decides.
+        PolicyRequiresApproval => "policy_requires_approval",
+        /// The caller is not the account the capability was granted to.
+        CallerNotGranted => "caller_not_granted",
+        /// The authorization presented is not the one the policy pins.
+        AuthorizationMismatched => "authorization_mismatched",
+        /// The authorization does not cover the start instant.
+        AuthorizationOutOfWindow => "authorization_out_of_window",
+        /// The authorization does not cover every task being created.
+        AuthorizationScopeMismatched => "authorization_scope_mismatched",
+        /// The proposal creates no work, so there is nothing to arm.
+        NoWorkProposed => "no_work_proposed",
+        /// More work than the narrowest concurrency bound allows.
+        ConcurrencyExceeded => "concurrency_exceeded",
+        /// A declared budget exceeds what the authorization grants.
+        BudgetExceeded => "budget_exceeded",
+    }
+}
+
+/// What a bounded auto-arm is asking to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoArmRequest<'a> {
+    /// The account exercising the capability.
+    pub caller: AccountProfileId,
+    /// The authorization the caller presents, read from storage.
+    pub authorization: &'a ExecutionAuthorization,
+    /// When the created work may start.
+    pub at: Timestamp,
+    /// The goal the created work belongs to, if any.
+    pub mini_project_id: Option<MiniProjectId>,
+    /// The tasks the intake decision creates.
+    pub task_ids: &'a [TaskId],
+}
+
+impl BudgetBounds {
+    /// Whether every bound here is within `grant`.
+    ///
+    /// Currencies must agree: a cost ceiling in another currency is not a
+    /// smaller one, it is an incomparable one.
+    #[must_use]
+    pub fn within(&self, grant: &Self) -> bool {
+        self.max_tokens <= grant.max_tokens
+            && self.max_commands <= grant.max_commands
+            && self.max_duration_seconds <= grant.max_duration_seconds
+            && self.max_cost.currency == grant.max_cost.currency
+            && self.max_cost.minor_units <= grant.max_cost.minor_units
     }
 }
 
@@ -1447,6 +1511,75 @@ impl TriggerSpec {
     pub fn canonicalize(&self) -> DomainResult<CanonicalDocument> {
         self.validate()?;
         CanonicalDocument::from_serializable(self)
+    }
+
+    /// Whether this trigger's own policy arms the work a request describes.
+    ///
+    /// This is the *whole* bounded auto-arm rule and the only copy of it: the
+    /// intake layer calls it to decide, and the store calls it again inside the
+    /// transaction that creates the work, so a caller that skips the decision
+    /// layer is refused by the same bounds rather than by none. Everything it
+    /// reads is pinned or receipt-backed — the trigger revision, the stored
+    /// authorization, the tasks actually being created — so the answer is a
+    /// property of the evidence rather than of who asked.
+    ///
+    /// The narrowest of the three concurrency ceilings wins, and a declared
+    /// budget may never exceed what the authorization grants: a trigger cannot
+    /// widen its own authorization by naming a larger number.
+    ///
+    /// # Errors
+    /// Returns the single [`AutoArmRefusal`] that applies, evaluated in the
+    /// declaration order of the enum.
+    pub fn authorize_auto_arm(
+        &self,
+        request: &AutoArmRequest<'_>,
+    ) -> Result<ExecutionCapability, AutoArmRefusal> {
+        let Self {
+            approval:
+                AutoArmPolicy::BoundedAutoArm {
+                    capability,
+                    max_concurrency,
+                    budget,
+                },
+            ..
+        } = self
+        else {
+            return Err(AutoArmRefusal::PolicyRequiresApproval);
+        };
+        if request.caller != capability.granted_to {
+            return Err(AutoArmRefusal::CallerNotGranted);
+        }
+        let authorization = request.authorization;
+        if authorization.id != capability.execution_authorization {
+            return Err(AutoArmRefusal::AuthorizationMismatched);
+        }
+        if !authorization.allowed_start.contains(request.at) {
+            return Err(AutoArmRefusal::AuthorizationOutOfWindow);
+        }
+        if request.task_ids.is_empty() {
+            return Err(AutoArmRefusal::NoWorkProposed);
+        }
+        // Every created task, not merely the first: an authorization that covers
+        // one task of a graph authorizes one task of a graph.
+        if !request
+            .task_ids
+            .iter()
+            .all(|task_id| authorization.arms(request.at, request.mini_project_id, Some(*task_id)))
+        {
+            return Err(AutoArmRefusal::AuthorizationScopeMismatched);
+        }
+        let ceiling = (*max_concurrency)
+            .min(self.limits.max_concurrency)
+            .min(authorization.max_concurrency);
+        if u32::try_from(request.task_ids.len()).unwrap_or(u32::MAX) > ceiling {
+            return Err(AutoArmRefusal::ConcurrencyExceeded);
+        }
+        if !budget.within(&authorization.budget)
+            || !self.limits.budget.within(&authorization.budget)
+        {
+            return Err(AutoArmRefusal::BudgetExceeded);
+        }
+        Ok(*capability)
     }
 }
 

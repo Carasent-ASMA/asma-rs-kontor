@@ -150,10 +150,52 @@ fn the_scheduler_reads_no_source_envelope() {
             "DedupExpression",
             "TriggerFilterClause",
             "JsonPointer",
+            // KON-MVP-22 merged the deciding half. None of it may leak here
+            // either: an approval, a bounded auto-arm and the work a decision
+            // created are all *upstream* of a candidate, and a scheduler that
+            // could name them could re-decide one.
+            "InboundEvent",
+            "AutoArmPolicy",
+            "AutoArmRefusal",
+            "ExecutionCapability",
+            "IntakeAuthority",
+            "IntakeDecisionRecord",
+            "IntakeCreatedWork",
+            "IntakeWorkPlan",
+            "kontor_intake",
         ] {
             assert!(
                 !source.contains(forbidden),
                 "{path} names `{forbidden}`, which belongs to intake (KON-MVP-22)"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_scheduler_decides_no_intake_and_creates_no_work() {
+    // The two halves of the same boundary, from the other side: the scheduler
+    // must not be able to *make* an intake decision, and must not be able to
+    // create the work one would have created. It reads a resolved lineage and
+    // that is all.
+    for path in SOURCES {
+        let source = executable(path);
+        // `IntakeReceiptNotApproved` and `auto_arm_authorization` are *read*
+        // vocabulary — a refusal code and a field the lineage arrives with — so
+        // what is scanned for is the act, not the noun.
+        for forbidden in [
+            "authorize_auto_arm",
+            "NewTask",
+            "NewMiniProject",
+            "commit_intake_decision",
+            "record_source_event",
+            "ingest_source_event",
+            "insert_trigger_spec",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} names `{forbidden}`. Deciding intake and creating the work it \
+                 proposes happen before a candidate exists; this crate only judges one"
             );
         }
     }

@@ -645,7 +645,10 @@ impl CodexTransport for CodexLiveTransport {
             });
         }
 
-        let exec_id = ExternalId::parse(&format!("codex-exec-{}", uuid::Uuid::now_v7()))?;
+        let exec_id = ExternalId::parse(&format!(
+            "codex-exec-{}",
+            kontor_core::id::generate_uuid_v7()
+        ))?;
         let lines = Arc::new(std::sync::Mutex::new(VecDeque::new()));
         let dropped = Arc::new(AtomicU64::new(0));
         let ending = Arc::new(std::sync::Mutex::new(None));

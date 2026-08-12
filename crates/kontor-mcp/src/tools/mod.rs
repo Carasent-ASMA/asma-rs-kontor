@@ -628,7 +628,11 @@ impl Operands<'_> {
     pub fn idempotency_key(&self) -> String {
         self.optional_text(IDEMPOTENCY_KEY.name)
             .map(ToOwned::to_owned)
-            .unwrap_or_else(|| uuid::Uuid::now_v7().as_hyphenated().to_string())
+            .unwrap_or_else(|| {
+                kontor_core::id::generate_uuid_v7()
+                    .as_hyphenated()
+                    .to_string()
+            })
     }
 
     /// The idempotency key a *session* write commits under.
@@ -939,7 +943,9 @@ mod tests {
             // would be more lifelike, but `authorize_execution` legitimately
             // demands that a project-scoped grant name its own project — and this
             // test is about method and path, not about scope rules.
-            let identifier = uuid::Uuid::now_v7().as_hyphenated().to_string();
+            let identifier = kontor_core::id::generate_uuid_v7()
+                .as_hyphenated()
+                .to_string();
             for property in tool.properties {
                 if !property.required {
                     continue;

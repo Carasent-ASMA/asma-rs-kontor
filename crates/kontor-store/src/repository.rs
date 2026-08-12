@@ -34,19 +34,21 @@ use kontor_core::receipt::{
 use kontor_core::repository::{
     AccountProfile, AccountProfileUpdate, AgentRun, CalendarRepository, CommandRepository,
     ConnectorSpecSelector, CredentialReference, CredentialReferenceKind, GateEvaluation,
-    HistoryGapKind, HistoryGapMarker, IntakeOutcome, IntakeRepository, MiniProject,
-    NewAccountProfile, NewAgentRun, NewCommandIntent, NewGateEvaluation, NewIntakeReevaluation,
+    HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
+    IntakeRepository, MiniProject, NewAccountProfile, NewAgentRun, NewCommandIntent,
+    NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation,
     NewMiniProject, NewObservation, NewProject, NewRuntimeEvent, NewSourceEvent, NewTask,
     NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
     ProjectRepository, RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome,
     RepositoryError, RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding,
-    RuntimeEvent, SpecRepository, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow,
-    TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, WorkflowRepository,
-    validate_dependency_graph,
+    RuntimeEvent, SourceEventIngest, SpecRepository, Task, TaskInspection, TaskTransitionRequest,
+    TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository,
+    WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
-    IntakeReceipt, PersonaScenarioSnapshot, PersonaScenarioSpec, ResolvedWorkProfileSnapshot,
-    SourceIdentity, TeamRunSnapshot, TeamTemplateRevision, TriggerSpec, WorkProfileSpec,
+    CanonicalSourceEvent, IntakeReceipt, PersonaScenarioSnapshot, PersonaScenarioSpec,
+    ResolvedWorkProfileSnapshot, SourceIdentity, TeamRunSnapshot, TeamTemplateRevision,
+    TriggerSpec, WorkProfileSpec,
 };
 use kontor_core::state::{
     AbandonReceiptFacts, DerivedRunState, DesiredRunState, GateState, GateVerdict,
@@ -129,11 +131,11 @@ pub(crate) fn revision_column(revision: AggregateRevision) -> RepositoryResult<i
     })
 }
 
-fn version_column(version: SpecVersion) -> i64 {
+pub(crate) fn version_column(version: SpecVersion) -> i64 {
     i64::from(version.get())
 }
 
-fn read_version(value: i64) -> RepositoryResult<SpecVersion> {
+pub(crate) fn read_version(value: i64) -> RepositoryResult<SpecVersion> {
     let narrowed = u32::try_from(value).map_err(|_| RepositoryError::Backend {
         detail: "stored version is out of range".to_owned(),
     })?;
@@ -142,7 +144,7 @@ fn read_version(value: i64) -> RepositoryResult<SpecVersion> {
 
 /// Read a versioned document back, verifying its canonical bytes and digest
 /// before it is trusted.
-fn stored_document<T: DeserializeOwned>(json: &str, hash: &str) -> RepositoryResult<T> {
+pub(crate) fn stored_document<T: DeserializeOwned>(json: &str, hash: &str) -> RepositoryResult<T> {
     let digest = ContentHash::parse(hash)?;
     let document = CanonicalDocument::from_stored(json, &digest)?;
     Ok(document.deserialize::<T>()?)
@@ -2534,133 +2536,47 @@ impl RunRepository for SqliteStore {
 // Source events and intake
 // ---------------------------------------------------------------------------
 
-fn load_receipt_for_event(
-    transaction: &Transaction<'_>,
-    project_id: ProjectId,
-    source_event_id: &str,
-) -> RepositoryResult<Option<IntakeReceipt>> {
-    let found: Option<String> = transaction
-        .query_row(
-            "SELECT receipt FROM intake_receipts
-             WHERE project_id = ?1 AND source_event_id = ?2 AND result <> 'duplicate'
-             ORDER BY decided_at LIMIT 1",
-            params![project_id.to_string(), source_event_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(backend)?;
-    found
-        .map(|json| from_json::<IntakeReceipt>(&json))
-        .transpose()
-}
-
 impl IntakeRepository for SqliteStore {
+    fn ingest_source_event(
+        &self,
+        project_id: ProjectId,
+        event: &CanonicalSourceEvent,
+    ) -> RepositoryResult<SourceEventIngest> {
+        crate::intake::ingest_source_event(self, project_id, event)
+    }
+
+    fn record_intake_decision(
+        &self,
+        request: &NewIntakeDecision,
+    ) -> RepositoryResult<IntakeOutcome> {
+        crate::intake::record_intake_decision(self, request)
+    }
+
     fn record_source_event(&self, request: &NewSourceEvent) -> RepositoryResult<IntakeOutcome> {
-        request.receipt.validate()?;
-        // The decision must be about the event being inserted. Filing a receipt
-        // against an event it never evaluated would make every later lineage
-        // check meaningless.
-        request
-            .receipt
-            .ensure_decides(request.event.id, request.event.envelope.hash())?;
-        let transaction = self.begin()?;
-        let identity = &request.event.identity;
+        crate::intake::record_source_event(self, request)
+    }
 
-        // A repeat of either the source identity or the canonical payload on the
-        // same connection is a duplicate: return the original decision and do
-        // not create a second work graph. The stored digest is read back so the
-        // two cases can be told apart.
-        let existing: Option<(String, String)> = transaction
-            .query_row(
-                "SELECT id, envelope_hash FROM source_events
-                 WHERE project_id = ?1
-                   AND ((source_kind = ?2 AND source_connection = ?3 AND external_event_id = ?4)
-                        OR (source_connection = ?3 AND envelope_hash = ?5))
-                 LIMIT 1",
-                params![
-                    request.project_id.to_string(),
-                    identity.source_kind.as_str(),
-                    identity.source_connection.as_str(),
-                    identity.external_event_id.as_str(),
-                    request.event.envelope.hash().as_str()
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        if let Some((original_event, stored_hash)) = existing {
-            // The same source identity carrying *different* canonical bytes is
-            // not a replay at all: the upstream system changed what it said
-            // under an id it already used. Returning the old decision would
-            // silently discard the new content, so this is a conflict a human
-            // has to look at.
-            if ContentHash::parse(&stored_hash)? != *request.event.envelope.hash() {
-                return Err(conflict(
-                    "source event",
-                    "the same source identity already exists with different canonical bytes",
-                ));
-            }
-            let original =
-                load_receipt_for_event(&transaction, request.project_id, &original_event)?.ok_or(
-                    RepositoryError::NotFound {
-                        subject: "original intake receipt",
-                    },
-                )?;
-            return Ok(IntakeOutcome::Duplicate(Box::new(original)));
-        }
+    fn commit_intake_decision(
+        &self,
+        request: &NewIntakeDecisionRecord,
+    ) -> RepositoryResult<IntakeDecisionRecord> {
+        crate::intake::commit_intake_decision(self, request)
+    }
 
-        transaction
-            .execute(
-                "INSERT INTO source_events
-                     (id, project_id, source_kind, source_connection, external_event_id,
-                      envelope, envelope_hash, external_observed_at, ingested_at,
-                      processing_state)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    request.event.id.to_string(),
-                    request.project_id.to_string(),
-                    identity.source_kind.as_str(),
-                    identity.source_connection.as_str(),
-                    identity.external_event_id.as_str(),
-                    request.event.envelope.json(),
-                    request.event.envelope.hash().as_str(),
-                    text(request.event.external_observed_at),
-                    text(request.event.ingested_at),
-                    request.event.processing_state.as_str()
-                ],
-            )
-            .map_err(backend)?;
+    fn get_intake_decision(
+        &self,
+        project_id: ProjectId,
+        receipt_id: IntakeReceiptId,
+    ) -> RepositoryResult<Option<IntakeDecisionRecord>> {
+        crate::intake::get_intake_decision(self, project_id, receipt_id)
+    }
 
-        let receipt = to_json(&request.receipt)?;
-        transaction
-            .execute(
-                "INSERT INTO intake_receipts
-                     (id, project_id, source_event_id, source_event_hash, trigger_key,
-                      trigger_version, result, receipt, idempotency_key, dedup_key,
-                       duplicate_of, predecessor_receipt_id, decided_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    request.receipt.id.to_string(),
-                    request.project_id.to_string(),
-                    request.receipt.source_event_id.to_string(),
-                    request.receipt.source_event_hash.as_str(),
-                    request.receipt.trigger.as_str(),
-                    version_column(request.receipt.trigger_version),
-                    request.receipt.result.as_str(),
-                    receipt,
-                    request.receipt.idempotency_key.as_str(),
-                    request.receipt.dedup_key.as_str(),
-                    request.receipt.duplicate_of.map(|id| id.to_string()),
-                    request
-                        .receipt
-                        .predecessor_receipt_id
-                        .map(|id| id.to_string()),
-                    text(request.receipt.decided_at)
-                ],
-            )
-            .map_err(backend)?;
-        transaction.commit().map_err(backend)?;
-        Ok(IntakeOutcome::Recorded(Box::new(request.receipt.clone())))
+    fn intake_lineage_of_task(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<IntakeCreatedWork>> {
+        crate::intake::intake_lineage_of_task(self, project_id, task_id)
     }
 
     fn reevaluate_source_event(
@@ -3209,7 +3125,7 @@ fn budget_columns(
     ))
 }
 
-fn read_budget(
+pub(crate) fn read_budget(
     tokens: i64,
     commands: i64,
     duration: i64,
@@ -3982,7 +3898,7 @@ pub(crate) fn read_abandon_receipt(
 /// against one aggregate is not permission to do a different thing elsewhere.
 /// The check re-reads the stored row rather than trusting anything the caller
 /// passed alongside the id.
-fn ensure_receipt_authorizes(
+pub(crate) fn ensure_receipt_authorizes(
     transaction: &Transaction<'_>,
     subject: &'static str,
     project_id: ProjectId,

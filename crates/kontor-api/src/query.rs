@@ -77,11 +77,16 @@ use crate::{Caller, now};
 /// language model — is taught to trust an answer nobody computed.
 pub const STAGED: &[(&str, &str)] = &[
     (
-        "source-event intake: normalization, proposal, approval, rejection, replay and lineage",
-        "KON-MVP-22. `kontor-intake` is a scaffold with one constant in it. The \
-         `source_events` and `intake_receipts` tables exist and `ApproveIntake` is a command \
-         kind, but nothing produces a proposal to approve and nothing reads a lineage, so \
-         every candidate here is assembled with `TaskOrigin::Manual`.",
+        "source-event intake over HTTP: delivering an event, and approving or rejecting a \
+         proposal through this API",
+        "KON-MVP-22 merged the domain, not the transport. `kontor-intake` normalizes and \
+         decides, the store commits the identity before the decision and records approval, \
+         rejection and bounded auto-arm append-only, and `scheduling_candidates` reads the \
+         created-work lineage — an intake-created task is assembled as `TaskOrigin::Event` \
+         and admitted through its receipt. What has no route here is the *ingress*: no \
+         endpoint accepts a delivery from an authenticated connection and no endpoint runs \
+         an `ApproveIntake` command against a proposal, so nothing in this API can create \
+         intake work.",
     ),
     (
         "calendar inspection: effective policy, windows, holidays and schedule overrides",

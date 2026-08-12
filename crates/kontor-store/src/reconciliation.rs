@@ -49,7 +49,7 @@ impl ReconciliationEpochId {
     /// Mint a new epoch id.
     #[must_use]
     pub fn generate() -> Self {
-        Self(Uuid::now_v7())
+        Self(kontor_core::id::generate_uuid_v7())
     }
 
     /// Parse a stored epoch id.

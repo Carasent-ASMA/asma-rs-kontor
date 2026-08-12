@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -76,6 +76,10 @@ const MIGRATIONS: &[&str] = &[
     // import receipt and the append-only lineage of the source records it was
     // built from.
     include_str!("../migrations/0005_redacted_import.sql"),
+    // Schema v6. The terminal half of intake: append-only approval, rejection
+    // and bounded auto-arm decisions about a proposal, and one lineage row per
+    // task those decisions created.
+    include_str!("../migrations/0006_intake_decisions.sql"),
 ];
 
 const _: () = assert!(

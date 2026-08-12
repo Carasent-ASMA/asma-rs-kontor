@@ -101,7 +101,7 @@ impl MessageId {
     /// Generate a fresh, time-ordered identifier.
     #[must_use]
     pub fn generate() -> Self {
-        Self(Uuid::now_v7())
+        Self(kontor_core::id::generate_uuid_v7())
     }
 
     /// Parse the canonical lowercase hyphenated text form.

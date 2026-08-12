@@ -16,7 +16,6 @@ use kontor_core::repository::{
     CommandRepository, NewCommandIntent, RepositoryError, RepositoryResult,
 };
 use rusqlite::{OptionalExtension, params};
-use uuid::Uuid;
 
 use crate::SqliteStore;
 use crate::commands::receipts::{append_transition, last_transition, read_receipt_row};
@@ -397,7 +396,7 @@ impl SqliteStore {
             let receipt_id = CommandReceiptId::parse(&receipt_id)?;
             // The correlation is minted here and persisted before the caller is
             // told anything, so it exists on disk before any native call can.
-            let correlation = ExternalId::parse(&Uuid::now_v7().to_string())?;
+            let correlation = ExternalId::parse(&kontor_core::id::generate_uuid_v7().to_string())?;
             let claimed = transaction
                 .execute(
                     "UPDATE command_outbox

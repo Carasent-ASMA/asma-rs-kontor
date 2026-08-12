@@ -43,7 +43,7 @@ macro_rules! policy_ids {
                 /// Mint a new time-ordered identifier.
                 #[must_use]
                 pub fn generate() -> Self {
-                    Self(Uuid::now_v7())
+                    Self(kontor_core::id::generate_uuid_v7())
                 }
 
                 /// Parse a stored identifier.

@@ -11,6 +11,11 @@ description = "Domain identifiers, states and commands for the Kontor control pl
 [lints]
 workspace = true
 
+[features]
+# Test harnesses may opt into an explicit deterministic UUIDv7 source. The
+# production default remains the wall-clock-backed `Uuid::now_v7` path.
+deterministic-test-ids = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

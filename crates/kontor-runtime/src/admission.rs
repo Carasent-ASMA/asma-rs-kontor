@@ -140,7 +140,7 @@ impl AdmissionTicket {
     /// the same reason: a value only the runtime can produce is worth checking,
     /// and one anybody can produce is not.
     pub(crate) fn mint() -> Self {
-        Self(Uuid::now_v7())
+        Self(kontor_core::id::generate_uuid_v7())
     }
 }
 
