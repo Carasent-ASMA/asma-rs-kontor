@@ -1,31 +1,125 @@
-# Contributing to Kontor
+# Contributing to ASMA Kontor
 
-The Kontor MVP epic is planned in
-`asma-modules/_docs/ai-orchestration/plans/2026-08-08-20-12-plan-asma-kontor-mvp-control-plane.md`
-and executed through Jira tickets (`KON-MVP-01` … `KON-MVP-22`) against the
-AgentsRoom tracker. Until the epic is closed:
+Thank you for improving Kontor. The project is pre-1.0, so small, reviewable
+changes with explicit evidence are more valuable than broad speculative
+frameworks.
 
-- The root `Cargo.toml` member list and `[workspace.dependencies]` pins are
-  owned by KON-MVP-02 (CON-007). Do not edit them for a ticket; return to the
-  tracker for re-planning.
-- One ticket is one reviewable diff; code tickets run in worktrees that
-  initialize only their declared `mod:` submodules (CON-005, CON-006).
-- Every runtime-changing ticket includes unit/contract tests and a mutation
-  check for its changed behavior (CON-004).
-- No test may bind a socket, launch the daemon or Tauri event loop, fetch
-  network data, or leave a child process behind (TST-001).
-- Never stage or commit another agent's uncommitted work; stage explicit paths
-  only.
+By participating, you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Do
+not report vulnerabilities in public issues; follow [Security](SECURITY.md).
+
+## Before writing code
+
+For a non-trivial behavior or architecture change, open or reference an issue
+and agree on the acceptance boundary first. This avoids a large implementation
+that cannot merge because it creates a second authority, weakens a safety
+property or overlaps active work.
+
+Read [Architecture](ARCHITECTURE.md) when changing persistence, scheduling,
+policy, commands, runtime adapters, session content, accounts, integrations or
+security. The invariants in that document are acceptance criteria, not style
+preferences.
+
+## Set up
+
+```sh
+git clone https://github.com/Carasent-ASMA/asma-rs-kontor.git
+cd asma-rs-kontor
+rustup show active-toolchain
+pnpm install --frozen-lockfile
+```
+
+The repository pins Rust, Node/pnpm expectations, Rust dependencies and
+JavaScript dependencies. Keep both lockfiles committed and reproducible.
+
+## Work in one focused branch
+
+- Keep one issue/ticket to one reviewable diff.
+- Do not mix generated lockfile drift, formatting unrelated files or another
+  contributor's work into the change.
+- Stage explicit paths; avoid broad staging in a shared checkout.
+- Explain user-visible and protocol changes in the pull request.
+- Update `README.md`, `ARCHITECTURE.md`, OpenAPI or fixtures when their contract
+  changes.
+
+## Design rules
+
+Every change must preserve these boundaries:
+
+1. Kontor writes only Kontor-owned state; adapters use supported external
+   interfaces and never edit another tool's internal store.
+2. Desired command state, runtime observation and derived safe status remain
+   separate.
+3. A missing runtime, closed stream or acknowledgement is not a terminal
+   verdict.
+4. Runtime-changing intent is durable before dispatch and replay is
+   idempotent.
+5. One team-run role slot has at most one non-terminal native session.
+6. Secrets remain references and do not enter databases, logs, exports,
+   command arguments, fixtures or tickets.
+7. Core workflow/profile identifiers remain open, versioned data rather than
+   product-specific enums or branches.
+
+Prefer extending an existing seam to adding another one. New dependencies must
+be justified, pinned exactly in the workspace manifest and checked by both
+license and advisory gates.
+
+## Tests and evidence
+
+Run the gates relevant to your change, then the complete set before requesting
+merge:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo audit
+cargo deny check
+pnpm install --frozen-lockfile
+pnpm -r typecheck
+pnpm -r test
+pnpm audit --prod
+```
+
+Runtime, scheduler, policy, persistence and security changes require:
+
+- a focused unit or contract test that fails for the defect/change;
+- recorded/offline protocol fixtures by default;
+- a mutation check demonstrating that the test detects the relevant wrong
+  behavior;
+- final working-tree and lockfile cleanliness.
+
+Tests must be deterministic and clean up every process and temporary resource.
+Live daemon/runtime tests must be explicitly opt-in; ordinary tests must not
+depend on network access, provider accounts or a user's runtime state.
+
+After committing, verify the committed export rather than only the working
+tree:
+
+```sh
+python3 scripts/verify-tree.py --mode archive
+```
 
 ## Pull requests
 
-- Run the full gate set from `README.md` before requesting review.
-- Keep the generated `Cargo.lock` and `pnpm-lock.yaml` in sync with your
-  change.
-- The `scripts/verify-tree.py --mode archive` preflight must pass after your
-  branch is committed.
+A pull request should include:
 
-## Licensing
+- the problem and why it belongs in Kontor;
+- the authority/boundary affected;
+- the behavior before and after;
+- commands run and results;
+- mutation or failure-injection evidence when required;
+- any residual risk or deliberately unsupported case.
 
-Kontor source is `MIT OR Apache-2.0`. By contributing you agree to license
-your contribution under both, with copyright assigned per `NOTICE`.
+Reviewers may ask for a split when code, generated artifacts and policy changes
+cannot be evaluated independently. A self-reported agent verdict is useful
+context but not merge evidence; the diff and reproducible checks are.
+
+## Licensing contributions
+
+The repository is licensed `MIT OR Apache-2.0`. By submitting a contribution,
+you represent that you have the right to submit it and agree that it is
+licensed under those same terms. This repository does **not** state that
+contributors assign their copyright to Carasent ASMA.
+
+Dependency or copied-source additions must retain their own notices and update
+`THIRD_PARTY_NOTICES.md` when required.
