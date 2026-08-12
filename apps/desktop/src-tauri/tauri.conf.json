@@ -14,15 +14,21 @@
       {
         "title": "Kontor",
         "width": 1200,
-        "height": 800
+        "height": 800,
+        "minWidth": 360,
+        "minHeight": 480
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:*"
     }
   },
   "bundle": {
-    "active": false,
-    "icon": ["icons/icon.png"]
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"],
+    "category": "DeveloperTool",
+    "shortDescription": "Kontor operator console",
+    "longDescription": "The operator console for a Kontor realm. Reads one realm over its authenticated loopback /v1 contract."
   }
 }

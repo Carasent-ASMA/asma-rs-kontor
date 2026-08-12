@@ -75,6 +75,14 @@ jobs:
       - name: Frozen install
         run: pnpm install --frozen-lockfile
 
+      # The console's wire types are generated from the committed contract
+      # document, and `kontor-api`'s own suite pins that document to what the
+      # crate serves. This closes the remaining link: types regenerated from the
+      # document must equal the ones committed, so a console can never compile
+      # against a contract the realm stopped serving.
+      - name: Generated API types match the contract document
+        run: pnpm --filter kontor-console verify:api
+
       - name: Typecheck all packages
         run: pnpm -r typecheck
 

@@ -1,0 +1,527 @@
+/*
+ * The console's layout.
+ *
+ * Two layouts, one breakpoint, and no third state in between. Wide: the top bar,
+ * a rail, and master beside detail. Narrow: the top bar, the rail as a scrolling
+ * row of tabs, one column, and the detail as a drawer over it.
+ *
+ * The rule the narrow layout exists to keep is that only one thing is fixed at a
+ * time. The drawer covers the page; the page behind it is inert and does not
+ * scroll. Two overlapping fixed panels, both scrollable, is how a console becomes
+ * unusable on a phone while looking correct on the machine it was built on.
+ */
+
+:root {
+  --ink: #14171a;
+  --ink-soft: #5b6570;
+  --paper: #ffffff;
+  --paper-sunk: #f4f6f8;
+  --line: #d7dde3;
+  --accent: #1f4d7a;
+  --warn: #8a5300;
+  --stop: #8a1f1f;
+  --radius: 6px;
+  --gap: 0.75rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--paper-sunk);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.9em;
+  word-break: break-all;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip-link:focus {
+  left: var(--gap);
+  top: var(--gap);
+  z-index: 20;
+  padding: 0.5rem;
+  background: var(--paper);
+  border: 2px solid var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- top bar */
+
+.top-bar {
+  grid-area: bar;
+  padding: var(--gap);
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+
+.top-bar h1 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.top-bar .realm-id {
+  margin: 0.15rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.top-bar-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap);
+  margin: var(--gap) 0 0;
+}
+
+.top-bar-facts .fact {
+  min-width: 0;
+}
+
+.contact-wording {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+/* ------------------------------------------------------------------ facts */
+
+.facts {
+  margin: 0;
+  display: grid;
+  gap: 0.4rem 1rem;
+}
+
+.fact dt {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.fact dd {
+  margin: 0;
+}
+
+.fact-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-style: italic;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-sunk);
+  font-size: 0.8rem;
+}
+
+/*
+ * The states worth a colour. Everything else renders as a plain badge, which is
+ * what lets a value this console has never seen still be shown.
+ */
+.badge[data-state="stale"],
+.badge[data-state="interrupted"],
+.badge[data-state="behind"],
+.badge[data-state="unknown"],
+.badge[data-state="draining"] {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.badge[data-state="diverged"],
+.badge[data-state="lost_contact"],
+.badge[data-state="orphaned"],
+.badge[data-state="runtime_unavailable"],
+.badge[data-state="resnapshot_required"],
+.badge[data-state="not_loopback"],
+.badge[data-state="failed"],
+.badge[data-state="rejected"] {
+  border-color: var(--stop);
+  color: var(--stop);
+}
+
+.empty,
+.caveat,
+.hint {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.banner {
+  margin: var(--gap) 0;
+  padding: 0.5rem var(--gap);
+  border-left: 3px solid var(--warn);
+  background: var(--paper);
+}
+
+.banner[data-banner="error"],
+.banner[data-banner="realm-error"],
+.banner[data-banner="resnapshot"] {
+  border-left-color: var(--stop);
+}
+
+.warning {
+  color: var(--warn);
+}
+
+.pending {
+  padding: var(--gap);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.pending h3 {
+  margin-top: 0;
+}
+
+.pending-needs {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+/* --------------------------------------------------------------- skeleton */
+
+.console {
+  display: grid;
+  min-height: 100vh;
+  grid-template-areas:
+    "bar bar"
+    "rail view";
+  grid-template-columns: 12rem 1fr;
+  grid-template-rows: auto 1fr;
+}
+
+.nav-rail {
+  grid-area: rail;
+  background: var(--paper);
+  border-right: 1px solid var(--line);
+}
+
+.nav-rail ul {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nav-rail button {
+  width: 100%;
+  padding: 0.6rem var(--gap);
+  border: 0;
+  background: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.nav-rail button[aria-current="page"] {
+  background: var(--paper-sunk);
+  box-shadow: inset 3px 0 0 var(--accent);
+  font-weight: 600;
+}
+
+.view-host {
+  grid-area: view;
+  min-width: 0;
+  padding: var(--gap);
+}
+
+.master-detail {
+  display: grid;
+  gap: var(--gap);
+  align-items: start;
+}
+
+.master-detail[data-layout="wide"] {
+  grid-template-columns: minmax(16rem, 24rem) 1fr;
+}
+
+.master,
+.detail {
+  min-width: 0;
+  padding: var(--gap);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* ------------------------------------------------------------------ lists */
+
+.run-list ul,
+.permissions,
+.timeline,
+.phase-layers,
+.phase-layer ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-list ul button {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  width: 100%;
+  padding: 0.5rem;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.run-list ul button[aria-current="true"] {
+  background: var(--paper-sunk);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.open-by-id {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: var(--gap);
+}
+
+.open-by-id input {
+  flex: 1 1 10rem;
+  min-width: 0;
+  padding: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font: inherit;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+/* ------------------------------------------------------------ phase graph */
+
+.phase-layers {
+  display: flex;
+  gap: var(--gap);
+  overflow-x: auto;
+  padding-bottom: 0.5rem;
+}
+
+.phase-layer > ol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 11rem;
+}
+
+.phase-node {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.phase-node[data-current="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.phase-node[data-entry="true"] .phase-key::before {
+  content: "entry · ";
+  color: var(--ink-soft);
+}
+
+.phase-node[data-terminal="true"] .phase-key::after {
+  content: " · terminal";
+  color: var(--ink-soft);
+}
+
+.phase-key {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.phase-label {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.phase-chip {
+  display: inline-block;
+  margin: 0.1rem 0.2rem 0 0;
+  padding: 0 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 0.75rem;
+}
+
+.phase-chip[data-kind="return"],
+.phase-chip[data-kind="rejects-to"] {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.phase-chip[data-kind="dangling"] {
+  border-color: var(--stop);
+  color: var(--stop);
+}
+
+.phase-edges li {
+  padding: 0.15rem 0;
+}
+
+.phase-edges li[data-direction="return"] .edge-arrow {
+  color: var(--warn);
+}
+
+/* -------------------------------------------------------------- timeline */
+
+.timeline-item {
+  padding: 0.5rem;
+  margin-bottom: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.timeline-item header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.timeline-kind {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.timeline-preview {
+  margin: 0.3rem 0 0;
+  white-space: pre-wrap;
+}
+
+.payload dt {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+
+.payload-row {
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--line);
+}
+
+.permission-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.permission-receipt[data-response-state="conflict"],
+.permission-receipt[data-response-state="refused"] {
+  color: var(--stop);
+}
+
+.session-controls textarea {
+  width: 100%;
+  padding: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font: inherit;
+}
+
+/* ----------------------------------------------------------- narrow layout */
+
+@media (max-width: 767px) {
+  .console {
+    grid-template-areas:
+      "bar"
+      "rail"
+      "view";
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
+  }
+
+  .nav-rail {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .nav-rail ul {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .nav-rail button {
+    width: auto;
+    white-space: nowrap;
+  }
+
+  .nav-rail button[aria-current="page"] {
+    box-shadow: inset 0 -3px 0 var(--accent);
+  }
+
+  .master-detail[data-layout="narrow"] {
+    grid-template-columns: 1fr;
+  }
+
+  /*
+   * The drawer is the only fixed thing on screen while it is up, and the list
+   * behind it is `inert`, so nothing under it scrolls or takes focus.
+   */
+  .drawer {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    overflow-y: auto;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .drawer-close {
+    position: sticky;
+    top: 0;
+    margin-bottom: var(--gap);
+  }
+
+  .master-detail[data-layout="narrow"]:has(.drawer) .master {
+    overflow: hidden;
+  }
+
+  .phase-layers {
+    flex-direction: column;
+  }
+}
