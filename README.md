@@ -157,6 +157,12 @@ A realm with no `runtimes.json` is valid for inspecting the control plane; its
 session operations report that no runtime is configured. Runtime configuration
 is intentionally explicit and remains local to the state root.
 
+Seat lifecycle behavior is configuration too. Copy the example
+[`supervision.yml`](config/examples/paseo-supervision.yml) into the state root
+to use notification-first completion with a bounded hang watchdog; see
+[Configuration](docs/CONFIGURATION.md). With no policy file, Kontor invents no
+timeout behavior.
+
 For frontend development:
 
 ```sh
