@@ -11,10 +11,51 @@ description = "Kontor workspace e2e test crate."
 [lints]
 workspace = true
 
+# KON-MVP-18: the disposable mini-project proof. `pilot` is the deterministic
+# driver every gate runs; `pilot_live` is the opt-in probe that only says
+# something when `KONTOR_PILOT_LIVE=1` names real installed harnesses.
+[[test]]
+name = "pilot"
+path = "pilot.rs"
+
+[[test]]
+name = "pilot_live"
+path = "pilot_live.rs"
+
+# The library target is the evidence bundle and the case ledger — the parts both
+# test targets write into. It deliberately depends on almost nothing: a bundle
+# writer that needed the whole control plane to link would be a second place for
+# the proof to live.
+[dependencies]
+kontor-core = { path = "../../crates/kontor-core", version = "=0.1.0" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
 [dev-dependencies]
+# The driver composes the merged seams rather than restating them, so it depends
+# on the same crates the daemon's composition root does, plus the reusable
+# adapter contract in `tests/contract`.
+kontor-tests-contract = { path = "../contract", version = "=0.1.0" }
+kontor-accounts = { path = "../../crates/kontor-accounts", version = "=0.1.0" }
+kontor-api = { path = "../../crates/kontor-api", version = "=0.1.0" }
+kontor-cli = { path = "../../crates/kontor-cli", version = "=0.1.0" }
+kontor-context = { path = "../../crates/kontor-context", version = "=0.1.0" }
+kontor-daemon = { path = "../../crates/kontor-daemon", version = "=0.1.0" }
+kontor-integrations-asma = { path = "../../crates/kontor-integrations-asma", version = "=0.1.0" }
+kontor-mcp = { path = "../../crates/kontor-mcp", version = "=0.1.0" }
+kontor-policy = { path = "../../crates/kontor-policy", version = "=0.1.0" }
+kontor-profiles = { path = "../../crates/kontor-profiles", version = "=0.1.0" }
+kontor-runtime = { path = "../../crates/kontor-runtime", version = "=0.1.0" }
+kontor-scheduler = { path = "../../crates/kontor-scheduler", version = "=0.1.0" }
+kontor-store = { path = "../../crates/kontor-store", version = "=0.1.0" }
+kontor-teams = { path = "../../crates/kontor-teams", version = "=0.1.0" }
+async-trait = { workspace = true }
+axum = { workspace = true }
+jiff = { workspace = true }
+rusqlite = { workspace = true }
 tempfile = { workspace = true }
-proptest = { workspace = true }
-insta = { workspace = true }
-assert_cmd = { workspace = true }
-predicates = { workspace = true }
-wiremock = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+uuid = { workspace = true }

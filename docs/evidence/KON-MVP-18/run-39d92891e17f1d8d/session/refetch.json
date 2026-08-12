@@ -1,0 +1,42 @@
+{
+  "canonical_reload": {
+    "items": 26,
+    "items_at_the_first_read": 20,
+    "ok": true,
+    "prefix_matches_the_first_read": true,
+    "stream_sha256": "3e13799837fa243c139c766030b9608a0a9dcc215366227f50f077923ce17664",
+    "why_it_grew": "a message and a permission answer were committed into this session between the two reads, and this runtime records a committed effect as content"
+  },
+  "injected_epoch_change": {
+    "code": "timeline_refetch_required",
+    "cursor_binding": "this session's own binding",
+    "cursor_epoch": 9,
+    "rule": "the session's content must be read again from the runtime",
+    "status": 409
+  },
+  "injected_sequence_gap": {
+    "agent_run_id": "019ff40e-7c97-7b20-a33e-b07585d42a7d",
+    "anchor": "019ff40e-7c97-7b20-a33e-b08fa53bc05b:1:1",
+    "content_frames_before_the_break": 1,
+    "final_code": "timeline_refetch_required",
+    "final_event": "error",
+    "final_event_carried_an_id": false,
+    "final_rule": "the runtime renumbered or skipped this session's content",
+    "stream_status": 200
+  },
+  "lifecycle": {
+    "after": {
+      "closed_at": null,
+      "derived": "pending_confirmation",
+      "lifecycle": "queued",
+      "revision": 1
+    },
+    "before": {
+      "closed_at": null,
+      "derived": "pending_confirmation",
+      "lifecycle": "queued",
+      "revision": 1
+    },
+    "unchanged": true
+  }
+}

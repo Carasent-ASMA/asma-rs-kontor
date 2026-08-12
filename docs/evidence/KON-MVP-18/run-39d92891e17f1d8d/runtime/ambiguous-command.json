@@ -1,0 +1,20 @@
+{
+  "adapter_send_calls": 3,
+  "binding_id": "019ff40e-78e8-7471-8e20-c08ca5e8a539",
+  "control_blind_retry_under_a_fresh_id": {
+    "accepted": true,
+    "committed_messages": 2
+  },
+  "first_attempt": {
+    "committed_messages": 1,
+    "outcome": "transport failure after the effect committed",
+    "recognized": true
+  },
+  "message_id": "019ff40e-78e9-7952-a45b-1bde593acbb0",
+  "reconciled_by_id": {
+    "committed_messages": 1,
+    "receipt_position": "1:1",
+    "replayed_original_receipt": true
+  },
+  "rule": "the ledger is written before the acknowledgement leaves, so an ambiguous command is answered from the ledger rather than by performing the effect again"
+}

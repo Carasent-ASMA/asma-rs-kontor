@@ -1,0 +1,15 @@
+{
+  "admitted_count": 0,
+  "contender_task": "019ff40e-78dd-7542-8a4e-acf81a6f1d0f",
+  "contender_worktree": null,
+  "every_blocker": [
+    {
+      "blocker": "contention",
+      "code": "module_in_flight"
+    }
+  ],
+  "first_blocker": "module_in_flight",
+  "holder_worktree": "pilot-code-tree",
+  "module": "pilot.code",
+  "shares_module_with": "019ff40e-78dd-7542-8a4e-ace1e7bcc89c"
+}

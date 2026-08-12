@@ -1,0 +1,96 @@
+{
+  "auto_arm_policy": {
+    "bounded_validates": true,
+    "declared_bounds": [
+      "capability.granted_to",
+      "capability.authorization",
+      "max_concurrency",
+      "budget"
+    ],
+    "unbounded_variant_unrepresentable": true,
+    "zero_budget_bound_refused": true,
+    "zero_concurrency_refused": true
+  },
+  "bounded_auto_arm_is_unstorable": {
+    "canonicalize_error": "sensitive material rejected at `approval.capability.authorization`",
+    "cause": "`ExecutionCapability` names its field `authorization`, and `authorization` is a `FORBIDDEN_KEYS` entry in `kontor_core::id::reject_sensitive_material`. Every route to a digest goes through `CanonicalDocument::from_value`, so a bounded auto-arm `TriggerSpec` validates and then cannot be canonicalized, hashed, receipted or inserted",
+    "insert_trigger_spec_error": "sensitive material rejected at `approval.capability.authorization`",
+    "reach": "`TriggerSpec::validate` and `TriggerSpec::canonicalize` disagree about the same document; `crates/kontor-core/tests/spec_validation.rs` exercises only the validating half, and no test in the tree stores one"
+  },
+  "contradictions_refused": {
+    "approved_without_evidence": "an approved intake requires approval evidence",
+    "rejected_carrying_work": "an ignored or rejected intake must not create work"
+  },
+  "persisted_decisions": [
+    {
+      "decision": "approved",
+      "has_approval_evidence": true,
+      "outcome": "recorded",
+      "result": "approved",
+      "task_count": 1
+    },
+    {
+      "decision": "rejected",
+      "has_approval_evidence": false,
+      "outcome": "recorded",
+      "result": "rejected",
+      "task_count": 0
+    },
+    {
+      "decision": "auto_armed",
+      "has_approval_evidence": false,
+      "outcome": "recorded",
+      "result": "proposed",
+      "task_count": 1
+    }
+  ],
+  "scheduler_admission": [
+    {
+      "admitted": true,
+      "case": "manual",
+      "rejection": null
+    },
+    {
+      "admitted": false,
+      "case": "absent_lineage",
+      "rejection": "intake_receipt_missing"
+    },
+    {
+      "admitted": false,
+      "case": "armed_other_task",
+      "rejection": "intake_receipt_mismatched"
+    },
+    {
+      "admitted": true,
+      "case": "approved",
+      "rejection": null
+    },
+    {
+      "admitted": true,
+      "case": "auto_armed_with_authorization",
+      "rejection": null
+    },
+    {
+      "admitted": false,
+      "case": "proposed_without_authorization",
+      "rejection": "intake_receipt_not_approved"
+    },
+    {
+      "admitted": false,
+      "case": "rejected",
+      "rejection": "intake_receipt_not_approved"
+    },
+    {
+      "admitted": false,
+      "case": "ignored",
+      "rejection": "intake_receipt_not_approved"
+    },
+    {
+      "admitted": false,
+      "case": "duplicate",
+      "rejection": "intake_receipt_not_approved"
+    }
+  ],
+  "store_problems": [],
+  "unmerged_seam": "KON-MVP-22 (`kontor_api::query::STAGED[0]`): `kontor-intake` is a scaffold, so nothing produces the proposal that is approved here and nothing runs the approval command against it. The receipts, their validation rules, the persisted `ApproveIntake` command receipt and every admission consequence above are merged code"
+}

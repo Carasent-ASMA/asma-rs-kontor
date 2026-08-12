@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "project": {
+    "name": "Kontor pilot (disposable)",
+    "root_path": "/tmp/kontor-pilot/realm"
+  },
+  "note": [
+    "The five pilot tasks each pin one work profile, one module and one distinct",
+    "verified worktree. `contender` is the deliberate sixth: it shares",
+    "`pilot.code` with pilot-code and declares no worktree, so the scheduler must",
+    "refuse it rather than isolate it. Module keys use '.' because ModuleKey",
+    "rejects path separators (kontor-core validate_open_key)."
+  ],
+  "tasks": [
+    {
+      "key": "pilot-code",
+      "title": "Pilot coding task",
+      "module": "pilot.code",
+      "pack": "bundled",
+      "category": "code",
+      "worktree": "pilot-code-tree",
+      "isolated": true,
+      "expected_phases": ["implementation", "code-review", "qa", "release"]
+    },
+    {
+      "key": "pilot-ux",
+      "title": "Pilot UX/UI/layout task",
+      "module": "pilot.ux",
+      "pack": "bundled",
+      "category": "ux-ui-layout",
+      "worktree": "pilot-ux-tree",
+      "isolated": true,
+      "expected_phases": [
+        "design",
+        "design-review",
+        "implementation",
+        "code-review",
+        "functionality-qa",
+        "design-qa",
+        "final-audit",
+        "release"
+      ]
+    },
+    {
+      "key": "pilot-research",
+      "title": "Pilot research task",
+      "module": "pilot.research",
+      "pack": "bundled",
+      "category": "research",
+      "worktree": "pilot-research-tree",
+      "isolated": true,
+      "expected_phases": [
+        "scoping",
+        "lane-a",
+        "lane-b",
+        "evidence-review",
+        "synthesis",
+        "final-review"
+      ]
+    },
+    {
+      "key": "pilot-docs",
+      "title": "Pilot documentation task",
+      "module": "pilot.docs",
+      "pack": "bundled",
+      "category": "docs",
+      "worktree": "pilot-docs-tree",
+      "isolated": true,
+      "expected_phases": ["authoring", "technical-review", "final-review"]
+    },
+    {
+      "key": "pilot-incident",
+      "title": "Pilot incident-response task",
+      "module": "pilot.incident",
+      "pack": "incident",
+      "category": "incident-response-v1",
+      "worktree": "pilot-incident-tree",
+      "isolated": true,
+      "expected_phases": ["triage", "containment", "recovery", "independent-audit"]
+    },
+    {
+      "key": "pilot-code-contender",
+      "title": "Pilot collision contender (must never launch)",
+      "module": "pilot.code",
+      "pack": "bundled",
+      "category": "code",
+      "worktree": null,
+      "isolated": false,
+      "expected_phases": ["implementation", "code-review", "qa", "release"]
+    }
+  ]
+}

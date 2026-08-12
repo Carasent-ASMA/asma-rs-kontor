@@ -1,0 +1,31 @@
+{
+  "capsule_hash": "be75298a7ceb0dea9293c8624c89896edef23db382d14139c151d42d9a7429ee",
+  "carries": {
+    "attempted_work": 2,
+    "commits": 1,
+    "decisions": 1,
+    "evidence": 1,
+    "remaining_work": 1,
+    "risks": 1,
+    "tests": 1,
+    "touched_files": 1
+  },
+  "carries_no_session_locator": true,
+  "continuation_mode": "cross_engine_handoff",
+  "edited_capsule_hash": "ee9c07db8623cf10a4bc95752fc8f8305ec02d6adeda41c030574e72843c7780",
+  "handoff_id": "019ff40e-78ec-7cb1-ace6-2903aab1750d",
+  "realm_id": "019ff40e-78ec-7cb1-ace6-28ec6caa765a",
+  "seal_changes_when_the_capsule_does": true,
+  "source": {
+    "agent_run_id": "019ff40e-78ec-7cb1-ace6-28b8bbe1259c",
+    "native_id": "native-session-2",
+    "runtime_binding_id": "019ff40e-78ec-7cb1-ace6-28c83cfa5fc0",
+    "workspace_root": "/w/pilot-handoff"
+  },
+  "target": {
+    "agent_run_id": "019ff40e-78ec-7cb1-ace6-28f5cee7ecfd",
+    "native_id": "native-session-2",
+    "runtime_binding_id": "019ff40e-78ec-7cb1-ace6-292ed1c8d134",
+    "workspace_root": "/w/pilot-handoff"
+  }
+}
