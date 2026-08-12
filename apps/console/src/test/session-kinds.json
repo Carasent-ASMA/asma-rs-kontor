@@ -1,0 +1,8 @@
+[
+  "message",
+  "tool_call",
+  "permission_request",
+  "permission_resolved",
+  "state_change",
+  "log"
+]

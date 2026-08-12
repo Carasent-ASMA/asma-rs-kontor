@@ -1,0 +1,1636 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Kontor control plane",
+    "description": "The loopback HTTP and SSE contract of one Kontor realm.",
+    "contact": {
+      "name": "Carasent ASMA"
+    },
+    "license": {
+      "name": "MIT OR Apache-2.0",
+      "identifier": "MIT OR Apache-2.0"
+    },
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/v1/commands/{kind}": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Record one control-plane command intent.",
+        "description": "The kind, the target and the desired state are checked against the domain's own\ncompatibility matrix before anything is written, and the revision is checked\nagainst what the aggregate currently stands at — so a caller working from a\nstale read is told the current revision and nothing is mutated. The write\nitself is `kontor-store`'s single transaction: intent, target row, outbox\nentry, first durable transition, desired state and the intent event, or none of\nthem.",
+        "operationId": "command",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "The command kind",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded, or replayed unchanged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReceiptResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision or a reused idempotency key"
+          }
+        }
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "The durable control-plane feed.",
+        "description": "Three properties make it restartable. Every frame's SSE `id` is the event's\nown persisted control-plane cursor, so `Last-Event-ID` is a position this\nRealm actually allocated. Delivery is strictly greater than the requested\nposition, so nothing is repeated and nothing is skipped. And the events come\nfrom SQLite rather than from memory, so a reconnect after a restart reads the\nsame log the previous connection was reading.",
+        "operationId": "events",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Resume strictly after this cursor",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An SSE stream of control-plane events"
+          },
+          "410": {
+            "description": "The position is outside the retained history"
+          }
+        }
+      }
+    },
+    "/v1/health": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Liveness, Realm identity and the startup barrier.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tasks/{task_id}": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "One task, its active workflow, its gate states and its pinned revisions.",
+        "operationId": "task_snapshot",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotDto_TaskDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/realm": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "This Realm's immutable identity.",
+        "operationId": "realm",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RealmDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/runs/{agent_run_id}": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "One agent run, its projection, its pinned revisions and its recorded gaps.",
+        "operationId": "run_snapshot",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The Kontor agent run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotDto_RunDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/sessions/{agent_run_id}/messages": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Deliver one message into a session.",
+        "description": "The `Idempotency-Key` *is* the stable client message id: it must parse as one,\nand it is what the runtime's own ledger keys the effect on. Requiring two\nseparate tokens would create two things that can disagree about whether a\nretry is the same message, and only one of them would be the one the runtime\nactually checks.",
+        "operationId": "send_message",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The Kontor agent run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The stable client message id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Delivered, or the original ack replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageAckDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The id already committed different content"
+          },
+          "422": {
+            "description": "This runtime cannot take messages"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{agent_run_id}/permissions/{request_id}": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Answer one permission request raised inside a session.",
+        "operationId": "respond_permission",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The Kontor agent run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "description": "The runtime's own permission request id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The stable client response id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PermissionRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied, or the original ack replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionAckDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request was already answered differently"
+          },
+          "422": {
+            "description": "This runtime cannot take permission answers"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{agent_run_id}/stream": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Follow a session's content strictly after a validated timeline anchor.",
+        "description": "The anchor is required, and that is the transport spelling of \"history anchors\nlive\": without a position a previous read validated, there is nothing for\ndelivery to be strictly after, and a stream that guessed would be unable to\ntell a runtime dropping events from its own missing start.",
+        "operationId": "stream",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The Kontor agent run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "The anchor a timeline read returned",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An SSE stream of session content"
+          },
+          "400": {
+            "description": "No anchor was presented"
+          },
+          "422": {
+            "description": "This runtime cannot stream content"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{agent_run_id}/timeline": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "One page of a session's recorded content, read from the runtime.",
+        "description": "The page is validated through `HistoryReader` before it is returned, so what a\ncaller receives is exactly-once by construction: a redelivered item is dropped\nfrom the page rather than merely uncounted, and a page that changes epoch,\nskips a sequence or rewrites a position it already delivered is refused.",
+        "operationId": "timeline",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The Kontor agent run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "A runtime continuation cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum items",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelineDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The timeline must be refetched from the start"
+          },
+          "422": {
+            "description": "This runtime cannot replay content"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiErrorBody": {
+        "type": "object",
+        "description": "The JSON body every refusal is reported with.",
+        "required": [
+          "realm_id",
+          "code",
+          "rule"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The stable machine-readable code."
+          },
+          "current_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The revision the aggregate actually stands at, for a revision conflict.",
+            "minimum": 0
+          },
+          "newest_cursor": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The newest position allocated, for a resnapshot."
+          },
+          "oldest_retained_cursor": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The oldest position still retained, for a resnapshot."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the request was refused in."
+          },
+          "rule": {
+            "type": "string",
+            "description": "A static description of the rule that refused. Never a stored value."
+          }
+        }
+      },
+      "AppliedRevisionsDto": {
+        "type": "object",
+        "description": "Which pinned specification revisions an aggregate is running under.\n\nEvery one of these is a *frozen* revision copied into the aggregate, not a\npointer to whatever the current definition happens to be. That is what makes\na snapshot re-checkable rather than merely re-readable.",
+        "properties": {
+          "persona_scenario": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The persona scenario frozen onto the task, if any."
+          },
+          "persona_scenario_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "That scenario's revision.",
+            "minimum": 0
+          },
+          "team_template": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team template the run's team pinned."
+          },
+          "team_template_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "That template's revision.",
+            "minimum": 0
+          },
+          "work_profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The work profile the task's active workflow pinned."
+          },
+          "work_profile_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "That profile's revision.",
+            "minimum": 0
+          }
+        }
+      },
+      "BarrierState": {
+        "type": "string",
+        "description": "How far startup reconciliation has got, and therefore whether scheduling may\nrun.",
+        "enum": [
+          "pending",
+          "open",
+          "failed"
+        ]
+      },
+      "BindingDto": {
+        "type": "object",
+        "description": "The native session one run is bound to, as evidence and never as identity.",
+        "required": [
+          "binding_id",
+          "runtime_kind",
+          "host",
+          "generation",
+          "native_id",
+          "bound_at",
+          "attached"
+        ],
+        "properties": {
+          "attached": {
+            "type": "boolean",
+            "description": "Whether this process still holds the frozen capability snapshot for it,\nand can therefore address the session at all."
+          },
+          "binding_id": {
+            "type": "string",
+            "description": "The Kontor binding."
+          },
+          "bound_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was bound."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The runtime generation the session belongs to.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "The host label the runtime reports for itself."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The runtime's own session id. Correlation evidence."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The runtime family. Never an endpoint."
+          }
+        }
+      },
+      "CommandRequest": {
+        "type": "object",
+        "description": "What a command asks for, as a caller states it.",
+        "required": [
+          "project_id",
+          "target",
+          "expected_revision",
+          "intent",
+          "payload"
+        ],
+        "properties": {
+          "desired_state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The desired run state, for the commands that carry one."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision the caller computed the intent against.",
+            "minimum": 0
+          },
+          "intent": {
+            "type": "object",
+            "description": "The canonical intent document. Must carry a `schema_version`."
+          },
+          "payload": {
+            "type": "object",
+            "description": "The canonical dispatch payload. Must carry a `schema_version`."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The acting project."
+          },
+          "target": {
+            "type": "object",
+            "description": "The aggregate the command targets."
+          }
+        }
+      },
+      "EventDto": {
+        "type": "object",
+        "description": "One durable control-plane event.",
+        "required": [
+          "realm_id",
+          "cursor",
+          "project_id",
+          "agent_run_id",
+          "runtime_kind",
+          "generation",
+          "native_id",
+          "native_sequence",
+          "payload",
+          "observed_at",
+          "recorded_at"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The run it concerns."
+          },
+          "cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its control-plane position."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The runtime generation it belongs to.",
+            "minimum": 0
+          },
+          "native_event_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The runtime's own event id, when it provides one."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The runtime's own session id."
+          },
+          "native_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The runtime's own ordering.",
+            "minimum": 0
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the runtime emitted it."
+          },
+          "payload": {
+            "type": "object",
+            "description": "The stored control metadata. Held to the store's positive allowlist, so it\nis facts about the session and never the session's content."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project that owns it."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was recorded in."
+          },
+          "recorded_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this Realm stored it."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The runtime family that reported it."
+          }
+        }
+      },
+      "GapDto": {
+        "type": "object",
+        "description": "A recorded discontinuity a reader is owed.",
+        "required": [
+          "kind",
+          "expected_sequence",
+          "received_sequence",
+          "detected_cursor",
+          "detected_at"
+        ],
+        "properties": {
+          "content_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The runtime's content epoch, for a content gap.",
+            "minimum": 0
+          },
+          "detected_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was noticed."
+          },
+          "detected_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The control-plane position the hole was noticed at."
+          },
+          "expected_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The sequence that was expected next.",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "description": "Which cursor space the hole is in."
+          },
+          "received_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The sequence that actually arrived.",
+            "minimum": 0
+          }
+        }
+      },
+      "HealthDto": {
+        "type": "object",
+        "description": "Liveness, identity and how far startup has got.",
+        "required": [
+          "realm_id",
+          "live",
+          "schema_version",
+          "reconciliation",
+          "scheduling_open",
+          "runtimes"
+        ],
+        "properties": {
+          "live": {
+            "type": "boolean",
+            "description": "Always true: reaching a handler is what liveness means."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm answering."
+          },
+          "reconciliation": {
+            "$ref": "#/components/schemas/BarrierState",
+            "description": "Whether startup reconciliation finished, and therefore whether scheduling\nis open."
+          },
+          "runtimes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The runtime families this daemon was configured with."
+          },
+          "scheduling_open": {
+            "type": "boolean",
+            "description": "Whether work may be dispatched right now."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The persisted schema generation."
+          }
+        }
+      },
+      "MessageAckDto": {
+        "type": "object",
+        "description": "The runtime's answer to one delivered message.",
+        "required": [
+          "message_id",
+          "binding_id",
+          "epoch",
+          "sequence",
+          "accepted_at"
+        ],
+        "properties": {
+          "accepted_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the runtime accepted it."
+          },
+          "binding_id": {
+            "type": "string",
+            "description": "The binding it was delivered into."
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The content epoch it landed in.",
+            "minimum": 0
+          },
+          "message_id": {
+            "type": "string",
+            "description": "The Kontor identifier the message was sent under. It is the\n`Idempotency-Key` the caller presented."
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Where it landed inside that epoch.",
+            "minimum": 0
+          }
+        }
+      },
+      "MessageRequest": {
+        "type": "object",
+        "description": "What a caller sends into a session.",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "The message body."
+          }
+        }
+      },
+      "PermissionAckDto": {
+        "type": "object",
+        "description": "The runtime's answer to one permission response.",
+        "required": [
+          "permission_id",
+          "response_id",
+          "binding_id",
+          "decision",
+          "epoch",
+          "sequence",
+          "accepted_at"
+        ],
+        "properties": {
+          "accepted_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the runtime accepted it."
+          },
+          "binding_id": {
+            "type": "string",
+            "description": "The binding whose session raised the request."
+          },
+          "decision": {
+            "type": "string",
+            "description": "The answer that was applied."
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The content epoch the resolution landed in.",
+            "minimum": 0
+          },
+          "permission_id": {
+            "type": "string",
+            "description": "The runtime's own identifier for the request that was answered."
+          },
+          "response_id": {
+            "type": "string",
+            "description": "The Kontor identifier the answer was sent under."
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Where it landed inside that epoch.",
+            "minimum": 0
+          }
+        }
+      },
+      "PermissionRequestBody": {
+        "type": "object",
+        "description": "How a permission request is answered.",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "description": "The answer."
+          }
+        }
+      },
+      "ProjectionDto": {
+        "type": "object",
+        "description": "The orthogonal state of one run, plus how old its newest confirmation is.",
+        "required": [
+          "lifecycle",
+          "desired",
+          "observed",
+          "derived",
+          "freshness"
+        ],
+        "properties": {
+          "derived": {
+            "type": "string",
+            "description": "What Kontor concluded. `terminal` carries its outcome separately."
+          },
+          "desired": {
+            "type": "string",
+            "description": "What Kontor asked for."
+          },
+          "freshness": {
+            "type": "string",
+            "description": "How old that confirmation is, judged against the daemon's evidence window\nat the instant this snapshot was taken."
+          },
+          "last_confirmed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the newest trusted confirmation arrived."
+          },
+          "last_cursor": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The control-plane position of the newest reduced event."
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "The run's own lifecycle."
+          },
+          "observed": {
+            "type": "string",
+            "description": "What the runtime last reported."
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The outcome, when the run is closed."
+          }
+        }
+      },
+      "RealmDto": {
+        "type": "object",
+        "description": "This Realm's immutable identity.",
+        "required": [
+          "realm_id",
+          "schema_version",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "display_label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its optional non-secret label."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The envelope contract it was created under.",
+            "minimum": 0
+          }
+        }
+      },
+      "ReceiptDto": {
+        "type": "object",
+        "description": "The durable record of one command.",
+        "required": [
+          "receipt_id",
+          "project_id",
+          "idempotency_key",
+          "kind",
+          "target",
+          "target_revision",
+          "state",
+          "attempts",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many dispatch attempts have been made.",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the intent was recorded."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "description": "The caller's idempotency key."
+          },
+          "kind": {
+            "type": "string",
+            "description": "What was asked for."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project that owns it."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "The receipt."
+          },
+          "state": {
+            "type": "string",
+            "description": "How far it has got. An acknowledgement is never a completion."
+          },
+          "target": {
+            "type": "object",
+            "description": "Which aggregate it targets."
+          },
+          "target_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision the intent was computed against.",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the receipt last changed."
+          }
+        }
+      },
+      "ReceiptResponse": {
+        "allOf": [
+          {
+            "type": "object",
+            "description": "The Realm-qualified receipt envelope."
+          },
+          {
+            "type": "object",
+            "required": [
+              "replayed"
+            ],
+            "properties": {
+              "replayed": {
+                "type": "boolean",
+                "description": "`true` when the idempotency key had already recorded this exact command,\nso nothing was written and the original receipt is being returned."
+              }
+            }
+          }
+        ],
+        "description": "A receipt, and whether this call is the one that recorded it."
+      },
+      "RunDto": {
+        "type": "object",
+        "description": "One agent run, as a cross-boundary reader sees it.",
+        "required": [
+          "agent_run_id",
+          "project_id",
+          "team_run_id",
+          "role",
+          "projection",
+          "revision",
+          "applied",
+          "gaps",
+          "created_at"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The coding account it is pinned to, if any."
+          },
+          "agent_run_id": {
+            "type": "string",
+            "description": "The run."
+          },
+          "applied": {
+            "$ref": "#/components/schemas/AppliedRevisionsDto",
+            "description": "The team template revision this run's team pinned."
+          },
+          "binding": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BindingDto",
+                "description": "The native binding, once launched."
+              }
+            ]
+          },
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it closed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GapDto"
+            },
+            "description": "Every recorded discontinuity, oldest first."
+          },
+          "parent_agent_run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The run it succeeds, for recovery and resume."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project it belongs to."
+          },
+          "projection": {
+            "$ref": "#/components/schemas/ProjectionDto",
+            "description": "The orthogonal state."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "role": {
+            "type": "string",
+            "description": "The role slot it fills."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "The team run it serves."
+          }
+        }
+      },
+      "SnapshotDto_RunDto": {
+        "type": "object",
+        "description": "A point-in-time value and the position it is consistent with.\n\nIt is the wire spelling of `kontor-core`'s own `SnapshotEnvelope`: a\nsubscriber resumes strictly after `snapshot_cursor`, in the same Realm.",
+        "required": [
+          "realm_id",
+          "snapshot_cursor",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this snapshot came from."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position it is consistent with."
+          },
+          "value": {
+            "type": "object",
+            "description": "One agent run, as a cross-boundary reader sees it.",
+            "required": [
+              "agent_run_id",
+              "project_id",
+              "team_run_id",
+              "role",
+              "projection",
+              "revision",
+              "applied",
+              "gaps",
+              "created_at"
+            ],
+            "properties": {
+              "account_profile_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The coding account it is pinned to, if any."
+              },
+              "agent_run_id": {
+                "type": "string",
+                "description": "The run."
+              },
+              "applied": {
+                "$ref": "#/components/schemas/AppliedRevisionsDto",
+                "description": "The team template revision this run's team pinned."
+              },
+              "binding": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BindingDto",
+                    "description": "The native binding, once launched."
+                  }
+                ]
+              },
+              "closed_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time",
+                "description": "When it closed."
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When it was created."
+              },
+              "gaps": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/GapDto"
+                },
+                "description": "Every recorded discontinuity, oldest first."
+              },
+              "parent_agent_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The run it succeeds, for recovery and resume."
+              },
+              "project_id": {
+                "type": "string",
+                "description": "The project it belongs to."
+              },
+              "projection": {
+                "$ref": "#/components/schemas/ProjectionDto",
+                "description": "The orthogonal state."
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The revision a write must present.",
+                "minimum": 0
+              },
+              "role": {
+                "type": "string",
+                "description": "The role slot it fills."
+              },
+              "team_run_id": {
+                "type": "string",
+                "description": "The team run it serves."
+              }
+            }
+          }
+        }
+      },
+      "SnapshotDto_TaskDto": {
+        "type": "object",
+        "description": "A point-in-time value and the position it is consistent with.\n\nIt is the wire spelling of `kontor-core`'s own `SnapshotEnvelope`: a\nsubscriber resumes strictly after `snapshot_cursor`, in the same Realm.",
+        "required": [
+          "realm_id",
+          "snapshot_cursor",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this snapshot came from."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position it is consistent with."
+          },
+          "value": {
+            "type": "object",
+            "description": "One task, its active workflow and the gates reduced from its evaluations.",
+            "required": [
+              "task_id",
+              "project_id",
+              "title",
+              "state",
+              "revision",
+              "gates",
+              "applied",
+              "updated_at"
+            ],
+            "properties": {
+              "applied": {
+                "$ref": "#/components/schemas/AppliedRevisionsDto",
+                "description": "The pinned specification revisions in force."
+              },
+              "current_phase": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The phase the active workflow is in."
+              },
+              "gates": {
+                "type": "object",
+                "description": "The gate states, keyed by gate."
+              },
+              "project_id": {
+                "type": "string",
+                "description": "The project it belongs to."
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The revision a write must present.",
+                "minimum": 0
+              },
+              "state": {
+                "type": "string",
+                "description": "Its lifecycle state."
+              },
+              "task_id": {
+                "type": "string",
+                "description": "The task."
+              },
+              "title": {
+                "type": "string",
+                "description": "Its title."
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When it last changed."
+              }
+            }
+          }
+        }
+      },
+      "StreamFrameDto": {
+        "type": "object",
+        "description": "One frame of live session content.\n\nThe item is wrapped rather than sent bare so that *every* frame of the stream\ncarries the Realm and the run it belongs to — a console holding two sessions\nopen must never have to infer which one a frame came from.",
+        "required": [
+          "realm_id",
+          "agent_run_id",
+          "item"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The run whose session produced it."
+          },
+          "item": {
+            "$ref": "#/components/schemas/TimelineItemDto",
+            "description": "The content item."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the session belongs to."
+          }
+        }
+      },
+      "StreamRefusalDto": {
+        "type": "object",
+        "description": "A frame the live-content stream emits instead of an item when the timeline can\nno longer be followed.",
+        "required": [
+          "realm_id",
+          "code",
+          "rule"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Always `timeline_refetch_required`."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the session belongs to."
+          },
+          "rule": {
+            "type": "string",
+            "description": "A static description of what broke."
+          }
+        }
+      },
+      "TaskDto": {
+        "type": "object",
+        "description": "One task, its active workflow and the gates reduced from its evaluations.",
+        "required": [
+          "task_id",
+          "project_id",
+          "title",
+          "state",
+          "revision",
+          "gates",
+          "applied",
+          "updated_at"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedRevisionsDto",
+            "description": "The pinned specification revisions in force."
+          },
+          "current_phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The phase the active workflow is in."
+          },
+          "gates": {
+            "type": "object",
+            "description": "The gate states, keyed by gate."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project it belongs to."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "Its lifecycle state."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task."
+          },
+          "title": {
+            "type": "string",
+            "description": "Its title."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it last changed."
+          }
+        }
+      },
+      "TimelineDto": {
+        "type": "object",
+        "description": "One page of a session's recorded content.",
+        "required": [
+          "realm_id",
+          "agent_run_id",
+          "epoch",
+          "items",
+          "end_epoch",
+          "end_sequence",
+          "anchor"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The run whose session was read."
+          },
+          "anchor": {
+            "type": "string",
+            "description": "The cursor a live subscription resumes from. The same position as\n`end_epoch`/`end_sequence`, in the form `/stream` accepts."
+          },
+          "end_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last position this page covers. A live subscription must start\nstrictly after it.",
+            "minimum": 0
+          },
+          "end_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The sequence half of that position.",
+            "minimum": 0
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The runtime's content epoch every item belongs to.",
+            "minimum": 0
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TimelineItemDto"
+            },
+            "description": "The items, in ascending sequence order."
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where to continue, or `null` when the history is exhausted."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the session belongs to."
+          }
+        }
+      },
+      "TimelineItemDto": {
+        "type": "object",
+        "description": "One item of session content.",
+        "required": [
+          "kind",
+          "epoch",
+          "sequence",
+          "emitted_at",
+          "payload"
+        ],
+        "properties": {
+          "emitted_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the runtime emitted it."
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its position inside the epoch.",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "description": "What kind of thing happened."
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Kontor message id, when the item is about one."
+          },
+          "native_event_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The runtime's own event id, when it provides one."
+          },
+          "payload": {
+            "type": "object",
+            "description": "The runtime's own payload. Never persisted by this control plane."
+          },
+          "permission_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The runtime's permission request id, when the item is about one."
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its position inside that epoch.",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "realm_bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "One of the realm's tier secrets, read from its 0600 credential file."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "control",
+      "description": "Liveness, identity, snapshots, commands and the durable event feed."
+    },
+    {
+      "name": "sessions",
+      "description": "Session content, read from the runtime and never from this realm's log."
+    }
+  ]
+}

@@ -1,7 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the Kontor desktop window (KON-MVP-17 adds plugin permissions).",
+  "description": "The Kontor desktop window: the console's own assets, plus a Stronghold vault for the selected loopback endpoint and its realm bearer. No filesystem, shell, HTTP or process capability is granted — the console reaches its realm over the same authenticated /v1 contract as any other client.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "stronghold:default",
+    "stronghold:allow-remove-store-record"
+  ]
 }
