@@ -41,6 +41,7 @@
 //! until that inventory has been taken.
 
 pub mod credentials;
+pub mod endpoint;
 pub mod lock;
 pub mod runtimes;
 

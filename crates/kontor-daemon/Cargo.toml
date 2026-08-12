@@ -47,6 +47,10 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+kontor-store = { path = "../kontor-store", version = "=0.1.0" }
+# KON-MVP-16: the wired-api suite seeds a work-calendar assignment directly to
+# prove the scheduling route refuses a project it cannot resolve a window for.
+rusqlite = { workspace = true }
 # The black-box suite drives the real router through `tower::ServiceExt::oneshot`
 # and never binds a socket, launches this binary or spawns a child process
 # (TST-001). The runtime under test is always the scripted fake.

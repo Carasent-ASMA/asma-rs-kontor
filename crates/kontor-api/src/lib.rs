@@ -40,8 +40,10 @@ pub mod control;
 pub mod dto;
 pub mod error;
 pub mod openapi;
+pub mod query;
 pub mod sessions;
 pub mod state;
+pub mod wired;
 
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
@@ -196,6 +198,60 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/v1/commands/{kind}", post(control::command))
         .route("/v1/events", get(control::events))
+        // The KON-MVP-16 contract amendment. Every one of these is a thin read
+        // over a repository method that already existed; see `query`'s own docs
+        // for what is deliberately absent and which ticket owns it.
+        // The KON-MVP-16 second amendment: the surfaces whose owning seams are
+        // merged. See `wired` for what each one reads and what it refuses.
+        .route("/v1/projects", get(wired::projects))
+        .route("/v1/projects/{project_id}/team-runs", get(wired::missions))
+        .route("/v1/projects/{project_id}/runs", get(wired::runs))
+        .route(
+            "/v1/projects/{project_id}/scheduler/plan",
+            get(wired::scheduler_plan),
+        )
+        .route("/v1/projects/{project_id}/tickets", get(wired::tickets))
+        .route(
+            "/v1/projects/{project_id}/tickets/{link_id}",
+            get(wired::ticket),
+        )
+        .route(
+            "/v1/projects/{project_id}/tickets/{link_id}/comments",
+            get(wired::ticket_comments),
+        )
+        .route(
+            "/v1/projects/{project_id}/tickets/{link_id}/transitions",
+            get(wired::ticket_transitions),
+        )
+        .route(
+            "/v1/runtimes/{runtime_kind}/sessions",
+            get(wired::runtime_sessions),
+        )
+        .route("/v1/projects/{project_id}", get(query::project))
+        .route("/v1/projects/{project_id}/tasks", get(query::tasks))
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/gates",
+            get(query::gates),
+        )
+        .route(
+            "/v1/projects/{project_id}/team-runs/{team_run_id}",
+            get(query::mission),
+        )
+        .route(
+            "/v1/projects/{project_id}/profiles/{profile_key}/{version}",
+            get(query::profile),
+        )
+        .route(
+            "/v1/projects/{project_id}/receipts/{receipt_id}",
+            get(query::receipt),
+        )
+        .route("/v1/projects/{project_id}/accounts", get(query::accounts))
+        .route(
+            "/v1/projects/{project_id}/accounts/{account_profile_id}",
+            get(query::account),
+        )
+        .route("/v1/runtimes", get(query::runtimes))
+        .route("/v1/scheduler/contention", get(query::scheduler_contention))
         .route(
             "/v1/sessions/{agent_run_id}/timeline",
             get(sessions::timeline),

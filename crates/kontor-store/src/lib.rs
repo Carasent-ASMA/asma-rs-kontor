@@ -31,6 +31,7 @@ mod commands;
 mod events;
 mod migrations;
 mod policy;
+pub mod query;
 mod reconciliation;
 mod repository;
 mod scheduler;

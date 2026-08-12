@@ -66,4 +66,4 @@ pub use model::{
     RejectionEvidence, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
     WorktreeClaim, WorktreeVerification,
 };
-pub use ready::{BLOCKER_ORDER, Blocker, minimum_launch_capabilities, plan};
+pub use ready::{BLOCKER_ORDER, Blocker, Refused, explain, minimum_launch_capabilities, plan};

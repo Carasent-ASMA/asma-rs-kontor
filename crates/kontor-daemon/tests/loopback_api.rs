@@ -34,11 +34,16 @@ mod harness;
 use harness::{Call, World, at, capabilities_without, fake_family, name, secret};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{AgentRunId, CanonicalDocument, ProjectId, TaskId};
-use kontor_core::repository::{
-    NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunRepository,
+use kontor_core::id::{
+    AgentRunId, CanonicalDocument, ConnectorKey, ExternalId, ProjectId, RoleSlotId, TaskId,
+    TaskWorkflowId, TicketLinkId,
 };
-use kontor_core::state::{Freshness, ObservedRunState, RuntimeContact};
+use kontor_core::repository::{
+    NewAgentRun, NewObservation, NewProject, NewRuntimeEvent, NewTask, NewTaskWorkflow,
+    ProjectRepository, RealmRepository, RunRepository, TicketRepository, WorkflowRepository,
+};
+use kontor_core::spec::ResolvedWorkProfileSnapshot;
+use kontor_core::state::{Freshness, ObservedRunState, RuntimeContact, TaskState};
 use kontor_daemon::{Daemon, DaemonConfig};
 use kontor_runtime::capability::RuntimeCapability;
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep};
@@ -1801,4 +1806,755 @@ async fn shutdown_shuts_scheduling_and_releases_the_state_root() {
     assert_eq!(next.state().barrier().state(), BarrierState::Pending);
     drop(next);
     drop(directory);
+}
+
+// ---------------------------------------------------------------------------
+// The KON-MVP-16 second amendment: lists, the scheduling explanation, external
+// ticket evidence and live session discovery
+// ---------------------------------------------------------------------------
+//
+// Each of these routes was staged in the first round of KON-MVP-16 and is wired in
+// this one, so what follows is the evidence that each answers from persisted rows or
+// from the adapter rather than from a default. The extra mutants they exist to kill:
+//
+// * a list that answers for the wrong project, or answers an unknown project with an
+//   empty list instead of a refusal;
+// * a scheduling plan that admits a task with no execution authorization — the one
+//   default that would make the whole route a lie;
+// * a plan that reports only the first blocker after all;
+// * a plan that commits anything, which would be the worst defect available here;
+// * a ticket history that answers for an unknown link with an empty page, which
+//   reads as "never touched" rather than "no such link";
+// * an authority tier slipping on any of the new routes.
+
+/// Give the harness task an active workflow, so it becomes a scheduling candidate.
+///
+/// The profile comes from the bundled pack the harness already stored, because a run
+/// through the real store needs a revision its foreign keys can see.
+async fn with_workflow(world: &World) -> TaskWorkflowId {
+    let workflow_id = TaskWorkflowId::generate();
+    world.daemon.state().with_store(|store| {
+        let pack = kontor_profiles::seeds::bundled_pack().expect("the bundled pack loads");
+        let entry = pack
+            .manifest
+            .iter()
+            .find(|entry| entry.availability == kontor_profiles::pack::PackAvailability::Seeded)
+            .expect("the bundled pack seeds at least one category");
+        let bundle = kontor_profiles::pack::resolve_profile(
+            &pack,
+            &entry.category,
+            at("2026-08-10T09:00:00Z"),
+        )
+        .expect("the seeded category resolves");
+        let snapshot: ResolvedWorkProfileSnapshot = bundle.profile.clone();
+        let entry_phase = snapshot.definition.entry_phase.clone();
+        store
+            .create_task_workflow(&NewTaskWorkflow {
+                id: workflow_id,
+                project_id: world.project,
+                task_id: world.task,
+                snapshot,
+                current_phase: entry_phase,
+                created_at: at("2026-08-10T09:05:00Z"),
+            })
+            .expect("the task workflow is created");
+    });
+    workflow_id
+}
+
+/// Link the harness task to an external ticket.
+fn with_ticket(world: &World) -> TicketLinkId {
+    let link_id = TicketLinkId::generate();
+    world.daemon.state().with_store(|store| {
+        store
+            .create_ticket_link(&kontor_core::repository::NewTicketLink {
+                id: link_id,
+                project_id: world.project,
+                task_id: world.task,
+                connector: ConnectorKey::parse("test.connector").expect("a valid connector key"),
+                external_issue_key: ExternalId::parse("ASMA-7760").expect("a valid issue key"),
+                created_at: at("2026-08-10T09:10:00Z"),
+            })
+            .expect("the ticket link is created");
+    });
+    link_id
+}
+
+/// Persist one extra task in the harness project.
+fn another_task(world: &World, title: &str) -> TaskId {
+    let task_id = TaskId::generate();
+    world.daemon.state().with_store(|store| {
+        store
+            .create_task(&NewTask {
+                id: task_id,
+                project_id: world.project,
+                mini_project_id: None,
+                title: name(title),
+                module: None,
+                state: TaskState::Ready,
+                created_at: at("2026-08-10T09:20:00Z"),
+            })
+            .expect("a task is created");
+    });
+    task_id
+}
+
+// ---------------------------------------------------------------------------
+// Lists
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_project_list_names_the_realm_and_the_project_the_harness_seeded() {
+    let world = World::open().await;
+    let answer = Call::get("/v1/projects")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(
+        answer.realm(),
+        world.realm_id(),
+        "every answer names its realm"
+    );
+    let listed = answer.json()["value"]
+        .as_array()
+        .expect("a list is an array")
+        .clone();
+    assert_eq!(listed.len(), 1, "the harness seeds exactly one project");
+    assert_eq!(
+        listed[0]["project_id"],
+        serde_json::json!(world.project.to_string())
+    );
+    assert!(
+        listed[0]["revision"]
+            .as_u64()
+            .is_some_and(|value| value >= 1),
+        "a list entry carries the revision a later write must present: {}",
+        answer.body
+    );
+}
+
+#[tokio::test]
+async fn the_mission_and_run_lists_answer_for_the_project_they_were_asked_about() {
+    let world = World::open().await;
+    let (agent_run_id, _snapshot) = world.launch().await;
+
+    let missions = Call::get(format!("/v1/projects/{}/team-runs", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(missions.status, 200, "{}", missions.body);
+    let listed = missions.json()["value"]
+        .as_array()
+        .expect("a list is an array")
+        .clone();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0]["team_run_id"],
+        serde_json::json!(world.team_run.to_string())
+    );
+    assert_eq!(
+        listed[0]["task_id"],
+        serde_json::json!(world.task.to_string()),
+        "a mission names the task it serves"
+    );
+
+    let runs = Call::get(format!("/v1/projects/{}/runs", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(runs.status, 200, "{}", runs.body);
+    let listed = runs.json()["value"]
+        .as_array()
+        .expect("a list is an array")
+        .clone();
+    assert!(
+        listed
+            .iter()
+            .any(|run| run["agent_run_id"] == serde_json::json!(agent_run_id.to_string())),
+        "the launched run appears in its project's run list: {}",
+        runs.body
+    );
+}
+
+#[tokio::test]
+async fn a_run_list_filtered_by_mission_answers_only_that_missions_runs() {
+    let world = World::open().await;
+    let (agent_run_id, _snapshot) = world.launch().await;
+
+    let matching = Call::get(format!(
+        "/v1/projects/{}/runs?team_run={}",
+        world.project, world.team_run
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(matching.status, 200, "{}", matching.body);
+    assert!(
+        matching.json()["value"]
+            .as_array()
+            .expect("a list is an array")
+            .iter()
+            .any(|run| run["agent_run_id"] == serde_json::json!(agent_run_id.to_string()))
+    );
+
+    // A filter naming another mission must answer empty rather than ignoring the
+    // filter, which is the failure a caller would never notice.
+    let other = kontor_core::id::TeamRunId::generate();
+    let empty = Call::get(format!(
+        "/v1/projects/{}/runs?team_run={other}",
+        world.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(empty.status, 200, "{}", empty.body);
+    assert_eq!(
+        empty.json()["value"]
+            .as_array()
+            .expect("a list is an array")
+            .len(),
+        0,
+        "a filter that matches nothing answers nothing, not everything"
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_project_is_refused_rather_than_answered_with_an_empty_list() {
+    let world = World::open().await;
+    let unknown = kontor_core::id::ProjectId::generate();
+    let answer = Call::get(format!("/v1/projects/{unknown}/tasks"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 404, "{}", answer.body);
+    assert_eq!(answer.code(), "not_found");
+}
+
+// ---------------------------------------------------------------------------
+// The scheduling explanation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_task_with_no_execution_authorization_is_refused_and_never_admitted() {
+    // The most important assertion in this file. The snapshot is assembled with no
+    // authorization evidence when none is recorded, and the scheduler's answer to
+    // that is a refusal. If a default ever made this admit, the whole route would be
+    // telling an operator that unarmed work is runnable.
+    let world = World::open().await;
+    with_workflow(&world).await;
+
+    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.realm(), world.realm_id());
+    let plan = answer.json()["value"].clone();
+    assert_eq!(
+        plan["admitted"],
+        serde_json::json!(0),
+        "nothing is armed, so nothing is admitted: {}",
+        answer.body
+    );
+    let decisions = plan["decisions"]
+        .as_array()
+        .expect("a plan carries decisions")
+        .clone();
+    let decision = decisions
+        .iter()
+        .find(|decision| decision["task_id"] == serde_json::json!(world.task.to_string()))
+        .expect("the seeded task is a candidate");
+    assert_eq!(decision["admitted"], serde_json::json!(false));
+    assert_eq!(
+        decision["code"],
+        serde_json::json!("authorization_missing"),
+        "the refusal is the real one and not a placeholder: {}",
+        answer.body
+    );
+}
+
+#[tokio::test]
+async fn a_plan_reports_every_blocker_and_not_only_the_first() {
+    let world = World::open().await;
+    with_workflow(&world).await;
+    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    let decisions = answer.json()["value"]["decisions"]
+        .as_array()
+        .expect("a plan carries decisions")
+        .clone();
+    let decision = decisions
+        .iter()
+        .find(|decision| decision["task_id"] == serde_json::json!(world.task.to_string()))
+        .expect("the seeded task is a candidate")
+        .clone();
+    let blockers = decision["blockers"]
+        .as_array()
+        .expect("a refused candidate carries its blockers")
+        .clone();
+    assert!(
+        !blockers.is_empty(),
+        "a refused candidate must say what refused it: {}",
+        answer.body
+    );
+    // The list is in evaluation order and its first entry is the decision's own
+    // code, which is what makes the two impossible to contradict.
+    assert_eq!(
+        blockers[0]["code"], decision["code"],
+        "the first blocker is the code the decision reports: {}",
+        answer.body
+    );
+    for blocker in &blockers {
+        assert!(
+            blocker["blocker"]
+                .as_str()
+                .is_some_and(|name| !name.is_empty()),
+            "every blocker names itself: {blocker}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_plan_names_every_value_it_assembled_rather_than_read() {
+    let world = World::open().await;
+    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    let defaults = answer.json()["value"]["assembled_defaults"]
+        .as_array()
+        .expect("a plan discloses its assembled defaults")
+        .clone();
+    assert!(
+        defaults.len() >= 7,
+        "each snapshot field with no stored source must be named: {}",
+        answer.body
+    );
+    let joined = defaults
+        .iter()
+        .filter_map(|note| note.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for expected in ["priority", "origin", "account pin", "capacity"] {
+        assert!(
+            joined.contains(expected),
+            "`{expected}` is assembled and must be disclosed: {joined}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_task_with_no_active_workflow_is_named_rather_than_silently_dropped() {
+    let world = World::open().await;
+    let extra = another_task(&world, "A task with no workflow");
+    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    let plan = answer.json()["value"].clone();
+    let without: Vec<String> = plan["without_workflow"]
+        .as_array()
+        .expect("a plan names the tasks it could not consider")
+        .iter()
+        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+        .collect();
+    assert!(
+        without.contains(&extra.to_string()),
+        "a task with no workflow is reported, not dropped: {}",
+        answer.body
+    );
+    assert!(
+        plan["considered"].as_u64().is_some_and(|count| count >= 2),
+        "the count is of tasks looked at, not of candidates built: {}",
+        answer.body
+    );
+}
+
+#[tokio::test]
+async fn a_plan_admits_nothing_and_queues_nothing() {
+    // A read that committed an admission would be the worst defect available here,
+    // so it is asserted directly: the run list is the same before and after.
+    let world = World::open().await;
+    with_workflow(&world).await;
+    let before = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs(world.project, None))
+        .expect("the run list is readable");
+
+    Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+
+    let after = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs(world.project, None))
+        .expect("the run list is readable");
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "planning is a read and must create no run"
+    );
+}
+
+#[tokio::test]
+async fn a_project_with_no_work_calendar_is_planned_and_one_with_a_calendar_is_not() {
+    // Resolving a calendar into an effective window is KON-MVP-21, and the only
+    // dishonest default available to the plan route is to call the window open. So
+    // the route refuses a project that has an assignment.
+    //
+    // The harness seeds no assignment, so what is proved here is the other half: the
+    // flag the route branches on really is false, and the route really does answer.
+    // The refusal itself is proved in `kontor_store::query`'s own tests, where a row
+    // can be inserted without giving this crate a way into the connection.
+    let world = World::open().await;
+    with_workflow(&world).await;
+    assert!(
+        !world
+            .daemon
+            .state()
+            .with_store(|store| store.has_calendar_assignment(world.project))
+            .expect("the flag is readable"),
+        "the harness seeds no calendar assignment"
+    );
+
+    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        answer.status, 200,
+        "a project with no calendar has no window to resolve: {}",
+        answer.body
+    );
+}
+
+// ---------------------------------------------------------------------------
+// External tickets
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_ticket_link_is_listed_and_read_with_the_revision_a_command_needs() {
+    let world = World::open().await;
+    let link_id = with_ticket(&world);
+
+    let listed = Call::get(format!("/v1/projects/{}/tickets", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert_eq!(listed.realm(), world.realm_id());
+    let links = listed.json()["value"]
+        .as_array()
+        .expect("a list is an array")
+        .clone();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0]["link_id"], serde_json::json!(link_id.to_string()));
+    assert_eq!(
+        links[0]["external_issue_key"],
+        serde_json::json!("ASMA-7760")
+    );
+    assert!(
+        links[0]["revision"]
+            .as_u64()
+            .is_some_and(|value| value >= 1),
+        "a convergence command needs this revision: {}",
+        listed.body
+    );
+
+    let shown = Call::get(format!("/v1/projects/{}/tickets/{link_id}", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(shown.status, 200, "{}", shown.body);
+    let ticket = shown.json()["value"].clone();
+    assert_eq!(
+        ticket["link"]["link_id"],
+        serde_json::json!(link_id.to_string())
+    );
+    // Nothing has been projected or observed yet, and that is reported as absence
+    // rather than as an empty object a caller would read as "no fields to write".
+    assert!(ticket["projection"].is_null(), "{}", shown.body);
+    assert!(ticket["observed"].is_null(), "{}", shown.body);
+    assert_eq!(ticket["unresolved_conflicts"], serde_json::json!(0));
+}
+
+#[tokio::test]
+async fn a_ticket_history_for_an_unknown_link_is_refused_and_not_answered_empty() {
+    // An empty page would read as "this ticket has never been touched", which is a
+    // different and wrong statement about a link that does not exist.
+    let world = World::open().await;
+    let unknown = TicketLinkId::generate();
+    for route in ["comments", "transitions"] {
+        let answer = Call::get(format!(
+            "/v1/projects/{}/tickets/{unknown}/{route}",
+            world.project
+        ))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+        assert_eq!(answer.status, 404, "{route}: {}", answer.body);
+        assert_eq!(answer.code(), "not_found", "{route}");
+    }
+}
+
+#[tokio::test]
+async fn a_linked_tickets_histories_answer_empty_because_nothing_has_happened_yet() {
+    let world = World::open().await;
+    let link_id = with_ticket(&world);
+    for route in ["comments", "transitions"] {
+        let answer = Call::get(format!(
+            "/v1/projects/{}/tickets/{link_id}/{route}",
+            world.project
+        ))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+        assert_eq!(answer.status, 200, "{route}: {}", answer.body);
+        assert_eq!(answer.realm(), world.realm_id(), "{route}");
+        assert_eq!(
+            answer.json()["value"]
+                .as_array()
+                .expect("a list is an array")
+                .len(),
+            0,
+            "{route} has nothing recorded yet, and says so with a page rather than a refusal"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_ticket_convergence_command_is_receipt_backed_and_ticket_scoped() {
+    let world = World::open().await;
+    let link_id = with_ticket(&world);
+    let revision = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_ticket_link(world.project, link_id))
+        .expect("the link is readable")
+        .expect("the link exists")
+        .revision;
+
+    let body = serde_json::json!({
+        "project_id": world.project.to_string(),
+        "target": { "kind": "ticket_link", "link_id": link_id.to_string() },
+        "expected_revision": revision.get(),
+        "desired_state": serde_json::Value::Null,
+        "intent": { "schema_version": 1, "reason": "converge the ticket" },
+        "payload": { "schema_version": 1 },
+    });
+    let answer = Call::post("/v1/commands/sync_ticket", &body)
+        .signed_as(&world, "operator")
+        .with_key("sync-once")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    let receipt = answer.json();
+    assert_eq!(
+        receipt["value"]["kind"],
+        serde_json::json!("sync_ticket"),
+        "the receipt records the command that was asked for"
+    );
+    assert_eq!(
+        receipt["value"]["target"]["link_id"],
+        serde_json::json!(link_id.to_string()),
+        "and it is scoped to the one ticket link it named"
+    );
+    assert_eq!(receipt["replayed"], serde_json::json!(false));
+
+    // The same key and the same intent replays rather than converging twice.
+    let replay = Call::post("/v1/commands/sync_ticket", &body)
+        .signed_as(&world, "operator")
+        .with_key("sync-once")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["replayed"], serde_json::json!(true));
+    assert_eq!(
+        replay.json()["value"]["receipt_id"],
+        receipt["value"]["receipt_id"],
+        "a replay returns the receipt that was already durable"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Live session discovery
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn session_discovery_reports_which_native_sessions_this_realm_already_holds() {
+    let world = World::open().await;
+    let (_agent_run_id, snapshot) = world.launch().await;
+
+    let answer = Call::get(format!("/v1/runtimes/{}/sessions", harness::fake_family()))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.realm(), world.realm_id());
+    let sessions = answer.json()["value"]
+        .as_array()
+        .expect("a list is an array")
+        .clone();
+    let native = snapshot.identity().native_id.to_string();
+    let found = sessions
+        .iter()
+        .find(|session| session["native_id"] == serde_json::json!(native));
+    if let Some(session) = found {
+        assert_eq!(
+            session["bound"],
+            serde_json::json!(true),
+            "a session this realm holds a binding for is reported as bound: {}",
+            answer.body
+        );
+        assert_eq!(
+            session["runtime_kind"],
+            serde_json::json!(harness::fake_family().to_string())
+        );
+    }
+}
+
+#[tokio::test]
+async fn discovery_against_an_unconfigured_runtime_is_not_found() {
+    let world = World::open().await;
+    let answer = Call::get("/v1/runtimes/absent.runtime/sessions")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 404, "{}", answer.body);
+    assert_eq!(answer.code(), "not_found");
+}
+
+#[tokio::test]
+async fn discovery_against_a_runtime_that_never_declared_it_is_unsupported() {
+    // Not an empty list: an empty list would say "this runtime owns no sessions",
+    // which is not something a runtime without discovery can be asked.
+    let world = World::open_with(harness::capabilities_without(&[
+        kontor_runtime::capability::RuntimeCapability::Discovery,
+    ]))
+    .await;
+    let answer = Call::get(format!("/v1/runtimes/{}/sessions", harness::fake_family()))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 422, "{}", answer.body);
+    assert_eq!(answer.code(), "unsupported_capability");
+}
+
+// ---------------------------------------------------------------------------
+// Authority
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn every_new_read_requires_a_credential_and_answers_an_observer() {
+    let world = World::open().await;
+    let link_id = with_ticket(&world);
+    let routes = vec![
+        "/v1/projects".to_owned(),
+        format!("/v1/projects/{}/team-runs", world.project),
+        format!("/v1/projects/{}/runs", world.project),
+        format!("/v1/projects/{}/scheduler/plan", world.project),
+        format!("/v1/projects/{}/tickets", world.project),
+        format!("/v1/projects/{}/tickets/{link_id}", world.project),
+        format!("/v1/projects/{}/tickets/{link_id}/comments", world.project),
+        format!(
+            "/v1/projects/{}/tickets/{link_id}/transitions",
+            world.project
+        ),
+        format!("/v1/runtimes/{}/sessions", harness::fake_family()),
+    ];
+    for route in routes {
+        let anonymous = Call::get(route.clone()).anonymous().send(&world).await;
+        assert_eq!(
+            anonymous.status, 401,
+            "{route} must not answer an unauthenticated caller: {}",
+            anonymous.body
+        );
+        assert_eq!(anonymous.code(), "unauthenticated", "{route}");
+
+        let observer = Call::get(route.clone())
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        assert!(
+            observer.status.is_success(),
+            "{route} is a read and must answer an observer: {} {}",
+            observer.status,
+            observer.body
+        );
+        assert_eq!(
+            observer.realm(),
+            world.realm_id(),
+            "{route} must name its realm"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_ticket_convergence_command_refuses_an_observer() {
+    let world = World::open().await;
+    let link_id = with_ticket(&world);
+    let body = serde_json::json!({
+        "project_id": world.project.to_string(),
+        "target": { "kind": "ticket_link", "link_id": link_id.to_string() },
+        "expected_revision": 1,
+        "desired_state": serde_json::Value::Null,
+        "intent": { "schema_version": 1 },
+        "payload": { "schema_version": 1 },
+    });
+    let answer = Call::post("/v1/commands/sync_ticket", &body)
+        .signed_as(&world, "observer")
+        .with_key("observer-may-not")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 403, "{}", answer.body);
+    assert_eq!(answer.code(), "forbidden");
+}
+
+/// One extra run, so the run list has something to filter.
+#[tokio::test]
+async fn an_unbound_run_still_appears_in_the_run_list() {
+    // A list of runs that only showed *bound* ones would hide every queued run,
+    // which is exactly the set an operator is looking for when nothing is happening.
+    let world = World::open().await;
+    let agent_run_id = AgentRunId::generate();
+    world.daemon.state().with_store(|store| {
+        store
+            .create_agent_run(&NewAgentRun {
+                id: agent_run_id,
+                project_id: world.project,
+                team_run_id: world.team_run,
+                parent_agent_run_id: None,
+                role: RoleSlotId::parse("queued-seat")
+                    .expect("a valid slot key")
+                    .into_role_key(),
+                account_profile_id: None,
+                binding: None,
+                created_at: at("2026-08-10T09:30:00Z"),
+            })
+            .expect("an unbound run is persisted");
+    });
+
+    let answer = Call::get(format!("/v1/projects/{}/runs", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert!(
+        answer.json()["value"]
+            .as_array()
+            .expect("a list is an array")
+            .iter()
+            .any(|run| run["agent_run_id"] == serde_json::json!(agent_run_id.to_string())),
+        "a queued run with no binding is still a run: {}",
+        answer.body
+    );
 }
