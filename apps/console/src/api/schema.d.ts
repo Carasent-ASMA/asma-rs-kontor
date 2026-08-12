@@ -72,6 +72,175 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every project in this Realm. */
+        get: operations["projects"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One project. */
+        get: operations["project"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every coding-account profile in one project.
+         * @description Admin, not observer. The tier model puts credential and account routes with
+         *     the admin secret, and an account profile names the alias a resolver looks a
+         *     credential up under — so even though the alias is not itself a capability,
+         *     enumerating them is an account-authority read.
+         */
+        get: operations["accounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/accounts/{account_profile_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One coding-account profile. */
+        get: operations["account"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/profiles/{profile_key}/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One stored work-profile revision, addressed by its open key and version.
+         * @description The key is whatever the deployment called it. Nothing in this route — or in
+         *     the CLI and MCP surfaces above it — enumerates the legal values, because a
+         *     seeded profile pack is deployment data and a control plane that hard-coded its
+         *     names would refuse every profile a deployment added.
+         */
+        get: operations["profile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/receipts/{receipt_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One command receipt, with its transition history. */
+        get: operations["receipt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every agent run in one project, optionally one mission's. */
+        get: operations["runs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/scheduler/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Explain what a scheduling pass over one project would decide.
+         * @description Nothing is admitted, queued, launched or leased. This is `kontor_scheduler::plan`
+         *     run over a snapshot assembled from stored rows, reported with every blocker.
+         */
+        get: operations["scheduler_plan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every task in one project, oldest first. */
+        get: operations["tasks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/tasks/{task_id}": {
         parameters: {
             query?: never;
@@ -81,6 +250,137 @@ export interface paths {
         };
         /** One task, its active workflow, its gate states and its pinned revisions. */
         get: operations["task_snapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tasks/{task_id}/gates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One task's gate states and the evidence they were reduced from.
+         * @description A task with no active workflow answers with an empty inspection rather than a
+         *     refusal: the task exists, and "this task has no workflow yet" is a fact about
+         *     it rather than a missing row.
+         */
+        get: operations["gates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/team-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every mission in one project. */
+        get: operations["missions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/team-runs/{team_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One mission. */
+        get: operations["mission"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tickets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every external-ticket link in one project. */
+        get: operations["tickets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tickets/{link_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One ticket's stored evidence: the projection, the last observation, the
+         *     conflicts.
+         */
+        get: operations["ticket"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tickets/{link_id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One ticket's inbound comments, newest first.
+         * @description Inbound only, and structurally so: there is no outbound comment table in this
+         *     schema and no route that writes one.
+         */
+        get: operations["ticket_comments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tickets/{link_id}/transitions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One ticket's convergence attempts, newest first. */
+        get: operations["ticket_transitions"];
         put?: never;
         post?: never;
         delete?: never;
@@ -115,6 +415,75 @@ export interface paths {
         };
         /** One agent run, its projection, its pinned revisions and its recorded gaps. */
         get: operations["run_snapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtimes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every configured runtime family, with what it declares right now.
+         * @description A *freshly discovered* declaration, not a frozen one. That distinction is the
+         *     whole point of the route: a binding keeps answering with the capabilities it
+         *     was frozen at, and an operator asking "what can this runtime do today" is
+         *     asking a different question — one whose answer must never be written back onto
+         *     a binding.
+         */
+        get: operations["runtimes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtimes/{runtime_kind}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The sessions one runtime family currently owns.
+         * @description A read of the runtime, not of this Realm's log — so it is the one place an
+         *     operator can see a session that exists natively and has no binding here.
+         *
+         *     Adoption itself is deliberately absent: binding a native session to an agent run
+         *     creates a run, a binding and a frozen capability snapshot in one transaction, and
+         *     `CommandKind` has no variant that records that intent. Adding one is a
+         *     `kontor-core` change with its own compatibility matrix entry, which is a ticket
+         *     and not a route. Until then a discovered session is reported and nothing here
+         *     claims it.
+         */
+        get: operations["runtime_sessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scheduler/contention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The Realm's current scheduling contention. */
+        get: operations["scheduler_contention"];
         put?: never;
         post?: never;
         delete?: never;
@@ -214,6 +583,43 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description One coding-account profile, as a policy reader sees it.
+         *
+         *     Three of the stored fields — the environment map, the routing metadata and the
+         *     declared capability document — are deliberately absent. Every one of them is
+         *     non-secret by construction, and every one of them is also the natural place a
+         *     deployment would eventually write an endpoint. A view that never carries them
+         *     cannot start carrying one by accident.
+         */
+        AccountDto: {
+            /** @description The profile. */
+            account_profile_id: string;
+            /**
+             * @description The opaque approved alias. Never a credential, and never where one
+             *     resolves to.
+             */
+            credential_alias: string;
+            /** @description Which approved family the credential alias belongs to. */
+            credential_kind: string;
+            /** @description Whether launches may select it. */
+            enabled: boolean;
+            /** @description The external account id it authenticates as, when it records one. */
+            external_account_id?: string | null;
+            /** @description The runtime family it authenticates against. */
+            harness: string;
+            /** @description Its human label. */
+            label: string;
+            /** @description The project that owns it. */
+            project_id: string;
+            /** @description The non-secret provider identity hint, when the deployment records one. */
+            provider_identity?: string | null;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+        };
         /** @description The JSON body every refusal is reported with. */
         ApiErrorBody: {
             /** @description The stable machine-readable code. */
@@ -300,6 +706,15 @@ export interface components {
             /** @description The runtime family. Never an endpoint. */
             runtime_kind: string;
         };
+        /** @description One blocker's refusal of one candidate. */
+        BlockerDto: {
+            /** @description Which blocker refused. */
+            blocker: string;
+            /** @description The code it refused with. */
+            code: string;
+            /** @description What it refused on, in the scheduler's own evidence shape. */
+            evidence: Record<string, never>[];
+        };
         /** @description What a command asks for, as a caller states it. */
         CommandRequest: {
             /** @description The desired run state, for the commands that carry one. */
@@ -317,6 +732,103 @@ export interface components {
             project_id: string;
             /** @description The aggregate the command targets. */
             target: Record<string, never>;
+        };
+        /** @description One inbound comment. */
+        CommentDto: {
+            /** @description The author's external account. */
+            author_account_id: string;
+            /** @description The author's display name, when the external system provided one. */
+            author_display?: string | null;
+            /** @description The comment text, as mirrored. */
+            body: string;
+            /** @description The digest of the body, which is half this revision's identity. */
+            body_hash: string;
+            /** @description The external system's own comment id. */
+            external_comment_id: string;
+            /**
+             * Format: date-time
+             * @description When it was created externally.
+             */
+            external_created_at: string;
+            /**
+             * Format: date-time
+             * @description When it was last edited externally.
+             */
+            external_updated_at: string;
+            /**
+             * Format: date-time
+             * @description When this Realm mirrored it.
+             */
+            observed_at: string;
+            /** @description The revision this one replaces, for an edit. */
+            supersedes_hash?: string | null;
+        };
+        /** @description One detected conflict. */
+        ConflictDto: {
+            /** @description The conflict. */
+            conflict_id: string;
+            /**
+             * Format: date-time
+             * @description When it was detected.
+             */
+            detected_at: string;
+            /** @description What kind it is. */
+            kind: string;
+            /** @description The internal milestone involved, when there is one. */
+            milestone?: string | null;
+            /** @description The observation it was detected against. */
+            observation_id: string;
+            /** @description The receipt that authorized the resolution. */
+            resolution_receipt_id?: string | null;
+            /**
+             * Format: date-time
+             * @description When it was resolved.
+             */
+            resolved_at?: string | null;
+        };
+        /**
+         * @description What is currently held, and therefore what a scheduling pass would contend
+         *     with.
+         *
+         *     This is evidence and **not a plan**. A plan is `kontor_scheduler::plan`'s
+         *     answer over a `SchedulingSnapshot`, and that snapshot needs authorization,
+         *     calendar, fleet-preflight and external-work evidence this build has no read
+         *     path for. Serving contention under an honest name is the difference between
+         *     telling an operator what is known and inventing a decision.
+         */
+        ContentionDto: {
+            /** @description Every live module claim in the Realm. */
+            module_claims: components["schemas"]["ModuleClaimDto"][];
+            /**
+             * Format: date-time
+             * @description When the contention was read.
+             */
+            observed_at: string;
+            /** @description Every task with an open run. */
+            tasks_with_open_runs: string[];
+            /** @description Every worktree currently leased. */
+            worktree_leases: string[];
+        };
+        /** @description What the pass decided about one candidate. */
+        DecisionDto: {
+            /** @description Whether the pass would admit it. */
+            admitted: boolean;
+            /** @description The authorization the pass would admit it under. */
+            authorization_id?: string | null;
+            /**
+             * @description Every blocker that refuses it, in evaluation order.
+             *
+             *     The first entry is always the code above: `explain` asks the same blockers
+             *     in the same order the decision does. Later entries are what an operator
+             *     would hit next after fixing the first, which is why they are here.
+             */
+            blockers: components["schemas"]["BlockerDto"][];
+            /** @description The one code the decision reports, for a refusal. */
+            code?: string | null;
+            /** @description The runtime family it would launch through. */
+            runtime_kind?: string | null;
+            /** @description The task. */
+            task_id: string;
         };
         /** @description One durable control-plane event. */
         EventDto: {
@@ -393,6 +905,49 @@ export interface components {
              */
             received_sequence: number;
         };
+        /**
+         * @description One recorded gate verdict, as evidence.
+         *
+         *     The evaluator's account and the reviewer principal are named because a gate
+         *     verdict is an accountability record; the guardrail evaluation is named by id
+         *     only, because its inputs are a stored document and not this route's to serve.
+         */
+        GateEvaluationDto: {
+            /** @description The account that recorded it. */
+            evaluator_account: string;
+            /** @description The role that recorded it. */
+            evaluator_role: string;
+            /** @description The artifacts cited as evidence. */
+            evidence: string[];
+            /** @description The gate. */
+            gate: string;
+            /** @description The stable authenticated principal, when the row records one. */
+            reviewer_principal?: string | null;
+            /**
+             * Format: int32
+             * @description Position in that gate's append-only history, starting at 1.
+             */
+            sequence: number;
+            /** @description The verdict recorded. */
+            verdict: string;
+        };
+        /**
+         * @description A task's active workflow, the gates reduced from its evaluations, and the
+         *     append-only evidence behind them.
+         */
+        GateInspectionDto: {
+            /** @description The phase the active workflow is in. */
+            current_phase?: string | null;
+            /** @description Every recorded verdict, oldest first. */
+            evaluations: components["schemas"]["GateEvaluationDto"][];
+            /** @description The reduced gate states, keyed by gate. */
+            gates: Record<string, never>;
+            profile?: null | components["schemas"]["ProfileDto"];
+            /** @description The task. */
+            task_id: string;
+            /** @description The active workflow, or `null` when the task has none. */
+            workflow_id?: string | null;
+        };
         /** @description Liveness, identity and how far startup has got. */
         HealthDto: {
             /** @description Always true: reaching a handler is what liveness means. */
@@ -444,6 +999,126 @@ export interface components {
             /** @description The message body. */
             body: string;
         };
+        /** @description One team run — a mission — and the template revision it froze. */
+        MissionDto: {
+            /**
+             * Format: date-time
+             * @description When it closed.
+             */
+            closed_at?: string | null;
+            /**
+             * Format: date-time
+             * @description When it was created.
+             */
+            created_at: string;
+            /** @description Its lifecycle. */
+            lifecycle: string;
+            /** @description The project it belongs to. */
+            project_id: string;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description The task it serves. */
+            task_id: string;
+            /** @description The team run. */
+            team_run_id: string;
+            /** @description The team template it froze. */
+            team_template: string;
+            /**
+             * Format: int32
+             * @description That template's pinned revision.
+             */
+            team_template_version: number;
+        };
+        /** @description One mission, as a list entry. */
+        MissionEntryDto: {
+            /**
+             * Format: date-time
+             * @description When it closed.
+             */
+            closed_at?: string | null;
+            /**
+             * Format: date-time
+             * @description When it was created.
+             */
+            created_at: string;
+            /** @description Its lifecycle. */
+            lifecycle: string;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description The task it serves. */
+            task_id: string;
+            /** @description The team run. */
+            team_run_id: string;
+            /** @description The team template it froze. */
+            team_template: string;
+            /**
+             * Format: int32
+             * @description That template's pinned revision.
+             */
+            team_template_version: number;
+        };
+        /** @description One module held by one task. */
+        ModuleClaimDto: {
+            /** @description Whether the claim is still live. */
+            in_flight: boolean;
+            /** @description The module being contended for. */
+            module: string;
+            /** @description The task holding it. */
+            task_id: string;
+            /** @description The worktree it is isolated by, when it is. */
+            worktree?: string | null;
+        };
+        /** @description One native session a runtime currently owns. */
+        NativeSessionDto: {
+            /**
+             * @description Whether this Realm already holds a binding for it.
+             *
+             *     The point of a discovery read: a session the Realm does not know about is an
+             *     adoption candidate, and one it does know about is not.
+             */
+            bound: boolean;
+            /**
+             * Format: int64
+             * @description The runtime generation it belongs to.
+             */
+            generation: number;
+            /** @description The host label the runtime reports for itself. */
+            host: string;
+            /** @description The runtime's own session id. Correlation evidence, never an identity. */
+            native_id: string;
+            /** @description The runtime family that owns it. */
+            runtime_kind: string;
+        };
+        /** @description One observation of the external ticket's own state. */
+        ObservationDto: {
+            /** @description The assignee's external account, when the ticket has one. */
+            assignee_account_id?: string | null;
+            /** @description The assignee's display name, when the external system provided one. */
+            assignee_display?: string | null;
+            /** @description The external version token, when the external system issues one. */
+            external_version?: string | null;
+            /** @description The external issue type. */
+            issue_type: string;
+            /** @description The observation. */
+            observation_id: string;
+            /**
+             * Format: date-time
+             * @description When the observation was taken.
+             */
+            observed_at: string;
+            /** @description Its category, as the external system spells it. */
+            status_category: string;
+            /** @description The external status identifier. */
+            status_id: string;
+            /** @description Its human name, as the external system spells it. */
+            status_name: string;
+        };
         /** @description The runtime's answer to one permission response. */
         PermissionAckDto: {
             /**
@@ -474,6 +1149,106 @@ export interface components {
         PermissionRequestBody: {
             /** @description The answer. */
             decision: string;
+        };
+        /** @description One phase of a work profile, with the gates evaluated at its end. */
+        PhaseDto: {
+            /** @description The gates evaluated at the end of it. */
+            gates: string[];
+            /** @description Its human label. */
+            label: string;
+            /** @description The phase. */
+            phase: string;
+            /** @description Where a rejection returns the work to. */
+            rejection_route?: string | null;
+        };
+        /** @description One planning pass, reported and not committed. */
+        PlanDto: {
+            /** @description How many the pass would admit. */
+            admitted: number;
+            /**
+             * @description Facts about this pass a reader must not mistake for stored state.
+             *
+             *     Names each field of the snapshot that had no source in schema v1 and the
+             *     value it was assembled with, so an answer is never read as evidence of
+             *     something nobody recorded.
+             */
+            assembled_defaults: string[];
+            /** @description How many tasks were looked at. */
+            considered: number;
+            /** @description Every decision, in the order the pass considered them. */
+            decisions: components["schemas"]["DecisionDto"][];
+            /** @description The project the pass was taken for. */
+            project_id: string;
+            /**
+             * Format: date-time
+             * @description The instant every judgement was made against.
+             */
+            taken_at: string;
+            /** @description Tasks with no active workflow, which are therefore not candidates. */
+            without_workflow: string[];
+        };
+        /**
+         * @description One resolved work-profile revision, as its phase and gate structure.
+         *
+         *     The whole [`kontor_core::spec::WorkProfileSpec`] is deliberately not served:
+         *     it carries a runtime-routing reference, and a read route is not the place to
+         *     start naming where runs go. What a caller needs to reason about a task is the
+         *     phase DAG and the gates, which is what this is.
+         */
+        ProfileDto: {
+            /** @description The single entry phase. */
+            entry_phase: string;
+            /** @description Its human name. */
+            name: string;
+            /** @description Every phase, in declaration order. */
+            phases: components["schemas"]["PhaseDto"][];
+            /** @description The profile key. An open, deployment-defined key. */
+            profile: string;
+            /** @description The declared terminal phases. */
+            terminal_phases: string[];
+            /**
+             * Format: int32
+             * @description The immutable revision of that key.
+             */
+            version: number;
+        };
+        /** @description Read one project's identity and revision. */
+        ProjectDto: {
+            /**
+             * Format: date-time
+             * @description When it was created.
+             */
+            created_at: string;
+            /** @description Its human name. */
+            name: string;
+            /** @description The project. */
+            project_id: string;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description Its root path on disk. */
+            root_path: string;
+        };
+        /** @description One project, as a list entry. */
+        ProjectEntryDto: {
+            /**
+             * Format: date-time
+             * @description When it was created.
+             */
+            created_at: string;
+            /** @description Its human name. */
+            name: string;
+            /** @description The project. */
+            project_id: string;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description Its root path on disk. */
+            root_path: string;
         };
         /** @description The orthogonal state of one run, plus how old its newest confirmation is. */
         ProjectionDto: {
@@ -555,6 +1330,53 @@ export interface components {
              */
             updated_at: string;
         };
+        /**
+         * @description One command receipt and every state it has been through.
+         *
+         *     This is what makes an idempotent replay checkable rather than merely claimed:
+         *     a caller that retried a command can read the receipt its key recorded and see
+         *     that the history did not grow.
+         *
+         *     The stored correlation and native identity are deliberately absent, exactly as
+         *     they are from `ReceiptDto`: a correlation is the dispatcher's private handle on
+         *     a foreign system.
+         */
+        ReceiptInspectionDto: {
+            /**
+             * Format: int32
+             * @description How many dispatch attempts have been made.
+             */
+            attempts: number;
+            /**
+             * Format: date-time
+             * @description When the intent was recorded.
+             */
+            created_at: string;
+            /** @description Every state it has been through, oldest first. */
+            history: components["schemas"]["ReceiptTransitionDto"][];
+            /** @description The caller's idempotency key. */
+            idempotency_key: string;
+            /** @description What was asked for. */
+            kind: string;
+            /** @description The project that owns it. */
+            project_id: string;
+            /** @description The receipt. */
+            receipt_id: string;
+            /** @description How far it has got. */
+            state: string;
+            /** @description Which aggregate it targets. */
+            target: Record<string, never>;
+            /**
+             * Format: int64
+             * @description The revision the intent was computed against.
+             */
+            target_revision: number;
+            /**
+             * Format: date-time
+             * @description When it last changed.
+             */
+            updated_at: string;
+        };
         /** @description A receipt, and whether this call is the one that recorded it. */
         ReceiptResponse: Record<string, never> & {
             /**
@@ -562,6 +1384,21 @@ export interface components {
              *     so nothing was written and the original receipt is being returned.
              */
             replayed: boolean;
+        };
+        /** @description One step of a receipt's durable history. */
+        ReceiptTransitionDto: {
+            /**
+             * Format: date-time
+             * @description When it moved.
+             */
+            recorded_at: string;
+            /**
+             * Format: int32
+             * @description Position in the receipt's history, starting at 1.
+             */
+            sequence: number;
+            /** @description The state the receipt moved to. */
+            state: string;
         };
         /** @description One agent run, as a cross-boundary reader sees it. */
         RunDto: {
@@ -599,6 +1436,126 @@ export interface components {
             role: string;
             /** @description The team run it serves. */
             team_run_id: string;
+        };
+        /** @description One agent run, as a list entry. */
+        RunEntryDto: {
+            /** @description The coding account it is pinned to, if any. */
+            account_profile_id?: string | null;
+            /** @description The agent run. */
+            agent_run_id: string;
+            /**
+             * Format: date-time
+             * @description When it closed.
+             */
+            closed_at?: string | null;
+            /**
+             * Format: date-time
+             * @description When it was created.
+             */
+            created_at: string;
+            /** @description What Kontor concluded. */
+            derived: string;
+            /** @description What Kontor asked for. */
+            desired: string;
+            /** @description Its own lifecycle. */
+            lifecycle: string;
+            /** @description What the runtime last reported. */
+            observed: string;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description The role slot it fills. */
+            role: string;
+            /** @description The team run it serves. */
+            team_run_id: string;
+        };
+        /** @description What one configured runtime family reports about itself right now. */
+        RuntimeDto: {
+            /** @description Whether it can prove which coding account a run executes as. */
+            account_env?: boolean | null;
+            /**
+             * Format: int32
+             * @description How many concurrent sessions it declares.
+             */
+            max_concurrent_sessions?: number | null;
+            /**
+             * Format: int32
+             * @description The largest history page it declares.
+             */
+            max_history_page?: number | null;
+            /**
+             * Format: int64
+             * @description The largest message it declares it will take, in bytes.
+             */
+            max_message_bytes?: number | null;
+            /**
+             * @description Whether the runtime answered the capability question at all.
+             *
+             *     This is the health signal, and it is a fact about the channel: a family
+             *     that could not be reached reports `false` here and no capabilities, rather
+             *     than the capabilities it had last time.
+             */
+            reachable: boolean;
+            /** @description The runtime family. Never an endpoint. */
+            runtime_kind: string;
+            /** @description The operations it currently declares, when it answered. */
+            supported: string[];
+            /** @description How much of what it reports may be acted on, when it answered. */
+            trust_grade?: string | null;
+        };
+        /**
+         * @description A point-in-time value and the position it is consistent with.
+         *
+         *     It is the wire spelling of `kontor-core`'s own `SnapshotEnvelope`: a
+         *     subscriber resumes strictly after `snapshot_cursor`, in the same Realm.
+         */
+        SnapshotDto_AccountDto: {
+            /** @description The Realm this snapshot came from. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The position it is consistent with.
+             */
+            snapshot_cursor: number;
+            /**
+             * @description One coding-account profile, as a policy reader sees it.
+             *
+             *     Three of the stored fields — the environment map, the routing metadata and the
+             *     declared capability document — are deliberately absent. Every one of them is
+             *     non-secret by construction, and every one of them is also the natural place a
+             *     deployment would eventually write an endpoint. A view that never carries them
+             *     cannot start carrying one by accident.
+             */
+            value: {
+                /** @description The profile. */
+                account_profile_id: string;
+                /**
+                 * @description The opaque approved alias. Never a credential, and never where one
+                 *     resolves to.
+                 */
+                credential_alias: string;
+                /** @description Which approved family the credential alias belongs to. */
+                credential_kind: string;
+                /** @description Whether launches may select it. */
+                enabled: boolean;
+                /** @description The external account id it authenticates as, when it records one. */
+                external_account_id?: string | null;
+                /** @description The runtime family it authenticates against. */
+                harness: string;
+                /** @description Its human label. */
+                label: string;
+                /** @description The project that owns it. */
+                project_id: string;
+                /** @description The non-secret provider identity hint, when the deployment records one. */
+                provider_identity?: string | null;
+                /**
+                 * Format: int64
+                 * @description The revision a write must present.
+                 */
+                revision: number;
+            };
         };
         /**
          * @description A point-in-time value and the position it is consistent with.
@@ -748,6 +1705,114 @@ export interface components {
              */
             updated_at: string;
         };
+        /**
+         * @description One task, as a list entry.
+         *
+         *     It is deliberately smaller than `TaskDto`: a list is for finding the task you
+         *     want, and the gates, the pinned revisions and the workflow are one read away
+         *     on the snapshot route.
+         */
+        TaskSummaryDto: {
+            /**
+             * Format: date-time
+             * @description When it was created.
+             */
+            created_at: string;
+            /** @description The module it contends for, if any. */
+            module?: string | null;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description Its lifecycle state. */
+            state: string;
+            /** @description The task. */
+            task_id: string;
+            /** @description Its title. */
+            title: string;
+            /**
+             * Format: date-time
+             * @description When it last changed.
+             */
+            updated_at: string;
+        };
+        /** @description One ticket, with the evidence this Realm holds about it. */
+        TicketDto: {
+            /** @description Every conflict, newest first. */
+            conflicts: components["schemas"]["ConflictDto"][];
+            /** @description The link itself. */
+            link: components["schemas"]["TicketLinkDto"];
+            observed?: null | components["schemas"]["ObservationDto"];
+            projection?: null | components["schemas"]["TicketProjectionDto"];
+            /** @description How many of those are still unresolved. */
+            unresolved_conflicts: number;
+        };
+        /** @description One external-ticket link, as a list entry. */
+        TicketLinkDto: {
+            /** @description The connector implementation. */
+            connector: string;
+            /**
+             * Format: date-time
+             * @description When the link was made.
+             */
+            created_at: string;
+            /** @description The external issue key. */
+            external_issue_key: string;
+            /** @description The link. */
+            link_id: string;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description The task it links. */
+            task_id: string;
+        };
+        /**
+         * @description The projection this Realm computed for one ticket.
+         *
+         *     Published as `TicketProjectionDto` rather than under its Rust name. `utoipa`
+         *     keys the contract document by bare type name, and [`crate::dto::ProjectionDto`]
+         *     — the orthogonal state of a *run* — already holds `ProjectionDto` there. Two
+         *     registrations under one name do not collide loudly: the second silently
+         *     replaces the first, so `RunDto.projection` would resolve to this shape and
+         *     every generated client would be wrong about it while the wire stayed right.
+         */
+        TicketProjectionDto: {
+            /**
+             * @description The comment policy in force. Always `inbound_only`: schema v1 has no
+             *     outbound comment table or column.
+             */
+            comment_policy: string;
+            /**
+             * Format: date-time
+             * @description When it was computed.
+             */
+            computed_at: string;
+            /** @description How far inbound comments have been mirrored. */
+            external_comment_cursor?: string | null;
+            /** @description Its issue type. */
+            field_spec_issue_type: string;
+            /** @description The pinned field specification's external project. */
+            field_spec_project: string;
+            /**
+             * Format: int32
+             * @description Its pinned revision.
+             */
+            field_spec_version: number;
+            /** @description The fields this Realm would write. */
+            fields: Record<string, never>;
+            /**
+             * Format: int64
+             * @description The link revision it was computed against.
+             */
+            link_revision: number;
+            /** @description The digest of the projection. */
+            projection_hash: string;
+            /** @description The projection. */
+            projection_id: string;
+        };
         /** @description One page of a session's recorded content. */
         TimelineDto: {
             /** @description The run whose session was read. */
@@ -807,6 +1872,716 @@ export interface components {
              * @description Its position inside that epoch.
              */
             sequence: number;
+        };
+        /** @description One convergence attempt. */
+        TransitionDto: {
+            /**
+             * Format: date-time
+             * @description When the external system acknowledged it.
+             */
+            acknowledged_at?: string | null;
+            /** @description Whether an assignment had to happen first. */
+            assignment_prerequisite: boolean;
+            /**
+             * Format: date-time
+             * @description When a *refetched* observation confirmed it.
+             *
+             *     `null` means unconfirmed, which is never the same as failed: an
+             *     acknowledgement is not a confirmation, and this column is only written when
+             *     the external system was read again.
+             */
+            confirmed_at?: string | null;
+            /**
+             * Format: date-time
+             * @description When it was dispatched.
+             */
+            dispatched_at: string;
+            /** @description The internal milestone being converged to. */
+            milestone: string;
+            /** @description The external principal it acted as. */
+            principal_account_id: string;
+            /** @description The receipt. */
+            receipt_id: string;
+            /** @description The observation that confirmed it. */
+            refetched_observation_id?: string | null;
+            /** @description The external status it aimed at. */
+            target_status_id: string;
+            /** @description The task whose state was being projected. */
+            task_id: string;
+            /** @description The external transition used. `null` for an assignee-only convergence. */
+            transition_id?: string | null;
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_ContentionDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            /**
+             * @description What is currently held, and therefore what a scheduling pass would contend
+             *     with.
+             *
+             *     This is evidence and **not a plan**. A plan is `kontor_scheduler::plan`'s
+             *     answer over a `SchedulingSnapshot`, and that snapshot needs authorization,
+             *     calendar, fleet-preflight and external-work evidence this build has no read
+             *     path for. Serving contention under an honest name is the difference between
+             *     telling an operator what is known and inventing a decision.
+             */
+            value: {
+                /** @description Every live module claim in the Realm. */
+                module_claims: components["schemas"]["ModuleClaimDto"][];
+                /**
+                 * Format: date-time
+                 * @description When the contention was read.
+                 */
+                observed_at: string;
+                /** @description Every task with an open run. */
+                tasks_with_open_runs: string[];
+                /** @description Every worktree currently leased. */
+                worktree_leases: string[];
+            };
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_GateInspectionDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            /**
+             * @description A task's active workflow, the gates reduced from its evaluations, and the
+             *     append-only evidence behind them.
+             */
+            value: {
+                /** @description The phase the active workflow is in. */
+                current_phase?: string | null;
+                /** @description Every recorded verdict, oldest first. */
+                evaluations: components["schemas"]["GateEvaluationDto"][];
+                /** @description The reduced gate states, keyed by gate. */
+                gates: Record<string, never>;
+                profile?: null | components["schemas"]["ProfileDto"];
+                /** @description The task. */
+                task_id: string;
+                /** @description The active workflow, or `null` when the task has none. */
+                workflow_id?: string | null;
+            };
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_MissionDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            /** @description One team run — a mission — and the template revision it froze. */
+            value: {
+                /**
+                 * Format: date-time
+                 * @description When it closed.
+                 */
+                closed_at?: string | null;
+                /**
+                 * Format: date-time
+                 * @description When it was created.
+                 */
+                created_at: string;
+                /** @description Its lifecycle. */
+                lifecycle: string;
+                /** @description The project it belongs to. */
+                project_id: string;
+                /**
+                 * Format: int64
+                 * @description The revision a write must present.
+                 */
+                revision: number;
+                /** @description The task it serves. */
+                task_id: string;
+                /** @description The team run. */
+                team_run_id: string;
+                /** @description The team template it froze. */
+                team_template: string;
+                /**
+                 * Format: int32
+                 * @description That template's pinned revision.
+                 */
+                team_template_version: number;
+            };
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_PlanDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            /** @description One planning pass, reported and not committed. */
+            value: {
+                /** @description How many the pass would admit. */
+                admitted: number;
+                /**
+                 * @description Facts about this pass a reader must not mistake for stored state.
+                 *
+                 *     Names each field of the snapshot that had no source in schema v1 and the
+                 *     value it was assembled with, so an answer is never read as evidence of
+                 *     something nobody recorded.
+                 */
+                assembled_defaults: string[];
+                /** @description How many tasks were looked at. */
+                considered: number;
+                /** @description Every decision, in the order the pass considered them. */
+                decisions: components["schemas"]["DecisionDto"][];
+                /** @description The project the pass was taken for. */
+                project_id: string;
+                /**
+                 * Format: date-time
+                 * @description The instant every judgement was made against.
+                 */
+                taken_at: string;
+                /** @description Tasks with no active workflow, which are therefore not candidates. */
+                without_workflow: string[];
+            };
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_ProfileDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            /**
+             * @description One resolved work-profile revision, as its phase and gate structure.
+             *
+             *     The whole [`kontor_core::spec::WorkProfileSpec`] is deliberately not served:
+             *     it carries a runtime-routing reference, and a read route is not the place to
+             *     start naming where runs go. What a caller needs to reason about a task is the
+             *     phase DAG and the gates, which is what this is.
+             */
+            value: {
+                /** @description The single entry phase. */
+                entry_phase: string;
+                /** @description Its human name. */
+                name: string;
+                /** @description Every phase, in declaration order. */
+                phases: components["schemas"]["PhaseDto"][];
+                /** @description The profile key. An open, deployment-defined key. */
+                profile: string;
+                /** @description The declared terminal phases. */
+                terminal_phases: string[];
+                /**
+                 * Format: int32
+                 * @description The immutable revision of that key.
+                 */
+                version: number;
+            };
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_ProjectDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            /** @description Read one project's identity and revision. */
+            value: {
+                /**
+                 * Format: date-time
+                 * @description When it was created.
+                 */
+                created_at: string;
+                /** @description Its human name. */
+                name: string;
+                /** @description The project. */
+                project_id: string;
+                /**
+                 * Format: int64
+                 * @description The revision a write must present.
+                 */
+                revision: number;
+                /** @description Its root path on disk. */
+                root_path: string;
+            };
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_ReceiptInspectionDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            /**
+             * @description One command receipt and every state it has been through.
+             *
+             *     This is what makes an idempotent replay checkable rather than merely claimed:
+             *     a caller that retried a command can read the receipt its key recorded and see
+             *     that the history did not grow.
+             *
+             *     The stored correlation and native identity are deliberately absent, exactly as
+             *     they are from `ReceiptDto`: a correlation is the dispatcher's private handle on
+             *     a foreign system.
+             */
+            value: {
+                /**
+                 * Format: int32
+                 * @description How many dispatch attempts have been made.
+                 */
+                attempts: number;
+                /**
+                 * Format: date-time
+                 * @description When the intent was recorded.
+                 */
+                created_at: string;
+                /** @description Every state it has been through, oldest first. */
+                history: components["schemas"]["ReceiptTransitionDto"][];
+                /** @description The caller's idempotency key. */
+                idempotency_key: string;
+                /** @description What was asked for. */
+                kind: string;
+                /** @description The project that owns it. */
+                project_id: string;
+                /** @description The receipt. */
+                receipt_id: string;
+                /** @description How far it has got. */
+                state: string;
+                /** @description Which aggregate it targets. */
+                target: Record<string, never>;
+                /**
+                 * Format: int64
+                 * @description The revision the intent was computed against.
+                 */
+                target_revision: number;
+                /**
+                 * Format: date-time
+                 * @description When it last changed.
+                 */
+                updated_at: string;
+            };
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_TicketDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            /** @description One ticket, with the evidence this Realm holds about it. */
+            value: {
+                /** @description Every conflict, newest first. */
+                conflicts: components["schemas"]["ConflictDto"][];
+                /** @description The link itself. */
+                link: components["schemas"]["TicketLinkDto"];
+                observed?: null | components["schemas"]["ObservationDto"];
+                projection?: null | components["schemas"]["TicketProjectionDto"];
+                /** @description How many of those are still unresolved. */
+                unresolved_conflicts: number;
+            };
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_Vec_AccountDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            value: {
+                /** @description The profile. */
+                account_profile_id: string;
+                /**
+                 * @description The opaque approved alias. Never a credential, and never where one
+                 *     resolves to.
+                 */
+                credential_alias: string;
+                /** @description Which approved family the credential alias belongs to. */
+                credential_kind: string;
+                /** @description Whether launches may select it. */
+                enabled: boolean;
+                /** @description The external account id it authenticates as, when it records one. */
+                external_account_id?: string | null;
+                /** @description The runtime family it authenticates against. */
+                harness: string;
+                /** @description Its human label. */
+                label: string;
+                /** @description The project that owns it. */
+                project_id: string;
+                /** @description The non-secret provider identity hint, when the deployment records one. */
+                provider_identity?: string | null;
+                /**
+                 * Format: int64
+                 * @description The revision a write must present.
+                 */
+                revision: number;
+            }[];
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_Vec_CommentDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            value: {
+                /** @description The author's external account. */
+                author_account_id: string;
+                /** @description The author's display name, when the external system provided one. */
+                author_display?: string | null;
+                /** @description The comment text, as mirrored. */
+                body: string;
+                /** @description The digest of the body, which is half this revision's identity. */
+                body_hash: string;
+                /** @description The external system's own comment id. */
+                external_comment_id: string;
+                /**
+                 * Format: date-time
+                 * @description When it was created externally.
+                 */
+                external_created_at: string;
+                /**
+                 * Format: date-time
+                 * @description When it was last edited externally.
+                 */
+                external_updated_at: string;
+                /**
+                 * Format: date-time
+                 * @description When this Realm mirrored it.
+                 */
+                observed_at: string;
+                /** @description The revision this one replaces, for an edit. */
+                supersedes_hash?: string | null;
+            }[];
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_Vec_MissionEntryDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            value: {
+                /**
+                 * Format: date-time
+                 * @description When it closed.
+                 */
+                closed_at?: string | null;
+                /**
+                 * Format: date-time
+                 * @description When it was created.
+                 */
+                created_at: string;
+                /** @description Its lifecycle. */
+                lifecycle: string;
+                /**
+                 * Format: int64
+                 * @description The revision a write must present.
+                 */
+                revision: number;
+                /** @description The task it serves. */
+                task_id: string;
+                /** @description The team run. */
+                team_run_id: string;
+                /** @description The team template it froze. */
+                team_template: string;
+                /**
+                 * Format: int32
+                 * @description That template's pinned revision.
+                 */
+                team_template_version: number;
+            }[];
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_Vec_NativeSessionDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            value: {
+                /**
+                 * @description Whether this Realm already holds a binding for it.
+                 *
+                 *     The point of a discovery read: a session the Realm does not know about is an
+                 *     adoption candidate, and one it does know about is not.
+                 */
+                bound: boolean;
+                /**
+                 * Format: int64
+                 * @description The runtime generation it belongs to.
+                 */
+                generation: number;
+                /** @description The host label the runtime reports for itself. */
+                host: string;
+                /** @description The runtime's own session id. Correlation evidence, never an identity. */
+                native_id: string;
+                /** @description The runtime family that owns it. */
+                runtime_kind: string;
+            }[];
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_Vec_ProjectEntryDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            value: {
+                /**
+                 * Format: date-time
+                 * @description When it was created.
+                 */
+                created_at: string;
+                /** @description Its human name. */
+                name: string;
+                /** @description The project. */
+                project_id: string;
+                /**
+                 * Format: int64
+                 * @description The revision a write must present.
+                 */
+                revision: number;
+                /** @description Its root path on disk. */
+                root_path: string;
+            }[];
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_Vec_RunEntryDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            value: {
+                /** @description The coding account it is pinned to, if any. */
+                account_profile_id?: string | null;
+                /** @description The agent run. */
+                agent_run_id: string;
+                /**
+                 * Format: date-time
+                 * @description When it closed.
+                 */
+                closed_at?: string | null;
+                /**
+                 * Format: date-time
+                 * @description When it was created.
+                 */
+                created_at: string;
+                /** @description What Kontor concluded. */
+                derived: string;
+                /** @description What Kontor asked for. */
+                desired: string;
+                /** @description Its own lifecycle. */
+                lifecycle: string;
+                /** @description What the runtime last reported. */
+                observed: string;
+                /**
+                 * Format: int64
+                 * @description The revision a write must present.
+                 */
+                revision: number;
+                /** @description The role slot it fills. */
+                role: string;
+                /** @description The team run it serves. */
+                team_run_id: string;
+            }[];
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_Vec_RuntimeDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            value: {
+                /** @description Whether it can prove which coding account a run executes as. */
+                account_env?: boolean | null;
+                /**
+                 * Format: int32
+                 * @description How many concurrent sessions it declares.
+                 */
+                max_concurrent_sessions?: number | null;
+                /**
+                 * Format: int32
+                 * @description The largest history page it declares.
+                 */
+                max_history_page?: number | null;
+                /**
+                 * Format: int64
+                 * @description The largest message it declares it will take, in bytes.
+                 */
+                max_message_bytes?: number | null;
+                /**
+                 * @description Whether the runtime answered the capability question at all.
+                 *
+                 *     This is the health signal, and it is a fact about the channel: a family
+                 *     that could not be reached reports `false` here and no capabilities, rather
+                 *     than the capabilities it had last time.
+                 */
+                reachable: boolean;
+                /** @description The runtime family. Never an endpoint. */
+                runtime_kind: string;
+                /** @description The operations it currently declares, when it answered. */
+                supported: string[];
+                /** @description How much of what it reports may be acted on, when it answered. */
+                trust_grade?: string | null;
+            }[];
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_Vec_TaskSummaryDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            value: {
+                /**
+                 * Format: date-time
+                 * @description When it was created.
+                 */
+                created_at: string;
+                /** @description The module it contends for, if any. */
+                module?: string | null;
+                /**
+                 * Format: int64
+                 * @description The revision a write must present.
+                 */
+                revision: number;
+                /** @description Its lifecycle state. */
+                state: string;
+                /** @description The task. */
+                task_id: string;
+                /** @description Its title. */
+                title: string;
+                /**
+                 * Format: date-time
+                 * @description When it last changed.
+                 */
+                updated_at: string;
+            }[];
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_Vec_TicketLinkDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            value: {
+                /** @description The connector implementation. */
+                connector: string;
+                /**
+                 * Format: date-time
+                 * @description When the link was made.
+                 */
+                created_at: string;
+                /** @description The external issue key. */
+                external_issue_key: string;
+                /** @description The link. */
+                link_id: string;
+                /**
+                 * Format: int64
+                 * @description The revision a write must present.
+                 */
+                revision: number;
+                /** @description The task it links. */
+                task_id: string;
+            }[];
+        };
+        /**
+         * @description A Realm-qualified view.
+         *
+         *     The Realm is named on every answer for the same reason it is named on a
+         *     snapshot: a value that leaves this process is read as `(realm_id, …)` or not
+         *     at all.
+         */
+        ViewDto_Vec_TransitionDto: {
+            /** @description The Realm this view came from. */
+            realm_id: string;
+            value: {
+                /**
+                 * Format: date-time
+                 * @description When the external system acknowledged it.
+                 */
+                acknowledged_at?: string | null;
+                /** @description Whether an assignment had to happen first. */
+                assignment_prerequisite: boolean;
+                /**
+                 * Format: date-time
+                 * @description When a *refetched* observation confirmed it.
+                 *
+                 *     `null` means unconfirmed, which is never the same as failed: an
+                 *     acknowledgement is not a confirmation, and this column is only written when
+                 *     the external system was read again.
+                 */
+                confirmed_at?: string | null;
+                /**
+                 * Format: date-time
+                 * @description When it was dispatched.
+                 */
+                dispatched_at: string;
+                /** @description The internal milestone being converged to. */
+                milestone: string;
+                /** @description The external principal it acted as. */
+                principal_account_id: string;
+                /** @description The receipt. */
+                receipt_id: string;
+                /** @description The observation that confirmed it. */
+                refetched_observation_id?: string | null;
+                /** @description The external status it aimed at. */
+                target_status_id: string;
+                /** @description The task whose state was being projected. */
+                task_id: string;
+                /** @description The external transition used. `null` for an assignee-only convergence. */
+                transition_id?: string | null;
+            }[];
         };
     };
     responses: never;
@@ -913,6 +2688,273 @@ export interface operations {
             };
         };
     };
+    projects: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_Vec_ProjectEntryDto"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    project: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_ProjectDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    accounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_Vec_AccountDto"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The account profile */
+                account_profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotDto_AccountDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    profile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The open work-profile key */
+                profile_key: string;
+                /** @description The pinned revision */
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_ProfileDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    receipt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The command receipt */
+                receipt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_ReceiptInspectionDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    runs: {
+        parameters: {
+            query?: {
+                /** @description Only this mission's runs */
+                team_run?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_Vec_RunEntryDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    scheduler_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The project to plan */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_PlanDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A work calendar is assigned and resolving it is KON-MVP-21 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    tasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_Vec_TaskSummaryDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     task_snapshot: {
         parameters: {
             query?: never;
@@ -933,6 +2975,218 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SnapshotDto_TaskDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    gates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_GateInspectionDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    missions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_Vec_MissionEntryDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    mission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The team run */
+                team_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_MissionDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    tickets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_Vec_TicketLinkDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ticket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The ticket link */
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_TicketDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ticket_comments: {
+        parameters: {
+            query?: {
+                /** @description How many rows at most */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The ticket link */
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_Vec_CommentDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ticket_transitions: {
+        parameters: {
+            query?: {
+                /** @description How many rows at most */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The ticket link */
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_Vec_TransitionDto"];
                 };
             };
             404: {
@@ -995,6 +3249,92 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    runtimes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_Vec_RuntimeDto"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    runtime_sessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The runtime family to ask */
+                runtime_kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_Vec_NativeSessionDto"];
+                };
+            };
+            /** @description This daemon is not configured with that runtime */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description That runtime never declared discovery */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    scheduler_contention: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto_ContentionDto"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

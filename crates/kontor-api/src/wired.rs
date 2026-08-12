@@ -724,7 +724,15 @@ fn link_dto(link: kontor_store::query::TicketLinkSummary) -> TicketLinkDto {
 }
 
 /// The projection this Realm computed for one ticket.
+///
+/// Published as `TicketProjectionDto` rather than under its Rust name. `utoipa`
+/// keys the contract document by bare type name, and [`crate::dto::ProjectionDto`]
+/// — the orthogonal state of a *run* — already holds `ProjectionDto` there. Two
+/// registrations under one name do not collide loudly: the second silently
+/// replaces the first, so `RunDto.projection` would resolve to this shape and
+/// every generated client would be wrong about it while the wire stayed right.
 #[derive(Debug, Clone, Serialize, ToSchema)]
+#[schema(as = TicketProjectionDto)]
 pub struct ProjectionDto {
     /// The projection.
     #[schema(value_type = String)]

@@ -125,6 +125,363 @@
         }
       }
     },
+    "/v1/projects": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Every project in this Realm.",
+        "operationId": "projects",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_Vec_ProjectEntryDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "One project.",
+        "operationId": "project",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_ProjectDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/accounts": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Every coding-account profile in one project.",
+        "description": "Admin, not observer. The tier model puts credential and account routes with\nthe admin secret, and an account profile names the alias a resolver looks a\ncredential up under — so even though the alias is not itself a capability,\nenumerating them is an account-authority read.",
+        "operationId": "accounts",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_Vec_AccountDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/accounts/{account_profile_id}": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "One coding-account profile.",
+        "operationId": "account",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_profile_id",
+            "in": "path",
+            "description": "The account profile",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotDto_AccountDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/profiles/{profile_key}/{version}": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "One stored work-profile revision, addressed by its open key and version.",
+        "description": "The key is whatever the deployment called it. Nothing in this route — or in\nthe CLI and MCP surfaces above it — enumerates the legal values, because a\nseeded profile pack is deployment data and a control plane that hard-coded its\nnames would refuse every profile a deployment added.",
+        "operationId": "profile",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile_key",
+            "in": "path",
+            "description": "The open work-profile key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "The pinned revision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_ProfileDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/receipts/{receipt_id}": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "One command receipt, with its transition history.",
+        "operationId": "receipt",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "receipt_id",
+            "in": "path",
+            "description": "The command receipt",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_ReceiptInspectionDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/runs": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Every agent run in one project, optionally one mission's.",
+        "operationId": "runs",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_run",
+            "in": "query",
+            "description": "Only this mission's runs",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_Vec_RunEntryDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/scheduler/plan": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Explain what a scheduling pass over one project would decide.",
+        "description": "Nothing is admitted, queued, launched or leased. This is `kontor_scheduler::plan`\nrun over a snapshot assembled from stored rows, reported with every blocker.",
+        "operationId": "scheduler_plan",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project to plan",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_PlanDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "A work calendar is assigned and resolving it is KON-MVP-21"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tasks": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Every task in one project, oldest first.",
+        "operationId": "tasks",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_Vec_TaskSummaryDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/tasks/{task_id}": {
       "get": {
         "tags": [
@@ -159,6 +516,320 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SnapshotDto_TaskDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tasks/{task_id}/gates": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "One task's gate states and the evidence they were reduced from.",
+        "description": "A task with no active workflow answers with an empty inspection rather than a\nrefusal: the task exists, and \"this task has no workflow yet\" is a fact about\nit rather than a missing row.",
+        "operationId": "gates",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_GateInspectionDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/team-runs": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Every mission in one project.",
+        "operationId": "missions",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_Vec_MissionEntryDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/team-runs/{team_run_id}": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "One mission.",
+        "operationId": "mission",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_run_id",
+            "in": "path",
+            "description": "The team run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_MissionDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tickets": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Every external-ticket link in one project.",
+        "operationId": "tickets",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_Vec_TicketLinkDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tickets/{link_id}": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "One ticket's stored evidence: the projection, the last observation, the\nconflicts.",
+        "operationId": "ticket",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "link_id",
+            "in": "path",
+            "description": "The ticket link",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_TicketDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tickets/{link_id}/comments": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "One ticket's inbound comments, newest first.",
+        "description": "Inbound only, and structurally so: there is no outbound comment table in this\nschema and no route that writes one.",
+        "operationId": "ticket_comments",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "link_id",
+            "in": "path",
+            "description": "The ticket link",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many rows at most",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_Vec_CommentDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tickets/{link_id}/transitions": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "One ticket's convergence attempts, newest first.",
+        "operationId": "ticket_transitions",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "link_id",
+            "in": "path",
+            "description": "The ticket link",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many rows at most",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_Vec_TransitionDto"
                 }
               }
             }
@@ -226,6 +897,94 @@
             }
           },
           "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/runtimes": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Every configured runtime family, with what it declares right now.",
+        "description": "A *freshly discovered* declaration, not a frozen one. That distinction is the\nwhole point of the route: a binding keeps answering with the capabilities it\nwas frozen at, and an operator asking \"what can this runtime do today\" is\nasking a different question — one whose answer must never be written back onto\na binding.",
+        "operationId": "runtimes",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_Vec_RuntimeDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/runtimes/{runtime_kind}/sessions": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "The sessions one runtime family currently owns.",
+        "description": "A read of the runtime, not of this Realm's log — so it is the one place an\noperator can see a session that exists natively and has no binding here.\n\nAdoption itself is deliberately absent: binding a native session to an agent run\ncreates a run, a binding and a frozen capability snapshot in one transaction, and\n`CommandKind` has no variant that records that intent. Adding one is a\n`kontor-core` change with its own compatibility matrix entry, which is a ticket\nand not a route. Until then a discovered session is reported and nothing here\nclaims it.",
+        "operationId": "runtime_sessions",
+        "parameters": [
+          {
+            "name": "runtime_kind",
+            "in": "path",
+            "description": "The runtime family to ask",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_Vec_NativeSessionDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This daemon is not configured with that runtime"
+          },
+          "422": {
+            "description": "That runtime never declared discovery"
+          }
+        }
+      }
+    },
+    "/v1/scheduler/contention": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "The Realm's current scheduling contention.",
+        "operationId": "scheduler_contention",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDto_ContentionDto"
+                }
+              }
+            }
+          },
+          "403": {
             "description": ""
           }
         }
@@ -458,6 +1217,70 @@
   },
   "components": {
     "schemas": {
+      "AccountDto": {
+        "type": "object",
+        "description": "One coding-account profile, as a policy reader sees it.\n\nThree of the stored fields — the environment map, the routing metadata and the\ndeclared capability document — are deliberately absent. Every one of them is\nnon-secret by construction, and every one of them is also the natural place a\ndeployment would eventually write an endpoint. A view that never carries them\ncannot start carrying one by accident.",
+        "required": [
+          "account_profile_id",
+          "project_id",
+          "label",
+          "harness",
+          "credential_kind",
+          "credential_alias",
+          "enabled",
+          "revision"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "The profile."
+          },
+          "credential_alias": {
+            "type": "string",
+            "description": "The opaque approved alias. Never a credential, and never where one\nresolves to."
+          },
+          "credential_kind": {
+            "type": "string",
+            "description": "Which approved family the credential alias belongs to."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether launches may select it."
+          },
+          "external_account_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The external account id it authenticates as, when it records one."
+          },
+          "harness": {
+            "type": "string",
+            "description": "The runtime family it authenticates against."
+          },
+          "label": {
+            "type": "string",
+            "description": "Its human label."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project that owns it."
+          },
+          "provider_identity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The non-secret provider identity hint, when the deployment records one."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          }
+        }
+      },
       "ApiErrorBody": {
         "type": "object",
         "description": "The JSON body every refusal is reported with.",
@@ -615,6 +1438,32 @@
           }
         }
       },
+      "BlockerDto": {
+        "type": "object",
+        "description": "One blocker's refusal of one candidate.",
+        "required": [
+          "blocker",
+          "code",
+          "evidence"
+        ],
+        "properties": {
+          "blocker": {
+            "type": "string",
+            "description": "Which blocker refused."
+          },
+          "code": {
+            "type": "string",
+            "description": "The code it refused with."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "What it refused on, in the scheduler's own evidence shape."
+          }
+        }
+      },
       "CommandRequest": {
         "type": "object",
         "description": "What a command asks for, as a caller states it.",
@@ -654,6 +1503,202 @@
           "target": {
             "type": "object",
             "description": "The aggregate the command targets."
+          }
+        }
+      },
+      "CommentDto": {
+        "type": "object",
+        "description": "One inbound comment.",
+        "required": [
+          "external_comment_id",
+          "body_hash",
+          "author_account_id",
+          "external_created_at",
+          "external_updated_at",
+          "observed_at",
+          "body"
+        ],
+        "properties": {
+          "author_account_id": {
+            "type": "string",
+            "description": "The author's external account."
+          },
+          "author_display": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The author's display name, when the external system provided one."
+          },
+          "body": {
+            "type": "string",
+            "description": "The comment text, as mirrored."
+          },
+          "body_hash": {
+            "type": "string",
+            "description": "The digest of the body, which is half this revision's identity."
+          },
+          "external_comment_id": {
+            "type": "string",
+            "description": "The external system's own comment id."
+          },
+          "external_created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created externally."
+          },
+          "external_updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was last edited externally."
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this Realm mirrored it."
+          },
+          "supersedes_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The revision this one replaces, for an edit."
+          }
+        }
+      },
+      "ConflictDto": {
+        "type": "object",
+        "description": "One detected conflict.",
+        "required": [
+          "conflict_id",
+          "kind",
+          "observation_id",
+          "detected_at"
+        ],
+        "properties": {
+          "conflict_id": {
+            "type": "string",
+            "description": "The conflict."
+          },
+          "detected_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was detected."
+          },
+          "kind": {
+            "type": "string",
+            "description": "What kind it is."
+          },
+          "milestone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The internal milestone involved, when there is one."
+          },
+          "observation_id": {
+            "type": "string",
+            "description": "The observation it was detected against."
+          },
+          "resolution_receipt_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The receipt that authorized the resolution."
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was resolved."
+          }
+        }
+      },
+      "ContentionDto": {
+        "type": "object",
+        "description": "What is currently held, and therefore what a scheduling pass would contend\nwith.\n\nThis is evidence and **not a plan**. A plan is `kontor_scheduler::plan`'s\nanswer over a `SchedulingSnapshot`, and that snapshot needs authorization,\ncalendar, fleet-preflight and external-work evidence this build has no read\npath for. Serving contention under an honest name is the difference between\ntelling an operator what is known and inventing a decision.",
+        "required": [
+          "observed_at",
+          "module_claims",
+          "worktree_leases",
+          "tasks_with_open_runs"
+        ],
+        "properties": {
+          "module_claims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModuleClaimDto"
+            },
+            "description": "Every live module claim in the Realm."
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the contention was read."
+          },
+          "tasks_with_open_runs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every task with an open run."
+          },
+          "worktree_leases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every worktree currently leased."
+          }
+        }
+      },
+      "DecisionDto": {
+        "type": "object",
+        "description": "What the pass decided about one candidate.",
+        "required": [
+          "task_id",
+          "admitted",
+          "blockers"
+        ],
+        "properties": {
+          "admitted": {
+            "type": "boolean",
+            "description": "Whether the pass would admit it."
+          },
+          "authorization_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The authorization the pass would admit it under."
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BlockerDto"
+            },
+            "description": "Every blocker that refuses it, in evaluation order.\n\nThe first entry is always the code above: `explain` asks the same blockers\nin the same order the decision does. Later entries are what an operator\nwould hit next after fixing the first, which is why they are here."
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The one code the decision reports, for a refusal."
+          },
+          "runtime_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The runtime family it would launch through."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task."
           }
         }
       },
@@ -782,6 +1827,107 @@
           }
         }
       },
+      "GateEvaluationDto": {
+        "type": "object",
+        "description": "One recorded gate verdict, as evidence.\n\nThe evaluator's account and the reviewer principal are named because a gate\nverdict is an accountability record; the guardrail evaluation is named by id\nonly, because its inputs are a stored document and not this route's to serve.",
+        "required": [
+          "gate",
+          "sequence",
+          "verdict",
+          "evaluator_role",
+          "evaluator_account",
+          "evidence"
+        ],
+        "properties": {
+          "evaluator_account": {
+            "type": "string",
+            "description": "The account that recorded it."
+          },
+          "evaluator_role": {
+            "type": "string",
+            "description": "The role that recorded it."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The artifacts cited as evidence."
+          },
+          "gate": {
+            "type": "string",
+            "description": "The gate."
+          },
+          "reviewer_principal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stable authenticated principal, when the row records one."
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Position in that gate's append-only history, starting at 1.",
+            "minimum": 0
+          },
+          "verdict": {
+            "type": "string",
+            "description": "The verdict recorded."
+          }
+        }
+      },
+      "GateInspectionDto": {
+        "type": "object",
+        "description": "A task's active workflow, the gates reduced from its evaluations, and the\nappend-only evidence behind them.",
+        "required": [
+          "task_id",
+          "gates",
+          "evaluations"
+        ],
+        "properties": {
+          "current_phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The phase the active workflow is in."
+          },
+          "evaluations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GateEvaluationDto"
+            },
+            "description": "Every recorded verdict, oldest first."
+          },
+          "gates": {
+            "type": "object",
+            "description": "The reduced gate states, keyed by gate."
+          },
+          "profile": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProfileDto",
+                "description": "The profile revision the workflow froze, as its phase and gate structure."
+              }
+            ]
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task."
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The active workflow, or `null` when the task has none."
+          }
+        }
+      },
       "HealthDto": {
         "type": "object",
         "description": "Liveness, identity and how far startup has got.",
@@ -875,6 +2021,248 @@
           }
         }
       },
+      "MissionDto": {
+        "type": "object",
+        "description": "One team run — a mission — and the template revision it froze.",
+        "required": [
+          "team_run_id",
+          "project_id",
+          "task_id",
+          "team_template",
+          "team_template_version",
+          "lifecycle",
+          "revision",
+          "created_at"
+        ],
+        "properties": {
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it closed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "Its lifecycle."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project it belongs to."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task it serves."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "The team run."
+          },
+          "team_template": {
+            "type": "string",
+            "description": "The team template it froze."
+          },
+          "team_template_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "That template's pinned revision.",
+            "minimum": 0
+          }
+        }
+      },
+      "MissionEntryDto": {
+        "type": "object",
+        "description": "One mission, as a list entry.",
+        "required": [
+          "team_run_id",
+          "task_id",
+          "team_template",
+          "team_template_version",
+          "lifecycle",
+          "revision",
+          "created_at"
+        ],
+        "properties": {
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it closed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "Its lifecycle."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task it serves."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "The team run."
+          },
+          "team_template": {
+            "type": "string",
+            "description": "The team template it froze."
+          },
+          "team_template_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "That template's pinned revision.",
+            "minimum": 0
+          }
+        }
+      },
+      "ModuleClaimDto": {
+        "type": "object",
+        "description": "One module held by one task.",
+        "required": [
+          "module",
+          "task_id",
+          "in_flight"
+        ],
+        "properties": {
+          "in_flight": {
+            "type": "boolean",
+            "description": "Whether the claim is still live."
+          },
+          "module": {
+            "type": "string",
+            "description": "The module being contended for."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task holding it."
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The worktree it is isolated by, when it is."
+          }
+        }
+      },
+      "NativeSessionDto": {
+        "type": "object",
+        "description": "One native session a runtime currently owns.",
+        "required": [
+          "runtime_kind",
+          "native_id",
+          "host",
+          "generation",
+          "bound"
+        ],
+        "properties": {
+          "bound": {
+            "type": "boolean",
+            "description": "Whether this Realm already holds a binding for it.\n\nThe point of a discovery read: a session the Realm does not know about is an\nadoption candidate, and one it does know about is not."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The runtime generation it belongs to.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "The host label the runtime reports for itself."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The runtime's own session id. Correlation evidence, never an identity."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The runtime family that owns it."
+          }
+        }
+      },
+      "ObservationDto": {
+        "type": "object",
+        "description": "One observation of the external ticket's own state.",
+        "required": [
+          "observation_id",
+          "status_id",
+          "status_name",
+          "status_category",
+          "issue_type",
+          "observed_at"
+        ],
+        "properties": {
+          "assignee_account_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The assignee's external account, when the ticket has one."
+          },
+          "assignee_display": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The assignee's display name, when the external system provided one."
+          },
+          "external_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The external version token, when the external system issues one."
+          },
+          "issue_type": {
+            "type": "string",
+            "description": "The external issue type."
+          },
+          "observation_id": {
+            "type": "string",
+            "description": "The observation."
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the observation was taken."
+          },
+          "status_category": {
+            "type": "string",
+            "description": "Its category, as the external system spells it."
+          },
+          "status_id": {
+            "type": "string",
+            "description": "The external status identifier."
+          },
+          "status_name": {
+            "type": "string",
+            "description": "Its human name, as the external system spells it."
+          }
+        }
+      },
       "PermissionAckDto": {
         "type": "object",
         "description": "The runtime's answer to one permission response.",
@@ -933,6 +2321,212 @@
           "decision": {
             "type": "string",
             "description": "The answer."
+          }
+        }
+      },
+      "PhaseDto": {
+        "type": "object",
+        "description": "One phase of a work profile, with the gates evaluated at its end.",
+        "required": [
+          "phase",
+          "label",
+          "gates"
+        ],
+        "properties": {
+          "gates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The gates evaluated at the end of it."
+          },
+          "label": {
+            "type": "string",
+            "description": "Its human label."
+          },
+          "phase": {
+            "type": "string",
+            "description": "The phase."
+          },
+          "rejection_route": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where a rejection returns the work to."
+          }
+        }
+      },
+      "PlanDto": {
+        "type": "object",
+        "description": "One planning pass, reported and not committed.",
+        "required": [
+          "project_id",
+          "taken_at",
+          "considered",
+          "admitted",
+          "without_workflow",
+          "decisions",
+          "assembled_defaults"
+        ],
+        "properties": {
+          "admitted": {
+            "type": "integer",
+            "description": "How many the pass would admit.",
+            "minimum": 0
+          },
+          "assembled_defaults": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Facts about this pass a reader must not mistake for stored state.\n\nNames each field of the snapshot that had no source in schema v1 and the\nvalue it was assembled with, so an answer is never read as evidence of\nsomething nobody recorded."
+          },
+          "considered": {
+            "type": "integer",
+            "description": "How many tasks were looked at.",
+            "minimum": 0
+          },
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecisionDto"
+            },
+            "description": "Every decision, in the order the pass considered them."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project the pass was taken for."
+          },
+          "taken_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The instant every judgement was made against."
+          },
+          "without_workflow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tasks with no active workflow, which are therefore not candidates."
+          }
+        }
+      },
+      "ProfileDto": {
+        "type": "object",
+        "description": "One resolved work-profile revision, as its phase and gate structure.\n\nThe whole [`kontor_core::spec::WorkProfileSpec`] is deliberately not served:\nit carries a runtime-routing reference, and a read route is not the place to\nstart naming where runs go. What a caller needs to reason about a task is the\nphase DAG and the gates, which is what this is.",
+        "required": [
+          "profile",
+          "version",
+          "name",
+          "entry_phase",
+          "terminal_phases",
+          "phases"
+        ],
+        "properties": {
+          "entry_phase": {
+            "type": "string",
+            "description": "The single entry phase."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its human name."
+          },
+          "phases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhaseDto"
+            },
+            "description": "Every phase, in declaration order."
+          },
+          "profile": {
+            "type": "string",
+            "description": "The profile key. An open, deployment-defined key."
+          },
+          "terminal_phases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The declared terminal phases."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The immutable revision of that key.",
+            "minimum": 0
+          }
+        }
+      },
+      "ProjectDto": {
+        "type": "object",
+        "description": "Read one project's identity and revision.",
+        "required": [
+          "project_id",
+          "name",
+          "root_path",
+          "revision",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its human name."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "root_path": {
+            "type": "string",
+            "description": "Its root path on disk."
+          }
+        }
+      },
+      "ProjectEntryDto": {
+        "type": "object",
+        "description": "One project, as a list entry.",
+        "required": [
+          "project_id",
+          "name",
+          "root_path",
+          "revision",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its human name."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "root_path": {
+            "type": "string",
+            "description": "Its root path on disk."
           }
         }
       },
@@ -1089,6 +2683,78 @@
           }
         }
       },
+      "ReceiptInspectionDto": {
+        "type": "object",
+        "description": "One command receipt and every state it has been through.\n\nThis is what makes an idempotent replay checkable rather than merely claimed:\na caller that retried a command can read the receipt its key recorded and see\nthat the history did not grow.\n\nThe stored correlation and native identity are deliberately absent, exactly as\nthey are from `ReceiptDto`: a correlation is the dispatcher's private handle on\na foreign system.",
+        "required": [
+          "receipt_id",
+          "project_id",
+          "idempotency_key",
+          "kind",
+          "target",
+          "target_revision",
+          "state",
+          "attempts",
+          "history",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many dispatch attempts have been made.",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the intent was recorded."
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReceiptTransitionDto"
+            },
+            "description": "Every state it has been through, oldest first."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "description": "The caller's idempotency key."
+          },
+          "kind": {
+            "type": "string",
+            "description": "What was asked for."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project that owns it."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "The receipt."
+          },
+          "state": {
+            "type": "string",
+            "description": "How far it has got."
+          },
+          "target": {
+            "type": "object",
+            "description": "Which aggregate it targets."
+          },
+          "target_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision the intent was computed against.",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it last changed."
+          }
+        }
+      },
       "ReceiptResponse": {
         "allOf": [
           {
@@ -1109,6 +2775,32 @@
           }
         ],
         "description": "A receipt, and whether this call is the one that recorded it."
+      },
+      "ReceiptTransitionDto": {
+        "type": "object",
+        "description": "One step of a receipt's durable history.",
+        "required": [
+          "sequence",
+          "state",
+          "recorded_at"
+        ],
+        "properties": {
+          "recorded_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it moved."
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Position in the receipt's history, starting at 1.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "The state the receipt moved to."
+          }
+        }
       },
       "RunDto": {
         "type": "object",
@@ -1199,6 +2891,228 @@
           "team_run_id": {
             "type": "string",
             "description": "The team run it serves."
+          }
+        }
+      },
+      "RunEntryDto": {
+        "type": "object",
+        "description": "One agent run, as a list entry.",
+        "required": [
+          "agent_run_id",
+          "team_run_id",
+          "role",
+          "lifecycle",
+          "desired",
+          "observed",
+          "derived",
+          "revision",
+          "created_at"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The coding account it is pinned to, if any."
+          },
+          "agent_run_id": {
+            "type": "string",
+            "description": "The agent run."
+          },
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it closed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "derived": {
+            "type": "string",
+            "description": "What Kontor concluded."
+          },
+          "desired": {
+            "type": "string",
+            "description": "What Kontor asked for."
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "Its own lifecycle."
+          },
+          "observed": {
+            "type": "string",
+            "description": "What the runtime last reported."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "role": {
+            "type": "string",
+            "description": "The role slot it fills."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "The team run it serves."
+          }
+        }
+      },
+      "RuntimeDto": {
+        "type": "object",
+        "description": "What one configured runtime family reports about itself right now.",
+        "required": [
+          "runtime_kind",
+          "reachable",
+          "supported"
+        ],
+        "properties": {
+          "account_env": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether it can prove which coding account a run executes as."
+          },
+          "max_concurrent_sessions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many concurrent sessions it declares.",
+            "minimum": 0
+          },
+          "max_history_page": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The largest history page it declares.",
+            "minimum": 0
+          },
+          "max_message_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The largest message it declares it will take, in bytes.",
+            "minimum": 0
+          },
+          "reachable": {
+            "type": "boolean",
+            "description": "Whether the runtime answered the capability question at all.\n\nThis is the health signal, and it is a fact about the channel: a family\nthat could not be reached reports `false` here and no capabilities, rather\nthan the capabilities it had last time."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The runtime family. Never an endpoint."
+          },
+          "supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The operations it currently declares, when it answered."
+          },
+          "trust_grade": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How much of what it reports may be acted on, when it answered."
+          }
+        }
+      },
+      "SnapshotDto_AccountDto": {
+        "type": "object",
+        "description": "A point-in-time value and the position it is consistent with.\n\nIt is the wire spelling of `kontor-core`'s own `SnapshotEnvelope`: a\nsubscriber resumes strictly after `snapshot_cursor`, in the same Realm.",
+        "required": [
+          "realm_id",
+          "snapshot_cursor",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this snapshot came from."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position it is consistent with."
+          },
+          "value": {
+            "type": "object",
+            "description": "One coding-account profile, as a policy reader sees it.\n\nThree of the stored fields — the environment map, the routing metadata and the\ndeclared capability document — are deliberately absent. Every one of them is\nnon-secret by construction, and every one of them is also the natural place a\ndeployment would eventually write an endpoint. A view that never carries them\ncannot start carrying one by accident.",
+            "required": [
+              "account_profile_id",
+              "project_id",
+              "label",
+              "harness",
+              "credential_kind",
+              "credential_alias",
+              "enabled",
+              "revision"
+            ],
+            "properties": {
+              "account_profile_id": {
+                "type": "string",
+                "description": "The profile."
+              },
+              "credential_alias": {
+                "type": "string",
+                "description": "The opaque approved alias. Never a credential, and never where one\nresolves to."
+              },
+              "credential_kind": {
+                "type": "string",
+                "description": "Which approved family the credential alias belongs to."
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Whether launches may select it."
+              },
+              "external_account_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The external account id it authenticates as, when it records one."
+              },
+              "harness": {
+                "type": "string",
+                "description": "The runtime family it authenticates against."
+              },
+              "label": {
+                "type": "string",
+                "description": "Its human label."
+              },
+              "project_id": {
+                "type": "string",
+                "description": "The project that owns it."
+              },
+              "provider_identity": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The non-secret provider identity hint, when the deployment records one."
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The revision a write must present.",
+                "minimum": 0
+              }
+            }
           }
         }
       },
@@ -1496,6 +3410,210 @@
           }
         }
       },
+      "TaskSummaryDto": {
+        "type": "object",
+        "description": "One task, as a list entry.\n\nIt is deliberately smaller than `TaskDto`: a list is for finding the task you\nwant, and the gates, the pinned revisions and the workflow are one read away\non the snapshot route.",
+        "required": [
+          "task_id",
+          "title",
+          "state",
+          "revision",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "module": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The module it contends for, if any."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "Its lifecycle state."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task."
+          },
+          "title": {
+            "type": "string",
+            "description": "Its title."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it last changed."
+          }
+        }
+      },
+      "TicketDto": {
+        "type": "object",
+        "description": "One ticket, with the evidence this Realm holds about it.",
+        "required": [
+          "link",
+          "conflicts",
+          "unresolved_conflicts"
+        ],
+        "properties": {
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConflictDto"
+            },
+            "description": "Every conflict, newest first."
+          },
+          "link": {
+            "$ref": "#/components/schemas/TicketLinkDto",
+            "description": "The link itself."
+          },
+          "observed": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ObservationDto",
+                "description": "The newest observation, or `null` when the ticket has never been observed.\n\nThis is where the *live* assignee and status appear, as last seen. It is an\nobservation and never a claim about now."
+              }
+            ]
+          },
+          "projection": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TicketProjectionDto",
+                "description": "The newest projection, or `null` when none has been computed."
+              }
+            ]
+          },
+          "unresolved_conflicts": {
+            "type": "integer",
+            "description": "How many of those are still unresolved.",
+            "minimum": 0
+          }
+        }
+      },
+      "TicketLinkDto": {
+        "type": "object",
+        "description": "One external-ticket link, as a list entry.",
+        "required": [
+          "link_id",
+          "task_id",
+          "connector",
+          "external_issue_key",
+          "revision",
+          "created_at"
+        ],
+        "properties": {
+          "connector": {
+            "type": "string",
+            "description": "The connector implementation."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the link was made."
+          },
+          "external_issue_key": {
+            "type": "string",
+            "description": "The external issue key."
+          },
+          "link_id": {
+            "type": "string",
+            "description": "The link."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task it links."
+          }
+        }
+      },
+      "TicketProjectionDto": {
+        "type": "object",
+        "description": "The projection this Realm computed for one ticket.\n\nPublished as `TicketProjectionDto` rather than under its Rust name. `utoipa`\nkeys the contract document by bare type name, and [`crate::dto::ProjectionDto`]\n— the orthogonal state of a *run* — already holds `ProjectionDto` there. Two\nregistrations under one name do not collide loudly: the second silently\nreplaces the first, so `RunDto.projection` would resolve to this shape and\nevery generated client would be wrong about it while the wire stayed right.",
+        "required": [
+          "projection_id",
+          "link_revision",
+          "field_spec_project",
+          "field_spec_issue_type",
+          "field_spec_version",
+          "fields",
+          "comment_policy",
+          "projection_hash",
+          "computed_at"
+        ],
+        "properties": {
+          "comment_policy": {
+            "type": "string",
+            "description": "The comment policy in force. Always `inbound_only`: schema v1 has no\noutbound comment table or column."
+          },
+          "computed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was computed."
+          },
+          "external_comment_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How far inbound comments have been mirrored."
+          },
+          "field_spec_issue_type": {
+            "type": "string",
+            "description": "Its issue type."
+          },
+          "field_spec_project": {
+            "type": "string",
+            "description": "The pinned field specification's external project."
+          },
+          "field_spec_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its pinned revision.",
+            "minimum": 0
+          },
+          "fields": {
+            "type": "object",
+            "description": "The fields this Realm would write."
+          },
+          "link_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The link revision it was computed against.",
+            "minimum": 0
+          },
+          "projection_hash": {
+            "type": "string",
+            "description": "The digest of the projection."
+          },
+          "projection_id": {
+            "type": "string",
+            "description": "The projection."
+          }
+        }
+      },
       "TimelineDto": {
         "type": "object",
         "description": "One page of a session's recorded content.",
@@ -1613,6 +3731,1323 @@
             "minimum": 0
           }
         }
+      },
+      "TransitionDto": {
+        "type": "object",
+        "description": "One convergence attempt.",
+        "required": [
+          "receipt_id",
+          "task_id",
+          "milestone",
+          "target_status_id",
+          "principal_account_id",
+          "assignment_prerequisite",
+          "dispatched_at"
+        ],
+        "properties": {
+          "acknowledged_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the external system acknowledged it."
+          },
+          "assignment_prerequisite": {
+            "type": "boolean",
+            "description": "Whether an assignment had to happen first."
+          },
+          "confirmed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When a *refetched* observation confirmed it.\n\n`null` means unconfirmed, which is never the same as failed: an\nacknowledgement is not a confirmation, and this column is only written when\nthe external system was read again."
+          },
+          "dispatched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was dispatched."
+          },
+          "milestone": {
+            "type": "string",
+            "description": "The internal milestone being converged to."
+          },
+          "principal_account_id": {
+            "type": "string",
+            "description": "The external principal it acted as."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "The receipt."
+          },
+          "refetched_observation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The observation that confirmed it."
+          },
+          "target_status_id": {
+            "type": "string",
+            "description": "The external status it aimed at."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task whose state was being projected."
+          },
+          "transition_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The external transition used. `null` for an assignee-only convergence."
+          }
+        }
+      },
+      "ViewDto_ContentionDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "object",
+            "description": "What is currently held, and therefore what a scheduling pass would contend\nwith.\n\nThis is evidence and **not a plan**. A plan is `kontor_scheduler::plan`'s\nanswer over a `SchedulingSnapshot`, and that snapshot needs authorization,\ncalendar, fleet-preflight and external-work evidence this build has no read\npath for. Serving contention under an honest name is the difference between\ntelling an operator what is known and inventing a decision.",
+            "required": [
+              "observed_at",
+              "module_claims",
+              "worktree_leases",
+              "tasks_with_open_runs"
+            ],
+            "properties": {
+              "module_claims": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ModuleClaimDto"
+                },
+                "description": "Every live module claim in the Realm."
+              },
+              "observed_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the contention was read."
+              },
+              "tasks_with_open_runs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Every task with an open run."
+              },
+              "worktree_leases": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Every worktree currently leased."
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_GateInspectionDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "object",
+            "description": "A task's active workflow, the gates reduced from its evaluations, and the\nappend-only evidence behind them.",
+            "required": [
+              "task_id",
+              "gates",
+              "evaluations"
+            ],
+            "properties": {
+              "current_phase": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The phase the active workflow is in."
+              },
+              "evaluations": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/GateEvaluationDto"
+                },
+                "description": "Every recorded verdict, oldest first."
+              },
+              "gates": {
+                "type": "object",
+                "description": "The reduced gate states, keyed by gate."
+              },
+              "profile": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ProfileDto",
+                    "description": "The profile revision the workflow froze, as its phase and gate structure."
+                  }
+                ]
+              },
+              "task_id": {
+                "type": "string",
+                "description": "The task."
+              },
+              "workflow_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The active workflow, or `null` when the task has none."
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_MissionDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "object",
+            "description": "One team run — a mission — and the template revision it froze.",
+            "required": [
+              "team_run_id",
+              "project_id",
+              "task_id",
+              "team_template",
+              "team_template_version",
+              "lifecycle",
+              "revision",
+              "created_at"
+            ],
+            "properties": {
+              "closed_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time",
+                "description": "When it closed."
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When it was created."
+              },
+              "lifecycle": {
+                "type": "string",
+                "description": "Its lifecycle."
+              },
+              "project_id": {
+                "type": "string",
+                "description": "The project it belongs to."
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The revision a write must present.",
+                "minimum": 0
+              },
+              "task_id": {
+                "type": "string",
+                "description": "The task it serves."
+              },
+              "team_run_id": {
+                "type": "string",
+                "description": "The team run."
+              },
+              "team_template": {
+                "type": "string",
+                "description": "The team template it froze."
+              },
+              "team_template_version": {
+                "type": "integer",
+                "format": "int32",
+                "description": "That template's pinned revision.",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_PlanDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "object",
+            "description": "One planning pass, reported and not committed.",
+            "required": [
+              "project_id",
+              "taken_at",
+              "considered",
+              "admitted",
+              "without_workflow",
+              "decisions",
+              "assembled_defaults"
+            ],
+            "properties": {
+              "admitted": {
+                "type": "integer",
+                "description": "How many the pass would admit.",
+                "minimum": 0
+              },
+              "assembled_defaults": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Facts about this pass a reader must not mistake for stored state.\n\nNames each field of the snapshot that had no source in schema v1 and the\nvalue it was assembled with, so an answer is never read as evidence of\nsomething nobody recorded."
+              },
+              "considered": {
+                "type": "integer",
+                "description": "How many tasks were looked at.",
+                "minimum": 0
+              },
+              "decisions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DecisionDto"
+                },
+                "description": "Every decision, in the order the pass considered them."
+              },
+              "project_id": {
+                "type": "string",
+                "description": "The project the pass was taken for."
+              },
+              "taken_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "The instant every judgement was made against."
+              },
+              "without_workflow": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Tasks with no active workflow, which are therefore not candidates."
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_ProfileDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "object",
+            "description": "One resolved work-profile revision, as its phase and gate structure.\n\nThe whole [`kontor_core::spec::WorkProfileSpec`] is deliberately not served:\nit carries a runtime-routing reference, and a read route is not the place to\nstart naming where runs go. What a caller needs to reason about a task is the\nphase DAG and the gates, which is what this is.",
+            "required": [
+              "profile",
+              "version",
+              "name",
+              "entry_phase",
+              "terminal_phases",
+              "phases"
+            ],
+            "properties": {
+              "entry_phase": {
+                "type": "string",
+                "description": "The single entry phase."
+              },
+              "name": {
+                "type": "string",
+                "description": "Its human name."
+              },
+              "phases": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PhaseDto"
+                },
+                "description": "Every phase, in declaration order."
+              },
+              "profile": {
+                "type": "string",
+                "description": "The profile key. An open, deployment-defined key."
+              },
+              "terminal_phases": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The declared terminal phases."
+              },
+              "version": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The immutable revision of that key.",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_ProjectDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "object",
+            "description": "Read one project's identity and revision.",
+            "required": [
+              "project_id",
+              "name",
+              "root_path",
+              "revision",
+              "created_at"
+            ],
+            "properties": {
+              "created_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When it was created."
+              },
+              "name": {
+                "type": "string",
+                "description": "Its human name."
+              },
+              "project_id": {
+                "type": "string",
+                "description": "The project."
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The revision a write must present.",
+                "minimum": 0
+              },
+              "root_path": {
+                "type": "string",
+                "description": "Its root path on disk."
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_ReceiptInspectionDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "object",
+            "description": "One command receipt and every state it has been through.\n\nThis is what makes an idempotent replay checkable rather than merely claimed:\na caller that retried a command can read the receipt its key recorded and see\nthat the history did not grow.\n\nThe stored correlation and native identity are deliberately absent, exactly as\nthey are from `ReceiptDto`: a correlation is the dispatcher's private handle on\na foreign system.",
+            "required": [
+              "receipt_id",
+              "project_id",
+              "idempotency_key",
+              "kind",
+              "target",
+              "target_revision",
+              "state",
+              "attempts",
+              "history",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "attempts": {
+                "type": "integer",
+                "format": "int32",
+                "description": "How many dispatch attempts have been made.",
+                "minimum": 0
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the intent was recorded."
+              },
+              "history": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ReceiptTransitionDto"
+                },
+                "description": "Every state it has been through, oldest first."
+              },
+              "idempotency_key": {
+                "type": "string",
+                "description": "The caller's idempotency key."
+              },
+              "kind": {
+                "type": "string",
+                "description": "What was asked for."
+              },
+              "project_id": {
+                "type": "string",
+                "description": "The project that owns it."
+              },
+              "receipt_id": {
+                "type": "string",
+                "description": "The receipt."
+              },
+              "state": {
+                "type": "string",
+                "description": "How far it has got."
+              },
+              "target": {
+                "type": "object",
+                "description": "Which aggregate it targets."
+              },
+              "target_revision": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The revision the intent was computed against.",
+                "minimum": 0
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When it last changed."
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_TicketDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "object",
+            "description": "One ticket, with the evidence this Realm holds about it.",
+            "required": [
+              "link",
+              "conflicts",
+              "unresolved_conflicts"
+            ],
+            "properties": {
+              "conflicts": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ConflictDto"
+                },
+                "description": "Every conflict, newest first."
+              },
+              "link": {
+                "$ref": "#/components/schemas/TicketLinkDto",
+                "description": "The link itself."
+              },
+              "observed": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ObservationDto",
+                    "description": "The newest observation, or `null` when the ticket has never been observed.\n\nThis is where the *live* assignee and status appear, as last seen. It is an\nobservation and never a claim about now."
+                  }
+                ]
+              },
+              "projection": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TicketProjectionDto",
+                    "description": "The newest projection, or `null` when none has been computed."
+                  }
+                ]
+              },
+              "unresolved_conflicts": {
+                "type": "integer",
+                "description": "How many of those are still unresolved.",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_Vec_AccountDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One coding-account profile, as a policy reader sees it.\n\nThree of the stored fields — the environment map, the routing metadata and the\ndeclared capability document — are deliberately absent. Every one of them is\nnon-secret by construction, and every one of them is also the natural place a\ndeployment would eventually write an endpoint. A view that never carries them\ncannot start carrying one by accident.",
+              "required": [
+                "account_profile_id",
+                "project_id",
+                "label",
+                "harness",
+                "credential_kind",
+                "credential_alias",
+                "enabled",
+                "revision"
+              ],
+              "properties": {
+                "account_profile_id": {
+                  "type": "string",
+                  "description": "The profile."
+                },
+                "credential_alias": {
+                  "type": "string",
+                  "description": "The opaque approved alias. Never a credential, and never where one\nresolves to."
+                },
+                "credential_kind": {
+                  "type": "string",
+                  "description": "Which approved family the credential alias belongs to."
+                },
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Whether launches may select it."
+                },
+                "external_account_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The external account id it authenticates as, when it records one."
+                },
+                "harness": {
+                  "type": "string",
+                  "description": "The runtime family it authenticates against."
+                },
+                "label": {
+                  "type": "string",
+                  "description": "Its human label."
+                },
+                "project_id": {
+                  "type": "string",
+                  "description": "The project that owns it."
+                },
+                "provider_identity": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The non-secret provider identity hint, when the deployment records one."
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "The revision a write must present.",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_Vec_CommentDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One inbound comment.",
+              "required": [
+                "external_comment_id",
+                "body_hash",
+                "author_account_id",
+                "external_created_at",
+                "external_updated_at",
+                "observed_at",
+                "body"
+              ],
+              "properties": {
+                "author_account_id": {
+                  "type": "string",
+                  "description": "The author's external account."
+                },
+                "author_display": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The author's display name, when the external system provided one."
+                },
+                "body": {
+                  "type": "string",
+                  "description": "The comment text, as mirrored."
+                },
+                "body_hash": {
+                  "type": "string",
+                  "description": "The digest of the body, which is half this revision's identity."
+                },
+                "external_comment_id": {
+                  "type": "string",
+                  "description": "The external system's own comment id."
+                },
+                "external_created_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When it was created externally."
+                },
+                "external_updated_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When it was last edited externally."
+                },
+                "observed_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When this Realm mirrored it."
+                },
+                "supersedes_hash": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The revision this one replaces, for an edit."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_Vec_MissionEntryDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One mission, as a list entry.",
+              "required": [
+                "team_run_id",
+                "task_id",
+                "team_template",
+                "team_template_version",
+                "lifecycle",
+                "revision",
+                "created_at"
+              ],
+              "properties": {
+                "closed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When it closed."
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When it was created."
+                },
+                "lifecycle": {
+                  "type": "string",
+                  "description": "Its lifecycle."
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "The revision a write must present.",
+                  "minimum": 0
+                },
+                "task_id": {
+                  "type": "string",
+                  "description": "The task it serves."
+                },
+                "team_run_id": {
+                  "type": "string",
+                  "description": "The team run."
+                },
+                "team_template": {
+                  "type": "string",
+                  "description": "The team template it froze."
+                },
+                "team_template_version": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "That template's pinned revision.",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_Vec_NativeSessionDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One native session a runtime currently owns.",
+              "required": [
+                "runtime_kind",
+                "native_id",
+                "host",
+                "generation",
+                "bound"
+              ],
+              "properties": {
+                "bound": {
+                  "type": "boolean",
+                  "description": "Whether this Realm already holds a binding for it.\n\nThe point of a discovery read: a session the Realm does not know about is an\nadoption candidate, and one it does know about is not."
+                },
+                "generation": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "The runtime generation it belongs to.",
+                  "minimum": 0
+                },
+                "host": {
+                  "type": "string",
+                  "description": "The host label the runtime reports for itself."
+                },
+                "native_id": {
+                  "type": "string",
+                  "description": "The runtime's own session id. Correlation evidence, never an identity."
+                },
+                "runtime_kind": {
+                  "type": "string",
+                  "description": "The runtime family that owns it."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_Vec_ProjectEntryDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One project, as a list entry.",
+              "required": [
+                "project_id",
+                "name",
+                "root_path",
+                "revision",
+                "created_at"
+              ],
+              "properties": {
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When it was created."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Its human name."
+                },
+                "project_id": {
+                  "type": "string",
+                  "description": "The project."
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "The revision a write must present.",
+                  "minimum": 0
+                },
+                "root_path": {
+                  "type": "string",
+                  "description": "Its root path on disk."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_Vec_RunEntryDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One agent run, as a list entry.",
+              "required": [
+                "agent_run_id",
+                "team_run_id",
+                "role",
+                "lifecycle",
+                "desired",
+                "observed",
+                "derived",
+                "revision",
+                "created_at"
+              ],
+              "properties": {
+                "account_profile_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The coding account it is pinned to, if any."
+                },
+                "agent_run_id": {
+                  "type": "string",
+                  "description": "The agent run."
+                },
+                "closed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When it closed."
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When it was created."
+                },
+                "derived": {
+                  "type": "string",
+                  "description": "What Kontor concluded."
+                },
+                "desired": {
+                  "type": "string",
+                  "description": "What Kontor asked for."
+                },
+                "lifecycle": {
+                  "type": "string",
+                  "description": "Its own lifecycle."
+                },
+                "observed": {
+                  "type": "string",
+                  "description": "What the runtime last reported."
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "The revision a write must present.",
+                  "minimum": 0
+                },
+                "role": {
+                  "type": "string",
+                  "description": "The role slot it fills."
+                },
+                "team_run_id": {
+                  "type": "string",
+                  "description": "The team run it serves."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_Vec_RuntimeDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "What one configured runtime family reports about itself right now.",
+              "required": [
+                "runtime_kind",
+                "reachable",
+                "supported"
+              ],
+              "properties": {
+                "account_env": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ],
+                  "description": "Whether it can prove which coding account a run executes as."
+                },
+                "max_concurrent_sessions": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "How many concurrent sessions it declares.",
+                  "minimum": 0
+                },
+                "max_history_page": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "The largest history page it declares.",
+                  "minimum": 0
+                },
+                "max_message_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "The largest message it declares it will take, in bytes.",
+                  "minimum": 0
+                },
+                "reachable": {
+                  "type": "boolean",
+                  "description": "Whether the runtime answered the capability question at all.\n\nThis is the health signal, and it is a fact about the channel: a family\nthat could not be reached reports `false` here and no capabilities, rather\nthan the capabilities it had last time."
+                },
+                "runtime_kind": {
+                  "type": "string",
+                  "description": "The runtime family. Never an endpoint."
+                },
+                "supported": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The operations it currently declares, when it answered."
+                },
+                "trust_grade": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "How much of what it reports may be acted on, when it answered."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_Vec_TaskSummaryDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One task, as a list entry.\n\nIt is deliberately smaller than `TaskDto`: a list is for finding the task you\nwant, and the gates, the pinned revisions and the workflow are one read away\non the snapshot route.",
+              "required": [
+                "task_id",
+                "title",
+                "state",
+                "revision",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When it was created."
+                },
+                "module": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The module it contends for, if any."
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "The revision a write must present.",
+                  "minimum": 0
+                },
+                "state": {
+                  "type": "string",
+                  "description": "Its lifecycle state."
+                },
+                "task_id": {
+                  "type": "string",
+                  "description": "The task."
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Its title."
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When it last changed."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_Vec_TicketLinkDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One external-ticket link, as a list entry.",
+              "required": [
+                "link_id",
+                "task_id",
+                "connector",
+                "external_issue_key",
+                "revision",
+                "created_at"
+              ],
+              "properties": {
+                "connector": {
+                  "type": "string",
+                  "description": "The connector implementation."
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When the link was made."
+                },
+                "external_issue_key": {
+                  "type": "string",
+                  "description": "The external issue key."
+                },
+                "link_id": {
+                  "type": "string",
+                  "description": "The link."
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "The revision a write must present.",
+                  "minimum": 0
+                },
+                "task_id": {
+                  "type": "string",
+                  "description": "The task it links."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ViewDto_Vec_TransitionDto": {
+        "type": "object",
+        "description": "A Realm-qualified view.\n\nThe Realm is named on every answer for the same reason it is named on a\nsnapshot: a value that leaves this process is read as `(realm_id, …)` or not\nat all.",
+        "required": [
+          "realm_id",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this view came from."
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One convergence attempt.",
+              "required": [
+                "receipt_id",
+                "task_id",
+                "milestone",
+                "target_status_id",
+                "principal_account_id",
+                "assignment_prerequisite",
+                "dispatched_at"
+              ],
+              "properties": {
+                "acknowledged_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When the external system acknowledged it."
+                },
+                "assignment_prerequisite": {
+                  "type": "boolean",
+                  "description": "Whether an assignment had to happen first."
+                },
+                "confirmed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When a *refetched* observation confirmed it.\n\n`null` means unconfirmed, which is never the same as failed: an\nacknowledgement is not a confirmation, and this column is only written when\nthe external system was read again."
+                },
+                "dispatched_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When it was dispatched."
+                },
+                "milestone": {
+                  "type": "string",
+                  "description": "The internal milestone being converged to."
+                },
+                "principal_account_id": {
+                  "type": "string",
+                  "description": "The external principal it acted as."
+                },
+                "receipt_id": {
+                  "type": "string",
+                  "description": "The receipt."
+                },
+                "refetched_observation_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The observation that confirmed it."
+                },
+                "target_status_id": {
+                  "type": "string",
+                  "description": "The external status it aimed at."
+                },
+                "task_id": {
+                  "type": "string",
+                  "description": "The task whose state was being projected."
+                },
+                "transition_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The external transition used. `null` for an assignee-only convergence."
+                }
+              }
+            }
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -1627,6 +5062,10 @@
     {
       "name": "control",
       "description": "Liveness, identity, snapshots, commands and the durable event feed."
+    },
+    {
+      "name": "query",
+      "description": "The KON-MVP-16 read amendment: what a CLI or MCP caller needs to find and explain work."
     },
     {
       "name": "sessions",
