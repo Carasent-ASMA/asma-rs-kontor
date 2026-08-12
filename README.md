@@ -217,6 +217,42 @@ the Apache-2.0 option provides an explicit patent grant. See
 [NOTICE](NOTICE), [Provenance](PROVENANCE.md) and
 [Third-party notices](THIRD_PARTY_NOTICES.md).
 
+## The acceptance proof (KON-MVP-18)
+
+One command runs the whole disposable mini-project proof and writes the evidence
+bundle that accepts or rejects the MVP:
+
+```sh
+cargo test -p kontor-tests-e2e --test pilot -- --nocapture
+```
+
+It is deterministic and offline — two scripted runtimes, no socket, no child
+process, no clock. Each run writes an ephemeral bundle to
+`target/kontor-pilot/<run-id>/` and a retained one to
+`docs/evidence/KON-MVP-18/<run-id>/`; start at `REPORT.md`, which maps every
+acceptance criterion to the artifacts backing it, and `verdict.json`, which
+carries the overall accept/reject. The run id is derived from the commit and the
+fixture digests, so rerunning an unchanged tree reproduces the same bundle
+rather than accumulating one directory per invocation.
+
+Every criterion is registered up front, so a criterion the driver never answers
+is recorded `missing` and rejects the run on its own — an unrun case cannot read
+as a passing one. A case blocked on a seam that has not merged names the ticket
+that owns it and rejects the bundle without failing the gate; a case that
+*fails* is a defect in the merged tree, and fails the gate.
+
+Verifying the installed harnesses is a separate, opt-in question:
+
+```sh
+KONTOR_PILOT_LIVE=1 cargo test -p kontor-tests-e2e --test pilot_live -- --nocapture
+```
+
+Without the variable it asserts nothing and says so, because a probe that passes
+silently when a runtime is absent teaches an operator to read green as "the live
+harness works".
+
+## Dependency policy (CON-007)
+
 Paseo, Agent Orchestrator, Codex and the `asma` CLI are separate installations;
 their code and licenses are not included here. Public release remains subject
 to the reviews listed in [Provenance](PROVENANCE.md).

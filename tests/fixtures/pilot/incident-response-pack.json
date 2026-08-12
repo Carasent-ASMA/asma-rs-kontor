@@ -1,0 +1,208 @@
+{
+  "schema_version": 1,
+  "pack_id": "kontor-pilot-incident",
+  "version": 1,
+  "manifest": [
+    {
+      "category": "incident-response-v1",
+      "label": "Incident response (pilot)",
+      "availability": "seeded",
+      "profile": "incident-response-v1",
+      "profile_version": 1
+    }
+  ],
+  "roles": [
+    { "role": "ir-commander", "version": 1, "label": "Incident commander" },
+    { "role": "ir-responder", "version": 1, "label": "Incident responder" },
+    { "role": "ir-auditor", "version": 1, "label": "Independent auditor" }
+  ],
+  "skills": [
+    { "skill": "ir-triage", "version": 1, "label": "Incident triage" },
+    { "skill": "ir-remediation", "version": 1, "label": "Remediation" },
+    { "skill": "ir-audit", "version": 1, "label": "Independent audit" }
+  ],
+  "contexts": [],
+  "personas": [],
+  "teams": [
+    {
+      "schema_version": 1,
+      "template_id": "01936f5a-0000-7000-8000-0000000000ff",
+      "version": 1,
+      "name": "Incident response team",
+      "roles": [
+        { "role": { "role": "ir-commander", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "ir-responder", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "ir-auditor", "version": 1 }, "min_slots": 1, "max_slots": 1 }
+      ],
+      "slots": [
+        {
+          "id": "ir-commander",
+          "role": { "role": "ir-commander", "version": 1 },
+          "skills": [{ "skill": "ir-triage", "version": 1 }],
+          "context": null,
+          "may_evaluate": ["ir-containment-gate"],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "ir-responder",
+          "role": { "role": "ir-responder", "version": 1 },
+          "skills": [{ "skill": "ir-remediation", "version": 1 }],
+          "context": null,
+          "may_evaluate": ["ir-recovery-gate"],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "ir-auditor",
+          "role": { "role": "ir-auditor", "version": 1 },
+          "skills": [{ "skill": "ir-audit", "version": 1 }],
+          "context": null,
+          "may_evaluate": ["ir-audit-gate"],
+          "may_waive": ["ir-containment-gate"],
+          "waiver_policy": null
+        }
+      ],
+      "handoffs": [
+        {
+          "from_slot": "ir-commander",
+          "to_slot": "ir-responder",
+          "after_phase": null,
+          "required_artifacts": []
+        },
+        {
+          "from_slot": "ir-responder",
+          "to_slot": "ir-auditor",
+          "after_phase": null,
+          "required_artifacts": []
+        }
+      ],
+      "max_successor_depth": 3,
+      "max_handoff_depth": 8
+    }
+  ],
+  "profiles": [
+    {
+      "schema_version": 1,
+      "id": "incident-response-v1",
+      "version": 1,
+      "name": "Incident response",
+      "phases": [
+        {
+          "id": "triage",
+          "label": "Triage",
+          "required_artifacts": ["incident-timeline"],
+          "gates": [],
+          "rejection_route": null
+        },
+        {
+          "id": "containment",
+          "label": "Containment",
+          "required_artifacts": ["containment-record"],
+          "gates": ["ir-containment-gate"],
+          "rejection_route": "triage"
+        },
+        {
+          "id": "recovery",
+          "label": "Recovery",
+          "required_artifacts": ["recovery-verification"],
+          "gates": ["ir-recovery-gate"],
+          "rejection_route": "containment"
+        },
+        {
+          "id": "independent-audit",
+          "label": "Independent audit",
+          "required_artifacts": ["audit-report"],
+          "gates": ["ir-audit-gate"],
+          "rejection_route": "triage"
+        }
+      ],
+      "edges": [
+        { "from": "triage", "to": "containment", "handoff_role": "ir-responder" },
+        { "from": "containment", "to": "recovery", "handoff_role": "ir-responder" },
+        { "from": "recovery", "to": "independent-audit", "handoff_role": "ir-auditor" }
+      ],
+      "entry_phase": "triage",
+      "terminal_phases": ["independent-audit"],
+      "roles": [
+        { "role": "ir-commander", "version": 1 },
+        { "role": "ir-responder", "version": 1 },
+        { "role": "ir-auditor", "version": 1 }
+      ],
+      "skills": [
+        { "skill": "ir-triage", "version": 1 },
+        { "skill": "ir-remediation", "version": 1 },
+        { "skill": "ir-audit", "version": 1 }
+      ],
+      "team_template": { "template_id": "01936f5a-0000-7000-8000-0000000000ff", "version": 1 },
+      "artifacts": [
+        {
+          "key": "incident-timeline",
+          "label": "Incident timeline",
+          "producer_phase": "triage",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "containment-record",
+          "label": "Containment record",
+          "producer_phase": "containment",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "recovery-verification",
+          "label": "Recovery verification",
+          "producer_phase": "recovery",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "audit-report",
+          "label": "Independent audit report",
+          "producer_phase": "independent-audit",
+          "content_type": "report",
+          "evidence_required": true
+        }
+      ],
+      "gates": [
+        {
+          "id": "ir-containment-gate",
+          "phase": "containment",
+          "evaluator_roles": ["ir-commander"],
+          "required_evidence": ["incident-timeline", "containment-record"],
+          "rejection_target": "triage",
+          "waiver_allowed": true,
+          "waiver_roles": ["ir-auditor"]
+        },
+        {
+          "id": "ir-recovery-gate",
+          "phase": "recovery",
+          "evaluator_roles": ["ir-responder"],
+          "required_evidence": ["recovery-verification"],
+          "rejection_target": "containment",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        },
+        {
+          "id": "ir-audit-gate",
+          "phase": "independent-audit",
+          "evaluator_roles": ["ir-auditor"],
+          "required_evidence": ["audit-report"],
+          "rejection_target": "triage",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        }
+      ],
+      "runtime_routing": { "runtime_kind": "fake.runtime", "version": 1 },
+      "budget_defaults": {
+        "max_tokens": 80000,
+        "max_commands": 100,
+        "max_duration_seconds": 3600,
+        "max_cost": { "minor_units": 8000, "currency": "NOK" }
+      },
+      "calendar_policy": null,
+      "external_workflow": null
+    }
+  ]
+}
