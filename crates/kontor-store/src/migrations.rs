@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -72,6 +72,10 @@ const MIGRATIONS: &[&str] = &[
     // kind on the v1 lease — realm-wide module contention, append-only lease
     // history and the canonical admission decision.
     include_str!("../migrations/0004_scheduler_admission.sql"),
+    // Schema v5. The destination half of a redacted import: this Realm's own
+    // import receipt and the append-only lineage of the source records it was
+    // built from.
+    include_str!("../migrations/0005_redacted_import.sql"),
 ];
 
 const _: () = assert!(

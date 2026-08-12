@@ -45,6 +45,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "guardrail_evaluations",
     "handoffs",
     "holiday_sources",
+    // Schema v5 (KON-MVP-19): the destination half of a redacted import.
+    "import_receipts",
+    "imported_records",
     "intake_receipts",
     "jira_links",
     "lease_events",
@@ -166,7 +169,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 4);
+    assert_eq!(SCHEMA_VERSION, 5);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it

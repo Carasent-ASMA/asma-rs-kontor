@@ -22,6 +22,19 @@ Kontor architecture (`2026-08-08-20-12-architecture-asma-kontor-control-plane.md
   fleet/Jira operations to its supported commands.
 - Any credentials, tokens, keychain data or provider configuration.
 
+## What a Kontor realm produces, and what may leave it
+
+Snapshots (`kontor-<realm>-<instant>.db`) are byte copies of a realm's own
+database. They carry that realm's operational data and are **not** a
+distributable artifact of this repository; they stay wherever the operator's own
+data-handling rules put them.
+
+The redacted export (`KontorExportV1`) is the only document designed to leave a
+machine. It is versioned, deterministic and scanned before it is written: no
+credential, credential reference, environment mapping, connector payload, Zone C
+material, runtime transcript or token delta is in it, and it names in its own
+`redaction_summary` what it withheld. See `RECOVERY.md`.
+
 ## Release prerequisites (carried from the architecture, §19)
 
 Before any public release: employer intellectual-property review, product-name

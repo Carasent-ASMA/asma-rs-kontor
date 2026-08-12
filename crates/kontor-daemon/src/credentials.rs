@@ -108,6 +108,39 @@ pub fn open_or_create(state_root: &Path) -> Result<RealmCredentials, CredentialE
     Ok(into_credentials(stored))
 }
 
+/// Mint an entirely new credential set and replace the stored one.
+///
+/// Every tier is regenerated: there is no "rotate the admin secret only", because
+/// a rotation happens when the *file* may have been read, and a file holds all
+/// three. The new document is written to a temporary file in the same directory,
+/// flushed to the device and renamed over the old one, so a crash leaves either
+/// the whole previous generation or the whole new one — never a document with a
+/// new admin secret and an old operator one.
+///
+/// This function replaces the credentials on **disk**. Making the running process
+/// answer to them is [`kontor_api::auth::RealmCredentials::replace`], which the
+/// daemon does in the same operation; a rotation that stopped here would leave a
+/// process authorizing tokens that no longer exist anywhere.
+///
+/// # Errors
+/// Returns [`CredentialError`] when the platform's entropy source cannot be
+/// reached or the file cannot be written. The previous credentials stay in force
+/// in both cases.
+pub fn rotate(state_root: &Path) -> Result<RealmCredentials, CredentialError> {
+    let path = state_root.join(CREDENTIAL_FILE);
+    let generated = StoredCredentials {
+        schema_version: CREDENTIAL_SCHEMA,
+        observer: secret()?,
+        operator: secret()?,
+        admin: secret()?,
+    };
+    write_atomically(&path, &generated)?;
+    // Read back what is actually on disk, exactly as first start does: the
+    // credentials that count are the ones the next process will load.
+    let stored = read(&path)?.ok_or(CredentialError::Malformed)?;
+    Ok(into_credentials(stored))
+}
+
 /// The path the credential set lives at inside `state_root`.
 #[must_use]
 pub fn path_in(state_root: &Path) -> PathBuf {

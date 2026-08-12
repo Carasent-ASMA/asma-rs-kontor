@@ -43,6 +43,8 @@
 pub mod credentials;
 pub mod endpoint;
 pub mod lock;
+pub mod logging;
+pub mod recovery;
 pub mod runtimes;
 
 use std::net::{IpAddr, SocketAddr};
@@ -388,6 +390,66 @@ impl Daemon {
             }
         }
         settled
+    }
+
+    /// Mint a new credential set, publish it and swap it in, in that order.
+    ///
+    /// The order is the safety property. The file is written and flushed first,
+    /// so a crash between the two steps leaves a Realm whose *next* start
+    /// authorizes the new tokens — the operator has them, and they work. The
+    /// reverse order would leave a process answering to secrets that exist
+    /// nowhere on disk, and a restart would silently revive the tokens the
+    /// rotation was meant to kill.
+    ///
+    /// Every previously issued token is refused from the next authorization
+    /// onwards. In-flight calls that are already past the auth layer finish;
+    /// a long-lived stream reconnects with the new token like any other client.
+    /// Native sessions, runtime bindings and command receipts are untouched:
+    /// they are identified by this Realm's own ids, not by the credential a
+    /// client authenticated with.
+    ///
+    /// # Errors
+    /// Returns [`CredentialError`] when the platform's entropy source cannot be
+    /// reached or the file cannot be replaced. The previous credentials stay in
+    /// force, on disk and in memory.
+    pub fn rotate_credentials(&self) -> Result<(), CredentialError> {
+        let rotated = credentials::rotate(&self.config.state_root)?;
+        self.state.credentials().replace(rotated);
+        info!(
+            realm_id = %self.realm_id(),
+            "realm credentials rotated; every previously issued token is refused from now on"
+        );
+        Ok(())
+    }
+
+    /// Take a verified snapshot of this Realm while it serves, then prune.
+    ///
+    /// # Errors
+    /// Returns [`recovery::RecoveryError`] when the database fails verification
+    /// or the snapshot cannot be published; nothing is pruned in that case.
+    pub fn snapshot(
+        &self,
+        into: Option<&Path>,
+    ) -> Result<kontor_store::backup::SnapshotOutcome, recovery::RecoveryError> {
+        recovery::snapshot(
+            &self.config.state_root,
+            into,
+            kontor_core::id::Timestamp::now(),
+        )
+        .map(|(outcome, _pruned)| outcome)
+    }
+
+    /// Export this Realm's redacted state.
+    ///
+    /// # Errors
+    /// Returns [`kontor_store::backup::BackupError`] when the canary scan
+    /// refuses the document or the database cannot be read.
+    pub fn export(
+        &self,
+    ) -> Result<kontor_store::backup::KontorExportV1, kontor_store::backup::BackupError> {
+        let now = kontor_core::id::Timestamp::now();
+        self.state
+            .with_store(|store| kontor_store::backup::export_realm(store, now))
     }
 
     /// Stop scheduling, end every open stream and release the state root.
