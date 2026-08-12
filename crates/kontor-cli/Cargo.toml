@@ -15,6 +15,10 @@ workspace = true
 name = "kontor"
 path = "src/main.rs"
 
+[lib]
+name = "kontor_cli"
+path = "src/lib.rs"
+
 [dependencies]
 clap = { workspace = true }
 tokio = { workspace = true }
@@ -22,7 +26,28 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
+# KON-MVP-16: the narrow loopback client, the credential and endpoint resolution
+# and the operation catalogue all live in `kontor-mcp`, because `kontor mcp`
+# starts that server and both callers need the same route table. Nothing in this
+# graph reaches a store, a scheduler, a runtime adapter or the `asma` executable.
+kontor-mcp = { path = "../kontor-mcp", version = "=0.1.0" }
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+
+[[test]]
+name = "version"
+path = "tests/version.rs"
+
+[[test]]
+name = "envelopes"
+path = "tests/envelopes.rs"
+
+[[test]]
+name = "local"
+path = "tests/local.rs"

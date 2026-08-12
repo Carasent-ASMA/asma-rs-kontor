@@ -148,6 +148,22 @@ pub fn plan(snapshot: &SchedulingSnapshot) -> DomainResult<Plan> {
     })
 }
 
+/// One blocker's verdict on one candidate.
+fn verdict(snapshot: &SchedulingSnapshot, candidate: &Candidate, blocker: Blocker) -> Refusal {
+    match blocker {
+        Blocker::Readiness => readiness(snapshot, candidate),
+        Blocker::Origin => origin(candidate),
+        Blocker::Dependencies => dependencies(snapshot, candidate),
+        Blocker::Authorization => authorization(snapshot, candidate),
+        Blocker::Calendar => calendar(candidate),
+        Blocker::ExternalWork => external_work(candidate),
+        Blocker::Runtime => runtime(snapshot, candidate),
+        Blocker::Account => account(snapshot, candidate),
+        Blocker::Worktree => worktree(candidate),
+        Blocker::Contention => contention(snapshot, candidate),
+    }
+}
+
 /// The first blocker that refuses `candidate`, with its evidence.
 ///
 /// Capacity is not evaluated here: it is the one blocker whose answer depends on
@@ -157,23 +173,72 @@ fn refuse(
     candidate: &Candidate,
 ) -> Option<(RejectionCode, Vec<RejectionEvidence>)> {
     for blocker in BLOCKER_ORDER {
-        let refusal = match blocker {
-            Blocker::Readiness => readiness(snapshot, candidate),
-            Blocker::Origin => origin(candidate),
-            Blocker::Dependencies => dependencies(snapshot, candidate),
-            Blocker::Authorization => authorization(snapshot, candidate),
-            Blocker::Calendar => calendar(candidate),
-            Blocker::ExternalWork => external_work(candidate),
-            Blocker::Runtime => runtime(snapshot, candidate),
-            Blocker::Account => account(snapshot, candidate),
-            Blocker::Worktree => worktree(candidate),
-            Blocker::Contention => contention(snapshot, candidate),
-        };
+        let refusal = verdict(snapshot, candidate, *blocker);
         if refusal.is_some() {
             return refusal;
         }
     }
     None
+}
+
+/// One blocker's refusal, named.
+///
+/// [`Plan`] carries one code per candidate because a *decision* has one reason.
+/// This carries the blocker as well, because an *explanation* has to say which of
+/// the ten answered.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Refused {
+    /// Which blocker refused.
+    pub blocker: Blocker,
+    /// The code it refused with.
+    pub code: RejectionCode,
+    /// What it refused on.
+    pub evidence: Vec<RejectionEvidence>,
+}
+
+/// Every blocker that refuses `candidate`, in evaluation order.
+///
+/// # Why this exists alongside [`plan`]
+///
+/// [`plan`] reports the **first** blocker, and that is deliberate: a decision has
+/// one reason, and reporting one keeps two passes over the same snapshot from
+/// describing the same problem differently. That contract is unchanged and this
+/// function does not touch it.
+///
+/// An *explanation* has the opposite need. An operator asking "why is nothing
+/// running" who is told only about the first blocker fixes it, runs again, and is
+/// told about the second — round a loop as long as the blocker list. So this
+/// evaluates all ten and returns every one that refuses, leaving the caller to
+/// present them together.
+///
+/// The two can never disagree, because they ask the same functions in the same
+/// order: the first element of this list is exactly the code [`plan`] would
+/// report.
+///
+/// # What is deliberately absent
+///
+/// Capacity. It is the one blocker whose answer depends on what the pass has
+/// already admitted, so it has no meaning for a candidate considered on its own —
+/// and inventing one would be reporting a ceiling nobody was measured against.
+/// A capacity refusal appears in [`plan`]'s own decision for that candidate.
+///
+/// # Errors
+/// Returns [`kontor_core::DomainError`] when the snapshot is not admissible, for
+/// the same reasons [`plan`] does. An explanation of an invalid snapshot would be
+/// an explanation of nothing.
+pub fn explain(snapshot: &SchedulingSnapshot, candidate: &Candidate) -> DomainResult<Vec<Refused>> {
+    snapshot.validate()?;
+    candidate.validate()?;
+    Ok(BLOCKER_ORDER
+        .iter()
+        .filter_map(|blocker| {
+            verdict(snapshot, candidate, *blocker).map(|(code, evidence)| Refused {
+                blocker: *blocker,
+                code,
+                evidence,
+            })
+        })
+        .collect())
 }
 
 type Refusal = Option<(RejectionCode, Vec<RejectionEvidence>)>;

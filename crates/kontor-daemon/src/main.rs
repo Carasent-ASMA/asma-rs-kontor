@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use kontor_api::state::BarrierState;
-use kontor_daemon::{DEFAULT_PORT, Daemon, DaemonConfig, runtimes};
-use tracing::{error, info};
+use kontor_daemon::{DEFAULT_PORT, Daemon, DaemonConfig, endpoint, runtimes};
+use tracing::{error, info, warn};
 
 /// Serve one Kontor realm on loopback.
 #[derive(Debug, Parser)]
@@ -88,6 +88,25 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    // Recorded from the listener's own address, not from the configured one: a
+    // daemon started with `--port 0` asked the operating system to choose, and the
+    // configured value is a port no caller can reach. A failure to record is a
+    // warning rather than a stop — the file is a convenience for local callers, and
+    // the lock is what proves ownership of the state root.
+    match listener.local_addr() {
+        Ok(bound) => match endpoint::publish(&daemon.config().state_root, bound) {
+            Ok(path) => {
+                info!(realm_id = %daemon.realm_id(), endpoint = %path.display(), "loopback endpoint recorded")
+            }
+            Err(error) => warn!(
+                realm_id = %daemon.realm_id(),
+                detail = %error,
+                "the loopback endpoint could not be recorded; local callers must pass --base-url"
+            ),
+        },
+        Err(error) => warn!(detail = %error, "the bound address could not be read back"),
+    }
+
     info!(realm_id = %daemon.realm_id(), address = %bind, "kontor is serving");
 
     let signals = daemon.state().signals().clone();
