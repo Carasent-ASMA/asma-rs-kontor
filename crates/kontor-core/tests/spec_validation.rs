@@ -712,7 +712,7 @@ fn auto_arming_is_always_bounded() {
     spec.approval = AutoArmPolicy::BoundedAutoArm {
         capability: kontor_core::spec::ExecutionCapability {
             granted_to: AccountProfileId::generate(),
-            authorization: kontor_core::id::ExecutionAuthorizationId::generate(),
+            execution_authorization: kontor_core::id::ExecutionAuthorizationId::generate(),
         },
         max_concurrency: 0,
         budget: spec.limits.budget,
@@ -728,12 +728,24 @@ fn auto_arming_is_always_bounded() {
     spec.approval = AutoArmPolicy::BoundedAutoArm {
         capability: kontor_core::spec::ExecutionCapability {
             granted_to: AccountProfileId::generate(),
-            authorization: kontor_core::id::ExecutionAuthorizationId::generate(),
+            execution_authorization: kontor_core::id::ExecutionAuthorizationId::generate(),
         },
         max_concurrency: 1,
         budget: spec.limits.budget,
     };
     spec.validate().expect("a fully bounded auto-arm is legal");
+    // Validating is not enough to be onboardable. `canonicalize` is the only
+    // route to a digest, a receipt or a stored row, and it runs the shared
+    // sensitive-material scanner over every key: a policy whose capability field
+    // was spelled `authorization` — the HTTP header — validated here and was then
+    // refused there, which made every bounded auto-arm policy unstorable.
+    let document = spec
+        .canonicalize()
+        .expect("a fully bounded auto-arm can be canonicalized, hashed and stored");
+    assert!(
+        document.json().contains("execution_authorization"),
+        "the capability names the authorization it is bounded by"
+    );
 }
 
 fn receipt(result: IntakeResult) -> IntakeReceipt {

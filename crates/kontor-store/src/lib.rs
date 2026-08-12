@@ -30,6 +30,7 @@
 pub mod backup;
 mod commands;
 mod events;
+mod intake;
 mod migrations;
 mod policy;
 pub mod query;

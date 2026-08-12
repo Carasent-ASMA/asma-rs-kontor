@@ -730,6 +730,32 @@ exported_tables! {
         predecessor_receipt_id: Option<String>,
         decided_at: String,
     }
+    intake_decisions: IntakeDecisionsRow from "intake_decisions" key(id) {
+        id: String,
+        project_id: String,
+        intake_receipt_id: String,
+        outcome: String,
+        actor: String,
+        command_receipt_id: String,
+        reason: Option<String>,
+        capability_granted_to: Option<String>,
+        capability_execution_auth_id: Option<String>,
+        decided_at: String,
+    }
+    intake_created_work: IntakeCreatedWorkRow from "intake_created_work" key(project_id, task_id) {
+        project_id: String,
+        task_id: String,
+        intake_receipt_id: String,
+        intake_decision_id: String,
+        mini_project_id: Option<String>,
+        source_event_id: String,
+        source_event_hash: String,
+        trigger_key: String,
+        trigger_version: i64,
+        authority: String,
+        execution_auth_id: Option<String>,
+        created_at: String,
+    }
     jira_links: JiraLinksRow from "jira_links" key(id) {
         id: String,
         project_id: String,

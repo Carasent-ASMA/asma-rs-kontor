@@ -45,3 +45,6 @@ kontor-policy = { path = "../kontor-policy", version = "=0.1.0" }
 # has, from the bundled pack, because the import path re-validates them through
 # the same domain types — a hand-rolled document would test a shape nobody runs.
 kontor-profiles = { path = "../kontor-profiles", version = "=0.1.0" }
+# KON-MVP-22: the intake suite assembles a real scheduling snapshot to prove what
+# crosses the boundary, and a snapshot names the runtime capability vocabulary.
+kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }

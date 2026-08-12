@@ -40,6 +40,11 @@ fn at(text: &str) -> Timestamp {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pilot() {
+    // The run id is content-derived, so its evidence must be content-stable too.
+    // This feature-gated source yields real UUIDv7 ids used unchanged by the
+    // database and receipts, but starts from the same sequence on every pilot
+    // process instead of reading the wall clock.
+    kontor_core::id::install_deterministic_id_source();
     let root = repo_root();
     let commit = head_commit(&root);
     let fixtures = BTreeMap::from([

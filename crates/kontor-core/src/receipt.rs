@@ -221,7 +221,12 @@ impl CommandKind {
             Self::ParkRun => run_intent(target, DesiredRunState::ParkRequested),
             Self::AbandonRun => run_intent(target, DesiredRunState::AbandonRequested),
             Self::ResumeTask | Self::RecordGateVerdict => witness(matches!(target, A::Task)),
-            Self::ApproveIntake => witness(matches!(target, A::MiniProject | A::Task)),
+            // A project is a legal target because an intake proposal is decided
+            // *before* the work it proposes exists: at that moment there is no
+            // goal and no task to name, and a receipt cannot target a row that
+            // no transaction has written yet. Approving an already-created graph
+            // still targets that graph.
+            Self::ApproveIntake => witness(matches!(target, A::Project | A::MiniProject | A::Task)),
             Self::SyncTicket
             | Self::AssignTicket
             | Self::TransitionTicket

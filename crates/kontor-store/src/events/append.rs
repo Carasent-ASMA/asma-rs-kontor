@@ -24,7 +24,6 @@ use kontor_core::state::{
     RunProjection, RuntimeContact, RuntimeObservation,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
-use uuid::Uuid;
 
 use crate::SqliteStore;
 use crate::events::types::{
@@ -328,7 +327,7 @@ fn record_control_gap(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT DO NOTHING",
             params![
-                Uuid::now_v7().to_string(),
+                kontor_core::id::generate_uuid_v7().to_string(),
                 observation.project_id.to_string(),
                 observation.agent_run_id.to_string(),
                 observation.identity.runtime_kind.as_str(),
@@ -541,7 +540,7 @@ impl SqliteStore {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT DO NOTHING",
                 params![
-                    Uuid::now_v7().to_string(),
+                    kontor_core::id::generate_uuid_v7().to_string(),
                     discontinuity.project_id.to_string(),
                     discontinuity.agent_run_id.to_string(),
                     sequence_column(discontinuity.content_epoch)?,

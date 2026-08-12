@@ -21,36 +21,34 @@
 //! delegation case is refused by `build_write_request` *before* `exchange`, so
 //! it needs an [`AsmaExecutable`] that resolves and is never spawned.
 //!
-//! # What is not proved here, and why that is honest
-//!
-//! `kontor-intake` is a nine-line scaffold (KON-MVP-22): nothing in this build
-//! turns a source event into a proposal, and nothing runs an approval command
-//! against one. `kontor_api::query::STAGED` names that gap in checked-in source.
-//! The consequence is stated in every intake case below: the *receipts* are
-//! assembled by this driver, while the dedup transaction, the receipt
-//! validation rules and the admission consequences they feed are merged code.
+//! Intake proposals are produced by `kontor-intake` and terminal decisions are
+//! committed through the production store transaction. The only staged seam is
+//! transport: this deterministic driver invokes those APIs directly.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use kontor_core::DomainError;
+use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::id::{
     AccountProfileId, AggregateRevision, BoundedText, CanonicalDocument, CommandReceiptId,
     ConnectorKey, ContentHash, CurrencyCode, ExecutionAuthorizationId, ExternalId,
     ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, IdempotencyKey,
-    IntakeReceiptId, Money, ProjectId, SCHEMA_VERSION, SemanticMilestoneKey, SourceConnectionKey,
-    SourceEventId, SourceKindKey, SpecVersion, TaskId, TicketLinkId, TicketProjectionId,
-    TriggerKey, WorkProfileKey,
+    IntakeDecisionId, IntakeReceiptId, Money, ProjectId, SCHEMA_VERSION, SemanticMilestoneKey,
+    SourceConnectionKey, SourceEventId, SourceKindKey, SpecVersion, TaskId, TicketLinkId,
+    TicketProjectionId, TriggerKey, WorkProfileKey,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
-    CommandRepository, IntakeOutcome, IntakeRepository, NewCommandIntent, NewProject,
-    NewSourceEvent, NewTask, NewTicketLink, ProjectRepository, SpecRepository, TicketRepository,
+    CalendarRepository, CommandRepository, CredentialReference, CredentialReferenceKind,
+    IntakeAuthority, IntakeDecisionOutcome, IntakeOutcome, IntakeRepository, IntakeWorkPlan,
+    NewAccountProfile, NewCommandIntent, NewIntakeDecisionRecord, NewProject, NewSourceEvent,
+    NewTask, NewTicketLink, ProjectRepository, SpecRepository, TicketRepository,
 };
 use kontor_core::spec::{
-    ApprovalReceipt, AutoArmPolicy, BudgetBounds, CanonicalSourceEvent, ExecutionCapability,
-    IntakeReceipt, IntakeResult, ProposedWorkGraph, SourceIdentity, SourceProcessingState,
-    TeamTemplateRevision, TriggerSpec, WorkProfileSpec,
+    AutoArmPolicy, BudgetBounds, CanonicalSourceEvent, ExecutionCapability, IntakeReceipt,
+    IntakeResult, ProposedWorkGraph, SourceIdentity, SourceProcessingState, TeamTemplateRevision,
+    TriggerSpec, WorkProfileSpec,
 };
 use kontor_core::state::{Freshness, GateState, TaskState, TerminalOutcome};
 use kontor_core::ticket::{
@@ -59,6 +57,7 @@ use kontor_core::ticket::{
     ReconciliationInput, ReconciliationOutcome, StatusConflictKind, StatusSelector, TicketFieldKey,
     TicketPrincipal, TicketSyncProjection, TransitionPlan, reconcile,
 };
+use kontor_intake::{Intake, evaluate};
 use kontor_integrations_asma::jira::{
     ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, FieldSpecKey, JiraOperation,
     JiraOutcome, JiraRequest, JiraResponse, Observed, SpecCatalog, TicketDelegation,
@@ -252,6 +251,8 @@ struct StoreFixture {
     project: ProjectId,
     /// A real task, so a proposed work graph can name one that exists.
     task: TaskId,
+    /// The operator and bounded-auto-arm principal.
+    account: AccountProfileId,
 }
 
 impl StoreFixture {
@@ -286,12 +287,35 @@ impl StoreFixture {
                 created_at: at(DECIDED_AT),
             })
             .expect("the pilot task is created");
+        let account = AccountProfileId::generate();
+        store
+            .create_account_profile(&NewAccountProfile {
+                id: account,
+                project_id: project,
+                label: name("Pilot intake operator"),
+                external_account_id: None,
+                harness: kontor_core::id::RuntimeKindKey::parse("pilot.runtime")
+                    .expect("a legal runtime key"),
+                credential_ref: CredentialReference {
+                    kind: CredentialReferenceKind::ConfigHome,
+                    alias: kontor_core::id::CredentialAlias::parse("pilot-intake")
+                        .expect("a legal credential alias"),
+                },
+                environment: document("pilot-intake-environment"),
+                routing: document("pilot-intake-routing"),
+                capability: document("pilot-intake-capability"),
+                provider_identity: None,
+                enabled: true,
+                created_at: at(DECIDED_AT),
+            })
+            .expect("the pilot intake account is created");
         Self {
             directory,
             path,
             store,
             project,
             task,
+            account,
         }
     }
 
@@ -348,6 +372,68 @@ impl StoreFixture {
                 (table, count)
             })
             .collect()
+    }
+
+    fn approval_receipt(&self, label: &str) -> CommandReceiptId {
+        let receipt = CommandReceiptId::generate();
+        self.store
+            .record_intent(&NewCommandIntent {
+                project_id: self.project,
+                receipt_id: receipt,
+                idempotency_key: key(label),
+                kind: CommandKind::ApproveIntake,
+                target: AggregateRef::Project {
+                    project_id: self.project,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent: document(label),
+                payload: document(label),
+                desired: None,
+                not_before: at(DECIDED_AT),
+                created_at: at(DECIDED_AT),
+            })
+            .expect("the intake decision receipt is recorded");
+        receipt
+    }
+
+    fn execution_authorization(&self, label: &str) -> (ExecutionAuthorizationId, CommandReceiptId) {
+        let receipt = CommandReceiptId::generate();
+        self.store
+            .record_intent(&NewCommandIntent {
+                project_id: self.project,
+                receipt_id: receipt,
+                idempotency_key: key(label),
+                kind: CommandKind::AuthorizeExecution,
+                target: AggregateRef::Project {
+                    project_id: self.project,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent: document(label),
+                payload: document(label),
+                desired: None,
+                not_before: at(DECIDED_AT),
+                created_at: at(DECIDED_AT),
+            })
+            .expect("the execution-authorization receipt is recorded");
+        let id = ExecutionAuthorizationId::generate();
+        self.store
+            .insert_authorization(&ExecutionAuthorization {
+                id,
+                project_id: self.project,
+                scope: WorkScope::Project,
+                selected_tasks: Vec::new(),
+                allowed_start: TimeRange {
+                    start: at("2026-08-12T00:00:00Z"),
+                    end: at("2026-08-13T00:00:00Z"),
+                },
+                max_concurrency: 2,
+                budget: budget(),
+                created_by: self.account,
+                capability_receipt: receipt,
+                created_at: at(DECIDED_AT),
+            })
+            .expect("the execution authorization is stored");
+        (id, receipt)
     }
 
     /// Hand back the directory path and drop everything that holds it open.
@@ -471,9 +557,11 @@ fn intake_dedup(bundle: &mut Bundle, cleanup: &mut Cleanup) {
                 },
                 "find_intake_receipt_returns_the_original": lookup_agrees,
                 "duplicate_carrying_work_is_invalid": refused_rule,
-                "unmerged_seam": "KON-MVP-22 (`kontor_api::query::STAGED[0]`): nothing in this \
-                                  build produces the decision, so the receipt is assembled by \
-                                  the driver; the transaction that deduplicates it is merged",
+                "unmerged_seam": "None for the domain. KON-MVP-22 merged the deciding half \
+                                  (`kontor_intake::evaluate`) and split the transaction in two, \
+                                  so the identity commits before anything evaluates it; the \
+                                  receipt is still assembled here because no transport \
+                                  (`kontor_api::query::STAGED[0]`) delivers an event yet",
             }),
         )
         .expect("the dedup evidence is written");
@@ -515,16 +603,17 @@ fn intake_dedup(bundle: &mut Bundle, cleanup: &mut Cleanup) {
 fn intake_decisions(bundle: &mut Bundle, cleanup: &mut Cleanup) {
     let fixture = StoreFixture::open();
     let trigger = fixture.with_trigger();
+    let (authorization, authorization_receipt) =
+        fixture.execution_authorization("pilot-authorize-auto-arm");
 
     // The bounded auto-arm policy, built by mutating the shipped trigger so the
     // two documents differ in exactly one field.
-    let authorization = ExecutionAuthorizationId::generate();
     let mut armed_trigger = trigger.clone();
     armed_trigger.id = TriggerKey::parse("pilot.intake.armed").expect("a legal trigger key");
     armed_trigger.approval = AutoArmPolicy::BoundedAutoArm {
         capability: ExecutionCapability {
-            granted_to: AccountProfileId::generate(),
-            authorization,
+            granted_to: fixture.account,
+            execution_authorization: authorization,
         },
         max_concurrency: 2,
         budget: budget(),
@@ -543,7 +632,7 @@ fn intake_decisions(bundle: &mut Bundle, cleanup: &mut Cleanup) {
     zero_concurrency.approval = AutoArmPolicy::BoundedAutoArm {
         capability: ExecutionCapability {
             granted_to: AccountProfileId::generate(),
-            authorization,
+            execution_authorization: authorization,
         },
         max_concurrency: 0,
         budget: budget(),
@@ -552,7 +641,7 @@ fn intake_decisions(bundle: &mut Bundle, cleanup: &mut Cleanup) {
     zero_budget.approval = AutoArmPolicy::BoundedAutoArm {
         capability: ExecutionCapability {
             granted_to: AccountProfileId::generate(),
-            authorization,
+            execution_authorization: authorization,
         },
         max_concurrency: 2,
         budget: BudgetBounds {
@@ -565,95 +654,181 @@ fn intake_decisions(bundle: &mut Bundle, cleanup: &mut Cleanup) {
     let unbounded_unrepresentable =
         serde_json::from_str::<AutoArmPolicy>(r#"{"kind":"unbounded_auto_arm"}"#).is_err();
 
-    // Three real decisions, persisted. The approval cites a real `ApproveIntake`
-    // command receipt against the real task the graph names — an approval that
-    // pointed at a fabricated receipt id would prove nothing about authority.
-    let approval_receipt = CommandReceiptId::generate();
-    fixture
-        .store
-        .record_intent(&NewCommandIntent {
-            project_id: fixture.project,
-            receipt_id: approval_receipt,
-            idempotency_key: key("pilot-approve-intake"),
-            kind: CommandKind::ApproveIntake,
-            target: AggregateRef::Task {
-                task_id: fixture.task,
-            },
-            target_revision: AggregateRevision::INITIAL,
-            intent: document("approve-intake"),
-            payload: document("approve-intake"),
-            desired: None,
-            not_before: at(DECIDED_AT),
-            created_at: at(DECIDED_AT),
-        })
-        .expect("the approval command receipt is recorded");
-
-    let approved_event = source_event("ext-approved", "approved-payload");
-    let mut approved = proposed_receipt(&trigger, &approved_event, "pilot-intake-approved");
-    approved.result = IntakeResult::Approved;
-    approved.approval = Some(ApprovalReceipt {
-        authority: AccountProfileId::generate(),
-        receipt: approval_receipt,
-        approved_at: at(DECIDED_AT),
-    });
-    approved.proposed = Some(ProposedWorkGraph {
-        project_id: fixture.project,
-        mini_project_id: None,
-        task_ids: vec![fixture.task],
-    });
-
-    let rejected_event = source_event("ext-rejected", "rejected-payload");
-    let mut rejected = proposed_receipt(&trigger, &rejected_event, "pilot-intake-rejected");
-    rejected.result = IntakeResult::Rejected;
-
-    // The auto-armed decision. Its receipt is pinned to the shipped trigger
-    // rather than to the bounded one, because the bounded one cannot be stored
-    // at all — see `bounded_auto_arm_is_unstorable` in the artifact.
-    let armed_event = source_event("ext-armed", "armed-payload");
-    let mut armed = proposed_receipt(&trigger, &armed_event, "pilot-intake-armed");
-    armed.proposed = Some(ProposedWorkGraph {
-        project_id: fixture.project,
-        mini_project_id: None,
-        task_ids: vec![fixture.task],
-    });
     let armed_trigger_stored = fixture
         .store
         .insert_trigger_spec(fixture.project, &armed_trigger)
         .err()
         .map(|error| error.to_string());
 
-    let mut stored = Vec::new();
-    let mut store_problems = Vec::new();
-    for (label, event, receipt) in [
-        ("approved", &approved_event, &approved),
-        ("rejected", &rejected_event, &rejected),
-        ("auto_armed", &armed_event, &armed),
-    ] {
-        match fixture.store.record_source_event(&NewSourceEvent {
+    // Each event is evaluated by the production intake crate, then its proposal
+    // is made durable before the terminal decision is committed.
+    let propose = |event: &CanonicalSourceEvent, spec: &TriggerSpec| {
+        let Intake::Proposed { receipt, .. } = evaluate(
+            event,
+            std::slice::from_ref(spec),
+            IntakeReceiptId::generate(),
+            at(DECIDED_AT),
+        )
+        .expect("the production matcher evaluates the event") else {
+            panic!("the pilot event matches its trigger")
+        };
+        fixture
+            .store
+            .record_source_event(&NewSourceEvent {
+                project_id: fixture.project,
+                event: event.clone(),
+                receipt: (*receipt).clone(),
+            })
+            .expect("the proposal is stored");
+        *receipt
+    };
+
+    let approved_event = source_event("ext-approved", "approved-payload");
+    let approved = propose(&approved_event, &trigger);
+    let approved_task = TaskId::generate();
+    let approved_decision = fixture
+        .store
+        .commit_intake_decision(&NewIntakeDecisionRecord {
+            id: IntakeDecisionId::generate(),
             project_id: fixture.project,
-            event: event.clone(),
-            receipt: receipt.clone(),
-        }) {
-            Ok(outcome) => stored.push(json!({
-                "decision": label,
-                "outcome": outcome_name(&outcome),
-                "result": receipt.result.to_string(),
-                "has_approval_evidence": receipt.approval.is_some(),
-                "task_count": receipt.proposed.as_ref().map_or(0, |graph| graph.task_ids.len()),
-            })),
-            Err(error) => store_problems.push(format!("{label}: {error}")),
+            receipt_id: approved.id,
+            authority: IntakeAuthority::Approval {
+                authority: fixture.account,
+                command_receipt: fixture.approval_receipt("pilot-approve-intake"),
+            },
+            work: Some(intake_work(fixture.project, approved_task)),
+            decided_at: at(DECIDED_AT),
+        })
+        .expect("the real approval transaction commits");
+
+    let rejected_event = source_event("ext-rejected", "rejected-payload");
+    let rejected = propose(&rejected_event, &trigger);
+    let rejected_decision = fixture
+        .store
+        .commit_intake_decision(&NewIntakeDecisionRecord {
+            id: IntakeDecisionId::generate(),
+            project_id: fixture.project,
+            receipt_id: rejected.id,
+            authority: IntakeAuthority::Rejection {
+                authority: fixture.account,
+                command_receipt: fixture.approval_receipt("pilot-reject-intake"),
+                reason: name("outside the pilot scope"),
+            },
+            work: None,
+            decided_at: at(DECIDED_AT),
+        })
+        .expect("the real rejection transaction commits");
+
+    let armed_event = source_event("ext-armed", "armed-payload");
+    let armed = propose(&armed_event, &armed_trigger);
+    let armed_task = TaskId::generate();
+    let armed_decision = fixture
+        .store
+        .commit_intake_decision(&NewIntakeDecisionRecord {
+            id: IntakeDecisionId::generate(),
+            project_id: fixture.project,
+            receipt_id: armed.id,
+            authority: IntakeAuthority::BoundedAutoArm {
+                caller: fixture.account,
+                command_receipt: authorization_receipt,
+            },
+            work: Some(intake_work(fixture.project, armed_task)),
+            decided_at: at(DECIDED_AT),
+        })
+        .expect("the real bounded-auto-arm transaction commits");
+
+    let mut stored = Vec::new();
+    let store_problems: Vec<String> = Vec::new();
+    for (label, receipt, decision, expected_outcome, expected_tasks) in [
+        (
+            "approved",
+            &approved,
+            &approved_decision,
+            IntakeDecisionOutcome::Approved,
+            1,
+        ),
+        (
+            "rejected",
+            &rejected,
+            &rejected_decision,
+            IntakeDecisionOutcome::Rejected,
+            0,
+        ),
+        (
+            "bounded_auto_arm",
+            &armed,
+            &armed_decision,
+            IntakeDecisionOutcome::AutoArmed,
+            1,
+        ),
+    ] {
+        let persisted = fixture
+            .store
+            .get_intake_decision(fixture.project, receipt.id)
+            .expect("the decision query succeeds")
+            .expect("the intake_decisions row exists");
+        assert_eq!(persisted, *decision, "the committed decision reads back");
+        assert_eq!(persisted.outcome, expected_outcome, "{label} outcome");
+        assert_eq!(
+            persisted.created_work.len(),
+            expected_tasks,
+            "{label} intake_created_work count"
+        );
+        for work in &persisted.created_work {
+            assert_eq!(
+                fixture
+                    .store
+                    .intake_lineage_of_task(fixture.project, work.task_id)
+                    .expect("the lineage query succeeds")
+                    .as_ref(),
+                Some(work),
+                "the task lineage is a real intake_created_work row"
+            );
         }
+        let lineage = persisted.created_work.first().map(|work| {
+            json!({
+                "task_id": work.task_id,
+                "receipt_id": work.receipt_id,
+                "trigger": work.trigger,
+                "trigger_version": work.trigger_version,
+                "execution_authorization": work.execution_authorization,
+            })
+        });
+        stored.push(json!({
+            "decision": label,
+            "proposal_result": receipt.result,
+            "persisted_outcome": persisted.outcome,
+            "intake_decisions_rows": 1,
+            "intake_created_work_rows": persisted.created_work.len(),
+            "lineage": lineage,
+        }));
     }
 
-    // What each result contradicts, stated as the domain's own refusals.
-    let mut unevidenced = approved.clone();
-    unevidenced.id = IntakeReceiptId::generate();
-    unevidenced.approval = None;
-    let mut rejected_with_work = rejected.clone();
-    rejected_with_work.id = IntakeReceiptId::generate();
-    rejected_with_work.proposed = approved.proposed.clone();
+    let unevidenced = NewIntakeDecisionRecord {
+        id: IntakeDecisionId::generate(),
+        project_id: fixture.project,
+        receipt_id: approved.id,
+        authority: IntakeAuthority::Approval {
+            authority: fixture.account,
+            command_receipt: CommandReceiptId::generate(),
+        },
+        work: None,
+        decided_at: at(DECIDED_AT),
+    };
+    let rejected_with_work = NewIntakeDecisionRecord {
+        id: IntakeDecisionId::generate(),
+        project_id: fixture.project,
+        receipt_id: rejected.id,
+        authority: IntakeAuthority::Rejection {
+            authority: fixture.account,
+            command_receipt: CommandReceiptId::generate(),
+            reason: name("invalid rejection"),
+        },
+        work: Some(intake_work(fixture.project, TaskId::generate())),
+        decided_at: at(DECIDED_AT),
+    };
     let contradictions = json!({
-        "approved_without_evidence": rule_of(unevidenced.validate().unwrap_err()),
+        "approved_without_work": rule_of(unevidenced.validate().unwrap_err()),
         "rejected_carrying_work": rule_of(rejected_with_work.validate().unwrap_err()),
     });
 
@@ -738,33 +913,36 @@ fn intake_decisions(bundle: &mut Bundle, cleanup: &mut Cleanup) {
                     "zero_concurrency_refused": zero_concurrency.validate().is_err(),
                     "zero_budget_bound_refused": zero_budget.validate().is_err(),
                     "unbounded_variant_unrepresentable": unbounded_unrepresentable,
-                    "declared_bounds": ["capability.granted_to", "capability.authorization",
+                    "declared_bounds": ["capability.granted_to", "capability.execution_authorization",
                                         "max_concurrency", "budget"],
                 },
-                "bounded_auto_arm_is_unstorable": {
+                "bounded_auto_arm_is_onboardable": {
                     "canonicalize_error": bounded_canonicalizes,
                     "insert_trigger_spec_error": armed_trigger_stored,
-                    "cause": "`ExecutionCapability` names its field `authorization`, and \
-                              `authorization` is a `FORBIDDEN_KEYS` entry in \
-                              `kontor_core::id::reject_sensitive_material`. Every route to a \
-                              digest goes through `CanonicalDocument::from_value`, so a bounded \
-                              auto-arm `TriggerSpec` validates and then cannot be canonicalized, \
-                              hashed, receipted or inserted",
-                    "reach": "`TriggerSpec::validate` and `TriggerSpec::canonicalize` disagree \
-                              about the same document; `crates/kontor-core/tests/\
-                              spec_validation.rs` exercises only the validating half, and no \
-                              test in the tree stores one",
+                    "was": "`ExecutionCapability` named its field `authorization`, which is a \
+                            `FORBIDDEN_KEYS` entry in \
+                            `kontor_core::id::reject_sensitive_material`. Every route to a digest \
+                            goes through `CanonicalDocument::from_value`, so a bounded auto-arm \
+                            `TriggerSpec` validated and then could not be canonicalized, hashed, \
+                            receipted or inserted",
+                    "fix": "KON-MVP-22 renamed the field to `execution_authorization`. The \
+                            shared scanner is unchanged and no path is exempted from it: the \
+                            name that collided was the domain's, not the scanner's",
+                    "covered_by": "`crates/kontor-core/tests/spec_validation.rs` now \
+                                   canonicalizes the bounded policy it validates, and \
+                                   `crates/kontor-store/tests/intake_lineage.rs` stores one and \
+                                   arms work under it",
                 },
                 "persisted_decisions": stored,
                 "store_problems": store_problems,
                 "contradictions_refused": contradictions,
                 "scheduler_admission": admission_rows,
-                "unmerged_seam": "KON-MVP-22 (`kontor_api::query::STAGED[0]`): `kontor-intake` \
-                                  is a scaffold, so nothing produces the proposal that is \
-                                  approved here and nothing runs the approval command against \
-                                  it. The receipts, their validation rules, the persisted \
-                                  `ApproveIntake` command receipt and every admission \
-                                  consequence above are merged code",
+                "unmerged_seam": "None for the domain. KON-MVP-22 merged `kontor-intake`, the \
+                                  two-commit intake transaction, the append-only decision tables \
+                                  and the lineage the scheduler reads. What remains staged is \
+                                  the *transport* (`kontor_api::query::STAGED[0]`): no HTTP or \
+                                  CLI surface serves intake yet, so this driver calls the store \
+                                  directly, exactly as an operator's command would",
             }),
         )
         .expect("the intake-decision evidence is written");
@@ -785,12 +963,13 @@ fn intake_decisions(bundle: &mut Bundle, cleanup: &mut Cleanup) {
     {
         bundle.pass(
             "domain.intake-decisions",
-            "three decisions were persisted against three real source events: an `approved` one \
-             carrying a real `ApproveIntake` command receipt and a one-task work graph, a \
-             terminally `rejected` one carrying none, and a `proposed` one armed under a bounded \
-             policy naming a capability, an authorization, a concurrency ceiling and a non-zero \
-             budget. Approving without evidence and rejecting while carrying work are both \
-             refused by `IntakeReceipt::validate`; zero concurrency and any zero budget bound are \
+            "three proposals were produced by `kontor_intake::evaluate`, stored, then decided \
+             through `commit_intake_decision`: approval persisted one decision and one task \
+             lineage under a real `ApproveIntake` receipt; terminal rejection persisted one \
+             decision, a reason and no task; bounded auto-arm persisted one decision and one task \
+             lineage naming its execution authorization. Approval without work and rejection \
+             carrying work are refused by `NewIntakeDecisionRecord::validate`; zero concurrency \
+             and any zero budget bound are \
              refused by `AutoArmPolicy::validate`, and an unbounded variant does not deserialize \
              because it does not exist. All nine `TaskOrigin::admits` outcomes matched: approved \
              and bounded-auto-armed admit, and proposed-without-authorization, rejected, ignored \
@@ -2670,13 +2849,15 @@ fn source_event(external_event_id: &str, marker: &str) -> CanonicalSourceEvent {
         },
         envelope: CanonicalDocument::from_value(&json!({
             "schema_version": 1,
+            "event_schema": "schema.request-created",
+            "event_schema_version": 4,
             "kind": "request.created",
             "external_id": marker,
         }))
         .expect("a canonical envelope"),
         external_observed_at: at(DECIDED_AT),
         ingested_at: at(DECIDED_AT),
-        processing_state: SourceProcessingState::Evaluated,
+        processing_state: SourceProcessingState::Received,
     }
 }
 
@@ -2708,6 +2889,22 @@ fn proposed_receipt(
         duplicate_of: None,
         predecessor_receipt_id: None,
         decided_at: at(DECIDED_AT),
+    }
+}
+
+/// One task graph for a terminal intake decision.
+fn intake_work(project_id: ProjectId, task_id: TaskId) -> IntakeWorkPlan {
+    IntakeWorkPlan {
+        mini_project: None,
+        tasks: vec![NewTask {
+            id: task_id,
+            project_id,
+            mini_project_id: None,
+            title: name("Work created by the KON-MVP-18 intake pilot"),
+            module: None,
+            state: TaskState::Ready,
+            created_at: at(DECIDED_AT),
+        }],
     }
 }
 

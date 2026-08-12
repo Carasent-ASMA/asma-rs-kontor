@@ -1,0 +1,478 @@
+{
+  "cli": {
+    "exit_class_code": 0,
+    "note": "clap is not a dependency of this test crate, so `Cli` is constructed rather than parsed from argv; `invocation()` and `perform_with` are the real ones and `perform_with` calls the same `kontor_mcp::execute` the MCP server does",
+    "operands": {
+      "agent_run_id": "0192f0c0-0000-7000-8000-0000000000e3",
+      "limit": 8
+    },
+    "operation": "session_timeline"
+  },
+  "run": {
+    "agree": true,
+    "cli_sha256": "a8db4fc9c740e284f3d914dc6d13967923ce2629cbb7bd2cb355bdd122cd6edc",
+    "facts": {
+      "agent_run_id": "0192f0c0-0000-7000-8000-0000000000e3",
+      "binding_id": "0192f0c0-0000-7000-8000-0000000000e4",
+      "lifecycle": "queued",
+      "revision": 1,
+      "snapshot_cursor": 1
+    },
+    "http_sha256": "a8db4fc9c740e284f3d914dc6d13967923ce2629cbb7bd2cb355bdd122cd6edc",
+    "mcp_sha256": "a8db4fc9c740e284f3d914dc6d13967923ce2629cbb7bd2cb355bdd122cd6edc"
+  },
+  "stream": {
+    "agree": true,
+    "http_frames": [
+      {
+        "event": "content",
+        "id": "1:9",
+        "item": {
+          "epoch": 1,
+          "kind": "tool_call",
+          "message_id": null,
+          "payload_sha256": "34fef3f4e15748a815555a7e3fafd19a01e372ec3d33facac7461cd4c891c057",
+          "permission_id": null,
+          "sequence": 9
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:10",
+        "item": {
+          "epoch": 1,
+          "kind": "log",
+          "message_id": null,
+          "payload_sha256": "f8ea3f41ad9d5041abee13ae7b642e923c8f38d330a2ad1d1ab08365ef0d6a51",
+          "permission_id": null,
+          "sequence": 10
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:11",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "3b11109aac420b80b9981afacd1a3d2205661b8452a9db06de3127be0f185995",
+          "permission_id": null,
+          "sequence": 11
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:12",
+        "item": {
+          "epoch": 1,
+          "kind": "state_change",
+          "message_id": null,
+          "payload_sha256": "83ecd1847081921786d6ea06e53eaec368ad72138bac73d46cc1a2dc92390fce",
+          "permission_id": null,
+          "sequence": 12
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:13",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "1b54456c901d0fa21e54b8313da958937a7fb58023a9741227825af92d119fb9",
+          "permission_id": null,
+          "sequence": 13
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:14",
+        "item": {
+          "epoch": 1,
+          "kind": "log",
+          "message_id": null,
+          "payload_sha256": "ecba29992abeb405230be59e1a22df7a669dea13de4d4b230fac750155fbca85",
+          "permission_id": null,
+          "sequence": 14
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:15",
+        "item": {
+          "epoch": 1,
+          "kind": "tool_call",
+          "message_id": null,
+          "payload_sha256": "ea13be8d6efead5ba10871c8fd0e0643deb3950e93efb6fba78a47ed365e07fe",
+          "permission_id": null,
+          "sequence": 15
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:16",
+        "item": {
+          "epoch": 1,
+          "kind": "state_change",
+          "message_id": null,
+          "payload_sha256": "27a3c41c4a1b7ca03039dba5d6a9eeb77371db18a0624e32de8501eadb79f2d6",
+          "permission_id": null,
+          "sequence": 16
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:17",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "b38cbad968bc79de6e83f5050a505429c3c211ed194eea1bb96868a1224c545e",
+          "permission_id": null,
+          "sequence": 17
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:18",
+        "item": {
+          "epoch": 1,
+          "kind": "tool_call",
+          "message_id": null,
+          "payload_sha256": "c9e93932c3bf3fa58583f395b7cc51d998fdd2b22210ae7aeea6da624eff1820",
+          "permission_id": null,
+          "sequence": 18
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:19",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "3fcb07d89e5a8f2847bcca953f8a7b5d1b32350d69bda3bbf8dd760515cb8863",
+          "permission_id": null,
+          "sequence": 19
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:20",
+        "item": {
+          "epoch": 1,
+          "kind": "state_change",
+          "message_id": null,
+          "payload_sha256": "0e3a659f1f0f3f2e065350b69ad46b11aa8c9910b197495c029e1ac5fe088d1d",
+          "permission_id": null,
+          "sequence": 20
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:21",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "d0d63091aa1b36869caec0106b168733e24e31d261f080faec3498fb54c903f9",
+          "permission_id": null,
+          "sequence": 21
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:22",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "038fabf3bcc3156c49b3dc1017d2ee0a4be239da8e5fa3336c2f78f520cef887",
+          "permission_id": null,
+          "sequence": 22
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:23",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "e7c76820131d33797c320218b9dc3924876db27ffbda1f11355d8c27cb61fae9",
+          "permission_id": null,
+          "sequence": 23
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:24",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": "0192f0c0-0000-7000-8000-0000000000e7",
+          "payload_sha256": "bded07807308af8bdcf5f8e5d393f11de745cd07156974067ec32a364109d7a4",
+          "permission_id": null,
+          "sequence": 24
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:25",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": "0192f0c0-0000-7000-8000-0000000000e8",
+          "payload_sha256": "50e2221ca7151598a71c03cea4407c50e8468ba7b45e5aa35ff3fe449de599cb",
+          "permission_id": null,
+          "sequence": 25
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:26",
+        "item": {
+          "epoch": 1,
+          "kind": "permission_resolved",
+          "message_id": null,
+          "payload_sha256": "84c6b7730085690a22bf7d5c544a2175c6ec1815c24cbf27df2ffc66780acf70",
+          "permission_id": "pilot-permission-1",
+          "sequence": 26
+        }
+      }
+    ],
+    "mcp_frames": [
+      {
+        "event": "content",
+        "id": "1:9",
+        "item": {
+          "epoch": 1,
+          "kind": "tool_call",
+          "message_id": null,
+          "payload_sha256": "34fef3f4e15748a815555a7e3fafd19a01e372ec3d33facac7461cd4c891c057",
+          "permission_id": null,
+          "sequence": 9
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:10",
+        "item": {
+          "epoch": 1,
+          "kind": "log",
+          "message_id": null,
+          "payload_sha256": "f8ea3f41ad9d5041abee13ae7b642e923c8f38d330a2ad1d1ab08365ef0d6a51",
+          "permission_id": null,
+          "sequence": 10
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:11",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "3b11109aac420b80b9981afacd1a3d2205661b8452a9db06de3127be0f185995",
+          "permission_id": null,
+          "sequence": 11
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:12",
+        "item": {
+          "epoch": 1,
+          "kind": "state_change",
+          "message_id": null,
+          "payload_sha256": "83ecd1847081921786d6ea06e53eaec368ad72138bac73d46cc1a2dc92390fce",
+          "permission_id": null,
+          "sequence": 12
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:13",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "1b54456c901d0fa21e54b8313da958937a7fb58023a9741227825af92d119fb9",
+          "permission_id": null,
+          "sequence": 13
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:14",
+        "item": {
+          "epoch": 1,
+          "kind": "log",
+          "message_id": null,
+          "payload_sha256": "ecba29992abeb405230be59e1a22df7a669dea13de4d4b230fac750155fbca85",
+          "permission_id": null,
+          "sequence": 14
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:15",
+        "item": {
+          "epoch": 1,
+          "kind": "tool_call",
+          "message_id": null,
+          "payload_sha256": "ea13be8d6efead5ba10871c8fd0e0643deb3950e93efb6fba78a47ed365e07fe",
+          "permission_id": null,
+          "sequence": 15
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:16",
+        "item": {
+          "epoch": 1,
+          "kind": "state_change",
+          "message_id": null,
+          "payload_sha256": "27a3c41c4a1b7ca03039dba5d6a9eeb77371db18a0624e32de8501eadb79f2d6",
+          "permission_id": null,
+          "sequence": 16
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:17",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "b38cbad968bc79de6e83f5050a505429c3c211ed194eea1bb96868a1224c545e",
+          "permission_id": null,
+          "sequence": 17
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:18",
+        "item": {
+          "epoch": 1,
+          "kind": "tool_call",
+          "message_id": null,
+          "payload_sha256": "c9e93932c3bf3fa58583f395b7cc51d998fdd2b22210ae7aeea6da624eff1820",
+          "permission_id": null,
+          "sequence": 18
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:19",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "3fcb07d89e5a8f2847bcca953f8a7b5d1b32350d69bda3bbf8dd760515cb8863",
+          "permission_id": null,
+          "sequence": 19
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:20",
+        "item": {
+          "epoch": 1,
+          "kind": "state_change",
+          "message_id": null,
+          "payload_sha256": "0e3a659f1f0f3f2e065350b69ad46b11aa8c9910b197495c029e1ac5fe088d1d",
+          "permission_id": null,
+          "sequence": 20
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:21",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "d0d63091aa1b36869caec0106b168733e24e31d261f080faec3498fb54c903f9",
+          "permission_id": null,
+          "sequence": 21
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:22",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "038fabf3bcc3156c49b3dc1017d2ee0a4be239da8e5fa3336c2f78f520cef887",
+          "permission_id": null,
+          "sequence": 22
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:23",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": null,
+          "payload_sha256": "e7c76820131d33797c320218b9dc3924876db27ffbda1f11355d8c27cb61fae9",
+          "permission_id": null,
+          "sequence": 23
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:24",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": "0192f0c0-0000-7000-8000-0000000000e7",
+          "payload_sha256": "bded07807308af8bdcf5f8e5d393f11de745cd07156974067ec32a364109d7a4",
+          "permission_id": null,
+          "sequence": 24
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:25",
+        "item": {
+          "epoch": 1,
+          "kind": "message",
+          "message_id": "0192f0c0-0000-7000-8000-0000000000e8",
+          "payload_sha256": "50e2221ca7151598a71c03cea4407c50e8468ba7b45e5aa35ff3fe449de599cb",
+          "permission_id": null,
+          "sequence": 25
+        }
+      },
+      {
+        "event": "content",
+        "id": "1:26",
+        "item": {
+          "epoch": 1,
+          "kind": "permission_resolved",
+          "message_id": null,
+          "payload_sha256": "84c6b7730085690a22bf7d5c544a2175c6ec1815c24cbf27df2ffc66780acf70",
+          "permission_id": "pilot-permission-1",
+          "sequence": 26
+        }
+      }
+    ]
+  },
+  "subject": {
+    "agent_run_id": "0192f0c0-0000-7000-8000-0000000000e3",
+    "anchor": "0192f0c0-0000-7000-8000-0000000000e4:1:8",
+    "page_size": 8
+  },
+  "timeline": {
+    "agree": true,
+    "cli_sha256": "62153e2cdee269ec55b4a016143e83d89fa7a11952963d66c3a6908443a1d9f6",
+    "epoch": 1,
+    "http_sha256": "62153e2cdee269ec55b4a016143e83d89fa7a11952963d66c3a6908443a1d9f6",
+    "http_status": 200,
+    "items": 8,
+    "mcp_sha256": "62153e2cdee269ec55b4a016143e83d89fa7a11952963d66c3a6908443a1d9f6",
+    "next": "0192f0c0-0000-7000-8000-0000000000e4:1:8"
+  }
+}

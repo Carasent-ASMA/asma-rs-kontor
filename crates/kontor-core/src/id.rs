@@ -13,6 +13,8 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+#[cfg(feature = "deterministic-test-ids")]
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::de::Error as _;
 use serde::ser::Error as _;
@@ -21,6 +23,39 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{DomainError, DomainResult};
+
+#[cfg(feature = "deterministic-test-ids")]
+static DETERMINISTIC_IDS: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "deterministic-test-ids")]
+static DETERMINISTIC_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Install the deterministic UUIDv7 source used by reproducible evidence tests.
+///
+/// This function does not exist unless the crate is built with the explicit
+/// `deterministic-test-ids` feature. IDs remain valid UUIDv7 values and are used
+/// unchanged by repositories and receipts; only their timestamp/random payload
+/// is fixed to a monotonically increasing test sequence.
+#[cfg(feature = "deterministic-test-ids")]
+pub fn install_deterministic_id_source() {
+    DETERMINISTIC_ID_SEQUENCE.store(0, Ordering::SeqCst);
+    DETERMINISTIC_IDS.store(true, Ordering::SeqCst);
+}
+
+/// Generate a UUIDv7 from the active source.
+///
+/// Production uses the wall clock. Reproducible evidence tests can explicitly
+/// install the feature-gated deterministic source before creating any state.
+#[must_use]
+pub fn generate_uuid_v7() -> Uuid {
+    #[cfg(feature = "deterministic-test-ids")]
+    if DETERMINISTIC_IDS.load(Ordering::SeqCst) {
+        let sequence = DETERMINISTIC_ID_SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
+        // Fixed UUIDv7 timestamp/version/variant prefix plus a unique 48-bit
+        // sequence. The parser below validates these exactly like live ids.
+        return Uuid::from_u128(0x0192_f0c0_0000_7000_8000_0000_0000_0000 | u128::from(sequence));
+    }
+    Uuid::now_v7()
+}
 
 pub use jiff::Timestamp;
 
@@ -55,7 +90,7 @@ macro_rules! entity_ids {
                 /// Generate a fresh, time-ordered identifier.
                 #[must_use]
                 pub fn generate() -> Self {
-                    Self(Uuid::now_v7())
+                    Self(generate_uuid_v7())
                 }
 
                 /// Parse the canonical lowercase hyphenated text form.
@@ -148,6 +183,9 @@ entity_ids! {
     SourceEventId,
     /// Identifies one intake decision for a source event.
     IntakeReceiptId,
+    /// Identifies one terminal decision — approval, rejection or bounded
+    /// auto-arm — about a proposed intake receipt.
+    IntakeDecisionId,
     /// Identifies a workspace-level calendar profile (its revisions share this id).
     CalendarProfileId,
     /// Identifies a project's calendar assignment.

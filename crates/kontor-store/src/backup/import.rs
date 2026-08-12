@@ -174,7 +174,7 @@ pub fn import_export(
     materialize(store, export, destination, &mut dispositions)?;
 
     // 4. The destination's own receipt, and the lineage under it.
-    let import_id = Uuid::now_v7();
+    let import_id = kontor_core::id::generate_uuid_v7();
     record_import(store, export, plan, now, import_id, &dispositions)?;
 
     let count = |wanted: &dyn Fn(Disposition) -> bool| -> u64 {
