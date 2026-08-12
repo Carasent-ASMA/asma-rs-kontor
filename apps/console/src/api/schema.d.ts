@@ -2918,13 +2918,6 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description A work calendar is assigned and resolving it is KON-MVP-21 */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
         };
     };
     tasks: {

@@ -13,19 +13,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::DomainError;
 use kontor_core::calendar::{
-    CalendarExceptionRevision, CalendarProfileSpec, ExceptionKind, ExceptionProvenance,
-    ExecutionAuthorization, HolidayProviderKind, HolidaySourceRevision, IanaTimeZone,
-    OverrideExpiry, OverrideRevocation, ScheduleOverride, WeeklyWindow, WorkCalendarAssignment,
-    WorkScope,
+    CalendarExceptionRevision, CalendarProfileSpec, ChildCalendarWindows, ExceptionKind,
+    ExceptionProvenance, ExecutionAuthorization, HolidayImportBatch, HolidayImportKind,
+    HolidayProviderKind, HolidaySourceRevision, IanaTimeZone, OverrideExpiry, OverrideRevocation,
+    ScheduleOverride, WeeklyWindow, WorkCalendarAssignment, WorkScope,
 };
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CommandReceiptId, ContentHash, CredentialAlias,
     CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey, GuardrailEvaluationId,
-    IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money, PersonaScenarioId, PhaseKey,
-    ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SpecVersion,
-    StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
-    TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+    HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money,
+    PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey,
+    ScheduleOverrideId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
+    TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId, WorkProfileKey,
+    format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
@@ -3244,6 +3245,96 @@ impl CalendarRepository for SqliteStore {
             .transpose()
     }
 
+    fn append_child_windows(&self, revision: &ChildCalendarWindows) -> RepositoryResult<()> {
+        revision.validate()?;
+        let (scope_kind, mini_project, task) = scope_columns(revision.scope);
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO child_calendar_windows
+                     (project_id, work_calendar_id, scope_kind, mini_project_id, task_id,
+                      version, windows, supersedes, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    revision.project_id.to_string(),
+                    revision.work_calendar_id.to_string(),
+                    scope_kind,
+                    mini_project,
+                    task,
+                    version_column(revision.version),
+                    to_json(&revision.windows)?,
+                    revision.supersedes.map(version_column),
+                    text(revision.created_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn active_child_windows(
+        &self,
+        project_id: ProjectId,
+        work_calendar_id: WorkCalendarId,
+        scope: WorkScope,
+    ) -> RepositoryResult<Option<ChildCalendarWindows>> {
+        if scope == WorkScope::Project {
+            return Err(DomainError::invalid(
+                "ChildCalendarWindows",
+                "must name a mini-project or task scope",
+            )
+            .into());
+        }
+        let (scope_kind, mini_project, task) = scope_columns(scope);
+        let row: Option<RepositoryResult<ChildCalendarWindows>> = self
+            .connection
+            .query_row(
+                "SELECT version, windows, supersedes, created_at
+                   FROM child_calendar_windows AS current
+                  WHERE project_id = ?1 AND work_calendar_id = ?2 AND scope_kind = ?3
+                    AND mini_project_id IS ?4 AND task_id IS ?5
+                    AND NOT EXISTS (
+                        SELECT 1 FROM child_calendar_windows AS later
+                         WHERE later.project_id = current.project_id
+                           AND later.work_calendar_id = current.work_calendar_id
+                           AND later.scope_kind = current.scope_kind
+                           AND later.mini_project_id IS current.mini_project_id
+                           AND later.task_id IS current.task_id
+                           AND later.supersedes = current.version)",
+                params![
+                    project_id.to_string(),
+                    work_calendar_id.to_string(),
+                    scope_kind,
+                    mini_project,
+                    task,
+                ],
+                |row| {
+                    Ok((|| -> RepositoryResult<ChildCalendarWindows> {
+                        let previous: Option<i64> = row.get(2).map_err(backend)?;
+                        Ok(ChildCalendarWindows {
+                            project_id,
+                            work_calendar_id,
+                            scope,
+                            version: SpecVersion::parse(
+                                u32::try_from(row.get::<_, i64>(0).map_err(backend)?)
+                                    .unwrap_or_default(),
+                            )?,
+                            windows: from_json(&row.get::<_, String>(1).map_err(backend)?)?,
+                            supersedes: previous
+                                .map(|value| {
+                                    SpecVersion::parse(u32::try_from(value).unwrap_or_default())
+                                })
+                                .transpose()?,
+                            created_at: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
+                        })
+                    })())
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.transpose()
+    }
+
     fn append_exception(&self, exception: &CalendarExceptionRevision) -> RepositoryResult<()> {
         exception.validate()?;
         let provenance = to_json(&exception.provenance)?;
@@ -3367,11 +3458,7 @@ impl CalendarRepository for SqliteStore {
                     revision.id.to_string(),
                     revision.profile_id.to_string(),
                     version_column(revision.profile_version),
-                    match revision.provider {
-                        HolidayProviderKind::Ical => "ical",
-                        HolidayProviderKind::Manual => "manual",
-                        HolidayProviderKind::Bundled => "bundled",
-                    },
+                    provider_column(revision.provider),
                     revision.country.as_str(),
                     revision.subdivision.as_ref().map(ExternalName::as_str),
                     revision.reference.as_str(),
@@ -3716,6 +3803,274 @@ impl CalendarRepository for SqliteStore {
                     };
                     Ok(build())
                 },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.transpose()
+    }
+
+    fn apply_holiday_import(
+        &self,
+        batch: &HolidayImportBatch,
+        revision: &HolidaySourceRevision,
+        exceptions: &[CalendarExceptionRevision],
+    ) -> RepositoryResult<HolidayImportBatch> {
+        batch.validate()?;
+        revision.validate()?;
+        if batch.source_id != revision.id {
+            return Err(DomainError::invalid(
+                "HolidayImportBatch",
+                "the provenance and the source revision name different revisions",
+            )
+            .into());
+        }
+        if usize::try_from(batch.applied_exceptions).unwrap_or(usize::MAX) != exceptions.len() {
+            return Err(DomainError::invalid(
+                "HolidayImportBatch",
+                "the recorded exception count is not the number of exceptions applied",
+            )
+            .into());
+        }
+        for exception in exceptions {
+            exception.validate()?;
+            if exception.project_id != batch.project_id
+                || exception.work_calendar_id != batch.work_calendar_id
+            {
+                return Err(RepositoryError::CrossProject {
+                    subject: "imported calendar exception",
+                });
+            }
+            // Every exception this import writes must cite *this* revision. An
+            // import that wrote an exception attributed to another source would
+            // be attributing its closures to provenance it did not retrieve.
+            if exception.provenance
+                != (ExceptionProvenance::HolidaySource {
+                    source_id: revision.id,
+                })
+            {
+                return Err(DomainError::invalid(
+                    "imported calendar exception",
+                    "must cite the source revision this import applied",
+                )
+                .into());
+            }
+        }
+
+        // Replay first, and outside the write path: the same key for the same
+        // calendar returns what the original apply wrote and touches nothing.
+        if let Some(original) = self.import_by_key(
+            batch.project_id,
+            batch.work_calendar_id,
+            &batch.idempotency_key,
+        )? {
+            return Ok(original);
+        }
+
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO holiday_sources
+                     (id, profile_id, profile_version, provider, country, subdivision,
+                      reference, range_start, range_end, retrieved_at, raw_hash,
+                      normalized_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    revision.id.to_string(),
+                    revision.profile_id.to_string(),
+                    version_column(revision.profile_version),
+                    provider_column(revision.provider),
+                    revision.country.as_str(),
+                    revision.subdivision.as_ref().map(ExternalName::as_str),
+                    revision.reference.as_str(),
+                    revision.range_start.to_string(),
+                    revision.range_end.to_string(),
+                    text(revision.retrieved_at),
+                    revision.raw_hash.as_str(),
+                    revision.normalized_hash.as_str()
+                ],
+            )
+            .map_err(backend)?;
+        for exception in exceptions {
+            transaction
+                .execute(
+                    "INSERT INTO calendar_exceptions
+                         (id, project_id, work_calendar_id, start_date, end_date, kind, label,
+                          provenance, supersedes, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        exception.id.to_string(),
+                        exception.project_id.to_string(),
+                        exception.work_calendar_id.to_string(),
+                        exception.start_date.to_string(),
+                        exception.end_date.to_string(),
+                        exception.kind.as_str(),
+                        exception.label.as_str(),
+                        to_json(&exception.provenance)?,
+                        exception.supersedes.map(|id| id.to_string()),
+                        text(exception.created_at)
+                    ],
+                )
+                .map_err(backend)?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO holiday_import_batches
+                     (source_id, project_id, work_calendar_id, import_kind, requested_start,
+                      requested_end, categories, warnings, applied_exceptions, supersedes,
+                      idempotency_key, applied_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    batch.source_id.to_string(),
+                    batch.project_id.to_string(),
+                    batch.work_calendar_id.to_string(),
+                    batch.kind.as_str(),
+                    batch.requested_start.to_string(),
+                    batch.requested_end.to_string(),
+                    to_json(&batch.categories)?,
+                    to_json(&batch.warnings)?,
+                    i64::from(batch.applied_exceptions),
+                    batch.supersedes.map(|id| id.to_string()),
+                    batch.idempotency_key.as_str(),
+                    text(batch.applied_at)
+                ],
+            )
+            .map_err(|error| {
+                // The supersession trigger is the one refusal here that is a
+                // caller's mistake rather than a backend failure: it fires when a
+                // second import tries to become current without replacing the
+                // import that already is.
+                if matches!(
+                    &error,
+                    rusqlite::Error::SqliteFailure(failure, _)
+                        if failure.code == rusqlite::ErrorCode::ConstraintViolation
+                ) {
+                    conflict(
+                        "holiday import",
+                        "an import must supersede the calendar's current import",
+                    )
+                } else {
+                    backend(error)
+                }
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(batch.clone())
+    }
+
+    fn applied_import(
+        &self,
+        project_id: ProjectId,
+        work_calendar_id: WorkCalendarId,
+    ) -> RepositoryResult<Option<HolidayImportBatch>> {
+        let row: Option<RepositoryResult<HolidayImportBatch>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {IMPORT_BATCH_COLUMNS} FROM holiday_import_batches AS current
+                      WHERE current.project_id = ?1 AND current.work_calendar_id = ?2
+                        AND NOT EXISTS (SELECT 1 FROM holiday_import_batches AS later
+                                         WHERE later.supersedes = current.source_id)"
+                ),
+                params![project_id.to_string(), work_calendar_id.to_string()],
+                |row| Ok(read_import_batch(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        row.transpose()
+    }
+
+    fn applied_exceptions(
+        &self,
+        project_id: ProjectId,
+        work_calendar_id: WorkCalendarId,
+    ) -> RepositoryResult<Vec<CalendarExceptionRevision>> {
+        let applied = self
+            .applied_import(project_id, work_calendar_id)?
+            .map(|batch| batch.source_id);
+        Ok(self
+            .list_exceptions(project_id, work_calendar_id)?
+            .into_iter()
+            .filter(|exception| match exception.provenance {
+                // A human's revision is never dropped by an import refresh.
+                ExceptionProvenance::Manual { .. } => true,
+                // A superseded import's rows stay in the table as history and
+                // stop being policy the moment a newer import replaces them.
+                ExceptionProvenance::HolidaySource { source_id } => Some(source_id) == applied,
+            })
+            .collect())
+    }
+}
+
+/// The v1 provider spelling for a holiday source.
+///
+/// v1 has three: a retrieved feed, a human and a shipped set. Which *importer*
+/// read a retrieved feed — iCalendar, Nager or GOV.UK — is
+/// [`kontor_core::calendar::HolidayImportKind`] on the import batch, because
+/// SQLite cannot widen the v1 `CHECK` this column carries.
+fn provider_column(provider: HolidayProviderKind) -> &'static str {
+    match provider {
+        HolidayProviderKind::Ical => "ical",
+        HolidayProviderKind::Manual => "manual",
+        HolidayProviderKind::Bundled => "bundled",
+    }
+}
+
+const IMPORT_BATCH_COLUMNS: &str = "source_id, project_id, work_calendar_id, import_kind, \
+     requested_start, requested_end, categories, warnings, applied_exceptions, supersedes, \
+     idempotency_key, applied_at";
+
+fn read_import_batch(row: &Row<'_>) -> RepositoryResult<HolidayImportBatch> {
+    let supersedes: Option<String> = row.get(9).map_err(backend)?;
+    Ok(HolidayImportBatch {
+        source_id: HolidaySourceId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        work_calendar_id: WorkCalendarId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+        kind: HolidayImportKind::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+        requested_start: read_civil_date(&row.get::<_, String>(4).map_err(backend)?)?,
+        requested_end: read_civil_date(&row.get::<_, String>(5).map_err(backend)?)?,
+        categories: from_json(&row.get::<_, String>(6).map_err(backend)?)?,
+        warnings: from_json(&row.get::<_, String>(7).map_err(backend)?)?,
+        applied_exceptions: u32::try_from(row.get::<_, i64>(8).map_err(backend)?).map_err(
+            |_| RepositoryError::Backend {
+                detail: "stored import exception count is out of range".to_owned(),
+            },
+        )?,
+        supersedes: supersedes
+            .as_deref()
+            .map(HolidaySourceId::parse)
+            .transpose()?,
+        idempotency_key: IdempotencyKey::parse(&row.get::<_, String>(10).map_err(backend)?)?,
+        applied_at: read_timestamp(&row.get::<_, String>(11).map_err(backend)?)?,
+    })
+}
+
+/// Parse a stored `YYYY-MM-DD`, whichever civil-date type the field expects.
+fn read_civil_date<T: std::str::FromStr>(value: &str) -> RepositoryResult<T> {
+    value.parse().map_err(|_| RepositoryError::Backend {
+        detail: "stored calendar date is not a civil date".to_owned(),
+    })
+}
+
+impl SqliteStore {
+    /// The import a calendar already applied under one idempotency key.
+    fn import_by_key(
+        &self,
+        project_id: ProjectId,
+        work_calendar_id: WorkCalendarId,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<HolidayImportBatch>> {
+        let row: Option<RepositoryResult<HolidayImportBatch>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {IMPORT_BATCH_COLUMNS} FROM holiday_import_batches
+                      WHERE project_id = ?1 AND work_calendar_id = ?2 AND idempotency_key = ?3"
+                ),
+                params![
+                    project_id.to_string(),
+                    work_calendar_id.to_string(),
+                    key.as_str()
+                ],
+                |row| Ok(read_import_batch(row)),
             )
             .optional()
             .map_err(backend)?;

@@ -22,13 +22,16 @@
 //! authorization becomes `authorization_missing`, which is a real refusal and the
 //! right one.
 //!
-//! Two things this route will not do. It will not answer for a project with a work
-//! calendar assigned, because turning a calendar into an effective window is
-//! KON-MVP-21 and pretending the window is open would be the one dishonest default
-//! available here — so that project is refused as `unavailable` naming the ticket. And
-//! it does not admit anything: this is `plan`'s decision *reported*, not committed.
-//! Committing an admission is `kontor_store::admit_candidate`, behind the scheduler
-//! service, and no read route reaches it.
+//! A project with a work calendar assigned is answered rather than refused: the
+//! assignment, its pinned profile revision, the applied exceptions and the live
+//! overrides are read here and resolved by `kontor-calendar` (KON-MVP-21) against
+//! *this* coordinator's clock, and the resolved answer travels with each candidate.
+//! Nothing in this crate reads a window, a zone or a holiday.
+//!
+//! What this route will not do is admit anything: this is `plan`'s decision
+//! *reported*, not committed. Committing an admission is
+//! `kontor_store::admit_candidate`, behind the scheduler service, and no read route
+//! reaches it.
 //!
 //! # Every blocker, not just the first
 //!
@@ -383,8 +386,7 @@ pub struct PlanDto {
     params(("project_id" = String, Path, description = "The project to plan")),
     responses(
         (status = 200, body = ViewDto<PlanDto>),
-        (status = 404),
-        (status = 503, description = "A work calendar is assigned and resolving it is KON-MVP-21")
+        (status = 404)
     )
 )]
 pub async fn scheduler_plan(
@@ -415,21 +417,14 @@ pub async fn scheduler_plan(
                 "no such project exists in this realm",
             ));
         }
+        // `taken_at` is the coordinator's clock, and it is the only clock any
+        // calendar in this answer is judged against. A caller's instant is never
+        // accepted here, because a client that could choose the instant could
+        // choose the window.
         store
-            .scheduling_candidates(project_id, &runtime)
+            .scheduling_candidates_at(project_id, &runtime, taken_at)
             .map_err(|error| ApiError::from_repository(realm_id, &error))
     })?;
-
-    // A calendar this build cannot resolve is the one thing that would force a
-    // dishonest default, so it refuses instead. `unrestricted` would claim the
-    // window is open, and nothing here knows that.
-    if assembly.calendar_assigned {
-        return Err(state.refuse(
-            ApiErrorCode::Unavailable,
-            "this project has a work calendar assigned, and resolving one into an effective \
-             window is KON-MVP-21; planning it here would have to assume the window is open",
-        ));
-    }
 
     let (in_flight, load, completed) = state.with_store(|store| -> Result<_, ApiError> {
         let in_flight = store

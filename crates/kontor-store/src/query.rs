@@ -30,14 +30,18 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use kontor_core::calendar::WorkScope;
+use kontor_core::calendar::{
+    CalendarExceptionRevision, CalendarProfileSpec, ChildCalendarWindows, ScheduleOverride,
+    WorkCalendarAssignment, WorkScope,
+};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CommandReceiptId, ExecutionAuthorizationId,
-    ExternalId, ExternalName, ExternalProjectKey, PhaseKey, ProjectId, RoleKey, SpecVersion,
-    StatusConflictId, StatusTransitionReceiptId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId,
-    TicketLinkId, TicketProjectionId, Timestamp, WorkProfileKey,
+    ExternalId, ExternalName, ExternalProjectKey, MiniProjectId, PhaseKey, ProjectId, RoleKey,
+    ScheduleOverrideId, SpecVersion, StatusConflictId, StatusTransitionReceiptId, TaskId,
+    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, TicketProjectionId, Timestamp,
+    WorkProfileKey, format_utc_timestamp,
 };
-use kontor_core::repository::{RepositoryResult, TaskWorkflow};
+use kontor_core::repository::{RepositoryError, RepositoryResult, Task, TaskWorkflow};
 use kontor_core::spec::IntakeResult;
 use kontor_core::state::{DesiredRunState, ObservedRunState, RunLifecycle};
 use kontor_scheduler::model::{
@@ -48,6 +52,95 @@ use rusqlite::{Row, params};
 
 use crate::SqliteStore;
 use crate::repository::{backend, read_timestamp, revision_of, team_run_snapshot};
+
+/// A project's calendar, read once and resolved per candidate.
+///
+/// Everything here is a row. The *meaning* of those rows — which window matched,
+/// whether the day is a holiday, whether an override is in force, when the
+/// calendar next opens — is `kontor-calendar`'s, and this crate asks it rather
+/// than deciding a second time.
+#[derive(Debug, Clone, Default)]
+pub struct CalendarInputs {
+    /// The project's active assignment. `None` means unrestricted.
+    pub assignment: Option<WorkCalendarAssignment>,
+    /// The exact profile revision the assignment pins.
+    pub profile: Option<CalendarProfileSpec>,
+    /// Manual exceptions plus the currently applied import's.
+    pub exceptions: Vec<CalendarExceptionRevision>,
+    /// Overrides that have started, are unrevoked and have not passed their
+    /// ceiling. Scope and expiry are the resolver's to judge.
+    pub overrides: Vec<ScheduleOverride>,
+    /// Current immutable child-window revisions for this calendar.
+    pub child_windows: Vec<ChildCalendarWindows>,
+}
+
+impl CalendarInputs {
+    /// Resolve one piece of work against this calendar.
+    ///
+    /// # Errors
+    /// Returns the domain's refusal when the stored rows do not resolve — a
+    /// pinned revision that does not match, or a zone the bundled tzdb does not
+    /// know.
+    pub fn resolve(
+        &self,
+        now: Timestamp,
+        mini_project: Option<MiniProjectId>,
+        task: TaskId,
+        terminal_goals: &[MiniProjectId],
+    ) -> RepositoryResult<CalendarAdmission> {
+        let goal_scope =
+            mini_project.map(|mini_project_id| WorkScope::MiniProject { mini_project_id });
+        let task_scope = WorkScope::Task { task_id: task };
+        let levels: Vec<&[kontor_core::calendar::WeeklyWindow]> = goal_scope
+            .into_iter()
+            .chain(std::iter::once(task_scope))
+            .filter_map(|scope| {
+                self.child_windows
+                    .iter()
+                    .find(|revision| revision.scope == scope)
+                    .map(|revision| revision.windows.as_slice())
+            })
+            .collect();
+        kontor_calendar::resolve_scoped(
+            &kontor_calendar::ResolutionRequest {
+                now,
+                assignment: self.assignment.as_ref(),
+                profile: self.profile.as_ref(),
+                exceptions: &self.exceptions,
+                // Scope revisions are applied by `resolve_scoped` below; keep the
+                // request's legacy single-level field empty to avoid applying one twice.
+                child_windows: None,
+                overrides: &self.overrides,
+                terminal_goals,
+                mini_project,
+                task: Some(task),
+            },
+            &levels,
+        )
+        .map_err(|error| match error {
+            kontor_calendar::CalendarError::Domain(domain) => RepositoryError::Domain(domain),
+            other => RepositoryError::Backend {
+                detail: other.to_string(),
+            },
+        })
+    }
+}
+
+/// The goals whose every task has reached a terminal state.
+fn terminal_goals(tasks: &[Task]) -> Vec<MiniProjectId> {
+    let mut open: BTreeSet<MiniProjectId> = BTreeSet::new();
+    let mut seen: BTreeSet<MiniProjectId> = BTreeSet::new();
+    for task in tasks {
+        let Some(goal) = task.mini_project_id else {
+            continue;
+        };
+        seen.insert(goal);
+        if !task.state.is_terminal() {
+            open.insert(goal);
+        }
+    }
+    seen.difference(&open).copied().collect()
+}
 
 /// The default priority every candidate is assembled with.
 ///
@@ -298,11 +391,14 @@ pub struct CandidateAssembly {
     /// no gates to satisfy, so it is not a candidate — and saying so is better than
     /// inventing a workflow id for it.
     pub without_workflow: Vec<TaskId>,
-    /// Whether this project has a work calendar assigned.
+    /// Whether this project has an active work calendar assignment.
     ///
-    /// The caller needs this to decide whether it may answer at all: resolving a
-    /// calendar into an effective window is KON-MVP-21, so a project *with* an
-    /// assignment cannot be planned honestly by this build.
+    /// Informational: every candidate already carries the *resolved* answer, and
+    /// a project with no assignment carries
+    /// [`CalendarAdmission::unrestricted`]. This says which of those two cases
+    /// produced it, so a client can tell "unrestricted because nothing is
+    /// configured" from "open because the window is open" without inspecting a
+    /// candidate.
     pub calendar_assigned: bool,
 }
 
@@ -648,13 +744,32 @@ impl SqliteStore {
         project_id: ProjectId,
         runtime: &RuntimeAdmissionEvidence,
     ) -> RepositoryResult<CandidateAssembly> {
+        self.scheduling_candidates_at(project_id, runtime, Timestamp::now())
+    }
+
+    /// Assemble candidates at one coordinator-supplied instant.
+    ///
+    /// # Errors
+    /// As [`SqliteStore::scheduling_candidates`].
+    pub fn scheduling_candidates_at(
+        &self,
+        project_id: ProjectId,
+        runtime: &RuntimeAdmissionEvidence,
+        now: Timestamp,
+    ) -> RepositoryResult<CandidateAssembly> {
         use kontor_core::repository::{ProjectRepository, WorkflowRepository};
 
         let tasks = self.list_tasks(project_id)?;
         let dependencies = self.task_dependency_map(project_id)?;
         let authorizations = self.list_execution_authorizations(project_id)?;
-        let calendar_assigned = self.has_calendar_assignment(project_id)?;
+        let calendar = self.calendar_inputs(project_id, now)?;
+        let calendar_assigned = calendar.assignment.is_some();
         let intake = crate::intake::lineage_by_task(self, project_id)?;
+        // Derived from the tasks already read: a goal whose every task is
+        // terminal has completed, which is what ends a goal-bound override
+        // before its ceiling arrives. A goal with no task has not completed —
+        // an empty goal is unstarted, not finished.
+        let terminal_goals = terminal_goals(&tasks);
 
         let mut candidates = Vec::new();
         let mut without_workflow = Vec::new();
@@ -686,7 +801,10 @@ impl SqliteStore {
                 // inside. Which one is chosen changes only the evidence id in a
                 // refusal, never whether the task is admitted.
                 authorization: covering(&authorizations, task.mini_project_id, task.id),
-                calendar: CalendarAdmission::unrestricted(),
+                // Resolved per candidate, because an override is scoped: the
+                // project's answer and one task's answer are the same question
+                // asked about different work.
+                calendar: calendar.resolve(now, task.mini_project_id, task.id, &terminal_goals)?,
                 runtime: runtime.clone(),
                 account: AccountAdmissionEvidence {
                     pin: None,
@@ -701,6 +819,146 @@ impl SqliteStore {
             without_workflow,
             calendar_assigned,
         })
+    }
+
+    /// Everything `kontor-calendar` needs to resolve this project, read once.
+    ///
+    /// # Errors
+    /// As [`SqliteStore::list_projects`], and refuses an assignment whose pinned
+    /// profile revision is missing from this database — that is a calendar this
+    /// build cannot resolve, and guessing at it would be inventing a policy.
+    pub fn calendar_inputs(
+        &self,
+        project_id: ProjectId,
+        now: Timestamp,
+    ) -> RepositoryResult<CalendarInputs> {
+        use kontor_core::repository::{CalendarRepository, SpecRepository};
+
+        let Some(assignment) = self.active_assignment(project_id)? else {
+            return Ok(CalendarInputs::default());
+        };
+        let profile = self
+            .get_calendar_profile(assignment.profile_id, assignment.profile_version)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "pinned calendar profile revision",
+            })?;
+        let exceptions = self.applied_exceptions(project_id, assignment.id)?;
+        let overrides = self.active_overrides(project_id, now)?;
+        let child_windows = self.active_child_window_revisions(project_id, assignment.id)?;
+        Ok(CalendarInputs {
+            assignment: Some(assignment),
+            profile: Some(profile),
+            exceptions,
+            overrides,
+            child_windows,
+        })
+    }
+
+    fn active_child_window_revisions(
+        &self,
+        project_id: ProjectId,
+        work_calendar_id: kontor_core::id::WorkCalendarId,
+    ) -> RepositoryResult<Vec<ChildCalendarWindows>> {
+        use kontor_core::repository::CalendarRepository;
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT scope_kind, mini_project_id, task_id
+               FROM child_calendar_windows AS current
+              WHERE project_id = ?1 AND work_calendar_id = ?2
+                AND NOT EXISTS (
+                    SELECT 1 FROM child_calendar_windows AS later
+                     WHERE later.project_id = current.project_id
+                       AND later.work_calendar_id = current.work_calendar_id
+                       AND later.scope_kind = current.scope_kind
+                       AND later.mini_project_id IS current.mini_project_id
+                       AND later.task_id IS current.task_id
+                       AND later.supersedes = current.version)
+              ORDER BY scope_kind, mini_project_id, task_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), work_calendar_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .map_err(backend)?;
+        let mut revisions = Vec::new();
+        for row in rows {
+            let (kind, mini_project, task) = row.map_err(backend)?;
+            let scope = match kind.as_str() {
+                "mini_project" => WorkScope::MiniProject {
+                    mini_project_id: MiniProjectId::parse(mini_project.as_deref().unwrap_or(""))?,
+                },
+                "task" => WorkScope::Task {
+                    task_id: TaskId::parse(task.as_deref().unwrap_or(""))?,
+                },
+                _ => {
+                    return Err(RepositoryError::Backend {
+                        detail: "stored child calendar scope is invalid".to_owned(),
+                    });
+                }
+            };
+            if let Some(revision) =
+                self.active_child_windows(project_id, work_calendar_id, scope)?
+            {
+                revisions.push(revision);
+            }
+        }
+        Ok(revisions)
+    }
+
+    /// The overrides that could be in force at one instant.
+    ///
+    /// A pre-filter, not a decision: the rows returned are the ones whose start,
+    /// ceiling and revocation do not already rule them out. Scope, expiry and
+    /// goal completion are re-checked by the resolver, which is where all of
+    /// those rules live.
+    ///
+    /// # Errors
+    /// As [`SqliteStore::list_projects`].
+    pub fn active_overrides(
+        &self,
+        project_id: ProjectId,
+        now: Timestamp,
+    ) -> RepositoryResult<Vec<ScheduleOverride>> {
+        use kontor_core::repository::CalendarRepository;
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id FROM schedule_overrides
+                  WHERE project_id = ?1 AND revoked_at IS NULL
+                    AND start_at <= ?2 AND hard_ceiling >= ?2
+                  ORDER BY start_at, id",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), format_utc_timestamp(now)])
+            .map_err(backend)?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            ids.push(ScheduleOverrideId::parse(
+                &row.get::<_, String>(0).map_err(backend)?,
+            )?);
+        }
+        drop(rows);
+        drop(statement);
+
+        let mut overrides = Vec::new();
+        for id in ids {
+            if let Some(found) = self.get_override(project_id, id)? {
+                overrides.push(found);
+            }
+        }
+        Ok(overrides)
     }
 
     /// The active workflow of one task, as a phase and profile pair.

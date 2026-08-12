@@ -14,8 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::calendar::{
-    CalendarExceptionRevision, CalendarProfileSpec, ExecutionAuthorization, HolidaySourceRevision,
-    OverrideRevocation, ScheduleOverride, WorkCalendarAssignment,
+    CalendarExceptionRevision, CalendarProfileSpec, ChildCalendarWindows, ExecutionAuthorization,
+    HolidayImportBatch, HolidaySourceRevision, OverrideRevocation, ScheduleOverride,
+    WorkCalendarAssignment, WorkScope,
 };
 use crate::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
@@ -1969,6 +1970,17 @@ pub trait CalendarRepository {
         project_id: ProjectId,
     ) -> RepositoryResult<Option<WorkCalendarAssignment>>;
 
+    /// Append one immutable child-scope window revision.
+    fn append_child_windows(&self, revision: &ChildCalendarWindows) -> RepositoryResult<()>;
+
+    /// Read the current window revision for one child scope.
+    fn active_child_windows(
+        &self,
+        project_id: ProjectId,
+        work_calendar_id: WorkCalendarId,
+        scope: WorkScope,
+    ) -> RepositoryResult<Option<ChildCalendarWindows>>;
+
     /// Append a calendar exception revision.
     ///
     /// # Errors
@@ -2034,6 +2046,53 @@ pub trait CalendarRepository {
         project_id: ProjectId,
         id: CalendarExceptionId,
     ) -> RepositoryResult<Option<CalendarExceptionRevision>>;
+
+    /// Apply one holiday import: the source revision, its provenance and every
+    /// normalized exception it produced, in **one** transaction.
+    ///
+    /// Applying is all-or-nothing on purpose. A half-applied import is a calendar
+    /// that closes some of a holiday set and not the rest, which is worse than
+    /// one that closes none of it — and a source revision without its exceptions
+    /// is provenance for work that never happened.
+    ///
+    /// Replaying the same `idempotency_key` for the same calendar returns the
+    /// original apply and writes nothing.
+    ///
+    /// # Errors
+    /// Refuses an invalid batch or revision, exceptions that do not belong to the
+    /// named calendar, and a batch whose superseded revision is not the one
+    /// currently applied.
+    fn apply_holiday_import(
+        &self,
+        batch: &HolidayImportBatch,
+        revision: &HolidaySourceRevision,
+        exceptions: &[CalendarExceptionRevision],
+    ) -> RepositoryResult<HolidayImportBatch>;
+
+    /// The import currently applied to one calendar, if one is.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn applied_import(
+        &self,
+        project_id: ProjectId,
+        work_calendar_id: WorkCalendarId,
+    ) -> RepositoryResult<Option<HolidayImportBatch>>;
+
+    /// The exception revisions resolution is allowed to read: every manual one,
+    /// plus the imported ones belonging to the currently applied import.
+    ///
+    /// Superseded imports stay in the table as history and are simply not
+    /// returned here, which is how a refreshed import drops the holidays its
+    /// source no longer lists without deleting evidence that it once did.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn applied_exceptions(
+        &self,
+        project_id: ProjectId,
+        work_calendar_id: WorkCalendarId,
+    ) -> RepositoryResult<Vec<CalendarExceptionRevision>>;
 }
 
 // ---------------------------------------------------------------------------

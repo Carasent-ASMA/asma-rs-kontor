@@ -440,9 +440,6 @@
           },
           "404": {
             "description": ""
-          },
-          "503": {
-            "description": "A work calendar is assigned and resolving it is KON-MVP-21"
           }
         }
       }

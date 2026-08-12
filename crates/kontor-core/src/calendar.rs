@@ -13,14 +13,17 @@
 //!   missing or repeated local hour at a DST boundary cannot make the resolver
 //!   ambiguous.
 
+use std::collections::BTreeSet;
+
 use jiff::civil;
 use jiff::tz::TimeZone;
 use serde::{Deserialize, Serialize};
 
 use crate::id::{
     AccountProfileId, CalendarExceptionId, CalendarProfileId, CanonicalDocument, CommandReceiptId,
-    ContentHash, ExecutionAuthorizationId, ExternalName, HolidaySourceId, MiniProjectId, ProjectId,
-    ScheduleOverrideId, SchemaVersion, SpecVersion, TaskId, Timestamp, WorkCalendarId,
+    ContentHash, ExecutionAuthorizationId, ExternalName, HolidaySourceId, IdempotencyKey,
+    MiniProjectId, ProjectId, ScheduleOverrideId, SchemaVersion, SpecVersion, TaskId, Timestamp,
+    WorkCalendarId,
 };
 use crate::receipt::AggregateRef;
 use crate::spec::BudgetBounds;
@@ -145,6 +148,21 @@ impl WeeklyWindow {
     #[must_use]
     pub fn contains(&self, weekday: Weekday, time: civil::Time) -> bool {
         self.weekday == weekday && time >= self.start && time < self.end
+    }
+
+    /// Whole local minutes left before this window closes.
+    ///
+    /// Wall-clock minutes, which is exactly how the window and the drain lead are
+    /// both expressed, and seconds are truncated so the two ends of a comparison
+    /// cannot disagree by a partial minute. Negative once the window has closed.
+    ///
+    /// It lives here rather than at each call site because the drain boundary is
+    /// decided in two places — this crate's reducer and `kontor-calendar`'s
+    /// resolution — and two spellings of one formula is exactly how those two
+    /// answers would come to differ.
+    #[must_use]
+    pub fn minutes_remaining(&self, time: civil::Time) -> i64 {
+        i64::from(self.end.hour() - time.hour()) * 60 + i64::from(self.end.minute() - time.minute())
     }
 }
 
@@ -275,6 +293,57 @@ impl WorkCalendarAssignment {
     }
 }
 
+/// One immutable revision of working windows for a child scope.
+///
+/// Mini-projects and tasks inherit their project's calendar. This value can
+/// narrow that inherited calendar; widening is admitted only while a scoped
+/// approved override is active. Revisions are append-only and the newest leaf
+/// in the supersession chain is the effective one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildCalendarWindows {
+    /// Project owning the scope and calendar.
+    pub project_id: ProjectId,
+    /// Calendar assignment these windows narrow.
+    pub work_calendar_id: WorkCalendarId,
+    /// Mini-project or task being narrowed. Project scope is invalid here.
+    pub scope: WorkScope,
+    /// Revision number within this scope.
+    pub version: SpecVersion,
+    /// Local-time windows for the child.
+    pub windows: Vec<WeeklyWindow>,
+    /// Previous revision, when replacing one.
+    pub supersedes: Option<SpecVersion>,
+    /// When this revision was recorded.
+    pub created_at: Timestamp,
+}
+
+impl ChildCalendarWindows {
+    /// Validate the revision's shape.
+    ///
+    /// # Errors
+    /// Rejects project scope, invalid windows, and inconsistent revision lineage.
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.scope == WorkScope::Project {
+            return Err(DomainError::invalid(
+                "ChildCalendarWindows",
+                "must name a mini-project or task scope",
+            ));
+        }
+        validate_windows(&self.windows)?;
+        match self.supersedes {
+            None if self.version != SpecVersion::FIRST => Err(DomainError::invalid(
+                "ChildCalendarWindows",
+                "the first revision must have version one",
+            )),
+            Some(previous) if previous.next()? != self.version => Err(DomainError::invalid(
+                "ChildCalendarWindows",
+                "a revision must immediately follow the one it supersedes",
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
 closed_enum! {
     /// Where a holiday set came from.
     HolidayProviderKind, "HolidayProviderKind" {
@@ -370,6 +439,184 @@ impl HolidaySourceRevision {
             return Err(DomainError::invalid(
                 "HolidaySourceRevision",
                 "covers an inverted date range",
+            ));
+        }
+        Ok(())
+    }
+}
+
+closed_enum! {
+    /// Which importer produced a holiday source revision.
+    ///
+    /// This is the *precise* provenance, and it is deliberately not the same
+    /// vocabulary as [`HolidayProviderKind`]. That column was written in schema
+    /// v1, before any importer existed, and SQLite cannot widen a v1 `CHECK`;
+    /// schema v6 therefore records the exact importer beside it rather than
+    /// pretending the coarse value can carry a distinction it was never given.
+    HolidayImportKind, "HolidayImportKind" {
+        /// The Nager holiday API's JSON.
+        NagerV4 => "nager_v4",
+        /// The GOV.UK bank-holidays JSON.
+        GovUkJson => "gov_uk_json",
+        /// An iCalendar document, from a file or a URL.
+        Ical => "ical",
+    }
+}
+
+closed_enum! {
+    /// What kind of day an imported entry is.
+    ///
+    /// Public and bank holidays are what a work calendar normally means by
+    /// "closed". The rest are real days in the sources and are imported only when
+    /// a caller names them, because silently closing a workspace on every school
+    /// holiday would be a surprise nobody asked for.
+    HolidayCategory, "HolidayCategory" {
+        /// A public holiday.
+        Public => "public",
+        /// A bank holiday.
+        Bank => "bank",
+        /// A holiday for public authorities only.
+        Authorities => "authorities",
+        /// An optional holiday.
+        Optional => "optional",
+        /// A school holiday.
+        School => "school",
+        /// An observance, which is not normally a day off.
+        Observance => "observance",
+    }
+}
+
+impl HolidayCategory {
+    /// The categories imported when a caller names none.
+    pub const DEFAULT_SELECTION: &'static [Self] = &[Self::Public, Self::Bank];
+}
+
+closed_enum! {
+    /// Why an importer refused or dropped one entry.
+    ///
+    /// A stable code, never prose and never the offending value: an import
+    /// warning is stored, exported and shown to operators, and a source document
+    /// is not this crate's to echo.
+    ImportWarningCode, "ImportWarningCode" {
+        /// The entry had a time of day, so it is not an all-day closure.
+        TimedEvent => "timed_event",
+        /// The entry recurred, and recurrence expansion is not supported.
+        RecurringEvent => "recurring_event",
+        /// The entry was missing a field or could not be read.
+        MalformedEntry => "malformed_entry",
+        /// The entry used a feature this importer does not support.
+        UnsupportedEntry => "unsupported_entry",
+        /// The entry fell outside the requested date range.
+        OutOfRange => "out_of_range",
+        /// The entry's category was not selected.
+        FilteredCategory => "filtered_category",
+        /// The entry applied to a subdivision that was not requested.
+        FilteredSubdivision => "filtered_subdivision",
+        /// A second entry claimed an identity an earlier one already used.
+        DuplicateIdentity => "duplicate_identity",
+    }
+}
+
+/// One refused or dropped entry, by position in the source document.
+///
+/// The position is the whole payload. It is enough for an operator to find the
+/// entry in the document they supplied, and it cannot leak what the entry said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ImportWarning {
+    /// Why the entry was refused.
+    pub code: ImportWarningCode,
+    /// Its zero-based position in the source document.
+    pub entry: u32,
+}
+
+/// The most warnings one import records before it is refused outright.
+///
+/// A document that produces more than this is not a document with a few bad
+/// rows; it is the wrong document, and importing the remainder of it would be a
+/// guess.
+pub const MAX_IMPORT_WARNINGS: usize = 512;
+
+/// The longest span one import may cover.
+///
+/// Bounded because an import is a *retrieval*, and an unbounded retrieval is how
+/// a preview turns into a five-thousand-row apply nobody reviewed.
+pub const MAX_IMPORT_DAYS: i64 = 366 * 5;
+
+/// The import that produced one holiday source revision, and what it did.
+///
+/// One of these exists for exactly one [`HolidaySourceRevision`] — it is that
+/// revision's provenance, not a second copy of it. It carries what the *request*
+/// asked for, so a later reader can tell an empty result from a filtered one,
+/// and the revision it replaced, so an import history is a chain rather than a
+/// pile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HolidayImportBatch {
+    /// The source revision this provenance belongs to.
+    pub source_id: HolidaySourceId,
+    /// The project whose calendar it was applied to.
+    pub project_id: ProjectId,
+    /// The calendar assignment it was applied to.
+    pub work_calendar_id: WorkCalendarId,
+    /// Which importer produced it.
+    pub kind: HolidayImportKind,
+    /// First date the request asked for.
+    pub requested_start: civil::Date,
+    /// Last date the request asked for.
+    pub requested_end: civil::Date,
+    /// The categories the request selected.
+    pub categories: BTreeSet<HolidayCategory>,
+    /// What the importer refused or dropped.
+    pub warnings: Vec<ImportWarning>,
+    /// How many exception revisions the apply wrote.
+    pub applied_exceptions: u32,
+    /// The source revision this one replaces, if it replaces one.
+    pub supersedes: Option<HolidaySourceId>,
+    /// The caller's replay key. A repeat of it returns the original apply.
+    pub idempotency_key: IdempotencyKey,
+    /// When it was applied.
+    pub applied_at: Timestamp,
+}
+
+impl HolidayImportBatch {
+    /// Validate the provenance record.
+    ///
+    /// # Errors
+    /// Rejects an inverted or unbounded requested range, an empty category
+    /// selection and an implausible warning count.
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.requested_start > self.requested_end {
+            return Err(DomainError::invalid(
+                "HolidayImportBatch",
+                "covers an inverted date range",
+            ));
+        }
+        let days = self
+            .requested_start
+            .until(self.requested_end)
+            .map_err(|_| DomainError::invalid("HolidayImportBatch", "covers an unmeasurable span"))?
+            .get_days();
+        if i64::from(days) > MAX_IMPORT_DAYS {
+            return Err(DomainError::invalid(
+                "HolidayImportBatch",
+                "covers more than the bounded import span",
+            ));
+        }
+        if self.categories.is_empty() {
+            return Err(DomainError::invalid(
+                "HolidayImportBatch",
+                "selects no holiday category",
+            ));
+        }
+        if self.warnings.len() > MAX_IMPORT_WARNINGS {
+            return Err(DomainError::invalid(
+                "HolidayImportBatch",
+                "records more warnings than one import may produce",
+            ));
+        }
+        if self.supersedes == Some(self.source_id) {
+            return Err(DomainError::invalid(
+                "HolidayImportBatch",
+                "cannot supersede its own source revision",
             ));
         }
         Ok(())
@@ -735,7 +982,88 @@ pub struct CalendarResolution<'a> {
     pub now: Timestamp,
 }
 
+/// The exception revision that governs one local date, if any does.
+///
+/// Three rules decide it, in this order:
+///
+/// * a revision that a later revision supersedes is dead, and a dead revision is
+///   never consulted — that is how a refreshed import drops a holiday its source
+///   no longer lists without rewriting the row that recorded it;
+/// * a **manual** exception beats an imported one covering the same date. A human
+///   who closed or opened a day did it knowing the import existed, so recording
+///   order is not allowed to decide against them;
+/// * otherwise the most recently recorded revision wins.
+///
+/// An imported exception is skipped entirely under
+/// [`HolidayMergePolicy::Ignore`]: the profile has said holidays do not affect
+/// this calendar, and a skipped import must not shadow a manual revision either.
+#[must_use]
+pub fn governing_exception(
+    exceptions: &[CalendarExceptionRevision],
+    date: civil::Date,
+    holiday_merge: HolidayMergePolicy,
+) -> Option<&CalendarExceptionRevision> {
+    let superseded: BTreeSet<CalendarExceptionId> = exceptions
+        .iter()
+        .filter_map(|exception| exception.supersedes)
+        .collect();
+    exceptions
+        .iter()
+        .enumerate()
+        .filter(|(_, exception)| {
+            !superseded.contains(&exception.id)
+                && exception.covers(date)
+                && match exception.provenance {
+                    ExceptionProvenance::Manual { .. } => true,
+                    ExceptionProvenance::HolidaySource { .. } => {
+                        holiday_merge != HolidayMergePolicy::Ignore
+                    }
+                }
+        })
+        .max_by_key(|(index, exception)| {
+            (
+                matches!(exception.provenance, ExceptionProvenance::Manual { .. }),
+                exception.created_at,
+                *index,
+            )
+        })
+        .map(|(_, exception)| exception)
+}
+
+/// Whether a governing exception closes the day.
+///
+/// A manual revision says so itself. An imported one does not: the *profile*
+/// decides what a holiday means, which is why one workspace can treat a public
+/// holiday as a closed day and another as an open one from the same import.
+#[must_use]
+pub fn exception_closes(
+    exception: &CalendarExceptionRevision,
+    holiday_merge: HolidayMergePolicy,
+) -> bool {
+    match exception.provenance {
+        ExceptionProvenance::Manual { .. } => exception.kind == ExceptionKind::Closed,
+        ExceptionProvenance::HolidaySource { .. } => {
+            holiday_merge == HolidayMergePolicy::TreatAsClosed
+        }
+    }
+}
+
 /// Resolve the effective calendar state.
+///
+/// The order of the steps is itself a rule, and it is the reason this function
+/// reads top to bottom rather than as a set of independent checks:
+///
+/// 1. **No active assignment is `unrestricted`, and nothing overrides it.** An
+///    override on an unconfigured project is redundant, not authoritative: there
+///    is no closed window for it to open, and reporting `override_open` there
+///    would make an unconfigured project look governed by a calendar it does not
+///    have.
+/// 2. The pinned profile revision and the configured zone are validated.
+/// 3. The instant is converted to local time, never the other way round.
+/// 4. Exceptions, then windows, then the drain lead decide the state.
+/// 5. **An override is consulted last**, and only when the calendar would
+///    otherwise refuse new work. It opens what policy closed; it never
+///    manufactures a policy.
 ///
 /// # Errors
 /// * [`DomainError::Invalid`] when an assignment is present without its pinned
@@ -745,14 +1073,9 @@ pub struct CalendarResolution<'a> {
 pub fn resolve_effective_state(
     input: &CalendarResolution<'_>,
 ) -> DomainResult<EffectiveCalendarState> {
-    if let Some(over) = input.schedule_override
-        && over.is_active(input.now, input.mini_project, input.task)
-    {
-        return Ok(EffectiveCalendarState::OverrideOpen);
-    }
-
     // No configured calendar means no restriction. This is the single most
-    // important line in the module: absence must never read as "closed".
+    // important line in the module: absence must never read as "closed" — and,
+    // just as importantly, never as "overridden".
     let Some(assignment) = input.assignment else {
         return Ok(EffectiveCalendarState::Unrestricted);
     };
@@ -780,42 +1103,39 @@ pub fn resolve_effective_state(
     let local_time = local.time();
     let weekday = Weekday::from_civil(local.weekday());
 
-    let covering = input.exceptions.iter().rfind(|exception| {
-        exception.covers(local_date)
-            && match exception.provenance {
-                ExceptionProvenance::Manual { .. } => true,
-                ExceptionProvenance::HolidaySource { .. } => {
-                    profile.holiday_merge != HolidayMergePolicy::Ignore
-                }
-            }
-    });
-    if let Some(exception) = covering {
-        let closed = match exception.provenance {
-            ExceptionProvenance::Manual { .. } => exception.kind == ExceptionKind::Closed,
-            ExceptionProvenance::HolidaySource { .. } => {
-                profile.holiday_merge == HolidayMergePolicy::TreatAsClosed
-            }
-        };
-        if closed {
-            return Ok(EffectiveCalendarState::Closed);
-        }
-        return Ok(EffectiveCalendarState::Open);
-    }
-
     let windows = assignment
         .window_override
         .as_deref()
         .unwrap_or(&profile.windows);
-    let Some(window) = windows.iter().find(|w| w.contains(weekday, local_time)) else {
-        return Ok(EffectiveCalendarState::Closed);
+    let state = match governing_exception(input.exceptions, local_date, profile.holiday_merge) {
+        Some(exception) if exception_closes(exception, profile.holiday_merge) => {
+            EffectiveCalendarState::Closed
+        }
+        Some(_) => EffectiveCalendarState::Open,
+        None => match windows.iter().find(|w| w.contains(weekday, local_time)) {
+            None => EffectiveCalendarState::Closed,
+            Some(window)
+                if window.minutes_remaining(local_time)
+                    <= i64::from(profile.drain_lead_minutes) =>
+            {
+                EffectiveCalendarState::Draining
+            }
+            Some(_) => EffectiveCalendarState::Open,
+        },
     };
 
-    // Drain is measured in local wall-clock minutes, which is exactly how the
-    // window itself is expressed.
-    let remaining_minutes = i64::from(window.end.hour() - local_time.hour()) * 60
-        + i64::from(window.end.minute() - local_time.minute());
-    if remaining_minutes <= i64::from(profile.drain_lead_minutes) {
-        return Ok(EffectiveCalendarState::Draining);
+    // Last, and only over a refusal. `draining` counts as one: it is the state
+    // that admits no *new* top-level work, which is precisely what an urgent
+    // override exists to obtain.
+    let refuses_new_work = matches!(
+        state,
+        EffectiveCalendarState::Closed | EffectiveCalendarState::Draining
+    );
+    if refuses_new_work
+        && let Some(over) = input.schedule_override
+        && over.is_active(input.now, input.mini_project, input.task)
+    {
+        return Ok(EffectiveCalendarState::OverrideOpen);
     }
-    Ok(EffectiveCalendarState::Open)
+    Ok(state)
 }

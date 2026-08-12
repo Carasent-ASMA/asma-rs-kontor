@@ -1,0 +1,13 @@
+[
+  {"date":"2026-01-01","localName":"Anul Nou","name":"New Year's Day","countryCode":"MD","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-01-07","localName":"Nașterea lui Iisus Hristos","name":"Orthodox Christmas Day","countryCode":"MD","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-03-08","localName":"Ziua internațională a femeii","name":"International Women's Day","countryCode":"MD","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-04-12","localName":"Paștele","name":"Orthodox Easter","countryCode":"MD","fixed":false,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-04-20","localName":"Paștele Blajinilor","name":"Day of Rejoicing","countryCode":"MD","fixed":false,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-05-01","localName":"Ziua internațională a solidarității oamenilor muncii","name":"International Workers' Day","countryCode":"MD","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-05-09","localName":"Ziua Victoriei","name":"Victory Day","countryCode":"MD","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-06-01","localName":"Ziua Ocrotirii Copilului","name":"International Children's Day","countryCode":"MD","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-08-27","localName":"Ziua Independenței","name":"Independence Day","countryCode":"MD","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-08-31","localName":"Limba noastră","name":"National Language Day","countryCode":"MD","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]},
+  {"date":"2026-12-25","localName":"Crăciunul","name":"Christmas Day","countryCode":"MD","fixed":true,"global":true,"counties":null,"launchYear":null,"types":["Public"]}
+]

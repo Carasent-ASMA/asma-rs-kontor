@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -80,6 +80,13 @@ const MIGRATIONS: &[&str] = &[
     // and bounded auto-arm decisions about a proposal, and one lineage row per
     // task those decisions created.
     include_str!("../migrations/0006_intake_decisions.sql"),
+    // Schema v7. Holiday import provenance: which importer produced a source
+    // revision, what the request asked for, what it refused, and the superseding
+    // chain that makes exactly one import current per calendar.
+    include_str!("../migrations/0007_calendar_imports.sql"),
+    // Schema v8. Immutable mini-project/task window revisions that feed the
+    // production calendar resolver rather than stopping at its pure API.
+    include_str!("../migrations/0008_child_calendar_windows.sql"),
 ];
 
 const _: () = assert!(

@@ -31,6 +31,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "artifact_evidence",
     "calendar_exceptions",
     "calendar_profiles",
+    "child_calendar_windows",
     "command_outbox",
     "command_receipt_transitions",
     "command_receipts",
@@ -44,6 +45,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "gate_waivers",
     "guardrail_evaluations",
     "handoffs",
+    // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
+    // what the request asked for, and the chain that makes one import current.
+    "holiday_import_batches",
     "holiday_sources",
     // Schema v5 (KON-MVP-19): the destination half of a redacted import.
     "import_receipts",
@@ -172,7 +176,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 6);
+    assert_eq!(SCHEMA_VERSION, 8);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
