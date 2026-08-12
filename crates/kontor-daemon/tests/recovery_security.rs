@@ -226,10 +226,7 @@ impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for Captured {
 #[test]
 fn a_log_line_carries_allowlisted_fields_only_and_never_a_credential() {
     let captured = Captured::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(captured.clone())
-        .event_format(logging::Allowlisted)
-        .finish();
+    let subscriber = logging::subscriber(captured.clone());
 
     tracing::subscriber::with_default(subscriber, || {
         // The shape of a failure path: an error category, an opaque id, and a
@@ -276,6 +273,72 @@ fn a_log_line_carries_allowlisted_fields_only_and_never_a_credential() {
         written.contains(&format!("detail={}", logging::REDACTED)),
         "an allowed field carrying a token is written as the marker, not dropped silently:\n{written}"
     );
+}
+
+#[test]
+fn a_sensitive_span_field_is_redacted_on_the_failure_path_too() {
+    // A span is the other half of the sink, and the half a formatter-only
+    // redaction misses: its fields are recorded when the span is created, by the
+    // *field* formatter, and then written verbatim into every event inside it.
+    // So the canary here lives on the span, not on the event, and the event is a
+    // failure — the path where an operator is most likely to widen the context
+    // "just this once".
+    let captured = Captured::default();
+    let subscriber = logging::subscriber(captured.clone());
+
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::info_span!(
+            "snapshot",
+            realm_id = "0193f000-0000-7000-8000-0000000000a1",
+            authorization = "Bearer 0123456789abcdef0123456789abcdef",
+            token = "sk-0123456789abcdef0123456789",
+            credential_path = "/home/operator/.kontor/credentials.json",
+            payload = r#"{"messages":[{"role":"user","content":"a transcript"}]}"#,
+            detail = "Bearer 0123456789abcdef0123456789abcdef",
+        );
+        let entered = span.enter();
+        tracing::error!(
+            category = "verification",
+            "the snapshot could not be verified"
+        );
+        drop(entered);
+    });
+
+    let written = String::from_utf8(
+        captured
+            .0
+            .lock()
+            .expect("the buffer is not poisoned")
+            .clone(),
+    )
+    .expect("the log is UTF-8");
+
+    for canary in [
+        "0123456789abcdef0123456789abcdef",
+        "sk-0123456789abcdef0123456789",
+        "credentials.json",
+        "a transcript",
+        "authorization",
+        "credential_path",
+    ] {
+        assert!(
+            !written.contains(canary),
+            "a span field carried `{canary}` to the sink:\n{written}"
+        );
+    }
+    // The line is still useful: the span's allowed field survived, the value that
+    // looked like a credential under an allowed name became the marker, and the
+    // event itself was written.
+    assert!(
+        written.contains("realm_id=0193f000-0000-7000-8000-0000000000a1"),
+        "an allowed span field must still be logged:\n{written}"
+    );
+    assert!(
+        written.contains(&format!("detail={}", logging::REDACTED)),
+        "a span field that looks like a credential is the marker, not the value:\n{written}"
+    );
+    assert!(written.contains("the snapshot could not be verified"));
+    assert!(written.contains("category=verification"));
 }
 
 #[test]

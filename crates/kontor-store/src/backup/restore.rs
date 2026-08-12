@@ -13,8 +13,8 @@
 //!   touched — manifest, length, digest, integrity check, schema version and
 //!   Realm identity;
 //! * the destination must be uninitialized or the **same** Realm. A different
-//!   initialized Realm is refused with a typed error before any rename, and
-//!   there is no `--force` that changes it. A flag that lets an operator
+//!   initialized Realm is refused with a typed error before anything at the
+//!   destination is touched, and there is no `--force` that changes it. A flag that lets an operator
 //!   overwrite realm B with realm A's database at 3am is not a recovery
 //!   feature.
 //!
@@ -30,7 +30,7 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::backup::manifest::SnapshotManifest;
 use crate::backup::snapshot::{sync_file, verify_database_file};
-use crate::backup::{BackupError, io, sync_directory};
+use crate::backup::{BackupError, io, link_exclusively, sync_directory};
 
 /// What one successful restore did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,8 +90,9 @@ pub fn restore_snapshot(
         return Err(BackupError::DestinationInitialized { found });
     }
 
-    // 3. Copy beside the destination, then publish by rename. Same directory, so
-    //    the rename is atomic on every filesystem this runs on.
+    // 3. Copy beside the destination, then publish it into place. Same
+    //    directory, so the publishing link is atomic and cannot cross a
+    //    filesystem boundary.
     let directory = destination.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(directory).map_err(io("created"))?;
     let temporary = directory.join(format!(
@@ -118,7 +119,25 @@ pub fn restore_snapshot(
     })
 }
 
-/// Fold the outgoing database's WAL into it, move it aside and publish the copy.
+/// Fold the outgoing database's WAL into it, set it aside and publish the copy.
+///
+/// # The order, and why each step can be undone
+///
+/// ```text
+/// checkpoint the outgoing database   (so the file set aside is whole)
+///   → link it to `.superseded-<instant>`   (no-clobber; refuses a collision)
+///     → unlink the destination name        (the data is safe under the new name)
+///       → link the restored copy into the destination name (no-clobber)
+///         → drop the outgoing WAL/shm, fsync the directory
+/// ```
+///
+/// The destination is *never* displaced by a failure. Between the second and
+/// third step the data has two names and losing either loses nothing; between
+/// the third and fourth it has exactly one, the superseded one, which is a real
+/// file with a name an operator can act on rather than a temporary. If the
+/// publish fails, the original is linked straight back and the superseded name
+/// is dropped, so the caller sees an error and a destination byte-for-byte where
+/// it was.
 fn publish(
     temporary: &Path,
     destination: &Path,
@@ -130,11 +149,11 @@ fn publish(
     verify_database_file(temporary)?;
     sync_file(temporary)?;
 
-    let mut superseded = None;
-    if occupied {
-        // Checkpointing first is what makes the file we move aside a *whole*
-        // database: a WAL left beside a database that is about to be renamed
-        // away carries committed transactions the moved file would not have.
+    let superseded = if occupied {
+        // (see `displace_and_publish` for the rollback-safe sequence)
+        // Checkpointing first is what makes the file set aside a *whole*
+        // database: a WAL left beside a database that is about to lose its name
+        // carries committed transactions the set-aside file would not have.
         checkpoint(destination);
         let instant: String = format_utc_timestamp(now)
             .chars()
@@ -143,24 +162,91 @@ fn publish(
         let mut aside = destination.as_os_str().to_os_string();
         aside.push(format!(".superseded-{instant}"));
         let aside = PathBuf::from(aside);
-        std::fs::rename(destination, &aside).map_err(io("published"))?;
-        superseded = Some(aside);
-    }
+        displace_and_publish(temporary, destination, &aside)?;
+        Some(aside)
+    } else {
+        // An empty file is the one thing at the destination that is not a Realm
+        // and still holds the name — an interrupted create leaves exactly that,
+        // and `classify_destination` reads it as "nothing there". It is dropped
+        // rather than superseded, because there is no database in it to keep.
+        if std::fs::metadata(destination).is_ok_and(|found| found.len() == 0) {
+            std::fs::remove_file(destination).map_err(io("published"))?;
+        }
+        link_exclusively(temporary, destination)?;
+        None
+    };
+
+    // The restored data now answers to the destination's name, so the copy's own
+    // name is redundant. Removing it is what makes a successful restore leave a
+    // state root with nothing in it but the files that belong there.
+    let _ = std::fs::remove_file(temporary);
+
     // Whatever WAL and shared-memory files are left belong to the database that
-    // just moved aside. Leaving them here is the one way a restored file can be
-    // corrupted after the fact: SQLite would try to recover a stranger's WAL
-    // into it on the next open.
+    // was just set aside. Leaving them here is the one way a restored file can
+    // be corrupted after the fact: SQLite would try to recover a stranger's WAL
+    // into it on the next open. They go only once the publish has succeeded — a
+    // rollback leaves the original and its own residue exactly as they were.
     for residue in ["-wal", "-shm"] {
         let mut path = destination.as_os_str().to_os_string();
         path.push(residue);
         let _ = std::fs::remove_file(PathBuf::from(path));
     }
 
-    std::fs::rename(temporary, destination).map_err(io("published"))?;
     if let Some(directory) = destination.parent() {
         sync_directory(directory);
     }
     Ok(superseded)
+}
+
+/// Set the occupant aside under `aside` and put `temporary` in its place.
+///
+/// Every step is no-clobber and every failure undoes the steps before it, so
+/// this either fully succeeds or leaves the destination exactly as it found it.
+///
+/// # Errors
+/// Returns [`BackupError::AlreadyExists`] when the superseded name is already
+/// taken — a second restore in the same second, or a name an operator created —
+/// and [`BackupError::Io`] when a link or an unlink fails. The destination is
+/// unchanged in both cases.
+fn displace_and_publish(
+    temporary: &Path,
+    destination: &Path,
+    aside: &Path,
+) -> Result<(), BackupError> {
+    // A second name for the occupant. `rename` would have replaced whatever was
+    // already called that — and what is already called that is, by construction,
+    // the database some earlier restore set aside.
+    link_exclusively(destination, aside)?;
+
+    // The occupant now has two names, so dropping this one loses nothing.
+    if let Err(source) = std::fs::remove_file(destination) {
+        let _ = std::fs::remove_file(aside);
+        return Err(BackupError::Io {
+            action: "published",
+            source,
+        });
+    }
+
+    match link_exclusively(temporary, destination) {
+        Ok(()) => {
+            // The occupant keeps only the superseded name from here, which is
+            // the point of it: it is evidence, not a temporary.
+            Ok(())
+        }
+        Err(error) => {
+            // Put the original back under its own name. On success the
+            // destination is the same inode it always was and the superseded
+            // name goes away, so a failed restore leaves no trace at all.
+            if link_exclusively(aside, destination).is_ok() {
+                let _ = std::fs::remove_file(aside);
+            }
+            // If even that failed, the superseded file is deliberately *kept*:
+            // it is the only remaining name for the original database, and
+            // removing it to tidy up would be the one action here that loses
+            // data. The error tells the operator which name to look for.
+            Err(error)
+        }
+    }
 }
 
 /// Which Realm, if any, the destination already holds.
@@ -201,4 +287,79 @@ fn file_name(path: &Path) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("kontor.db")
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A publish that fails after the occupant has been set aside must put the
+    /// occupant back, under its own name, with its own bytes.
+    ///
+    /// The failure is injected the only honest way there is at this level: the
+    /// thing being published is a *directory*, and a directory cannot be hard
+    /// linked. That reaches the one branch a filesystem will not otherwise
+    /// produce on demand — a successful supersede followed by a failed publish —
+    /// which is exactly the branch that decides whether a failed restore leaves
+    /// an operator with a database or with a hole where one used to be.
+    #[test]
+    fn a_failed_publish_puts_the_occupant_back_and_leaves_no_superseded_name() {
+        let home = tempfile::TempDir::new().expect("a temporary directory");
+        let destination = home.path().join("kontor.db");
+        let original = b"the database that was already here";
+        std::fs::write(&destination, original).expect("the occupant exists");
+
+        let unpublishable = home.path().join("not-a-file");
+        std::fs::create_dir(&unpublishable).expect("a directory stands in for a copy");
+        let aside = home.path().join("kontor.db.superseded-20260810T120000Z");
+
+        let refused = displace_and_publish(&unpublishable, &destination, &aside)
+            .expect_err("a directory cannot be published as a database");
+        assert!(
+            matches!(refused, BackupError::Io { .. }),
+            "the refusal is the link failure, not something else: {refused:?}"
+        );
+
+        assert_eq!(
+            std::fs::read(&destination).expect("the occupant is still there"),
+            original,
+            "a failed publish must not displace the destination"
+        );
+        assert!(
+            !aside.exists(),
+            "a failed publish must not leave a superseded name behind"
+        );
+    }
+
+    /// The superseded name is claimed atomically, so a name that is already
+    /// taken is refused rather than replaced — and the refusal changes nothing.
+    #[test]
+    fn a_taken_superseded_name_is_refused_and_nothing_moves() {
+        let home = tempfile::TempDir::new().expect("a temporary directory");
+        let destination = home.path().join("kontor.db");
+        let occupant = b"the database that was already here";
+        std::fs::write(&destination, occupant).expect("the occupant exists");
+        let copy = home.path().join("kontor.db.restore.partial");
+        std::fs::write(&copy, b"the database being restored").expect("the copy exists");
+
+        let aside = home.path().join("kontor.db.superseded-20260810T120000Z");
+        let earlier = b"a database an earlier restore set aside";
+        std::fs::write(&aside, earlier).expect("the superseded name is already taken");
+
+        let refused = displace_and_publish(&copy, &destination, &aside)
+            .expect_err("a taken superseded name is never overwritten");
+        match refused {
+            BackupError::AlreadyExists { path } => assert_eq!(path, aside),
+            other => panic!("the refusal must name the collision: {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read(&aside).expect("the earlier file is still there"),
+            earlier,
+            "an earlier restore's evidence must not be overwritten"
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("the occupant is still there"),
+            occupant
+        );
+    }
 }

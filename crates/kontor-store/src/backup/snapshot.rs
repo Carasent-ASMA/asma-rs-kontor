@@ -34,7 +34,7 @@ use kontor_core::id::{RealmId, Timestamp};
 use rusqlite::{Connection, OpenFlags};
 
 use crate::backup::manifest::SnapshotManifest;
-use crate::backup::{BackupError, io, sync_directory};
+use crate::backup::{BackupError, io, link_exclusively, sync_directory};
 use crate::migrations::SCHEMA_VERSION;
 
 /// How long a snapshot waits for a database somebody else is checkpointing.
@@ -43,6 +43,12 @@ use crate::migrations::SCHEMA_VERSION;
 /// on a request path: nobody is waiting on it, and giving up early only means
 /// there is no backup.
 const BACKUP_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Distinguishes two snapshots taken by one process at the same instant.
+///
+/// The published name is a function of the Realm and the instant, so two callers
+/// racing for it is a real case; their *partials* must still be different files.
+static PUBLISH_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What one successful snapshot produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,8 +103,10 @@ pub fn create_snapshot(
     let stem = SnapshotManifest::file_stem(identity.realm_id, now);
     let snapshot = directory.join(format!("{stem}.db"));
     let manifest_path = SnapshotManifest::path_for(&snapshot);
-    // A published snapshot is never replaced, so the collision is refused here
-    // rather than resolved by overwriting evidence.
+    // A cheap early refusal so an obvious collision does not cost a whole copy.
+    // It is *not* what makes publication safe — a check followed by a rename is a
+    // race, and the winner of that race would silently replace a published
+    // snapshot. `link_exclusively` below is the guarantee; this is the courtesy.
     for published in [&snapshot, &manifest_path] {
         if published.exists() {
             return Err(BackupError::AlreadyExists {
@@ -107,10 +115,16 @@ pub fn create_snapshot(
         }
     }
 
-    // The partial carries the process id so two processes cannot pick the same
-    // name, and `VACUUM INTO` itself refuses a target that already exists — so
-    // the check below is the second of two locks on the same door.
-    let partial = directory.join(format!("{stem}.{}.partial", std::process::id()));
+    // The partial name is unique per attempt, not just per process: two threads
+    // of one process take snapshots of the same Realm at the same instant in
+    // exactly the situation this is for, and a shared name would turn that into
+    // a collision on the *partial* instead of an honest race for the published
+    // name. `VACUUM INTO` also refuses a target that already exists.
+    let partial = directory.join(format!(
+        "{stem}.{}.{}.partial",
+        std::process::id(),
+        PUBLISH_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     if partial.exists() {
         return Err(BackupError::AlreadyExists { path: partial });
     }
@@ -178,16 +192,23 @@ fn publish(
     }
 
     // The database is published first: a snapshot with no manifest yet is
-    // visibly incomplete, while a manifest with no snapshot claims a file that
-    // is not there.
-    if let Err(error) = std::fs::rename(partial, snapshot) {
+    // visibly incomplete — every reader here skips it — while a manifest with no
+    // snapshot claims a file that is not there.
+    if let Err(error) = link_exclusively(partial, snapshot) {
         remove_partial(&manifest_partial);
-        return Err(BackupError::Io {
-            action: "published",
-            source: error,
-        });
+        return Err(error);
     }
-    std::fs::rename(&manifest_partial, manifest_path).map_err(io("published"))?;
+    if let Err(error) = link_exclusively(&manifest_partial, manifest_path) {
+        // The database link is one this call created, exclusively, a moment ago,
+        // so removing it takes back only our own publication and can never
+        // remove somebody else's snapshot.
+        remove_partial(snapshot);
+        remove_partial(&manifest_partial);
+        return Err(error);
+    }
+    // Both names now exist; the partials are the second link to the same data.
+    remove_partial(partial);
+    remove_partial(&manifest_partial);
     if let Some(directory) = snapshot.parent() {
         sync_directory(directory);
     }

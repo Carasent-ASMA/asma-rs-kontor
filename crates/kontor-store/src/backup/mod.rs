@@ -176,6 +176,45 @@ pub(crate) fn io(action: &'static str) -> impl Fn(std::io::Error) -> BackupError
     move |source| BackupError::Io { action, source }
 }
 
+/// Give existing data a second name, atomically, and never over an existing one.
+///
+/// `std::fs::rename` is the wrong primitive for publishing and it is worth
+/// saying why: POSIX `rename` *replaces* an existing target atomically, so
+/// "check that the name is free, then rename" has a window in which a second
+/// writer can win — and the loser silently overwrites a file somebody may
+/// already be relying on. Checking harder does not close it; the check and the
+/// rename are two operations.
+///
+/// `link` is the primitive that does: it creates a new name for existing data
+/// and fails with `EEXIST` if the name is taken, in one atomic step. Both places
+/// that publish a file use it — a snapshot appearing in the backup directory,
+/// and a restored database appearing in a state root — and both then unlink the
+/// name they published *from*, so the data never moves and a race is resolved by
+/// the filesystem rather than by timing.
+///
+/// The trade-off is that hard links need source and target on one filesystem
+/// (they always are here: same directory) and a filesystem that supports them.
+/// On one that does not, this fails loudly rather than falling back to a racy
+/// rename — no backup, and no restore, is a smaller problem than a silently
+/// replaced file.
+pub(crate) fn link_exclusively(
+    existing: &std::path::Path,
+    new_name: &std::path::Path,
+) -> Result<(), BackupError> {
+    match std::fs::hard_link(existing, new_name) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(BackupError::AlreadyExists {
+                path: new_name.to_path_buf(),
+            })
+        }
+        Err(source) => Err(BackupError::Io {
+            action: "published",
+            source,
+        }),
+    }
+}
+
 /// Flush a directory entry so a rename that has already returned is durable.
 ///
 /// Renaming publishes the name; only an `fsync` of the *directory* makes the

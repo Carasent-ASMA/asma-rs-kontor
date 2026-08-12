@@ -238,6 +238,85 @@ fn a_published_snapshot_is_never_overwritten() {
 }
 
 #[test]
+fn two_simultaneous_publishers_of_one_name_produce_one_snapshot() {
+    // The published name is a function of the realm and the instant, so two
+    // callers asking for a snapshot of the same realm at the same instant race
+    // for the same file. Exactly one may win, and the loser must be refused
+    // rather than replace what the winner published — a check followed by a
+    // rename would let the loser win *after* the check and silently overwrite it.
+    let home = TempDir::new().expect("a temporary directory");
+    let database = home.path().join("kontor.db");
+    let backups = home.path().join("backups");
+    let realm = seeded(&database, 24).realm_id();
+    std::fs::create_dir_all(&backups).expect("the backup directory");
+
+    let instant = at("2026-08-10T10:00:00Z");
+    let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let publishers: Vec<_> = (0..8)
+        .map(|_| {
+            let database = database.clone();
+            let backups = backups.clone();
+            let start = std::sync::Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                create_snapshot(&database, &backups, instant)
+            })
+        })
+        .collect();
+
+    let mut published = Vec::new();
+    let mut refused = 0;
+    for publisher in publishers {
+        match publisher.join().expect("the publisher finishes") {
+            Ok(outcome) => published.push(outcome),
+            Err(BackupError::AlreadyExists { .. }) => refused += 1,
+            Err(other) => panic!("a loser must be refused as a collision: {other:?}"),
+        }
+    }
+    assert_eq!(published.len(), 1, "exactly one publisher may win the name");
+    assert_eq!(refused, 7, "every other publisher is refused");
+
+    // The winner's snapshot is intact: a loser that had overwritten it would
+    // leave a file whose bytes no longer match the manifest that was published
+    // with it.
+    let winner = &published[0];
+    winner
+        .manifest
+        .verify_file(&winner.snapshot)
+        .expect("the published snapshot is exactly the one that was verified");
+    // Read-only, and deliberately not through `SqliteStore::open`: opening a
+    // store migrates the file and switches it to WAL, which would *write* to the
+    // snapshot this test is asserting nobody wrote to.
+    let reader = rusqlite::Connection::open_with_flags(
+        &winner.snapshot,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("the published snapshot opens read-only");
+    let report: String = reader
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .expect("the snapshot is checkable");
+    assert_eq!(report, "ok", "the published snapshot is whole");
+    assert_eq!(projects_in(&winner.snapshot), 24);
+
+    // And the directory holds exactly one snapshot with one manifest — no
+    // second copy, and no partial left behind by a refused publisher.
+    let names = listing(&backups);
+    assert_eq!(
+        names.iter().filter(|name| name.ends_with(".db")).count(),
+        1,
+        "a refused publisher must not leave a second snapshot: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name.ends_with(".partial")),
+        "a refused publisher must not leave its partial behind: {names:?}"
+    );
+    assert_eq!(
+        list_snapshots(&backups, realm).expect("the listing").len(),
+        1
+    );
+}
+
+#[test]
 fn a_manifest_that_does_not_describe_its_snapshot_is_refused() {
     let home = TempDir::new().expect("a temporary directory");
     let database = home.path().join("kontor.db");
@@ -371,6 +450,96 @@ fn retention_never_empties_a_directory_that_holds_one_backup() {
     only.manifest
         .verify_file(&only.snapshot)
         .expect("the only backup is still the backup");
+}
+
+#[test]
+fn a_restore_refuses_a_taken_superseded_name_and_leaves_the_destination_intact() {
+    // The superseded name is derived from the restore's own instant, so two
+    // restores in the same second — or an operator who already parked a file
+    // under that name — collide on it. The database that name refers to is a
+    // *previous* restore's evidence, and overwriting it to make room for this
+    // one would destroy exactly the thing the superseded copy exists to keep.
+    let home = TempDir::new().expect("a temporary directory");
+    let state_root = home.path().join("realm");
+    std::fs::create_dir_all(&state_root).expect("the state root");
+    let destination = state_root.join("kontor.db");
+    let store = seeded(&destination, 6);
+    let realm = store.realm_id();
+    let snapshot = create_snapshot(
+        &destination,
+        &home.path().join("backups"),
+        at("2026-08-10T10:00:00Z"),
+    )
+    .expect("the snapshot is taken");
+
+    // The realm moves on, so the destination is provably *not* the snapshot.
+    store
+        .create_project(&NewProject {
+            id: ProjectId::generate(),
+            name: name("Written after the snapshot"),
+            root_path: name("/tmp/kontor-after"),
+            created_at: at("2026-08-10T11:00:00Z"),
+        })
+        .expect("the source moves on");
+    drop(store);
+
+    let instant = at("2026-08-10T12:00:00Z");
+    let taken = state_root.join("kontor.db.superseded-20260810T120000Z");
+    let earlier = b"a database an earlier restore set aside";
+    std::fs::write(&taken, earlier).expect("the superseded name is already taken");
+
+    let refused = restore_snapshot(&snapshot.snapshot, &destination, instant)
+        .expect_err("a taken superseded name is never overwritten");
+    match refused {
+        BackupError::AlreadyExists { path } => assert_eq!(path, taken),
+        other => panic!("the refusal must name the collision: {other:?}"),
+    }
+
+    assert_eq!(
+        std::fs::read(&taken).expect("the earlier file is still there"),
+        earlier,
+        "an earlier restore's evidence must survive a refused restore"
+    );
+    // The destination was not displaced: it is still the realm's live database,
+    // with the row the snapshot does not have.
+    assert_eq!(
+        projects_in(&destination),
+        7,
+        "a refused restore must leave the destination exactly as it was"
+    );
+    let reopened = SqliteStore::open(&destination).expect("the destination is still a database");
+    assert_eq!(reopened.realm_id(), realm);
+    reopened
+        .integrity_check()
+        .expect("and it is whole after the refusal");
+    drop(reopened);
+    assert!(
+        !listing(&state_root)
+            .iter()
+            .any(|entry| entry.ends_with(".partial")),
+        "a refused restore leaves no copy behind: {:?}",
+        listing(&state_root)
+    );
+
+    // With the collision cleared, the same restore succeeds and sets the
+    // occupant aside under a name of its own.
+    std::fs::remove_file(&taken).expect("the collision is cleared");
+    let plan = restore_snapshot(&snapshot.snapshot, &destination, instant)
+        .expect("the restore runs once the name is free");
+    assert_eq!(plan.superseded.as_deref(), Some(taken.as_path()));
+    assert_eq!(projects_in(&destination), 6, "the snapshot's state is back");
+    assert_eq!(
+        projects_in(&taken),
+        7,
+        "and the database it replaced is whole, under the superseded name"
+    );
+    assert!(
+        !listing(&state_root)
+            .iter()
+            .any(|entry| entry.ends_with(".partial")),
+        "a successful restore leaves no copy behind: {:?}",
+        listing(&state_root)
+    );
 }
 
 #[test]

@@ -144,9 +144,34 @@ pub fn scrub(value: &str) -> String {
     value.to_owned()
 }
 
-/// The event formatter: allowlisted fields, scanned values, canonical instants.
+/// The formatter, for both halves of a log line.
+///
+/// It is one type on purpose. A subscriber has two formatting seams — the event
+/// formatter and the *field* formatter, and the second one is the one a span's
+/// fields go through — so a redaction that only implements the first is not
+/// sink-wide: `info_span!("sync", token = …)` would be formatted by whatever
+/// field formatter the builder happened to have and then written out verbatim.
+/// Implementing both means every field in the process, on a span or on an event,
+/// goes through the same allowlist and the same value canary.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Allowlisted;
+
+impl<'writer> FormatFields<'writer> for Allowlisted {
+    /// Format a span's (or an event's) fields, dropping everything that is not
+    /// allowed and redacting every value that looks like a credential.
+    fn format_fields<R: tracing_subscriber::field::RecordFields>(
+        &self,
+        mut writer: Writer<'writer>,
+        fields: R,
+    ) -> fmt::Result {
+        let mut visitor = AllowlistedFields {
+            writer: &mut writer,
+            result: Ok(()),
+        };
+        fields.record(&mut visitor);
+        visitor.result
+    }
+}
 
 impl<S, N> FormatEvent<S, N> for Allowlisted
 where
@@ -168,13 +193,17 @@ where
             metadata.target()
         )?;
 
-        // A span's own fields went through the same allowlist when the span was
-        // recorded, so they are written as stored.
+        // A span's stored fields are looked up as `FormattedFields<Allowlisted>`
+        // — the *concrete* type — rather than as `FormattedFields<N>`. That is
+        // the fail-closed half of the fix: the extension exists only when this
+        // formatter is the one that recorded the span, so a subscriber wired up
+        // with a different field formatter writes no span fields at all instead
+        // of writing somebody else's unredacted rendering of them.
         if let Some(scope) = context.event_scope() {
             for span in scope.from_root() {
                 write!(writer, " {}", span.name())?;
                 let extensions = span.extensions();
-                if let Some(fields) = extensions.get::<FormattedFields<N>>()
+                if let Some(fields) = extensions.get::<FormattedFields<Self>>()
                     && !fields.is_empty()
                 {
                     write!(writer, "{{{fields}}}")?;
@@ -222,18 +251,38 @@ impl Visit for AllowlistedFields<'_, '_> {
     }
 }
 
-/// Install the process-wide subscriber.
+/// Build the subscriber this process logs through, writing to `writer`.
 ///
-/// `RUST_LOG` still selects *which* events are emitted; it cannot widen what a
-/// line may contain.
-pub fn install() {
-    let _ = tracing_subscriber::fmt()
+/// Both seams are wired to [`Allowlisted`]: `fmt_fields` is what a span's fields
+/// go through when the span is created, and `event_format` is what an event goes
+/// through when it is written. Wiring only the second leaves span fields
+/// unredacted, which is exactly the hole this pairing closes.
+///
+/// It is one function rather than two so a test can assert against the *real*
+/// wiring. A test that assembled its own subscriber would still pass on the day
+/// somebody dropped `fmt_fields` from the installed one.
+pub fn subscriber<W>(writer: W) -> impl tracing::Subscriber + Send + Sync + 'static
+where
+    W: for<'writer> tracing_subscriber::fmt::MakeWriter<'writer> + Send + Sync + 'static,
+{
+    tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .fmt_fields(Allowlisted)
         .event_format(Allowlisted)
-        .try_init();
+        .with_writer(writer)
+        .finish()
+}
+
+/// Install the process-wide subscriber on standard output.
+///
+/// `RUST_LOG` still selects *which* events are emitted; it cannot widen what a
+/// line may contain.
+pub fn install() {
+    use tracing_subscriber::util::SubscriberInitExt;
+    let _ = subscriber(std::io::stdout).try_init();
 }
 
 #[cfg(test)]
