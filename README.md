@@ -241,6 +241,21 @@ as a passing one. A case blocked on a seam that has not merged names the ticket
 that owns it and rejects the bundle without failing the gate; a case that
 *fails* is a defect in the merged tree, and fails the gate.
 
+`manifest.json` is written last and carries a SHA-256 of every other file in the
+bundle plus a combined `root_hash`, so a retained bundle can be checked rather
+than taken on faith; it names its own exclusion (`manifest.json` cannot hash
+itself) and the command to recompute. It also lists `unlinked_artifacts` — files
+no case cites — because an artifact that exists without a case pointing at it is
+evidence nobody will read.
+
+Because the run id keys off the commit, running the pilot on a tree whose HEAD
+has moved writes a *new* `docs/evidence/KON-MVP-18/<run-id>/` directory rather
+than rewriting the committed one. That is deliberate — evidence belongs to the
+tree that produced it, and the retained bundle's `commit` field names that tree
+— but it does mean a run after an unrelated commit leaves an untracked
+directory. Retain it only if it is the acceptance record you mean to publish;
+otherwise delete it.
+
 Verifying the installed harnesses is a separate, opt-in question:
 
 ```sh
