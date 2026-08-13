@@ -1,0 +1,17 @@
+[
+  {
+    "type": "agent_stream",
+    "payload": {
+      "agentId": "agt_implement",
+      "event": {
+        "type": "permission_resolved",
+        "provider": "claude",
+        "requestId": "perm_1",
+        "resolution": {
+          "behavior": "allow"
+        }
+      },
+      "timestamp": "2026-08-10T09:00:00.000Z"
+    }
+  }
+]

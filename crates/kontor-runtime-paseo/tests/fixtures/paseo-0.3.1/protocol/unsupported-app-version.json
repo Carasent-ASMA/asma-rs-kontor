@@ -1,0 +1,66 @@
+{
+  "status": "server_info",
+  "serverId": "srv_kontor_fixture",
+  "hostname": "kontor-fixture-host",
+  "version": "0.9.9",
+  "desktopManaged": true,
+  "capabilities": {
+    "voice": {
+      "dictation": {
+        "enabled": true,
+        "reason": ""
+      },
+      "voice": {
+        "enabled": true,
+        "reason": ""
+      }
+    }
+  },
+  "features": {
+    "providersSnapshot": true,
+    "checkoutForgeSetAutoMerge": true,
+    "checkoutGithubSetAutoMerge": true,
+    "githubCheckDetails": true,
+    "forgeCheckDetails": true,
+    "forgeSearch": true,
+    "daemonStatusRpc": true,
+    "relayConfig": true,
+    "terminal-restore-modes": true,
+    "terminal-input-mode-replay": true,
+    "terminal-size-ownership": true,
+    "rewind": true,
+    "agentTimelinePromptIndex": true,
+    "agentHistorySearch": true,
+    "checkoutRefresh": true,
+    "workspaceMultiplicity": true,
+    "projectRemove": true,
+    "projectAdd": true,
+    "projectList": true,
+    "worktreeRestore": true,
+    "workspaceRecovery": true,
+    "workspaceFileEditing": true,
+    "providerUsageList": true,
+    "agentDetach": true,
+    "agentThinkingUpdate": true,
+    "daemonDiagnostics": true,
+    "daemonSelfUpdate": false,
+    "agentForkContext": true,
+    "agentForkContextCursor": true,
+    "providerSubagents": true,
+    "workspacePinning": true,
+    "hubRelationship": true,
+    "projectGithubClone": true,
+    "workspaceGithubRepositorySearch": true,
+    "projectCreateDirectory": true,
+    "commitsList": true,
+    "commitBaseClassification": true,
+    "providerRemoval": true,
+    "importSessionWorkspaceTarget": true,
+    "forgeProviders": true,
+    "selectiveAgentTimeline": true,
+    "canonicalSubmittedPrompts": true,
+    "stableProjectIdentity": true,
+    "workspaceScriptManagement": true,
+    "projectCustomIcon": true
+  }
+}

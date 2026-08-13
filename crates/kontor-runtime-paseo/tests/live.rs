@@ -1,52 +1,44 @@
-//! An opt-in smoke test against a real, disposable Paseo daemon.
+//! An opt-in conformance check against a real, disposable Paseo 0.3.1 daemon.
 //!
 //! Ignored by default, and it skips with a precise reason when its environment
 //! is absent — because the alternative is worse than no coverage: a live test
 //! that silently passes when it could not run tells you the integration works
 //! when nothing was checked.
 //!
-//! # Only ever against disposable identities
+//! # Non-mutating, and only ever against disposable identities
 //!
-//! The canonical Architect / Implement / QA / Audit agents of a real ticket are
-//! live seats holding real work. This test never names one: it reads the CLI's
-//! own version, and it inspects only an agent id the operator supplied
-//! explicitly. It creates nothing, stops nothing and archives nothing.
+//! Every request here is a read. The canonical Architect / Implement / QA /
+//! Audit agents of a real ticket are live seats holding real work, and this test
+//! names none of them: it opens one connection, reads the pushed identity, and
+//! lists projects. It creates nothing, sends nothing, answers no permission,
+//! stops nothing and archives nothing.
+//!
+//! The mutating half of the qualification — prepare, launch, send, permission,
+//! reconnect, restart — is a composed `kontord -> Paseo` run against a
+//! disposable project, and it deliberately does not live in an ordinary unit
+//! test: `cargo test` must never be able to start an agent.
 //!
 //! ```bash
 //! KONTOR_PASEO_LIVE=1 \
-//! KONTOR_PASEO_HOST='<complete --host target, password and all>' \
-//! KONTOR_PASEO_EXECUTABLE=paseo \
-//! KONTOR_PASEO_DISPOSABLE_AGENT=agt_scratch \
+//! KONTOR_PASEO_HOST='127.0.0.1:6767' \
+//! KONTOR_PASEO_ENDPOINT='ws://127.0.0.1:6767/ws' \
+//! KONTOR_PASEO_EXECUTABLE=/Applications/Paseo.app/Contents/Resources/bin/paseo \
 //! cargo test -p kontor-runtime-paseo --test live -- --ignored --nocapture
 //! ```
-//!
-//! # What the WebSocket gate leaves out
-//!
-//! The plan's live criterion also asks for canonical history, a same-agent
-//! follow-up, message-id reconciliation and a permission round trip. Those ride
-//! the daemon protocol socket, and this adapter declares no WebSocket client —
-//! that needs an exact workspace-pinned dependency the root manifest does not
-//! carry, and hand-rolling frames to avoid that gate is rejected. So this smoke
-//! covers the CLI half plus the *honest degradation* the missing half produces,
-//! and the protocol half stays deferred with the dependency. The frame protocol
-//! itself is proved against recordings in `contract.rs`.
 
-use kontor_core::id::{ExternalId, ExternalName, RuntimeKindKey};
-use kontor_runtime::adapter::RuntimeAdapter;
-use kontor_runtime::capability::{RuntimeCapability, TrustGrade};
-use kontor_runtime::workspace::{WorkspacePrepareRequest, WorkspaceRoot};
-use kontor_runtime_paseo::adapter::{
-    PaseoAdapter, PaseoCheckpoint, PaseoConfig, PaseoExecutionScope,
+use kontor_runtime_paseo::client::{
+    PASEO_DEFAULT_ENDPOINT, PaseoCommand, PaseoLiveTransport, PaseoRpc, PaseoTransport,
 };
-use kontor_runtime_paseo::client::{PaseoCommand, PaseoLiveTransport, PaseoTransport};
-use kontor_runtime_paseo::wire::PASEO_VERSION;
+use kontor_runtime_paseo::wire::{
+    PASEO_APP_VERSION, PASEO_WS_PROTOCOL_VERSION, PaseoFeature, PaseoProjectList,
+};
 use secrecy::SecretString;
 
 /// Why a live run could not happen, stated precisely rather than as a silent
 /// pass.
 struct Skip(&'static str);
 
-fn gate() -> Result<(String, SecretString), Skip> {
+fn transport() -> Result<PaseoLiveTransport, Skip> {
     if std::env::var("KONTOR_PASEO_LIVE").as_deref() != Ok("1") {
         return Err(Skip("KONTOR_PASEO_LIVE is not 1"));
     }
@@ -57,139 +49,177 @@ fn gate() -> Result<(String, SecretString), Skip> {
     }
     let executable =
         std::env::var("KONTOR_PASEO_EXECUTABLE").unwrap_or_else(|_| "paseo".to_owned());
-    Ok((executable, SecretString::from(host)))
+    let endpoint = std::env::var("KONTOR_PASEO_ENDPOINT")
+        .unwrap_or_else(|_| PASEO_DEFAULT_ENDPOINT.to_owned());
+    PaseoLiveTransport::new(
+        &executable,
+        SecretString::from(host),
+        &endpoint,
+        "kontor-live-conformance",
+        10,
+    )
+    .map_err(|_| Skip("the live transport could not be configured"))
 }
 
-fn transport() -> Result<PaseoLiveTransport, Skip> {
-    let (executable, host) = gate()?;
-    PaseoLiveTransport::new(&executable, host, 30)
-        .map_err(|_| Skip("the live transport could not be configured"))
-}
-
-fn config() -> PaseoConfig {
-    PaseoConfig {
-        runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("a valid runtime key"),
-        host_key: ExternalName::parse("paseo-live").expect("a valid host key"),
-        mini_project_id: ExternalId::parse("kon-live-scratch").expect("a valid id"),
-        scope: PaseoExecutionScope {
-            jira_epic_key: ExternalId::parse("ASMA-0000").expect("a valid id"),
-            mini_project_short_title: ExternalName::parse("Live scratch").expect("a valid name"),
-            plan_item_key: ExternalId::parse("KON-LIVE-0").expect("a valid id"),
-            task_short_title: ExternalName::parse("smoke").expect("a valid name"),
-            canonical_worktree_cwd: WorkspaceRoot::parse("/tmp/kontor-paseo-live-scratch")
-                .expect("an absolute path"),
-            orchestrator_agent_id: ExternalId::parse("agt_live_orchestrator").expect("a valid id"),
-        },
-        max_concurrent_sessions: 1,
-    }
-}
-
-/// The pinned CLI is present and is the baseline this adapter's argv evidence
-/// was recorded against.
-#[tokio::test]
-#[ignore = "requires a live Paseo daemon; see the module docs"]
-async fn live_cli_answers_as_the_pinned_baseline() {
-    let transport = match transport() {
-        Ok(transport) => transport,
-        Err(Skip(reason)) => {
-            println!("skipped: {reason}");
-            return;
+macro_rules! live {
+    () => {
+        match transport() {
+            Ok(transport) => transport,
+            Err(Skip(reason)) => {
+                println!("skipped: {reason}");
+                return;
+            }
         }
     };
+}
+
+/// The hello is accepted, the daemon pushes its identity, and that identity is
+/// the pinned application version advertising every required feature.
+///
+/// This is the gate the whole adapter stands on: protocol 1 and app 0.3.1 are
+/// separate pins, and a daemon that fails either is observed rather than driven.
+#[tokio::test]
+#[ignore = "requires a live Paseo daemon; see the module docs"]
+async fn live_hello_is_accepted_and_the_daemon_pushes_a_pinned_identity() {
+    let transport = live!();
+    let identity = transport
+        .server_identity()
+        .await
+        .expect("the daemon accepts protocol 1 and announces itself");
+
+    println!(
+        "live Paseo announced version={:?} serverId={}",
+        identity.version, identity.server_id
+    );
+    assert_eq!(
+        identity.version.as_deref(),
+        Some(PASEO_APP_VERSION),
+        "this adapter's DTOs and argv evidence are pinned to {PASEO_APP_VERSION}"
+    );
+    assert!(
+        identity.is_pinned_baseline(),
+        "an unpinned build is observed, never driven"
+    );
+    assert!(
+        identity.missing_required().is_empty(),
+        "the qualified daemon advertises every required feature, missing {:?}",
+        identity.missing_required()
+    );
+    for feature in [PaseoFeature::ProjectRename, PaseoFeature::Compaction] {
+        assert!(
+            !identity.supports(feature),
+            "{feature:?} is not a supported 0.3.1 operation and must not be simulated"
+        );
+    }
+    assert_eq!(
+        PASEO_WS_PROTOCOL_VERSION, 1,
+        "the hello that was just accepted carried this protocol number"
+    );
+}
+
+/// A correlated read round-trips over the session envelope: the request goes out
+/// as `{type:"session"}`, and only a `project.list.response` carrying this
+/// request's id is accepted as its answer.
+#[tokio::test]
+#[ignore = "requires a live Paseo daemon; see the module docs"]
+async fn live_a_correlated_session_read_round_trips() {
+    let transport = live!();
+    let request = PaseoRpc::project_list("kontor-live-projects".to_owned());
+    let frame = transport
+        .request(&request)
+        .await
+        .expect("the daemon answers a project list");
+
+    assert_eq!(frame.request_id, request.request_id);
+    assert_eq!(frame.response_type, request.response_type);
+    let listed: PaseoProjectList = frame
+        .resolve(&request, "PaseoProjectList")
+        .expect("the answer is the pinned 0.3.1 shape");
+    println!("live Paseo holds {} projects", listed.projects.len());
+
+    // The same frame must not satisfy a different question. This is the
+    // wrong-request refusal, proved against the real daemon's own answer rather
+    // than a recording of one.
+    let other = PaseoRpc::daemon_status("kontor-live-status".to_owned());
+    assert!(
+        frame
+            .resolve::<serde_json::Value>(&other, "PaseoDaemonStatus")
+            .is_err(),
+        "a project list is not a daemon status, whatever id it carries"
+    );
+}
+
+/// The daemon status readback agrees with the identity it pushed.
+///
+/// Two independent statements of the same fact — one volunteered on connect, one
+/// asked for over a correlated request — and the adapter refuses to drive
+/// anything unless they are both the pinned version.
+#[tokio::test]
+#[ignore = "requires a live Paseo daemon; see the module docs"]
+async fn live_the_status_readback_agrees_with_the_pushed_identity() {
+    let transport = live!();
+    let pushed = transport
+        .server_identity()
+        .await
+        .expect("the daemon announces itself");
+    let request = PaseoRpc::daemon_status("kontor-live-status".to_owned());
+    let frame = transport
+        .request(&request)
+        .await
+        .expect("the daemon answers a status request");
+    let status: kontor_runtime_paseo::wire::PaseoDaemonStatus = frame
+        .resolve(&request, "PaseoDaemonStatus")
+        .expect("the answer is the pinned 0.3.1 shape");
+
+    assert_eq!(status.version.as_deref(), Some(PASEO_APP_VERSION));
+    assert_eq!(
+        status.server_id, pushed.server_id,
+        "the push and the readback describe the same daemon boot"
+    );
+}
+
+/// The bundled CLI is the pinned baseline too.
+///
+/// 0.3.1 prints the bare version for `--version --json` rather than JSON, which
+/// is why this reads text: a parser expecting an object here would fail against
+/// the very build it is pinned to.
+#[tokio::test]
+#[ignore = "requires a live Paseo daemon; see the module docs"]
+async fn live_cli_reports_the_pinned_baseline() {
+    let transport = live!();
     let output = transport
         .run(&PaseoCommand::version())
         .await
         .expect("the Paseo CLI answers");
-    let version: serde_json::Value =
-        serde_json::from_str(&output.stdout).expect("`--version --json` prints JSON");
-    let reported = version["version"].as_str().unwrap_or_default();
+    let reported = output.version().expect("a zero exit prints a version");
     println!("live Paseo CLI reports {reported}");
-    assert_eq!(
-        reported, PASEO_VERSION,
-        "this adapter's DTOs and argv evidence are pinned to {PASEO_VERSION}"
-    );
+    assert_eq!(reported, PASEO_APP_VERSION);
 }
 
-/// A read-only inspect of an agent the operator nominated. Nothing else is
-/// touched, and no canonical seat is ever named here.
-#[tokio::test]
-#[ignore = "requires a live Paseo daemon; see the module docs"]
-async fn live_inspect_of_a_disposable_agent_round_trips() {
-    let transport = match transport() {
-        Ok(transport) => transport,
-        Err(Skip(reason)) => {
-            println!("skipped: {reason}");
-            return;
-        }
-    };
-    let Ok(agent_id) = std::env::var("KONTOR_PASEO_DISPOSABLE_AGENT") else {
-        println!("skipped: KONTOR_PASEO_DISPOSABLE_AGENT is unset");
-        return;
-    };
-    let output = transport
-        .run(&PaseoCommand::agent_inspect(&agent_id))
-        .await
-        .expect("the daemon answers an inspect");
-    let inspected: serde_json::Value =
-        serde_json::from_str(&output.stdout).expect("`agent inspect --json` prints JSON");
-    assert_eq!(
-        inspected["id"].as_str(),
-        Some(agent_id.as_str()),
-        "the daemon answered about the agent that was asked for"
-    );
-}
-
-/// Without the daemon protocol socket, the adapter degrades honestly: it is
-/// observed, never driven, and every runtime-changing operation is refused as
-/// exactly the capability it is.
+/// An unknown agent id is a refusal rather than an empty session.
 ///
-/// This is the live half of the WebSocket deferral. It is a real assertion
-/// rather than a note, because "we left it out" and "we left it out and it
-/// fails safe" are different claims.
+/// The live shape of the fail-closed rule: 0.3.1 answers `fetch_agent_request`
+/// for an id it does not hold with `agent: null` and an error string, and
+/// reading that as "a session with no content" is how a binding gets made
+/// against nothing.
 #[tokio::test]
 #[ignore = "requires a live Paseo daemon; see the module docs"]
-async fn live_without_the_protocol_socket_the_plane_is_observed_but_not_driven() {
-    let transport = match transport() {
-        Ok(transport) => transport,
-        Err(Skip(reason)) => {
-            println!("skipped: {reason}");
-            return;
-        }
-    };
-    let host_key = config().host_key.clone();
-    let adapter = PaseoAdapter::new(
-        config(),
-        Box::new(transport),
-        PaseoCheckpoint::fresh(1, host_key),
-    )
-    .expect("a fresh checkpoint restores");
-
-    let declared = adapter
-        .discover_capabilities()
-        .await
-        .expect("the CLI probe still proves the runtime is there");
-    assert_eq!(
-        declared.trust_grade,
-        TrustGrade::C,
-        "a daemon whose features cannot be read is advisory, not trusted"
+async fn live_an_unknown_agent_is_refused_rather_than_answered_empty() {
+    let transport = live!();
+    let request = PaseoRpc::agent_fetch(
+        "kontor-live-missing".to_owned(),
+        "agt_kontor_does_not_exist",
     );
-    assert!(declared.supports(RuntimeCapability::Inspect));
-    assert!(!declared.supports(RuntimeCapability::Launch));
-
-    let refused = adapter
-        .prepare_workspace(&WorkspacePrepareRequest {
-            team_run_id: kontor_core::id::TeamRunId::generate(),
-            task_id: kontor_core::id::TaskId::generate(),
-            workspace_binding_id: kontor_runtime::workspace::WorkspaceBindingId::generate(),
-            root: WorkspaceRoot::parse("/tmp/kontor-paseo-live-scratch").expect("absolute"),
-            requested_at: kontor_core::id::Timestamp::now(),
-        })
+    let frame = transport
+        .request(&request)
         .await
-        .expect_err("an undeclared capability produces no effect");
-    assert_eq!(
-        refused,
-        kontor_runtime::adapter::RuntimeError::UnsupportedCapability {
-            capability: RuntimeCapability::PrepareWorkspace
-        }
+        .expect("the daemon answers");
+    let answer: kontor_runtime_paseo::wire::PaseoAgentAnswer = frame
+        .resolve(&request, "PaseoAgentAnswer")
+        .expect("the answer is the pinned 0.3.1 shape");
+    assert!(
+        answer.agent.is_none(),
+        "the daemon holds no such agent, and said so"
     );
+    assert!(answer.error.is_some(), "and named the refusal");
 }

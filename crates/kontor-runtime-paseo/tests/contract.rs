@@ -1,5 +1,5 @@
-//! The Paseo 0.2.5 adapter, judged against recorded fixtures and the shared
-//! capability-aware contract.
+//! The Paseo 0.3.1 adapter, judged against sanitized recordings of the live
+//! daemon and the shared capability-aware contract.
 //!
 //! Two kinds of test live here, and the split is deliberate. The shared
 //! contracts from `kontor_tests_contract` prove this adapter is the *same kind
@@ -10,16 +10,23 @@
 //! The mutants this suite exists to kill:
 //!
 //! * believing a CLI answer that omits the project, the workspace, the labels
-//!   and the parent — every placement rule is decided from a protocol readback,
+//!   and the parent — every placement rule is decided from a session readback,
 //!   and skipping it is how a role edits somebody else's tree;
+//! * taking an answer by correlation id alone, so an `rpc_error` or another
+//!   question's answer decides a placement rule;
+//! * treating an unsolicited `agent_stream` frame as the answer to whatever
+//!   request happens to be pending, or draining another agent's frames into
+//!   this session's timeline;
 //! * treating an idle or `finished` agent as a finished run, which replaces a
-//!   seat that was merely waiting and doubles the hierarchy every turn;
+//!   seat that was merely waiting and doubles the hierarchy every turn, or
+//!   missing that retirement is an `archivedAt` stamp rather than a status;
 //! * launching into a seat a previous process already filled, or into two seats
 //!   for one role name;
 //! * retrying a launch, a message or a permission answer whose acknowledgement
 //!   was lost, instead of reconciling first;
-//! * paging a `projected` timeline, whose collapsed ranges are holes a canonical
-//!   cursor cannot see;
+//! * paging a `projected` timeline, whose collapsed source ranges are holes a
+//!   canonical cursor cannot see, or paging past a `gap`/`reset`/`staleCursor`
+//!   the page itself declared;
 //! * allocating a fresh epoch for a raw one a restore already knew, which makes
 //!   every persisted cursor point into a numbering that no longer exists;
 //! * writing Paseo's internal state to fix a display name, or letting the host
@@ -42,7 +49,7 @@ use kontor_runtime::request::{
     LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
     SendMessageRequest,
 };
-use kontor_runtime::timeline::{HistoryCursor, SessionEventKind, TimelineBreak, TimelinePosition};
+use kontor_runtime::timeline::{HistoryCursor, TimelineBreak, TimelinePosition};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -55,7 +62,7 @@ use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,
     PaseoDelivery, PaseoExecutionScope, PaseoProjectOutcome, PaseoSlotPlan,
 };
-use kontor_runtime_paseo::client::PaseoCommand;
+use kontor_runtime_paseo::client::{PaseoCommand, PaseoTransport};
 use kontor_runtime_paseo::fixture::RecordedPaseo;
 use kontor_runtime_paseo::wire::{MAX_FRAME_BYTES, label};
 
@@ -65,16 +72,19 @@ use kontor_runtime_paseo::wire::{MAX_FRAME_BYTES, label};
 
 macro_rules! fixture {
     ($name:literal) => {
-        include_str!(concat!("fixtures/paseo-0.2.5/", $name))
+        include_str!(concat!("fixtures/paseo-0.3.1/", $name))
     };
 }
 
-const VERSION: &str = fixture!("cli/version.json");
+const VERSION: &str = fixture!("cli/version.txt");
 const CLI_WORKSPACE_CREATED: &str = fixture!("cli/workspace-created.json");
 const CLI_AGENT_STARTED: &str = fixture!("cli/agent-started.json");
 const CLI_AGENT_UPDATED: &str = fixture!("cli/agent-updated.json");
 const CLI_AGENT_UPDATED_NEW_ID: &str = fixture!("cli/agent-updated-new-id.json");
-const CLI_ACK_OK: &str = fixture!("cli/ack-ok.json");
+const CLI_AGENT_ARCHIVED: &str = fixture!("cli/agent-archived.json");
+const CLI_AGENT_STOPPED: &str = fixture!("cli/agent-stopped.json");
+const CLI_AGENT_RELOADED: &str = fixture!("cli/agent-reloaded.json");
+const SUBSCRIPTION_ACK: &str = fixture!("protocol/subscription-ack.json");
 
 const SERVER_INFO: &str = fixture!("protocol/server-info.json");
 const SERVER_INFO_DEGRADED: &str = fixture!("protocol/server-info-degraded.json");
@@ -86,7 +96,6 @@ const PROJECT_ADDED: &str = fixture!("protocol/project-added.json");
 const WORKSPACE_LIST_EMPTY: &str = fixture!("protocol/workspace-list-empty.json");
 const WORKSPACE_LIST_ONE: &str = fixture!("protocol/workspace-list-one.json");
 const WORKSPACE_LIST_TWO: &str = fixture!("protocol/workspace-list-two.json");
-const WORKSPACE: &str = fixture!("protocol/workspace.json");
 const WORKSPACE_OTHER_PROJECT: &str = fixture!("protocol/workspace-other-project.json");
 const WORKSPACE_ROOT_LOCAL: &str = fixture!("protocol/workspace-root-local.json");
 const WORKSPACE_OTHER_CWD: &str = fixture!("protocol/workspace-other-cwd.json");
@@ -94,9 +103,8 @@ const WORKSPACE_PASEO_OWNED: &str = fixture!("protocol/workspace-paseo-owned.jso
 const WORKSPACE_NO_ID: &str = fixture!("protocol/workspace-no-id.json");
 const AGENT: &str = fixture!("protocol/agent.json");
 const AGENT_IDLE_FINISHED: &str = fixture!("protocol/agent-idle-finished.json");
-const AGENT_STOPPED: &str = fixture!("protocol/agent-stopped.json");
+const AGENT_STOPPED: &str = fixture!("protocol/agent-closed.json");
 const AGENT_ARCHIVED: &str = fixture!("protocol/agent-archived.json");
-const AGENT_WRONG_PARENT_RAW: &str = fixture!("protocol/agent-wrong-parent-raw.json");
 const AGENT_WRONG_PARENT_LABEL: &str = fixture!("protocol/agent-wrong-parent-label.json");
 const AGENT_ADOPTED_PROVIDER_ROTATED: &str =
     fixture!("protocol/agent-adopted-provider-rotated.json");
@@ -104,7 +112,6 @@ const AGENT_OTHER_WORKSPACE: &str = fixture!("protocol/agent-other-workspace.jso
 const AGENT_OTHER_CWD: &str = fixture!("protocol/agent-other-cwd.json");
 const AGENT_FOREIGN: &str = fixture!("protocol/agent-foreign.json");
 const AGENT_ADOPTED: &str = fixture!("protocol/agent-adopted.json");
-const AGENT_ADOPTED_NEW_IDENTITY: &str = fixture!("protocol/agent-adopted-new-identity.json");
 const AGENT_LIST_EMPTY: &str = fixture!("protocol/agent-list-empty.json");
 const AGENT_LIST_IMPLEMENT: &str = fixture!("protocol/agent-list-implement.json");
 const AGENT_LIST_WITH_FOREIGN: &str = fixture!("protocol/agent-list-with-foreign.json");
@@ -114,19 +121,20 @@ const TIMELINE_GAP: &str = fixture!("protocol/timeline-gap.json");
 const TIMELINE_COLLAPSED: &str = fixture!("protocol/timeline-projected-collapsed.json");
 const TIMELINE_MESSAGE_TWICE: &str = fixture!("protocol/timeline-message-twice.json");
 const TIMELINE_MESSAGE_LANDED: &str = fixture!("protocol/timeline-message-landed.json");
-const TIMELINE_PERMISSION_OPEN: &str = fixture!("protocol/timeline-permission-open.json");
+const AGENT_PERMISSION_OPEN: &str = fixture!("protocol/agent-permission-open.json");
+const PERMISSION_RESOLVED: &str = fixture!("protocol/permission-resolved.json");
+const PERMISSION_RESOLVED_OTHER_AGENT: &str =
+    fixture!("protocol/permission-resolved-other-agent.json");
 const TIMELINE_MESSAGE_LANDED_NEW_EPOCH: &str =
     fixture!("protocol/timeline-message-landed-new-epoch.json");
 const TIMELINE_PAGE_ONE_OF_TWO: &str = fixture!("protocol/timeline-page-one-of-two.json");
 const TIMELINE_PAGE_TWO_RENUMBERED: &str = fixture!("protocol/timeline-page-two-renumbered.json");
 const AGENT_LIST_SLOT_MOVED: &str = fixture!("protocol/agent-list-slot-moved.json");
-const SERVER_INFO_OTHER_VERSION: &str = fixture!("protocol/server-info-other-version.json");
-const CLI_VERSION_OTHER: &str = fixture!("cli/version-other.json");
-const STREAM_GAP: &str = fixture!("protocol/stream-gap.json");
-const STREAM_RESET: &str = fixture!("protocol/stream-reset.json");
-const STREAM_STALE_CURSOR: &str = fixture!("protocol/stream-stale-cursor.json");
-const CLI_ACK_REFUSED: &str = fixture!("cli/ack-refused.json");
-const CLI_ACK_OTHER_ID: &str = fixture!("cli/ack-other-id.json");
+const SERVER_INFO_OTHER_VERSION: &str = fixture!("protocol/unsupported-app-version.json");
+const TIMELINE_RESET: &str = fixture!("protocol/timeline-reset.json");
+const TIMELINE_STALE_CURSOR: &str = fixture!("protocol/timeline-stale-cursor.json");
+const CLI_STOPPED_NONE: &str = fixture!("cli/agent-stopped-none.json");
+const CLI_STOPPED_OTHER_ID: &str = fixture!("cli/agent-stopped-other-id.json");
 
 // The pinned canonical identifiers the fixtures and the tests share. Generating
 // them would make a fixture unable to name them.
@@ -149,10 +157,6 @@ const EPOCH_RAW: &str = "8f2b1c34-0000-4000-8000-000000000001";
 
 fn v(raw: &str) -> serde_json::Value {
     serde_json::from_str(raw).expect("a fixture is valid JSON")
-}
-
-fn frames(raw: &str) -> Vec<serde_json::Value> {
-    serde_json::from_str(raw).expect("a stream fixture is a JSON array")
 }
 
 fn external(text: &str) -> ExternalId {
@@ -184,6 +188,73 @@ fn root() -> WorkspaceRoot {
 }
 
 // ---------------------------------------------------------------------------
+// 0.3.1 content builders
+// ---------------------------------------------------------------------------
+
+/// One canonical entry, in the shape `fetch_agent_timeline_response` carries.
+fn entry(seq: u64, item: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "item": item,
+        "timestamp": "2026-08-10T09:30:00.000Z",
+        "seqStart": seq,
+        "seqEnd": seq,
+        "sourceSeqRanges": [{ "startSeq": seq, "endSeq": seq }],
+        "collapsed": [],
+    })
+}
+
+/// A user message carrying the caller's own id as Paseo echoes it back.
+fn user_entry(seq: u64, client_message_id: &str) -> serde_json::Value {
+    entry(
+        seq,
+        serde_json::json!({
+            "type": "user_message",
+            "text": "synthetic text",
+            "clientMessageId": client_message_id,
+        }),
+    )
+}
+
+fn assistant_entry(seq: u64) -> serde_json::Value {
+    entry(
+        seq,
+        serde_json::json!({ "type": "assistant_message", "text": "synthetic text" }),
+    )
+}
+
+fn tool_entry(seq: u64, call_id: &str) -> serde_json::Value {
+    entry(
+        seq,
+        serde_json::json!({
+            "type": "tool_call",
+            "callId": call_id,
+            "name": "synthetic name",
+            "status": "completed",
+            "error": serde_json::Value::Null,
+            "detail": { "type": "plain_text", "text": "synthetic text" },
+        }),
+    )
+}
+
+/// One unsolicited `agent_stream` frame carrying timeline content.
+fn stream_entry(agent_id: &str, seq: u64, epoch: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "agent_stream",
+        "payload": {
+            "agentId": agent_id,
+            "event": {
+                "type": "timeline",
+                "provider": "claude",
+                "item": { "type": "assistant_message", "text": "synthetic text" },
+            },
+            "timestamp": "2026-08-10T09:30:00.000Z",
+            "seq": seq,
+            "epoch": epoch,
+        },
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Plane construction
 // ---------------------------------------------------------------------------
 
@@ -193,6 +264,9 @@ fn scope() -> PaseoExecutionScope {
         mini_project_short_title: name("Kontor MVP"),
         plan_item_key: external("KON-MVP-11"),
         task_short_title: name("Paseo adapter"),
+        // The epic's repository root, which is *not* the task worktree: a
+        // project registered from the worktree would be one project per task.
+        project_root_cwd: WorkspaceRoot::parse("/w/epic").expect("absolute"),
         canonical_worktree_cwd: root(),
         orchestrator_agent_id: external(ORCHESTRATOR),
     }
@@ -203,6 +277,7 @@ fn config() -> PaseoConfig {
         runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("a valid runtime key"),
         host_key: name(HOST_KEY),
         mini_project_id: external(MINI_PROJECT),
+        provider: name("codex"),
         scope: scope(),
         max_concurrent_sessions: 8,
     }
@@ -211,11 +286,19 @@ fn config() -> PaseoConfig {
 /// Route-equivalent commands. A ledger key is subcommand and addressed id only,
 /// so the arguments here are irrelevant to which answers they route.
 fn any_workspace_create() -> PaseoCommand {
-    PaseoCommand::workspace_create(CWD, PROJECT_ID, "t", &BTreeMap::new())
+    PaseoCommand::workspace_create(CWD, PROJECT_ID, "t")
 }
 
 fn any_agent_run() -> PaseoCommand {
-    PaseoCommand::agent_run(WORKSPACE_ID, CWD, "t", &BTreeMap::new(), ORCHESTRATOR, "p")
+    PaseoCommand::agent_run(
+        WORKSPACE_ID,
+        CWD,
+        "codex",
+        "t",
+        &BTreeMap::new(),
+        ORCHESTRATOR,
+        "p",
+    )
 }
 
 /// A daemon scripted for the whole happy path: create the workspace, launch one
@@ -225,15 +308,23 @@ fn daemon() -> RecordedPaseo {
         .answering(&PaseoCommand::version(), VERSION)
         .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
         .answering(&any_agent_run(), CLI_AGENT_STARTED)
-        .answering(&PaseoCommand::agent_stop(AGENT_ID), CLI_ACK_OK)
-        .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_ACK_OK)
-        .answering(&PaseoCommand::agent_reload(AGENT_ID), CLI_AGENT_STARTED)
-        .answering_rpc("server_info", v(SERVER_INFO))
+        .answering(&PaseoCommand::agent_stop(AGENT_ID), CLI_AGENT_STOPPED)
+        .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+        .answering(&PaseoCommand::agent_reload(AGENT_ID), CLI_AGENT_RELOADED)
+        .announcing(&v(SERVER_INFO))
         .answering_rpc("project.list.request", v(PROJECT_LIST))
-        .answering_rpc("workspace.list.request", v(WORKSPACE_LIST_EMPTY))
-        .answering_rpc("workspace.fetch.request", v(WORKSPACE))
-        .answering_rpc("agent.list.request", v(AGENT_LIST_EMPTY))
-        .answering_rpc("agent.fetch.request", v(AGENT))
+        // 0.3.1 has one workspace request, so the census before a create and
+        // the readback after it are the same route answering twice — first an
+        // empty project, then the workspace the create put in it. A single
+        // standing answer would make "was one created?" unaskable.
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_ONE))
+        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc("fetch_agent_request", v(AGENT))
+        .answering_rpc(
+            "agent.timeline.set_subscription.request",
+            v(SUBSCRIPTION_ACK),
+        )
         .journaling(AGENT_ID, EPOCH_RAW, Vec::new())
 }
 
@@ -364,7 +455,7 @@ async fn shared_reconciliation_contract_holds() {
     let (plane, binding) = launched().await;
     plane
         .daemon
-        .set_answer_rpc("agent.list.request", v(AGENT_LIST_IMPLEMENT));
+        .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
     reconciliation_contract(&plane.adapter, &[binding])
         .await
         .expect("the shared reconciliation contract holds");
@@ -458,7 +549,7 @@ async fn hierarchy_role_slot_reconciliation_reuses_an_idle_seat_and_materializes
     let (plane, _) = Plane::prepared(daemon()).await;
     plane
         .daemon
-        .set_answer_rpc("agent.list.request", v(AGENT_LIST_IMPLEMENT));
+        .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
 
     let plans = plane
         .adapter
@@ -484,7 +575,7 @@ async fn hierarchy_two_live_agents_in_one_slot_block_rather_than_pick_one() {
     let (plane, _) = Plane::prepared(daemon()).await;
     plane
         .daemon
-        .set_answer_rpc("agent.list.request", v(AGENT_LIST_DUPLICATE_SLOT));
+        .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_DUPLICATE_SLOT));
 
     let plans = plane
         .adapter
@@ -503,7 +594,7 @@ async fn hierarchy_an_archived_agent_leaves_its_slot_vacant() {
     let (plane, _) = Plane::prepared(daemon()).await;
     plane
         .daemon
-        .set_answer_rpc("agent.list.request", v(AGENT_LIST_ARCHIVED_ONLY));
+        .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_ARCHIVED_ONLY));
     let plans = plane
         .adapter
         .reconcile_role_slots(team_run(), &[slot("implement-a")])
@@ -549,7 +640,7 @@ async fn preparation_is_idempotent_and_creates_nothing_on_replay() {
 #[tokio::test]
 async fn preparation_reuses_an_existing_workspace_without_creating_one() {
     let recorded = daemon();
-    recorded.queue_answer_rpc("workspace.list.request", v(WORKSPACE_LIST_ONE));
+    recorded.forget_queued_rpc("fetch_workspaces_request");
     let (plane, snapshot) = Plane::prepared(recorded).await;
 
     assert_eq!(
@@ -654,7 +745,8 @@ async fn preparation_refuses_two_projects_carrying_one_epic_name() {
 #[tokio::test]
 async fn preparation_refuses_two_workspaces_at_one_canonical_worktree() {
     let recorded = daemon();
-    recorded.set_answer_rpc("workspace.list.request", v(WORKSPACE_LIST_TWO));
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_TWO));
     let plane = Plane::fresh(recorded);
     plane
         .adapter
@@ -677,7 +769,7 @@ async fn preparation_refuses_two_workspaces_at_one_canonical_worktree() {
 #[tokio::test]
 async fn preparation_refuses_a_workspace_readback_from_another_project() {
     let recorded = daemon();
-    recorded.set_answer_rpc("workspace.fetch.request", v(WORKSPACE_OTHER_PROJECT));
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_OTHER_PROJECT));
     let plane = Plane::fresh(recorded);
     plane
         .adapter
@@ -714,9 +806,8 @@ async fn preparation_survives_a_lost_create_ack_without_a_second_create() {
     let recorded = daemon();
     recorded.lose_next(&any_workspace_create());
     // Paseo committed the effect before the channel died, so the census that
-    // must run before any retry has something true to find.
-    recorded.queue_answer_rpc("workspace.list.request", v(WORKSPACE_LIST_EMPTY));
-    recorded.queue_answer_rpc("workspace.list.request", v(WORKSPACE_LIST_ONE));
+    // must run before any retry has something true to find: the pre-create page
+    // `daemon()` queues is empty, and every page after it holds the workspace.
     let plane = Plane::fresh(recorded);
     plane
         .adapter
@@ -792,7 +883,7 @@ async fn assert_prelaunch_refusal(recorded: RecordedPaseo) -> RuntimeError {
 #[tokio::test]
 async fn prelaunch_refuses_a_root_or_plain_local_workspace() {
     let recorded = daemon();
-    recorded.set_answer_rpc("workspace.fetch.request", v(WORKSPACE_ROOT_LOCAL));
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_ROOT_LOCAL));
     let error = assert_prelaunch_refusal(recorded).await;
     assert!(matches!(error, RuntimeError::WorkspaceMismatch { .. }));
 }
@@ -800,7 +891,7 @@ async fn prelaunch_refuses_a_root_or_plain_local_workspace() {
 #[tokio::test]
 async fn prelaunch_refuses_a_canonical_cwd_mismatch() {
     let recorded = daemon();
-    recorded.set_answer_rpc("workspace.fetch.request", v(WORKSPACE_OTHER_CWD));
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_OTHER_CWD));
     let error = assert_prelaunch_refusal(recorded).await;
     assert!(matches!(error, RuntimeError::WorkspaceMismatch { .. }));
 }
@@ -808,7 +899,7 @@ async fn prelaunch_refuses_a_canonical_cwd_mismatch() {
 #[tokio::test]
 async fn prelaunch_refuses_a_paseo_provisioned_worktree() {
     let recorded = daemon();
-    recorded.set_answer_rpc("workspace.fetch.request", v(WORKSPACE_PASEO_OWNED));
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_PASEO_OWNED));
     let error = assert_prelaunch_refusal(recorded).await;
     assert!(matches!(error, RuntimeError::WorkspaceMismatch { .. }));
 }
@@ -816,7 +907,7 @@ async fn prelaunch_refuses_a_paseo_provisioned_worktree() {
 #[tokio::test]
 async fn prelaunch_refuses_a_workspace_with_no_id() {
     let recorded = daemon();
-    recorded.set_answer_rpc("workspace.fetch.request", v(WORKSPACE_NO_ID));
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_NO_ID));
     let error = assert_prelaunch_refusal(recorded).await;
     assert!(matches!(
         error,
@@ -831,7 +922,7 @@ async fn prelaunch_refuses_an_agent_the_readback_places_elsewhere() {
         (AGENT_OTHER_CWD, "another working directory"),
     ] {
         let recorded = daemon();
-        recorded.set_answer_rpc("agent.fetch.request", v(fixture));
+        recorded.set_answer_rpc("fetch_agent_request", v(fixture));
         let (plane, workspace) = Plane::prepared(recorded).await;
         let error = plane
             .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
@@ -849,7 +940,7 @@ async fn prelaunch_refuses_a_duplicate_active_role_slot() {
     let recorded = daemon();
     // A previous process already filled this seat. The admission ledger cannot
     // know that; only a native census can.
-    recorded.set_answer_rpc("agent.list.request", v(AGENT_LIST_IMPLEMENT));
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
     let (plane, workspace) = Plane::prepared(recorded).await;
 
     let error = plane
@@ -882,7 +973,7 @@ async fn prelaunch_trusts_no_cli_answer_without_a_protocol_readback() {
     // protocol readback says it is in another project's workspace. Believing
     // the CLI is what this refusal exists to prevent.
     let recorded = daemon();
-    recorded.set_answer_rpc("agent.fetch.request", v(AGENT_OTHER_WORKSPACE));
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT_OTHER_WORKSPACE));
     let (plane, workspace) = Plane::prepared(recorded).await;
 
     assert!(
@@ -893,7 +984,7 @@ async fn prelaunch_trusts_no_cli_answer_without_a_protocol_readback() {
         "an id is not a placement"
     );
     assert_eq!(
-        plane.daemon.count("rpc agent.fetch.request"),
+        plane.daemon.count("rpc fetch_agent_request"),
         1,
         "the readback happened, and it is what decided"
     );
@@ -917,7 +1008,7 @@ async fn role_slot_same_role_needs_distinct_slots_to_run_in_parallel() {
         .set_answer(&any_agent_run(), fixture!("cli/agent-started-qa.json"));
     plane
         .daemon
-        .set_answer_rpc("agent.fetch.request", v(fixture!("protocol/agent-qa.json")));
+        .set_answer_rpc("fetch_agent_request", v(fixture!("protocol/agent-qa.json")));
     plane
         .launch(run(RUN_QA), &slot("qa-a"), &workspace)
         .await
@@ -998,8 +1089,8 @@ async fn lost_launch_ack_binds_the_one_correlated_agent_without_a_second_run() {
     // The census before the launch is empty; the recovery census, taken after
     // Paseo committed the effect, finds exactly one agent carrying this
     // launch's full label set.
-    recorded.queue_answer_rpc("agent.list.request", v(AGENT_LIST_EMPTY));
-    recorded.queue_answer_rpc("agent.list.request", v(AGENT_LIST_IMPLEMENT));
+    recorded.queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    recorded.queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
     let (plane, workspace) = Plane::prepared(recorded).await;
 
     let outcome = plane
@@ -1036,8 +1127,8 @@ async fn lost_launch_ack_with_no_match_stays_unknown_rather_than_relaunching() {
 async fn lost_launch_ack_with_two_matches_diverges() {
     let recorded = daemon();
     recorded.lose_next(&any_agent_run());
-    recorded.queue_answer_rpc("agent.list.request", v(AGENT_LIST_EMPTY));
-    recorded.queue_answer_rpc("agent.list.request", v(AGENT_LIST_DUPLICATE_SLOT));
+    recorded.queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    recorded.queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_DUPLICATE_SLOT));
     let (plane, workspace) = Plane::prepared(recorded).await;
 
     let error = plane
@@ -1054,7 +1145,7 @@ async fn lost_launch_ack_with_two_matches_diverges() {
 
 async fn adoptable_plane() -> (Plane, WorkspaceBindingSnapshot) {
     let recorded = daemon();
-    recorded.set_answer_rpc("agent.list.request", v(AGENT_LIST_WITH_FOREIGN));
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_WITH_FOREIGN));
     recorded.set_answer(
         &PaseoCommand::agent_update_labels("agt_foreign", &BTreeMap::new()),
         CLI_AGENT_UPDATED,
@@ -1081,10 +1172,10 @@ async fn adoption_preserves_the_native_identity() {
     let (plane, _) = adoptable_plane().await;
     plane
         .daemon
-        .queue_answer_rpc("agent.fetch.request", v(AGENT_FOREIGN));
+        .queue_answer_rpc("fetch_agent_request", v(AGENT_FOREIGN));
     plane
         .daemon
-        .queue_answer_rpc("agent.fetch.request", v(AGENT_ADOPTED));
+        .queue_answer_rpc("fetch_agent_request", v(AGENT_ADOPTED));
     plane.adapter.authorize_adoption(PaseoAdoptionIntent {
         native_agent_id: external("agt_foreign"),
         team_run_id: team_run(),
@@ -1142,7 +1233,7 @@ async fn adoption_refuses_a_session_that_already_belongs_to_a_run() {
     let (plane, _) = adoptable_plane().await;
     // The session already carries a Kontor run label. Re-labelling it would move
     // it out from under the run that owns it.
-    plane.daemon.set_answer_rpc("agent.fetch.request", v(AGENT));
+    plane.daemon.set_answer_rpc("fetch_agent_request", v(AGENT));
     plane.adapter.authorize_adoption(PaseoAdoptionIntent {
         native_agent_id: external("agt_foreign"),
         team_run_id: team_run(),
@@ -1166,15 +1257,12 @@ async fn adoption_refuses_a_session_that_already_belongs_to_a_run() {
 async fn adoption_refuses_a_readback_whose_identity_changed() {
     // Two distinct identity changes, because they are caught by two different
     // things and a single fixture that trips both would let either be deleted
-    // silently: the readback describing another agent id is refused by the fetch
-    // itself, and the *same* id with a rotated provider session — a fresh
-    // conversation wearing the old name — is refused by the adoption check.
+    // silently: the CLI acknowledging another agent id is refused before the
+    // readback, and the *same* id with a rotated provider session — a fresh
+    // conversation wearing the old name — is refused by the adoption check
+    // against the readback.
     for (readback, cli, why) in [
-        (
-            AGENT_ADOPTED_NEW_IDENTITY,
-            CLI_AGENT_UPDATED_NEW_ID,
-            "another agent id",
-        ),
+        (AGENT_ADOPTED, CLI_AGENT_UPDATED_NEW_ID, "another agent id"),
         (
             AGENT_ADOPTED_PROVIDER_ROTATED,
             CLI_AGENT_UPDATED,
@@ -1184,10 +1272,10 @@ async fn adoption_refuses_a_readback_whose_identity_changed() {
         let (plane, _) = adoptable_plane().await;
         plane
             .daemon
-            .queue_answer_rpc("agent.fetch.request", v(AGENT_FOREIGN));
+            .queue_answer_rpc("fetch_agent_request", v(AGENT_FOREIGN));
         plane
             .daemon
-            .queue_answer_rpc("agent.fetch.request", v(readback));
+            .queue_answer_rpc("fetch_agent_request", v(readback));
         plane.daemon.set_answer(
             &PaseoCommand::agent_update_labels("agt_foreign", &BTreeMap::new()),
             cli,
@@ -1221,7 +1309,7 @@ async fn freshness_a_missing_session_is_lost_contact_and_never_terminal() {
     // The agent is gone from the census entirely.
     plane
         .daemon
-        .set_answer_rpc("agent.list.request", v(AGENT_LIST_EMPTY));
+        .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
 
     let report = plane
         .adapter
@@ -1251,7 +1339,7 @@ async fn freshness_idle_and_finished_agents_stay_resumable_seats() {
     let (plane, binding) = launched().await;
     plane
         .daemon
-        .set_answer_rpc("agent.fetch.request", v(AGENT_IDLE_FINISHED));
+        .set_answer_rpc("fetch_agent_request", v(AGENT_IDLE_FINISHED));
 
     let observed = plane
         .adapter
@@ -1292,7 +1380,7 @@ async fn freshness_a_stopped_agent_is_reloaded_and_keeps_its_identity() {
     let (plane, binding) = launched().await;
     plane
         .daemon
-        .set_answer_rpc("agent.fetch.request", v(AGENT_STOPPED));
+        .set_answer_rpc("fetch_agent_request", v(AGENT_STOPPED));
 
     let observed = plane
         .adapter
@@ -1313,10 +1401,10 @@ async fn freshness_a_stopped_agent_is_reloaded_and_keeps_its_identity() {
     // Resume reloads exactly this case, and the readback must be the same seat.
     plane
         .daemon
-        .queue_answer_rpc("agent.fetch.request", v(AGENT_STOPPED));
+        .queue_answer_rpc("fetch_agent_request", v(AGENT_STOPPED));
     plane
         .daemon
-        .queue_answer_rpc("agent.fetch.request", v(AGENT));
+        .queue_answer_rpc("fetch_agent_request", v(AGENT));
     plane
         .adapter
         .resume(&ResumeRequest {
@@ -1335,7 +1423,7 @@ async fn freshness_only_a_fresh_archived_readback_is_terminal_evidence() {
     // A stop acknowledgement is not evidence, however cheerful.
     plane
         .daemon
-        .queue_answer_rpc("agent.fetch.request", v(AGENT));
+        .queue_answer_rpc("fetch_agent_request", v(AGENT));
     let cancelled = plane
         .adapter
         .cancel(&CancelRequest {
@@ -1353,7 +1441,7 @@ async fn freshness_only_a_fresh_archived_readback_is_terminal_evidence() {
     // An explicit archive, read back fresh, is.
     plane
         .daemon
-        .set_answer_rpc("agent.fetch.request", v(AGENT_ARCHIVED));
+        .set_answer_rpc("fetch_agent_request", v(AGENT_ARCHIVED));
     let retired = plane
         .adapter
         .retire(&binding, at("2026-08-10T09:31:00Z"))
@@ -1384,8 +1472,11 @@ async fn freshness_a_refused_or_misaddressed_stop_is_not_a_stop() {
     // no, and Paseo said yes about somebody else's agent. Reading either as a
     // stop would hand the control plane a cancellation that never happened.
     for (ack, why) in [
-        (CLI_ACK_REFUSED, "the runtime refused"),
-        (CLI_ACK_OTHER_ID, "the runtime answered about another agent"),
+        (CLI_STOPPED_NONE, "the runtime refused"),
+        (
+            CLI_STOPPED_OTHER_ID,
+            "the runtime answered about another agent",
+        ),
     ] {
         let (plane, binding) = launched().await;
         plane
@@ -1411,7 +1502,7 @@ async fn freshness_a_retired_session_cannot_be_resumed() {
     let (plane, binding) = launched().await;
     plane
         .daemon
-        .set_answer_rpc("agent.fetch.request", v(AGENT_ARCHIVED));
+        .set_answer_rpc("fetch_agent_request", v(AGENT_ARCHIVED));
     let refused = plane
         .adapter
         .resume(&ResumeRequest {
@@ -1426,7 +1517,7 @@ async fn freshness_a_retired_session_cannot_be_resumed() {
 #[tokio::test]
 async fn freshness_a_degraded_daemon_is_observed_but_never_driven() {
     let recorded = daemon();
-    recorded.set_answer_rpc("server_info", v(SERVER_INFO_DEGRADED));
+    recorded.set_identity(&v(SERVER_INFO_DEGRADED));
     let plane = Plane::fresh(recorded);
 
     let declared = plane
@@ -1459,28 +1550,24 @@ async fn freshness_a_degraded_daemon_is_observed_but_never_driven() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn continuity_a_wrong_parent_is_refused_by_both_halves() {
-    // Both halves, each on its own: a fixture where the raw parent and the
-    // planted label disagree with the orchestrator *together* would be caught
-    // twice over, and either check could then be deleted without a test
-    // noticing. These two split them.
-    for (fixture, half) in [
-        (AGENT_WRONG_PARENT_RAW, "the parent Paseo recorded"),
-        (AGENT_WRONG_PARENT_LABEL, "the parent label Kontor planted"),
-    ] {
-        let recorded = daemon();
-        recorded.set_answer_rpc("agent.fetch.request", v(fixture));
-        let (plane, workspace) = Plane::prepared(recorded).await;
+async fn continuity_a_wrong_parent_refuses_the_launch() {
+    // 0.3.1 records parentage in exactly one place — the
+    // `paseo.parent-agent-id` label — so there is one half to check here, not
+    // the two the 0.2.5 wire allowed. The 0.2.5 adapter compared the label
+    // against an independent `parentAgentId` field; that field does not exist on
+    // this snapshot, and a second check reading the same label under another
+    // name would be a check that cannot fail.
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT_WRONG_PARENT_LABEL));
+    let (plane, workspace) = Plane::prepared(recorded).await;
 
-        assert_eq!(
-            plane
-                .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
-                .await
-                .expect_err("an agent under another orchestrator is not this seat"),
-            RuntimeError::CorrelationFailed,
-            "{half} must be enough on its own to refuse the launch"
-        );
-    }
+    assert_eq!(
+        plane
+            .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+            .await
+            .expect_err("an agent under another orchestrator is not this seat"),
+        RuntimeError::CorrelationFailed
+    );
 }
 
 #[tokio::test]
@@ -1576,10 +1663,10 @@ async fn with_history() -> (Plane, RuntimeBindingSnapshot) {
         AGENT_ID,
         EPOCH_RAW,
         vec![
-            serde_json::json!({"seq":1,"type":"user_message","at":"2026-08-10T09:01:00Z","span":1,"entryId":"ent_1"}),
-            serde_json::json!({"seq":2,"type":"assistant_message","at":"2026-08-10T09:02:00Z","span":1,"entryId":"ent_2"}),
-            serde_json::json!({"seq":3,"type":"tool_call","at":"2026-08-10T09:03:00Z","span":1,"entryId":"ent_3"}),
-            serde_json::json!({"seq":4,"type":"tool_result","at":"2026-08-10T09:04:00Z","span":1,"entryId":"ent_4"}),
+            user_entry(1, "msg_someone_else"),
+            assistant_entry(2),
+            tool_entry(3, "call_1"),
+            tool_entry(4, "call_1"),
         ],
     );
     let (plane, workspace) = Plane::prepared(recorded).await;
@@ -1608,14 +1695,9 @@ async fn timeline_history_then_live_has_no_gap_and_no_overlap() {
 
     // Live delivers strictly after the anchor, and the buffered frame and the
     // catch-up fetch of the same entry are one event.
-    plane.daemon.push_stream(
-        AGENT_ID,
-        vec![serde_json::json!({
-            "agentId": AGENT_ID,
-            "epoch": EPOCH_RAW,
-            "entry": {"seq":5,"type":"assistant_message","at":"2026-08-10T09:05:00Z","span":1,"entryId":"ent_5"},
-        })],
-    );
+    plane
+        .daemon
+        .push_stream(AGENT_ID, vec![stream_entry(AGENT_ID, 5, EPOCH_RAW)]);
     let mut live = plane
         .adapter
         .subscribe_live(&LiveSubscribeRequest {
@@ -1672,7 +1754,11 @@ async fn timeline_a_native_gap_breaks_the_page() {
         .daemon
         .set_answer_rpc("fetch_agent_timeline_request", v(TIMELINE_GAP));
 
-    let page = plane
+    // 0.3.1 declares the hole on the response itself, so the refusal happens
+    // one step earlier than it did on the 0.2.5 wire: the page never becomes
+    // events at all, because paging over a gap the daemon just admitted to is
+    // the thing the flag exists to prevent.
+    let refused = plane
         .adapter
         .history(&HistoryRequest {
             binding: binding.clone(),
@@ -1680,16 +1766,9 @@ async fn timeline_a_native_gap_breaks_the_page() {
             page_size: 10,
         })
         .await
-        .expect("the adapter returns what Paseo said");
-    // The shared reader is what refuses it, over every event, which is the whole
-    // reason continuity policy lives in one place.
-    let mut reader =
-        kontor_runtime::timeline::HistoryReader::start(binding.binding_id(), page.epoch);
-    let mut page = page;
+        .expect_err("a page that declares a gap is not a page");
     assert_eq!(
-        reader
-            .accept_page(&mut page)
-            .expect_err("sequence 2 was never delivered"),
+        refused,
         RuntimeError::TimelineRefetchRequired {
             reason: TimelineBreak::SequenceGap
         }
@@ -1697,17 +1776,23 @@ async fn timeline_a_native_gap_breaks_the_page() {
 }
 
 #[tokio::test]
-async fn timeline_a_stream_control_signal_forces_a_canonical_refetch() {
-    for (script, reason) in [
-        (STREAM_GAP, TimelineBreak::SequenceGap),
-        (STREAM_RESET, TimelineBreak::EpochChanged),
-        (STREAM_STALE_CURSOR, TimelineBreak::EpochChanged),
+async fn timeline_a_declared_break_forces_a_canonical_refetch() {
+    // 0.3.1 puts `gap`, `reset` and `staleCursor` on the timeline *response*
+    // rather than on the stream, so this is where a hole is admitted to and
+    // where delivery has to stop. Each one ends the read and demands a
+    // canonical refetch; none of them says anything about the run.
+    for (page, reason) in [
+        (TIMELINE_GAP, TimelineBreak::SequenceGap),
+        (TIMELINE_RESET, TimelineBreak::EpochChanged),
+        (TIMELINE_STALE_CURSOR, TimelineBreak::EpochChanged),
     ] {
         let (plane, binding) = with_history().await;
         let (_, anchor) = drain_history(&plane.adapter, &binding, 10)
             .await
             .expect("history");
-        plane.daemon.push_stream(AGENT_ID, frames(script));
+        plane
+            .daemon
+            .set_answer_rpc("fetch_agent_timeline_request", v(page));
 
         let refused = plane
             .adapter
@@ -1721,14 +1806,11 @@ async fn timeline_a_stream_control_signal_forces_a_canonical_refetch() {
         assert_eq!(
             refused,
             RuntimeError::TimelineRefetchRequired { reason },
-            "a {script:?} control frame must demand a refetch"
+            "a declared break must demand a refetch"
         );
         // And it changed no lifecycle state.
-        plane
-            .adapter
-            .issued_binding(&binding)
-            .await
-            .expect("the binding is untouched by a content break");
+        let checkpoint = plane.adapter.checkpoint();
+        assert_eq!(checkpoint.bindings.len(), 1);
     }
 }
 
@@ -1747,13 +1829,7 @@ async fn timeline_restart_keeps_the_raw_epoch_mapping() {
     drop(plane);
 
     let restarted = Plane::build(
-        daemon().journaling(
-            AGENT_ID,
-            EPOCH_RAW,
-            vec![
-                serde_json::json!({"seq":1,"type":"user_message","at":"2026-08-10T09:01:00Z","span":1,"entryId":"ent_1"}),
-            ],
-        ),
+        daemon().journaling(AGENT_ID, EPOCH_RAW, vec![user_entry(1, "msg_someone_else")]),
         checkpoint,
     );
     // Continuing from the persisted cursor must resolve the *same* Kontor epoch.
@@ -1792,9 +1868,7 @@ async fn timeline_a_renumbered_epoch_breaks_a_restored_cursor() {
         daemon().journaling(
             AGENT_ID,
             "8f2b1c34-0000-4000-8000-00000000000f",
-            vec![
-                serde_json::json!({"seq":1,"type":"user_message","at":"2026-08-10T09:01:00Z","span":1,"entryId":"ent_1"}),
-            ],
+            vec![user_entry(1, "msg_someone_else")],
         ),
         checkpoint,
     );
@@ -1837,28 +1911,20 @@ async fn timeline_a_cursor_from_another_session_is_refused() {
 }
 
 #[tokio::test]
-async fn timeline_a_permission_raised_in_history_stays_pending() {
-    let (plane, binding) = with_history().await;
-    plane
-        .daemon
-        .set_answer_rpc("fetch_agent_timeline_request", v(TIMELINE_PERMISSION_OPEN));
-    let page = plane
-        .adapter
-        .history(&HistoryRequest {
-            binding: binding.clone(),
-            cursor: None,
-            page_size: 10,
-        })
-        .await
-        .expect("history");
-    assert_eq!(page.items[0].kind, SessionEventKind::PermissionRequest);
-
-    // …which is what makes answering it possible at all: a permission the
-    // adapter never saw raised cannot be answered.
-    plane.daemon.set_answer_rpc(
-        "fetch_agent_timeline_request",
-        v(fixture!("protocol/timeline-permission-resolved.json")),
+async fn timeline_a_permission_observed_on_a_readback_stays_pending() {
+    // 0.3.1's canonical timeline has no permission items, so a raised request
+    // is a row in the agent snapshot. Observing it is what makes answering it
+    // possible at all: a permission the adapter never saw raised cannot be
+    // answered.
+    let (plane, binding) = with_permission().await;
+    let checkpoint = plane.adapter.checkpoint();
+    assert_eq!(
+        checkpoint.pending_permissions,
+        vec![(binding.binding_id(), external("perm_1"))],
+        "a request Paseo reports pending is pending"
     );
+
+    resolve_permission(&plane);
     plane
         .adapter
         .respond_permission(&PermissionResponseRequest {
@@ -2151,35 +2217,46 @@ async fn message_restart_replays_the_original_ack_without_a_second_send() {
 // permission_
 // ---------------------------------------------------------------------------
 
-/// The canonical entry Paseo records when a session raises a permission.
-fn permission_raised() -> serde_json::Value {
-    serde_json::json!({
-        "seq": 1, "type": "permission_request", "at": "2026-08-10T09:45:00Z",
-        "span": 1, "entryId": "ent_1", "permissionId": "perm_1"
-    })
-}
-
-/// …and the one it records when the request is answered, by anyone.
-fn permission_answered() -> serde_json::Value {
-    serde_json::json!({
-        "seq": 2, "type": "permission_resolved", "at": "2026-08-10T09:46:00Z",
-        "span": 1, "entryId": "ent_2", "permissionId": "perm_1"
-    })
-}
-
 /// A plane whose seat has one permission request open.
+///
+/// 0.3.1's canonical timeline carries no permission items at all, so an open
+/// request is a row in the agent snapshot's `pendingPermissions` and reading
+/// *the agent* — not the transcript — is what makes it known. The seat also
+/// starts with two entries of content, because the acknowledgement a resolution
+/// produces is stamped at the session's last read position and a session nobody
+/// has read has none.
 async fn with_permission() -> (Plane, RuntimeBindingSnapshot) {
-    let recorded = daemon().journaling(AGENT_ID, EPOCH_RAW, vec![permission_raised()]);
+    let recorded = daemon().journaling(
+        AGENT_ID,
+        EPOCH_RAW,
+        vec![user_entry(1, "msg_someone_else"), assistant_entry(2)],
+    );
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT_PERMISSION_OPEN));
+    recorded.set_answer_rpc("agent_permission_response", v(PERMISSION_RESOLVED));
     let (plane, workspace) = Plane::prepared(recorded).await;
     let outcome = plane
         .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
         .await
         .expect("the seat launches");
-    // Reading the content is what makes the pending request known.
     drain_history(&plane.adapter, &outcome.snapshot, 10)
         .await
         .expect("history");
+    // An inspect is a fresh agent readback, and that is where the pending
+    // request is observed.
+    plane
+        .adapter
+        .inspect(&InspectRequest {
+            binding: outcome.snapshot.clone(),
+            requested_at: at("2026-08-10T09:45:00Z"),
+        })
+        .await
+        .expect("an inspect reads the pending permission");
     (plane, outcome.snapshot)
+}
+
+/// Answer as Paseo would once the request has left `pendingPermissions`.
+fn resolve_permission(plane: &Plane) {
+    plane.daemon.set_answer_rpc("fetch_agent_request", v(AGENT));
 }
 
 fn permission(
@@ -2199,6 +2276,7 @@ fn permission(
 async fn permission_response_is_session_bound_and_idempotent() {
     let (plane, binding) = with_permission().await;
     let request = permission(&binding, PermissionDecision::Allow);
+    resolve_permission(&plane);
 
     let first = plane
         .adapter
@@ -2208,7 +2286,9 @@ async fn permission_response_is_session_bound_and_idempotent() {
     assert_eq!(first.decision, PermissionDecision::Allow);
     assert_eq!(
         first.position.sequence, 2,
-        "the acknowledgement position comes from the resolution the timeline recorded"
+        "0.3.1 records no resolution in the transcript, so the acknowledgement \
+         is stamped at the session's last read position rather than at an \
+         invented one"
     );
 
     let replay = plane
@@ -2253,11 +2333,9 @@ async fn permission_an_unknown_request_is_refused_before_dispatch() {
 async fn permission_an_unknown_delivery_is_reconciled_not_resent() {
     let (plane, binding) = with_permission().await;
     plane.daemon.lose_next_rpc("agent_permission_response");
-    // Paseo applied it before the channel died.
-    plane.daemon.set_answer_rpc(
-        "fetch_agent_timeline_request",
-        v(fixture!("protocol/timeline-permission-resolved.json")),
-    );
+    // Paseo applied it before the channel died, so the readback no longer
+    // reports the request pending.
+    resolve_permission(&plane);
 
     let acknowledged = plane
         .adapter
@@ -2275,6 +2353,7 @@ async fn permission_an_unknown_delivery_is_reconciled_not_resent() {
 #[tokio::test]
 async fn permission_survives_a_restart_as_the_same_acknowledgement() {
     let (plane, binding) = with_permission().await;
+    resolve_permission(&plane);
     let first = plane
         .adapter
         .respond_permission(&permission(&binding, PermissionDecision::Allow))
@@ -2312,10 +2391,13 @@ async fn permission_an_open_request_survives_a_restart_and_is_answered_once() {
     );
     drop(plane);
 
-    let restarted = Plane::build(
-        daemon().journaling(AGENT_ID, EPOCH_RAW, vec![permission_raised()]),
-        checkpoint,
+    let recorded = daemon().journaling(
+        AGENT_ID,
+        EPOCH_RAW,
+        vec![user_entry(1, "msg_someone_else"), assistant_entry(2)],
     );
+    recorded.set_answer_rpc("agent_permission_response", v(PERMISSION_RESOLVED));
+    let restarted = Plane::build(recorded, checkpoint);
     let acknowledged = restarted
         .adapter
         .respond_permission(&permission(&binding, PermissionDecision::Allow))
@@ -2343,31 +2425,28 @@ async fn permission_an_open_request_survives_a_restart_and_is_answered_once() {
 }
 
 #[tokio::test]
-async fn permission_a_resolution_in_history_is_never_answered_a_second_time() {
+async fn permission_a_resolution_paseo_reports_is_never_answered_a_second_time() {
     // The operator answered it in Paseo's own UI. There is no acknowledgement of
-    // Kontor's for it — no response id, no decision — only the resolution the
-    // timeline recorded.
-    let recorded = daemon().journaling(
-        AGENT_ID,
-        EPOCH_RAW,
-        vec![permission_raised(), permission_answered()],
-    );
-    let (plane, workspace) = Plane::prepared(recorded).await;
-    let binding = plane
-        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+    // Kontor's for it — no response id, no decision — only the request having
+    // left `pendingPermissions`, which on this wire is the whole of the
+    // evidence that somebody answered.
+    let (plane, binding) = with_permission().await;
+    resolve_permission(&plane);
+    plane
+        .adapter
+        .inspect(&InspectRequest {
+            binding: binding.clone(),
+            requested_at: at("2026-08-10T09:46:00Z"),
+        })
         .await
-        .expect("the seat launches")
-        .snapshot;
-    drain_history(&plane.adapter, &binding, 10)
-        .await
-        .expect("history");
+        .expect("a readback shows the request resolved");
     plane.daemon.take_calls();
 
     let refused = plane
         .adapter
         .respond_permission(&permission(&binding, PermissionDecision::Allow))
         .await
-        .expect_err("a request the content shows answered is not answerable again");
+        .expect_err("a request Paseo shows answered is not answerable again");
     assert!(matches!(refused, RuntimeError::PermissionConflict { .. }));
     assert!(
         plane.daemon.mutations().is_empty(),
@@ -2387,22 +2466,22 @@ async fn permission_a_resolution_in_history_is_never_answered_a_second_time() {
     );
     drop(plane);
 
-    // The restart's first read lands on a page carrying only the request half —
-    // paging windows do that. Without the persisted resolution the request looks
-    // open again, and the duplicate answer the operator never asked for goes out.
+    // After the restart the daemon reports the request pending again — a
+    // provider that re-raises it, or simply a readback taken before Paseo
+    // settled. Without the persisted resolution it looks open, and the
+    // duplicate answer the operator never asked for goes out.
     let restarted = Plane::build(daemon(), checkpoint);
     restarted
         .daemon
-        .set_answer_rpc("fetch_agent_timeline_request", v(TIMELINE_PERMISSION_OPEN));
+        .set_answer_rpc("fetch_agent_request", v(AGENT_PERMISSION_OPEN));
     restarted
         .adapter
-        .history(&HistoryRequest {
+        .inspect(&InspectRequest {
             binding: binding.clone(),
-            cursor: None,
-            page_size: 10,
+            requested_at: at("2026-08-10T09:47:00Z"),
         })
         .await
-        .expect("history");
+        .expect("a readback");
     restarted.daemon.take_calls();
 
     let refused = restarted
@@ -2436,7 +2515,7 @@ async fn permission_a_resolution_in_history_is_never_answered_a_second_time() {
 /// A launched seat whose next readback puts it somewhere else.
 async fn moved(agent: &str) -> (Plane, RuntimeBindingSnapshot) {
     let (plane, binding) = launched().await;
-    plane.daemon.set_answer_rpc("agent.fetch.request", v(agent));
+    plane.daemon.set_answer_rpc("fetch_agent_request", v(agent));
     plane.daemon.take_calls();
     (plane, binding)
 }
@@ -2492,7 +2571,7 @@ async fn placement_a_workspace_that_stopped_being_the_task_worktree_stops_the_tu
         let (plane, binding) = launched().await;
         plane
             .daemon
-            .set_answer_rpc("workspace.fetch.request", v(workspace));
+            .set_answer_rpc("fetch_workspaces_request", v(workspace));
         plane.daemon.take_calls();
 
         let refused = plane
@@ -2517,7 +2596,7 @@ async fn placement_adoption_reproves_the_workspace_before_it_writes_a_label() {
     let (plane, _) = adoptable_plane().await;
     plane
         .daemon
-        .set_answer_rpc("agent.fetch.request", v(AGENT_FOREIGN));
+        .set_answer_rpc("fetch_agent_request", v(AGENT_FOREIGN));
     plane.adapter.authorize_adoption(PaseoAdoptionIntent {
         native_agent_id: external("agt_foreign"),
         team_run_id: team_run(),
@@ -2527,7 +2606,7 @@ async fn placement_adoption_reproves_the_workspace_before_it_writes_a_label() {
     // The session is where it should be; the workspace under it is not.
     plane
         .daemon
-        .set_answer_rpc("workspace.fetch.request", v(WORKSPACE_PASEO_OWNED));
+        .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_PASEO_OWNED));
     plane.daemon.take_calls();
 
     let refused = plane
@@ -2560,10 +2639,10 @@ async fn placement_a_reregistered_workspace_is_not_reused_under_its_old_id() {
         let (plane, _) = Plane::prepared(daemon()).await;
         plane
             .daemon
-            .set_answer_rpc("agent.list.request", v(AGENT_LIST_IMPLEMENT));
+            .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
         plane
             .daemon
-            .set_answer_rpc("workspace.fetch.request", v(workspace));
+            .set_answer_rpc("fetch_workspaces_request", v(workspace));
 
         let plans = plane
             .adapter
@@ -2582,7 +2661,7 @@ async fn placement_a_reregistered_workspace_is_not_reused_under_its_old_id() {
         // workspace that stopped being the task worktree.
         plane
             .daemon
-            .set_answer_rpc("agent.list.request", v(AGENT_LIST_EMPTY));
+            .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
         let plans = plane
             .adapter
             .reconcile_role_slots(team_run(), &[slot("implement-a")])
@@ -2600,7 +2679,7 @@ async fn placement_a_labelled_agent_outside_the_workspace_blocks_the_slot() {
     let (plane, _) = Plane::prepared(daemon()).await;
     plane
         .daemon
-        .set_answer_rpc("agent.list.request", v(AGENT_LIST_SLOT_MOVED));
+        .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_SLOT_MOVED));
 
     let plans = plane
         .adapter
@@ -2621,16 +2700,20 @@ async fn placement_a_labelled_agent_outside_the_workspace_blocks_the_slot() {
 
 #[tokio::test]
 async fn security_a_daemon_off_the_pinned_baseline_is_observed_not_driven() {
-    // Every DTO, argv and label spelling here was recorded against 0.2.5. A
+    // Every DTO, argv and label spelling here was recorded against 0.3.1. A
     // full feature list from an unrecognized build does not re-establish that,
-    // and Grade A is exactly the claim that it did.
-    for (cli, info) in [
-        (VERSION, SERVER_INFO_OTHER_VERSION),
-        (CLI_VERSION_OTHER, SERVER_INFO),
+    // and Grade A is exactly the claim that it did. The degraded fixture is the
+    // other half: a build that *is* 0.3.1 but withholds a required feature is
+    // just as undriveable, and for a different reason.
+    for (info, why) in [
+        (
+            SERVER_INFO_OTHER_VERSION,
+            "an unrecognized application version",
+        ),
+        (SERVER_INFO_DEGRADED, "a missing required feature"),
     ] {
         let recorded = daemon();
-        recorded.set_answer(&PaseoCommand::version(), cli);
-        recorded.set_answer_rpc("server_info", v(info));
+        recorded.set_identity(&v(info));
         let plane = Plane::fresh(recorded);
 
         let declared = plane
@@ -2641,7 +2724,7 @@ async fn security_a_daemon_off_the_pinned_baseline_is_observed_not_driven() {
         assert_eq!(
             declared.trust_grade,
             TrustGrade::C,
-            "an unrecognized Paseo build is advisory"
+            "{why} makes a Paseo build advisory"
         );
         assert!(declared.supports(RuntimeCapability::Inspect));
         assert!(
@@ -2750,7 +2833,7 @@ async fn security_every_lifecycle_command_is_argv_json_and_hostless() {
         PaseoCommand::agent_stop(AGENT_ID),
         PaseoCommand::agent_archive(AGENT_ID),
         PaseoCommand::agent_reload(AGENT_ID),
-        PaseoCommand::agent_inspect(AGENT_ID),
+        PaseoCommand::workspace_archive(WORKSPACE_ID),
         PaseoCommand::agent_update_labels(AGENT_ID, &BTreeMap::new()),
     ] {
         assert!(command.argv().iter().any(|argument| argument == "--json"));
@@ -2769,10 +2852,10 @@ async fn security_the_full_label_set_is_planted_and_verified() {
         .seat_record(binding.binding_id())
         .expect("a seat record");
     assert_eq!(record.agent_id.as_str(), AGENT_ID);
-    let agent: serde_json::Value = v(AGENT);
+    let answer: serde_json::Value = v(AGENT);
     for key in label::ALL {
         assert!(
-            agent["labels"].get(*key).is_some(),
+            answer["agent"]["labels"].get(*key).is_some(),
             "{key} must be planted on the agent"
         );
     }
@@ -2802,5 +2885,166 @@ async fn compaction_is_reported_unsupported_and_never_simulated() {
             .iter()
             .any(|call| call.starts_with("agent reload") || call.starts_with("agent archive")),
         "compaction is never simulated with a reload or a replacement"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// transport_ — the 0.3.1 socket's own fail-closed rules
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn transport_an_unrecognized_app_version_refuses_every_driving_operation() {
+    // The pushed identity is the gate, and it is checked before anything is
+    // driven rather than after something has already been started. A daemon on
+    // an unrecognized build stays observable — that is what keeps an unknown
+    // Paseo visible in the adoption inbox — and every operation that would
+    // change it is refused as exactly the capability it is.
+    let recorded = daemon();
+    recorded.set_identity(&v(SERVER_INFO_OTHER_VERSION));
+    let plane = Plane::fresh(recorded);
+    plane
+        .adapter
+        .prepare_project("cmd-1")
+        .await
+        .expect("reading the project list is not driving anything");
+    plane.daemon.take_calls();
+
+    let refused = plane
+        .prepare_workspace()
+        .await
+        .expect_err("an undeclared capability produces no effect");
+    assert_eq!(
+        refused,
+        RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareWorkspace
+        }
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "the refusal happened before the wire, got {:?}",
+        plane.daemon.mutations()
+    );
+}
+
+#[tokio::test]
+async fn transport_a_wrong_request_correlation_fails_closed() {
+    // Two shapes of the same defect, and the second is the one an id-only check
+    // lets through: an answer stamped with somebody else's correlation id, and
+    // an answer stamped with *this* id that is a different kind of answer
+    // entirely. Both would decide a placement rule from a frame about something
+    // else, so both refuse.
+    for (inject, why) in [
+        (
+            "misroute" as &str,
+            "an answer carrying another request's id",
+        ),
+        ("wrong-type", "a same-id answer of another response type"),
+    ] {
+        let (plane, binding) = launched().await;
+        plane.daemon.take_calls();
+        if inject == "misroute" {
+            plane.daemon.misroute_next_rpc("fetch_agent_request");
+        } else {
+            plane
+                .daemon
+                .wrong_response_type_next_rpc("fetch_agent_request");
+        }
+
+        let refused = plane
+            .adapter
+            .inspect(&InspectRequest {
+                binding: binding.clone(),
+                requested_at: at("2026-08-10T10:00:00Z"),
+            })
+            .await
+            .expect_err("{why} is not this request's answer");
+        assert!(
+            matches!(refused, RuntimeError::Transport { .. }),
+            "{why} must fail closed, got {refused:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a misrouted answer changes nothing, got {:?}",
+            plane.daemon.mutations()
+        );
+    }
+}
+
+#[tokio::test]
+async fn transport_an_unsolicited_frame_for_another_agent_never_drains_for_this_one() {
+    // The socket is multiplexed, so agent B's pushed frames arrive on the same
+    // connection as agent A's answers. Routing them by arrival — or by the
+    // subscription that happens to be open — would splice another session's
+    // content into this one's timeline, at sequence numbers that look perfectly
+    // ordinary.
+    let (plane, binding) = with_history().await;
+    let (_, anchor) = drain_history(&plane.adapter, &binding, 10)
+        .await
+        .expect("history");
+    plane.daemon.push_stream(
+        AGENT_ID,
+        vec![
+            stream_entry("agt_qa", 5, EPOCH_RAW),
+            stream_entry(AGENT_ID, 5, EPOCH_RAW),
+        ],
+    );
+
+    let mut live = plane
+        .adapter
+        .subscribe_live(&LiveSubscribeRequest {
+            binding: binding.clone(),
+            kinds: SESSION_KINDS.iter().copied().collect(),
+            strict_after: anchor,
+        })
+        .await
+        .expect("a live subscription");
+    let mut delivered = Vec::new();
+    while let Some(event) = live.next_event() {
+        delivered.push(event.expect("no break").position.sequence);
+    }
+    assert_eq!(
+        delivered,
+        vec![5],
+        "exactly this agent's frame is delivered, once"
+    );
+
+    // …and the other agent's frame is still where it belongs, unread by this
+    // session's drain.
+    let theirs = plane
+        .daemon
+        .drain_stream("agt_qa")
+        .await
+        .expect("the other agent's queue");
+    assert_eq!(
+        theirs.len(),
+        1,
+        "agent B's frame was buffered for agent B, not consumed by agent A"
+    );
+}
+
+#[tokio::test]
+async fn permission_an_acknowledgement_for_another_agent_is_refused() {
+    // The resolution frame is correlated by the permission request id, and that
+    // id is all it shares with the answer. So the agent it names is checked too:
+    // a resolution about somebody else's session, carrying the id this request
+    // was sent under, would otherwise close a permission on evidence from
+    // another conversation.
+    let (plane, binding) = with_permission().await;
+    resolve_permission(&plane);
+    plane.daemon.set_answer_rpc(
+        "agent_permission_response",
+        v(PERMISSION_RESOLVED_OTHER_AGENT),
+    );
+
+    let refused = plane
+        .adapter
+        .respond_permission(&permission(&binding, PermissionDecision::Allow))
+        .await
+        .expect_err("a resolution about another agent is not this answer");
+    assert_eq!(
+        refused,
+        RuntimeError::Transport {
+            rule: "runtime acknowledged something other than this permission answer"
+        }
     );
 }

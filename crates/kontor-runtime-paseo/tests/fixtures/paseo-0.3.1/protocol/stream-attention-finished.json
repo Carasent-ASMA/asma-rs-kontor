@@ -1,0 +1,16 @@
+[
+  {
+    "type": "agent_stream",
+    "payload": {
+      "agentId": "agt_implement",
+      "event": {
+        "type": "attention_required",
+        "provider": "claude",
+        "reason": "finished",
+        "timestamp": "2026-08-10T09:00:00.000Z",
+        "shouldNotify": false
+      },
+      "timestamp": "2026-08-10T09:00:00.000Z"
+    }
+  }
+]

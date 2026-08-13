@@ -20,10 +20,11 @@
 //!
 //! # Layout
 //!
-//! * [`wire`] — the Paseo 0.2.5 CLI and protocol model, plus the one place a
-//!   native timeline entry becomes a `SessionEvent`. Pure.
-//! * [`client`] — the transport seam, the argv builder, the request correlation,
-//!   and the [`SecretString`](secrecy::SecretString) that never leaves it.
+//! * [`wire`] — the Paseo 0.3.1 CLI and session-protocol model, plus the one
+//!   place a native timeline entry becomes a `SessionEvent`. Pure.
+//! * [`client`] — the transport seam, the argv builder, the hello/session
+//!   framing and request correlation, and the
+//!   [`SecretString`](secrecy::SecretString) that never leaves it.
 //! * [`fixture`] — a recorded daemon with a call ledger, so a claim about the
 //!   wire is a count rather than an inference.
 //! * [`adapter`] — hierarchy, admission, continuity and session content.
@@ -40,4 +41,4 @@ pub use adapter::{
 };
 pub use client::{PaseoCommand, PaseoLiveTransport, PaseoRpc, PaseoTransport};
 pub use fixture::RecordedPaseo;
-pub use wire::{PASEO_VERSION, PaseoFeature, PaseoProjection};
+pub use wire::{PASEO_APP_VERSION, PASEO_WS_PROTOCOL_VERSION, PaseoFeature, PaseoProjection};

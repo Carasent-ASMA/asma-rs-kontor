@@ -1,0 +1,19 @@
+[
+  {
+    "type": "agent_stream",
+    "payload": {
+      "agentId": "agt_implement",
+      "event": {
+        "type": "permission_requested",
+        "provider": "claude",
+        "request": {
+          "id": "perm_1",
+          "provider": "claude",
+          "name": "synthetic name",
+          "kind": "tool"
+        }
+      },
+      "timestamp": "2026-08-10T09:00:00.000Z"
+    }
+  }
+]

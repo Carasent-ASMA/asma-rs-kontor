@@ -1,24 +1,42 @@
-//! The Paseo 0.2.5 wire model: CLI JSON, daemon protocol frames, and the one
-//! place a native timeline entry becomes a [`SessionEvent`].
+//! The Paseo 0.3.1 wire model: session frames, CLI JSON, and the one place a
+//! native timeline entry becomes a [`SessionEvent`].
 //!
 //! Two surfaces, deliberately typed apart:
 //!
-//! * **CLI JSON** ([`PaseoCliWorkspace`], [`PaseoCliAgent`]) is what
-//!   `paseo … --json` prints. It is *thin on purpose* — the live probe recorded
-//!   that workspace output omits `projectId` and agent output omits the label
-//!   map and the provider session id. Typing it thin is what makes "trust the
-//!   CLI and skip the readback" fail to compile rather than fail in production.
-//! * **Protocol frames** ([`PaseoWorkspace`], [`PaseoAgent`],
+//! * **Session frames** ([`PaseoWorkspace`], [`PaseoAgent`],
 //!   [`PaseoTimelinePage`]) are the authoritative readback, and every binding,
 //!   launch, resume and adoption decision is made from these.
+//! * **CLI JSON** ([`PaseoCliWorkspaceCreated`], [`PaseoCliAgentStarted`]) is
+//!   what `paseo … --json` prints. It is *thin on purpose* — 0.3.1's
+//!   `workspace create --json` prints five display columns and no project id,
+//!   and `agent run --json` prints an id, a status, a provider, a cwd and a
+//!   title, with no workspace, no labels and no parent. Typing it thin is what
+//!   makes "trust the CLI and skip the readback" fail to compile rather than
+//!   fail in production.
 //!
 //! Nothing here talks to anything. Normalization is pure so the interesting
-//! cases — a collapsed projection, a sequence gap, an epoch change, an unknown
-//! frame — are decided by a fixture rather than by a daemon's mood.
+//! cases — a collapsed projection, a declared gap, an epoch change, an unknown
+//! item — are decided by a fixture rather than by a daemon's mood.
+//!
+//! # What 0.3.1 changed, and what that costs
+//!
+//! * The WebSocket protocol number and the application version are independent
+//!   pins ([`PASEO_WS_PROTOCOL_VERSION`], [`PASEO_APP_VERSION`]).
+//! * An agent snapshot carries **no** `projectId` and **no** `parentAgentId`
+//!   field. Placement in a project is proved through the agent's workspace, and
+//!   the parent is only ever the [`label::PARENT_AGENT`] label — so that check
+//!   has one source now instead of two, and [`PaseoAgent::parent_agent_id`]
+//!   says so at its definition.
+//! * A workspace carries **no labels at all**. See [`workspace_label_suffix`].
+//! * The lifecycle enum is `initializing | idle | running | error | closed`;
+//!   retirement is the `archivedAt` stamp rather than a status.
+//! * A timeline entry spans `seqStart..=seqEnd` over explicit
+//!   `sourceSeqRanges`, and the page — not the stream — declares `reset`,
+//!   `staleCursor` and `gap`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use kontor_core::id::{CanonicalDocument, ContentHash, ExternalId, Timestamp, parse_utc_timestamp};
+use kontor_core::id::{CanonicalDocument, ContentHash, ExternalId, Timestamp};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 use kontor_runtime::request::MessageId;
@@ -27,9 +45,27 @@ use kontor_runtime::timeline::{
 };
 use serde::{Deserialize, Serialize};
 
-/// The Paseo release this adapter's DTOs, fixtures and argv evidence are pinned
-/// to.
-pub const PASEO_VERSION: &str = "0.2.5";
+/// The WebSocket protocol number this adapter speaks, sent in the hello.
+///
+/// Independent of [`PASEO_APP_VERSION`]: the daemon closes the socket outright
+/// on a protocol mismatch, while an app/daemon version it does not recognize is
+/// this adapter's own refusal.
+pub const PASEO_WS_PROTOCOL_VERSION: u64 = 1;
+
+/// The Paseo application release this adapter's DTOs, fixtures and argv
+/// evidence are pinned to.
+pub const PASEO_APP_VERSION: &str = "0.3.1";
+
+/// The client type this adapter announces in the hello.
+pub const PASEO_CLIENT_TYPE: &str = "cli";
+
+/// The client capability that narrows agent streams to an explicit viewed set.
+///
+/// Spelled exactly as the daemon's `CLIENT_CAPS` table does — snake_case, not
+/// the camelCase the *server* feature list uses for the same idea. Sending the
+/// wrong spelling is silently accepted (the capability object is passthrough)
+/// and silently does nothing, which is the worst of both.
+pub const PASEO_CAP_SELECTIVE_AGENT_TIMELINE: &str = "selective_agent_timeline";
 
 /// The most CLI stdout this adapter will read before calling the answer a
 /// malfunction.
@@ -44,11 +80,24 @@ pub const MAX_MESSAGE_BYTES: u64 = 64 * 1024;
 /// The largest canonical history page this adapter will ask for.
 pub const MAX_HISTORY_PAGE: u32 = 500;
 
-/// The most characters of an unknown timeline frame that reach a `Log` payload.
+/// The largest directory page this adapter will ask for.
 ///
-/// An unknown frame is diagnostics, and diagnostics from an agent session can
-/// quote the operator's prompt. Bounding it is what keeps "we did not recognize
-/// this" from becoming a transcript leak into Kontor's own storage.
+/// The daemon caps `page.limit` at 200 and refuses more, so this is its number
+/// rather than a preference.
+pub const MAX_DIRECTORY_PAGE: u32 = 200;
+
+/// How many directory pages one bounded enumeration will follow.
+pub const MAX_DIRECTORY_PAGES: usize = 8;
+
+/// How many unsolicited frames one agent's queue holds before the oldest are
+/// dropped and the drain reports a gap.
+pub const MAX_STREAM_QUEUE: usize = 512;
+
+/// The most characters of an unaudited native string that reach a payload.
+///
+/// An unknown item type is diagnostics, and diagnostics from an agent session
+/// can quote the operator's prompt. Bounding it is what keeps "we did not
+/// recognize this" from becoming a transcript leak into Kontor's own storage.
 pub const MAX_UNKNOWN_FRAME_CHARS: usize = 256;
 
 // ---------------------------------------------------------------------------
@@ -82,6 +131,11 @@ pub mod label {
     /// The canonical task worktree path.
     pub const WORKTREE: &str = "kontor.worktree";
     /// The orchestrator agent this seat was launched under.
+    ///
+    /// Paseo's own key, and the only place 0.3.1 records parentage at all — the
+    /// agent snapshot has no `parentAgentId` field. Paseo writes it for an
+    /// agent one of its agents spawned; Kontor writes the same key for a seat
+    /// it launches. One key, two writers, one meaning.
     pub const PARENT_AGENT: &str = "paseo.parent-agent-id";
 
     /// Every label key, in the order they are applied.
@@ -119,7 +173,7 @@ pub enum PaseoFeature {
     SelectiveAgentTimeline,
     /// A project's display name can be changed through a supported operation.
     ///
-    /// Paseo 0.2.5 does **not** advertise this. The bundled client contains an
+    /// Paseo 0.3.1 does **not** advertise this. The bundled client contains an
     /// internal rename method, and this adapter never calls it: writing another
     /// owner's internal state to improve a display string is the trade nothing
     /// justifies. Name drift is reported as
@@ -127,13 +181,13 @@ pub enum PaseoFeature {
     ProjectRename,
     /// A session's context can be compacted through a supported operation.
     ///
-    /// Also absent in 0.2.5, and also never simulated with a reload or a
+    /// Also absent in 0.3.1, and also never simulated with a reload or a
     /// replacement.
     Compaction,
 }
 
 impl PaseoFeature {
-    /// The wire spelling the daemon advertises.
+    /// The wire spelling the daemon advertises in `status/server_info`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -157,24 +211,37 @@ pub const REQUIRED_FEATURES: &[PaseoFeature] = &[
     PaseoFeature::SelectiveAgentTimeline,
 ];
 
-/// What the daemon says about itself, read fresh before autonomous operations.
+/// What the daemon says about itself, pushed as `status/server_info` right
+/// after the hello.
+///
+/// Not a request. 0.3.1 volunteers this exactly once per accepted connection,
+/// so it is connection identity: the adapter holds the pushed copy and refuses
+/// to drive anything until it has one that agrees with the pins.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoServerInfo {
-    /// The daemon version string.
-    pub version: String,
-    /// The advertised feature names, verbatim.
-    #[serde(default)]
-    pub features: BTreeSet<String>,
-    /// The daemon's own boot/generation marker, when it exposes one.
+    /// The daemon's own identity for this boot.
     #[serde(default, rename = "serverId")]
-    pub server_id: Option<String>,
+    pub server_id: String,
+    /// The daemon version string, when it reports one.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// The daemon's hostname, carried as evidence and never matched on.
+    #[serde(default)]
+    pub hostname: Option<String>,
+    /// The advertised feature flags, verbatim.
+    ///
+    /// An object of booleans in 0.3.1, so "advertised" means *present and
+    /// true*: a daemon that reports `projectList: false` has answered the
+    /// question, and reading mere presence as support would drive it anyway.
+    #[serde(default)]
+    pub features: BTreeMap<String, bool>,
 }
 
 impl PaseoServerInfo {
-    /// Whether `feature` is advertised.
+    /// Whether `feature` is advertised as available.
     #[must_use]
     pub fn supports(&self, feature: PaseoFeature) -> bool {
-        self.features.contains(feature.as_str())
+        self.features.get(feature.as_str()) == Some(&true)
     }
 
     /// Every required feature this daemon does not advertise, in policy order.
@@ -187,40 +254,77 @@ impl PaseoServerInfo {
             .collect()
     }
 
-    /// Whether this daemon is the pinned baseline.
+    /// Whether this daemon is the pinned application baseline.
+    ///
+    /// A daemon that reports no version at all is *not* the baseline. Absence
+    /// is not agreement, and every DTO below was recorded from a build that
+    /// says which one it is.
     #[must_use]
     pub fn is_pinned_baseline(&self) -> bool {
-        self.version == PASEO_VERSION
+        self.version.as_deref() == Some(PASEO_APP_VERSION)
     }
 }
 
+/// The answer to `daemon.get_status.request`.
+///
+/// The version readback, and the one operation whose whole purpose is to ask
+/// the daemon what it is a second time, over a correlated request rather than a
+/// push.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoDaemonStatus {
+    /// The daemon's own identity for this boot.
+    #[serde(default, rename = "serverId")]
+    pub server_id: String,
+    /// The daemon version string.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Where it listens, when it says.
+    #[serde(default)]
+    pub listen: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
-// Projects, workspaces, agents — protocol readback
+// Projects, workspaces, agents — session readback
 // ---------------------------------------------------------------------------
 
-/// One Paseo project, as the protocol reports it.
+/// One Paseo project, as `project.list.response` reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoProject {
     /// The stable project id. This is the epic binding, and the only one.
+    #[serde(rename = "projectId")]
     pub id: String,
-    /// The display name, which is data and never authority.
-    #[serde(default)]
-    pub name: String,
+    /// The resolved display name, which is data and never authority.
+    #[serde(default, rename = "projectDisplayName")]
+    pub display_name: String,
     /// The Git remote the project was registered from.
     ///
-    /// Read but never matched on: the live daemon holds several projects for one
-    /// remote, so selecting by it would bind an epic to somebody else's project
-    /// (ALT-003).
+    /// Read but never matched on: the live daemon holds several projects for
+    /// one remote, so selecting by it would bind an epic to somebody else's
+    /// project (ALT-003).
     #[serde(default, rename = "projectKey")]
     pub project_key: Option<String>,
+    /// The project's root directory.
+    #[serde(default, rename = "projectRootPath")]
+    pub root_path: String,
 }
 
-/// The answer to `project.list`.
+/// The answer to `project.list.request`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoProjectList {
     /// Every project the daemon owns.
     #[serde(default)]
     pub projects: Vec<PaseoProject>,
+}
+
+/// The answer to `project.add.request`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoProjectAdded {
+    /// The project, when the daemon made one.
+    #[serde(default)]
+    pub project: Option<PaseoProject>,
+    /// The daemon's own error text, when it refused.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// What kind of place a workspace is.
@@ -229,78 +333,129 @@ pub struct PaseoProjectList {
 pub enum PaseoWorkspaceKind {
     /// A registered Git worktree. The only kind a ticket role may occupy.
     Worktree,
-    /// A plain local directory, typically the project root.
-    Local,
+    /// A checkout Paseo tracks as a branch of the project.
+    Checkout,
+    /// A plain local checkout, typically the project root.
+    LocalCheckout,
+    /// A plain directory.
+    Directory,
     /// Anything else this adapter has not audited.
     #[serde(other)]
     Other,
 }
 
-/// One Paseo workspace, as the protocol reports it.
+/// The Git facts a workspace descriptor carries.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoGitRuntime {
+    /// Whether Paseo provisioned the worktree itself.
+    #[serde(default, rename = "isPaseoOwnedWorktree")]
+    pub is_paseo_owned_worktree: bool,
+}
+
+/// One Paseo workspace, as `fetch_workspaces_response` reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoWorkspace {
     /// The native workspace id.
+    #[serde(default)]
     pub id: String,
     /// The project it belongs to. The CLI omits this, which is the whole reason
-    /// the protocol readback is mandatory.
-    #[serde(rename = "projectId")]
+    /// the session readback is mandatory.
+    #[serde(default, rename = "projectId")]
     pub project_id: String,
     /// The absolute working directory.
-    pub cwd: String,
+    #[serde(default, rename = "workspaceDirectory")]
+    pub workspace_directory: String,
     /// What kind of place it is.
     #[serde(rename = "workspaceKind")]
     pub workspace_kind: PaseoWorkspaceKind,
-    /// Whether Paseo provisioned the worktree itself.
-    ///
-    /// `true` means Paseo made a tree of its own rather than registering the
-    /// task worktree Kontor prepared, which is a different place than the one
-    /// the run was admitted for.
-    #[serde(default, rename = "isPaseoOwnedWorktree")]
-    pub is_paseo_owned_worktree: bool,
-    /// The display title.
+    /// The resolved display name.
     #[serde(default)]
-    pub title: String,
-    /// Every correlation label, verbatim.
-    ///
-    /// This is where [`label::TEAM_RUN`] lives for a workspace, and it is what
-    /// [`kontor_runtime::workspace::WorkspaceCorrelationEvidence::establish`]
-    /// judges. It has to be a label rather than the title, because the title is
-    /// the compact display name an operator reads and a Kontor team label is
-    /// neither compact nor for humans.
-    ///
-    /// **Assumption, and the one this adapter is least sure of.** The live probe
-    /// recorded `workspace create --isolation local --path … --project …
-    /// --title …` and did not enumerate every flag, so `--label` on a workspace
-    /// is inferred from the agent surface, which demonstrably has one. If a live
-    /// daemon rejects it, that fails loudly at
-    /// [`crate::client::PaseoCommand::workspace_create`] — which is the right
-    /// direction. The alternative was to pass Kontor's own computed label in as
-    /// the "reported" one, which would make workspace correlation evidence prove
-    /// nothing at all while looking exactly like this.
+    pub name: String,
+    /// The raw title override, when the workspace has one.
     #[serde(default)]
-    pub labels: BTreeMap<String, String>,
+    pub title: Option<String>,
+    /// Git facts, including whether Paseo made this tree for itself.
+    ///
+    /// `true` means Paseo provisioned a tree of its own rather than registering
+    /// the task worktree Kontor prepared, which is a different place than the
+    /// one the run was admitted for.
+    #[serde(default, rename = "gitRuntime")]
+    pub git_runtime: Option<PaseoGitRuntime>,
 }
 
-/// The answer to a workspace fetch or list.
+impl PaseoWorkspace {
+    /// Whether Paseo provisioned this worktree for itself.
+    #[must_use]
+    pub fn is_paseo_owned_worktree(&self) -> bool {
+        self.git_runtime
+            .as_ref()
+            .is_some_and(|git| git.is_paseo_owned_worktree)
+    }
+
+    /// The Kontor workspace label this workspace reports back, if any.
+    ///
+    /// See [`workspace_label_suffix`] for why a display string is carrying it.
+    #[must_use]
+    pub fn reported_label(&self) -> Option<&str> {
+        let titled = self.title.as_deref().unwrap_or(&self.name);
+        extract_workspace_label(titled)
+    }
+}
+
+/// One page of `fetch_workspaces_response`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaseoWorkspaceList {
-    /// Every workspace the request covered.
+pub struct PaseoWorkspacePage {
+    /// The workspaces on this page.
     #[serde(default)]
-    pub workspaces: Vec<PaseoWorkspace>,
+    pub entries: Vec<PaseoWorkspace>,
+    /// Where the next page starts, when there is one.
+    #[serde(default, rename = "pageInfo")]
+    pub page_info: PaseoPageInfo,
+}
+
+/// A directory page's continuation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoPageInfo {
+    /// The cursor the next page starts at.
+    #[serde(default, rename = "nextCursor")]
+    pub next_cursor: Option<String>,
+    /// Whether the daemon says more rows exist.
+    #[serde(default, rename = "hasMore")]
+    pub has_more: bool,
+}
+
+impl PaseoPageInfo {
+    /// The cursor to continue from, or `None` when the enumeration is done.
+    ///
+    /// Both halves have to agree. A daemon that says `hasMore` without a cursor
+    /// has not given a way on, and following a cursor it did not offer is how a
+    /// bounded loop stops being bounded.
+    #[must_use]
+    pub fn next(&self) -> Option<&str> {
+        match (&self.next_cursor, self.has_more) {
+            (Some(cursor), true) if !cursor.is_empty() => Some(cursor),
+            _ => None,
+        }
+    }
 }
 
 /// What Paseo says an agent is doing.
+///
+/// The whole 0.3.1 lifecycle enum. Retirement is *not* in it — an archived
+/// agent is one with an `archivedAt` stamp, whatever its status says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PaseoAgentStatus {
-    /// Working.
-    Running,
+    /// Starting up.
+    Initializing,
     /// Alive and reusable, with nothing in flight.
     Idle,
-    /// Explicitly stopped; the process is gone but the seat is not retired.
-    Stopped,
-    /// Retired. Only this, read fresh after an explicit intent, retires a seat.
-    Archived,
+    /// Working.
+    Running,
+    /// The session reported an error and is waiting for attention.
+    Error,
+    /// The underlying process is gone; the seat is not retired.
+    Closed,
     /// Something this adapter has not audited.
     #[serde(other)]
     Unknown,
@@ -315,55 +470,73 @@ impl PaseoAgentStatus {
     /// turn and the hierarchy fills up with dead siblings.
     #[must_use]
     pub const fn is_reusable_seat(self) -> bool {
-        matches!(self, Self::Running | Self::Idle)
+        matches!(self, Self::Running | Self::Idle | Self::Initializing)
     }
 
     /// Whether a process restart is needed before this agent can continue.
     #[must_use]
     pub const fn needs_reload(self) -> bool {
-        matches!(self, Self::Stopped)
-    }
-
-    /// Whether this agent has been retired out of its seat.
-    #[must_use]
-    pub const fn is_archived(self) -> bool {
-        matches!(self, Self::Archived)
+        matches!(self, Self::Closed)
     }
 }
 
-/// One Paseo agent, as the protocol reports it.
+/// One permission request an agent is waiting on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoPendingPermission {
+    /// The request id, which is what an answer is bound to.
+    pub id: String,
+}
+
+/// The provider handle an agent session is running under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoPersistence {
+    /// The provider's own session id.
+    #[serde(default, rename = "sessionId")]
+    pub session_id: Option<String>,
+}
+
+/// One Paseo agent, as a session readback reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoAgent {
     /// The native agent id — the session identity Kontor correlates against.
     pub id: String,
     /// The workspace it runs in.
-    #[serde(rename = "workspaceId")]
-    pub workspace_id: String,
-    /// The project that workspace belongs to.
-    #[serde(rename = "projectId")]
-    pub project_id: String,
+    ///
+    /// Optional on the wire, and its absence is a refusal rather than a
+    /// default: an agent with no workspace has no provable project, and every
+    /// placement rule here is decided through the workspace.
+    #[serde(default, rename = "workspaceId")]
+    pub workspace_id: Option<String>,
     /// Its working directory.
+    #[serde(default)]
     pub cwd: String,
-    /// The orchestrator agent it was launched under, as Paseo recorded it.
-    #[serde(default, rename = "parentAgentId")]
-    pub parent_agent_id: Option<String>,
     /// The display title.
     #[serde(default)]
-    pub title: String,
+    pub title: Option<String>,
     /// Every correlation label, verbatim.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
     /// What Paseo says it is doing.
     pub status: PaseoAgentStatus,
+    /// When it was retired, if it was. The only retirement evidence 0.3.1 has.
+    #[serde(default, rename = "archivedAt")]
+    pub archived_at: Option<String>,
     /// Paseo's own attention hint, e.g. `finished`.
     ///
     /// Carried as evidence and never promoted: `finished` on an idle agent is
     /// Paseo saying the last turn ended, not that the run did.
     #[serde(default, rename = "attentionReason")]
     pub attention_reason: Option<String>,
-    /// The provider's own session id, when Paseo exposes one.
-    #[serde(default, rename = "providerSessionId")]
-    pub provider_session_id: Option<String>,
+    /// The provider handle, when Paseo exposes one.
+    #[serde(default)]
+    pub persistence: Option<PaseoPersistence>,
+    /// Every permission request this session is waiting on.
+    ///
+    /// 0.3.1's canonical timeline carries no permission items at all, so this
+    /// list *is* the permission ledger's evidence: a request that is here is
+    /// open, and one that has left is resolved.
+    #[serde(default, rename = "pendingPermissions")]
+    pub pending_permissions: Vec<PaseoPendingPermission>,
 }
 
 impl PaseoAgent {
@@ -371,6 +544,32 @@ impl PaseoAgent {
     #[must_use]
     pub fn label(&self, key: &str) -> Option<&str> {
         self.labels.get(key).map(String::as_str)
+    }
+
+    /// The orchestrator this agent was launched under, as Paseo recorded it.
+    ///
+    /// A label rather than a field, because 0.3.1's agent snapshot has no
+    /// `parentAgentId`. The 0.2.5 adapter checked the raw field *and* the
+    /// planted label and called the seat proven only when both agreed; that
+    /// second, independent half no longer exists on this wire, and pretending
+    /// otherwise by reading one value twice would be a check that cannot fail.
+    #[must_use]
+    pub fn parent_agent_id(&self) -> Option<&str> {
+        self.label(label::PARENT_AGENT)
+    }
+
+    /// The provider's own session id, when Paseo exposes one.
+    #[must_use]
+    pub fn provider_session_id(&self) -> Option<&str> {
+        self.persistence
+            .as_ref()
+            .and_then(|handle| handle.session_id.as_deref())
+    }
+
+    /// Whether this agent has been retired out of its seat.
+    #[must_use]
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
     }
 
     /// Whether every entry of `wanted` is present with exactly that value.
@@ -386,69 +585,156 @@ impl PaseoAgent {
     }
 }
 
-/// The answer to an agent list.
+/// The answer to `fetch_agent_request`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaseoAgentList {
-    /// Every agent the request covered.
+pub struct PaseoAgentAnswer {
+    /// The agent, when the daemon holds one under that id.
     #[serde(default)]
-    pub agents: Vec<PaseoAgent>,
+    pub agent: Option<PaseoAgent>,
+    /// The daemon's own error text, when it does not.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// CLI JSON — deliberately thinner than the protocol
-// ---------------------------------------------------------------------------
-
-/// `paseo --version --json`.
+/// One row of `fetch_agents_response`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaseoCliVersion {
-    /// The CLI version string.
-    pub version: String,
+pub struct PaseoAgentEntry {
+    /// The agent.
+    pub agent: PaseoAgent,
 }
+
+/// One page of `fetch_agents_response`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoAgentPage {
+    /// The rows on this page.
+    #[serde(default)]
+    pub entries: Vec<PaseoAgentEntry>,
+    /// Where the next page starts, when there is one.
+    #[serde(default, rename = "pageInfo")]
+    pub page_info: PaseoPageInfo,
+}
+
+/// The answer to `send_agent_message_request`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoSendAccepted {
+    /// The agent it was delivered into, as the daemon resolved it.
+    #[serde(default, rename = "agentId")]
+    pub agent_id: String,
+    /// Whether the daemon took it.
+    #[serde(default)]
+    pub accepted: bool,
+    /// Why not, when it did not.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// The answer to `agent.timeline.set_subscription.request`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoSubscriptionAck {
+    /// Exactly the agents this connection is now subscribed to.
+    #[serde(default, rename = "agentIds")]
+    pub agent_ids: Vec<String>,
+}
+
+/// The resolution `agent_permission_resolved` reports.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoPermissionResolution {
+    /// `allow` or `deny`, verbatim.
+    #[serde(default)]
+    pub behavior: String,
+}
+
+/// The frame that answers an `agent_permission_response`.
+///
+/// Correlated by the *permission request id* rather than by a separate
+/// correlation id, because that is the only id 0.3.1 carries on both halves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoPermissionResolved {
+    /// The agent whose session raised the request.
+    #[serde(default, rename = "agentId")]
+    pub agent_id: String,
+    /// The answer Paseo recorded.
+    #[serde(default)]
+    pub resolution: PaseoPermissionResolution,
+}
+
+// ---------------------------------------------------------------------------
+// CLI JSON — deliberately thinner than the session protocol
+// ---------------------------------------------------------------------------
 
 /// `paseo workspace create --json`.
 ///
-/// No `projectId`. That absence is load-bearing: a workspace this adapter has
-/// only seen through the CLI has not been proved to live in the epic project,
-/// so it may not be bound (REQ-016, MUT-016).
+/// No `projectId`, no labels. That absence is load-bearing: a workspace this
+/// adapter has only seen through the CLI has not been proved to live in the
+/// epic project, so it may not be bound (REQ-016, MUT-016).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaseoCliWorkspace {
+pub struct PaseoCliWorkspaceCreated {
     /// The native workspace id.
-    pub id: String,
-    /// The path the CLI reports.
+    #[serde(rename = "workspaceId")]
+    pub workspace_id: String,
+    /// The resolved display name.
     #[serde(default)]
-    pub path: String,
-    /// The display title.
+    pub name: String,
+    /// The directory the CLI reports.
     #[serde(default)]
-    pub title: String,
+    pub cwd: String,
 }
 
-/// `paseo agent run|inspect|update|reload --json`.
+/// `paseo agent run --json`.
 ///
-/// No labels, no workspace, no provider session. Same rule as above.
+/// No workspace, no labels, no parent, no provider session. Same rule as above.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaseoCliAgent {
+pub struct PaseoCliAgentStarted {
     /// The native agent id.
-    pub id: String,
-    /// The display title.
+    #[serde(rename = "agentId")]
+    pub agent_id: String,
+    /// `created` or `running`, as the CLI spells it.
     #[serde(default)]
-    pub title: String,
-    /// What the CLI says it is doing.
-    #[serde(default = "unknown_status")]
-    pub status: PaseoAgentStatus,
+    pub status: String,
 }
 
-const fn unknown_status() -> PaseoAgentStatus {
-    PaseoAgentStatus::Unknown
-}
-
-/// `paseo agent stop|archive`, and `paseo workspace archive`.
+/// `paseo agent update --json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaseoCliAck {
-    /// Whether Paseo accepted the request.
-    pub ok: bool,
-    /// The id it acknowledged, echoed back.
+pub struct PaseoCliAgentUpdated {
+    /// The native agent id the CLI acknowledged.
+    #[serde(rename = "agentId")]
+    pub agent_id: String,
+}
+
+/// `paseo agent reload --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoCliAgentReloaded {
+    /// The native agent id the CLI acknowledged.
+    #[serde(rename = "agentId")]
+    pub agent_id: String,
+    /// `reloaded`, as the CLI spells it.
     #[serde(default)]
-    pub id: String,
+    pub status: String,
+}
+
+/// `paseo agent archive --json` and `paseo workspace archive --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoCliArchived {
+    /// The agent id, on an agent archive.
+    #[serde(default, rename = "agentId")]
+    pub agent_id: Option<String>,
+    /// The workspace id, on a workspace archive.
+    #[serde(default, rename = "workspaceId")]
+    pub workspace_id: Option<String>,
+    /// When Paseo says it was archived. Absent means it was not.
+    #[serde(default, rename = "archivedAt")]
+    pub archived_at: Option<String>,
+}
+
+/// `paseo agent stop --json`.
+///
+/// A count and the ids, because 0.3.1's stop is a bulk operation whose single-id
+/// form is one row of the same answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoCliStopped {
+    /// Every agent the CLI interrupted.
+    #[serde(default, rename = "agentIds")]
+    pub agent_ids: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -477,124 +763,291 @@ impl PaseoProjection {
     }
 }
 
+/// Which way a timeline read runs from its cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PaseoDirection {
+    /// The newest window, with no cursor.
+    Tail,
+    /// Strictly older than the cursor.
+    Before,
+    /// Strictly newer than the cursor. The resume read.
+    After,
+}
+
+impl PaseoDirection {
+    /// The wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tail => "tail",
+            Self::Before => "before",
+            Self::After => "after",
+        }
+    }
+}
+
+/// A position in one agent's content, as 0.3.1 spells it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoTimelineCursor {
+    /// The raw epoch, which Paseo spells as a UUID.
+    pub epoch: String,
+    /// The native sequence inside that epoch.
+    pub seq: u64,
+}
+
+/// One contiguous run of native sequences an entry was built from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoSeqRange {
+    /// First native sequence, inclusive.
+    #[serde(rename = "startSeq")]
+    pub start_seq: u64,
+    /// Last native sequence, inclusive.
+    #[serde(rename = "endSeq")]
+    pub end_seq: u64,
+}
+
+/// The content of one timeline entry, typed down to what Kontor may read.
+///
+/// Deliberately partial. `text`, tool detail, reasoning and todo bodies are the
+/// operator's work; nothing here can carry them into a Kontor payload because
+/// nothing here has a field for them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoTimelineItem {
+    /// The native item kind, verbatim.
+    #[serde(default, rename = "type")]
+    pub item_type: String,
+    /// The caller-supplied id, echoed on the resulting user message.
+    ///
+    /// This is Paseo's idempotency echo and the whole basis of exactly-once
+    /// delivery: `send_agent_message_request.messageId` comes back *here*, not
+    /// in `messageId`, which is the provider's own.
+    #[serde(default, rename = "clientMessageId")]
+    pub client_message_id: Option<String>,
+    /// The provider's own message id, which is never a Kontor one.
+    #[serde(default, rename = "messageId")]
+    pub message_id: Option<String>,
+    /// The tool call this entry is about.
+    #[serde(default, rename = "callId")]
+    pub call_id: Option<String>,
+}
+
 /// One canonical timeline entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoTimelineEntry {
-    /// The native sequence inside the epoch. 1-based and contiguous.
-    pub seq: u64,
-    /// The native entry kind, verbatim.
-    #[serde(rename = "type")]
-    pub entry_type: String,
+    /// The content.
+    #[serde(default)]
+    pub item: PaseoTimelineItem,
     /// When Paseo emitted it.
-    #[serde(rename = "at")]
-    pub at: String,
-    /// The caller-supplied message id, on a user message.
-    #[serde(default, rename = "messageId")]
-    pub message_id: Option<String>,
-    /// The permission request this entry is about.
-    #[serde(default, rename = "permissionId")]
-    pub permission_id: Option<String>,
-    /// Paseo's own entry id.
-    #[serde(default, rename = "entryId")]
-    pub entry_id: Option<String>,
-    /// A digest of the entry body, which Paseo computes so Kontor never has to
-    /// hold the body itself.
-    #[serde(default, rename = "bodyDigest")]
-    pub body_digest: Option<String>,
-    /// How many native sequences this entry covers.
-    ///
-    /// Always 1 under [`PaseoProjection::Canonical`]. A `projected` read can
-    /// report a range here, and the normalizer refuses it rather than paging
-    /// over a hole.
-    #[serde(default = "one")]
-    pub span: u64,
+    #[serde(default)]
+    pub timestamp: String,
+    /// First native sequence this entry covers.
+    #[serde(rename = "seqStart")]
+    pub seq_start: u64,
+    /// Last native sequence this entry covers.
+    #[serde(rename = "seqEnd")]
+    pub seq_end: u64,
+    /// Exactly which native sequences went into it.
+    #[serde(default, rename = "sourceSeqRanges")]
+    pub source_seq_ranges: Vec<PaseoSeqRange>,
+    /// Which merges the projection applied, if any.
+    #[serde(default)]
+    pub collapsed: Vec<String>,
 }
 
-const fn one() -> u64 {
-    1
+impl PaseoTimelineEntry {
+    /// Whether this entry is exactly one native sequence, built from exactly
+    /// that sequence.
+    ///
+    /// The 0.3.1 shape of "is this canonical?". A `projected` read folds a whole
+    /// tool lifecycle into one entry spanning two sequences, and the source
+    /// ranges say so — so the check is on the ranges rather than on the
+    /// projection field the daemon echoed back, which is only a claim about
+    /// what was asked for.
+    #[must_use]
+    pub fn is_single_sequence(&self) -> bool {
+        self.collapsed.is_empty()
+            && self.seq_start == self.seq_end
+            && self.source_seq_ranges.len() == 1
+            && self.source_seq_ranges[0].start_seq == self.seq_start
+            && self.source_seq_ranges[0].end_seq == self.seq_end
+    }
 }
 
 /// One page of canonical timeline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoTimelinePage {
     /// The agent this page is about.
-    #[serde(rename = "agentId")]
+    #[serde(default, rename = "agentId")]
     pub agent_id: String,
-    /// The raw epoch, which Paseo spells as a UUID.
+    /// Which way the read ran.
+    pub direction: PaseoDirection,
+    /// Which projection answered.
+    pub projection: PaseoProjection,
+    /// The raw epoch this page's sequences are numbered in.
+    #[serde(default)]
     pub epoch: String,
+    /// The daemon renumbered this session's content.
+    #[serde(default)]
+    pub reset: bool,
+    /// The cursor the read started from no longer exists.
+    #[serde(default, rename = "staleCursor")]
+    pub stale_cursor: bool,
+    /// The daemon knows it dropped entries.
+    #[serde(default)]
+    pub gap: bool,
     /// The entries, in ascending sequence order.
     #[serde(default)]
     pub entries: Vec<PaseoTimelineEntry>,
-    /// The native sequence to continue after, or `None` when exhausted.
-    #[serde(default, rename = "nextAfter")]
-    pub next_after: Option<u64>,
+    /// The first position on this page.
+    #[serde(default, rename = "startCursor")]
+    pub start_cursor: Option<PaseoTimelineCursor>,
+    /// The last position on this page — the exact strict-after anchor.
+    #[serde(default, rename = "endCursor")]
+    pub end_cursor: Option<PaseoTimelineCursor>,
+    /// Whether older content exists before this window.
+    #[serde(default, rename = "hasOlder")]
+    pub has_older: bool,
+    /// Whether newer content exists after this window.
+    #[serde(default, rename = "hasNewer")]
+    pub has_newer: bool,
+    /// The daemon's own error text, when the read failed.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
-/// A control signal a live stream can carry instead of content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PaseoStreamControl {
-    /// The daemon renumbered this session's content.
-    Reset,
-    /// The cursor the subscription started from no longer exists.
-    StaleCursor,
-    /// The daemon knows it dropped entries.
-    Gap,
-}
-
-impl PaseoStreamControl {
-    /// The timeline break this signal is.
+impl PaseoTimelinePage {
+    /// The break this page declares, if any.
     ///
     /// Every one of them ends delivery and demands a canonical refetch. None of
     /// them says anything about the run, which is why this maps to a break and
     /// never to a lifecycle state.
     #[must_use]
-    pub const fn as_break(self) -> TimelineBreak {
-        match self {
-            Self::Reset | Self::StaleCursor => TimelineBreak::EpochChanged,
-            Self::Gap => TimelineBreak::SequenceGap,
+    pub const fn declared_break(&self) -> Option<TimelineBreak> {
+        if self.reset || self.stale_cursor {
+            Some(TimelineBreak::EpochChanged)
+        } else if self.gap {
+            Some(TimelineBreak::SequenceGap)
+        } else {
+            None
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Unsolicited stream frames
+// ---------------------------------------------------------------------------
+
+/// The permission request an `agent_stream` event carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoStreamPermissionRequest {
+    /// The request id an answer must be bound to.
+    pub id: String,
+}
+
+/// What one `agent_stream` frame is about.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoStreamEvent {
+    /// The native event kind, verbatim.
+    #[serde(default, rename = "type")]
+    pub event_type: String,
+    /// The timeline content, on a `timeline` event.
+    #[serde(default)]
+    pub item: Option<PaseoTimelineItem>,
+    /// The permission request, on a `permission_requested` event.
+    #[serde(default)]
+    pub request: Option<PaseoStreamPermissionRequest>,
+    /// The permission request id, on a `permission_resolved` event.
+    #[serde(default, rename = "requestId")]
+    pub request_id: Option<String>,
+}
+
 /// One frame off the selective `agent_stream` subscription.
+///
+/// Never a request answer. These arrive unsolicited on the same socket as every
+/// response, which is why the transport routes them by `agentId` into a bounded
+/// per-agent queue instead of handing them to whichever request is pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoStreamFrame {
     /// The agent the frame belongs to.
-    #[serde(rename = "agentId")]
+    #[serde(default, rename = "agentId")]
     pub agent_id: String,
-    /// The raw epoch the entry is numbered in.
-    pub epoch: String,
-    /// The entry, when the frame carries content.
+    /// What happened.
     #[serde(default)]
-    pub entry: Option<PaseoTimelineEntry>,
-    /// The control signal, when the frame carries one instead.
+    pub event: PaseoStreamEvent,
+    /// When Paseo emitted it.
     #[serde(default)]
-    pub control: Option<PaseoStreamControl>,
+    pub timestamp: String,
+    /// The native sequence, on a timeline event.
+    #[serde(default)]
+    pub seq: Option<u64>,
+    /// The raw epoch that sequence is numbered in, on a timeline event.
+    #[serde(default)]
+    pub epoch: Option<String>,
 }
 
-/// The answer to `send_agent_message_request`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaseoSendAccepted {
-    /// The agent it was delivered into.
-    #[serde(rename = "agentId")]
-    pub agent_id: String,
-    /// The caller-supplied message id, echoed back.
-    #[serde(rename = "messageId")]
-    pub message_id: String,
+impl PaseoStreamFrame {
+    /// This frame as a canonical timeline entry, when it carries one.
+    ///
+    /// A stream frame with no `seq`/`epoch` is a notification rather than
+    /// content — a permission lifecycle, an attention hint, a turn boundary.
+    /// Numbering one of those would invent a position in a transcript Paseo
+    /// owns.
+    #[must_use]
+    pub fn as_entry(&self) -> Option<(String, PaseoTimelineEntry)> {
+        if self.event.event_type != "timeline" {
+            return None;
+        }
+        let (seq, epoch, item) = (self.seq?, self.epoch.clone()?, self.event.item.clone()?);
+        Some((
+            epoch,
+            PaseoTimelineEntry {
+                item,
+                timestamp: self.timestamp.clone(),
+                seq_start: seq,
+                seq_end: seq,
+                source_seq_ranges: vec![PaseoSeqRange {
+                    start_seq: seq,
+                    end_seq: seq,
+                }],
+                collapsed: Vec::new(),
+            },
+        ))
+    }
 }
 
-/// The answer to `agent_permission_response`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaseoPermissionAccepted {
-    /// The agent whose session raised the request.
-    #[serde(rename = "agentId")]
-    pub agent_id: String,
-    /// The permission request that was answered.
-    #[serde(rename = "permissionId")]
-    pub permission_id: String,
-    /// The answer Paseo recorded, verbatim.
-    pub decision: String,
+// ---------------------------------------------------------------------------
+// Workspace labels, which 0.3.1 does not have
+// ---------------------------------------------------------------------------
+
+/// The Kontor workspace label, wrapped so it survives in a display title.
+///
+/// **Paseo 0.3.1 has no workspace labels.** `workspace create` takes a title and
+/// nothing else, `WorkspaceDescriptorPayload` has no label map, and no request
+/// in the protocol sets one — labels exist for agents only. The 0.2.5 adapter
+/// inferred a `--label` flag from the agent surface; the live 0.3.1 CLI refutes
+/// it.
+///
+/// A title is therefore the only string Kontor can write to a workspace and
+/// read back verbatim, so the correlation label rides in a bracketed suffix of
+/// it. This is a genuine round trip and not a fabricated one:
+/// [`PaseoWorkspace::reported_label`] extracts what Paseo *returned*, and if
+/// Paseo dropped or rewrote the title the extraction fails and correlation
+/// fails with it. Handing
+/// [`kontor_runtime::workspace::WorkspaceCorrelationEvidence::establish`] a
+/// label computed on this side instead would make workspace evidence prove
+/// nothing while looking exactly like this.
+#[must_use]
+pub fn workspace_label_suffix(display_name: &str, label: &str) -> String {
+    format!("{display_name} [{label}]")
+}
+
+/// The Kontor workspace label inside a title, if it carries one.
+#[must_use]
+pub fn extract_workspace_label(title: &str) -> Option<&str> {
+    let start = title.rfind('[')?;
+    let inner = title.get(start + 1..)?.strip_suffix(']')?;
+    (!inner.is_empty()).then_some(inner)
 }
 
 // ---------------------------------------------------------------------------
@@ -603,27 +1056,47 @@ pub struct PaseoPermissionAccepted {
 
 /// Parse a Paseo wire timestamp.
 ///
+/// Accepts any RFC 3339 instant rather than only Kontor's canonical spelling.
+/// The live daemon stamps entries with millisecond precision
+/// (`2026-08-12T23:03:47.670Z`), and a whole-second timestamp round-trips to a
+/// different string than it arrived as — so demanding canonical form here would
+/// reject Paseo's own output about half the time.
+///
 /// # Errors
-/// Returns [`DomainError`] when the value is not canonical UTC.
+/// Returns [`DomainError`] when the value is not an RFC 3339 instant.
 pub fn parse_wire_timestamp(subject: &'static str, text: &str) -> DomainResult<Timestamp> {
-    parse_utc_timestamp(text)
-        .map_err(|_| DomainError::invalid(subject, "is not a canonical UTC timestamp"))
+    text.parse::<Timestamp>()
+        .map_err(|_| DomainError::invalid(subject, "is not an RFC 3339 UTC timestamp"))
 }
 
-/// The event kind one native entry type maps to.
+/// The event kind one native item type maps to.
 ///
 /// Everything unrecognized becomes [`SessionEventKind::Log`] rather than being
 /// dropped. Dropping would silently renumber the caller's view of a session,
 /// which is the one thing the continuity guard cannot detect for itself.
+///
+/// There is no permission mapping, and that is not an omission: 0.3.1's
+/// canonical timeline carries no permission items. That lifecycle arrives on
+/// the stream and in [`PaseoAgent::pending_permissions`], and
+/// [`classify_stream_event`] is where it is read.
 #[must_use]
-pub fn classify_entry(entry_type: &str) -> SessionEventKind {
-    match entry_type {
-        "user_message" | "assistant_message" | "message" => SessionEventKind::Message,
-        "tool_call" | "tool_result" => SessionEventKind::ToolCall,
-        "permission_request" => SessionEventKind::PermissionRequest,
-        "permission_resolved" => SessionEventKind::PermissionResolved,
-        "state_change" | "agent_state" => SessionEventKind::StateChange,
+pub fn classify_item(item_type: &str) -> SessionEventKind {
+    match item_type {
+        "user_message" | "assistant_message" => SessionEventKind::Message,
+        "tool_call" => SessionEventKind::ToolCall,
+        "compaction" => SessionEventKind::StateChange,
         _ => SessionEventKind::Log,
+    }
+}
+
+/// The event kind one unsolicited stream event maps to, when it is one Kontor
+/// records.
+#[must_use]
+pub fn classify_stream_event(event_type: &str) -> Option<SessionEventKind> {
+    match event_type {
+        "permission_requested" => Some(SessionEventKind::PermissionRequest),
+        "permission_resolved" => Some(SessionEventKind::PermissionResolved),
+        _ => None,
     }
 }
 
@@ -633,51 +1106,50 @@ pub fn classify_entry(entry_type: &str) -> SessionEventKind {
 /// never allocates one, because inventing an epoch is exactly how a restored
 /// cursor stops meaning anything.
 ///
-/// The native sequence and the native entry type are preserved in the payload,
+/// The native sequence and the native item type are preserved in the payload,
 /// so an audit can re-derive this mapping from what Paseo actually said rather
 /// than from what the adapter concluded.
 ///
 /// # Errors
 /// * [`RuntimeError::TimelineRefetchRequired`] with
-///   [`TimelineBreak::SequenceGap`] when the entry covers more than one native
-///   sequence, which is what a `projected` read looks like — a collapsed range
-///   is a hole a canonical cursor cannot page over.
-/// * [`RuntimeError::Domain`] for a sequence of zero, an unusable timestamp, or
-///   an identifier that does not parse.
+///   [`TimelineBreak::SequenceGap`] when the entry is not exactly one native
+///   sequence — a collapsed or non-contiguous range is a hole a canonical
+///   cursor cannot page over.
+/// * [`RuntimeError::Domain`] for a sequence of zero or an unusable timestamp.
 pub fn normalize_entry(entry: &PaseoTimelineEntry, epoch: u64) -> RuntimeResult<SessionEvent> {
-    if entry.span != 1 {
+    if !entry.is_single_sequence() {
         return Err(RuntimeError::TimelineRefetchRequired {
             reason: TimelineBreak::SequenceGap,
         });
     }
-    if entry.seq == 0 {
+    if entry.seq_start == 0 {
         return Err(RuntimeError::Domain(DomainError::invalid(
-            "PaseoTimelineEntry.seq",
+            "PaseoTimelineEntry.seqStart",
             "native sequences are 1-based inside an epoch",
         )));
     }
-    let emitted_at = parse_wire_timestamp("PaseoTimelineEntry.at", &entry.at)?;
-    let kind = classify_entry(&entry.entry_type);
-    let subject = match (&entry.permission_id, &entry.message_id) {
-        (Some(permission), _) => EventSubject::Permission(ExternalId::parse(permission)?),
-        // A native message id is not a Kontor one. When Paseo echoes back the id
-        // Kontor supplied it parses and the event is addressable; when the
-        // message came from somewhere else it does not, and the event is simply
-        // not about a Kontor message.
-        (None, Some(message)) => match MessageId::parse(message) {
-            Ok(id) => EventSubject::Message(id),
-            Err(_) => EventSubject::None,
-        },
-        (None, None) => EventSubject::None,
+    let emitted_at = parse_wire_timestamp("PaseoTimelineEntry.timestamp", &entry.timestamp)?;
+    let kind = classify_item(&entry.item.item_type);
+    // A native message id is not a Kontor one. Only `clientMessageId` — the id
+    // this adapter supplied on the send — can be ours; when it parses the event
+    // is addressable, and when it came from somewhere else the event is simply
+    // not about a Kontor message.
+    let subject = match entry
+        .item
+        .client_message_id
+        .as_deref()
+        .map(MessageId::parse)
+    {
+        Some(Ok(id)) => EventSubject::Message(id),
+        _ => EventSubject::None,
     };
     let payload = CanonicalDocument::from_value(&serde_json::json!({
         "schema_version": 1,
-        "paseo_version": PASEO_VERSION,
+        "paseo_version": PASEO_APP_VERSION,
         "native": {
-            "seq": entry.seq,
-            "type": bounded(&entry.entry_type),
-            "entry_id": entry.entry_id,
-            "body_digest": entry.body_digest,
+            "seq": entry.seq_start,
+            "type": bounded(&entry.item.item_type),
+            "call_id": entry.item.call_id,
         },
         "normalized": {
             "kind": format!("{kind:?}"),
@@ -687,14 +1159,13 @@ pub fn normalize_entry(entry: &PaseoTimelineEntry, epoch: u64) -> RuntimeResult<
         kind,
         position: TimelinePosition {
             epoch,
-            sequence: entry.seq,
+            sequence: entry.seq_start,
         },
         subject,
-        native_event_id: entry
-            .entry_id
-            .as_deref()
-            .map(ExternalId::parse)
-            .transpose()?,
+        // 0.3.1 gives a timeline entry no id of its own; its identity is its
+        // position. Minting one here would be a Kontor id wearing a native
+        // name.
+        native_event_id: None,
         emitted_at,
         payload,
     })
@@ -708,6 +1179,26 @@ fn bounded(text: &str) -> String {
         .collect()
 }
 
+/// The permission this stream event is about, when it is about one.
+#[must_use]
+pub fn stream_permission_id(event: &PaseoStreamEvent) -> Option<String> {
+    match event.event_type.as_str() {
+        "permission_requested" => event.request.as_ref().map(|request| request.id.clone()),
+        "permission_resolved" => event.request_id.clone(),
+        _ => None,
+    }
+}
+
+/// The permission this stream event is about, as an external id.
+///
+/// # Errors
+/// Returns [`DomainError`] when Paseo's id is not a usable external id.
+pub fn stream_permission_external_id(event: &PaseoStreamEvent) -> DomainResult<Option<ExternalId>> {
+    stream_permission_id(event)
+        .map(|id| ExternalId::parse(&id))
+        .transpose()
+}
+
 /// The digest of a message body, as the delivery ledger compares retries.
 #[must_use]
 pub fn body_digest(body: &str) -> ContentHash {
@@ -718,41 +1209,83 @@ pub fn body_digest(body: &str) -> ContentHash {
 mod tests {
     use super::*;
 
-    fn entry(seq: u64, entry_type: &str) -> PaseoTimelineEntry {
+    fn entry(seq: u64, item_type: &str) -> PaseoTimelineEntry {
         PaseoTimelineEntry {
-            seq,
-            entry_type: entry_type.to_owned(),
-            at: "2026-08-10T09:00:00Z".to_owned(),
-            message_id: None,
-            permission_id: None,
-            entry_id: None,
-            body_digest: None,
-            span: 1,
+            item: PaseoTimelineItem {
+                item_type: item_type.to_owned(),
+                ..PaseoTimelineItem::default()
+            },
+            timestamp: "2026-08-10T09:00:00.000Z".to_owned(),
+            seq_start: seq,
+            seq_end: seq,
+            source_seq_ranges: vec![PaseoSeqRange {
+                start_seq: seq,
+                end_seq: seq,
+            }],
+            collapsed: Vec::new(),
         }
     }
 
     #[test]
-    fn a_collapsed_projected_range_is_a_gap_rather_than_one_event() {
+    fn a_millisecond_daemon_timestamp_is_accepted_as_it_arrived() {
+        // The live daemon stamps entries with milliseconds, and a whole second
+        // renders back without them. Demanding Kontor's canonical spelling here
+        // would refuse Paseo's own output.
+        for stamp in [
+            "2026-08-10T09:00:00Z",
+            "2026-08-10T09:00:00.000Z",
+            "2026-08-12T23:03:47.670Z",
+        ] {
+            parse_wire_timestamp("PaseoTimelineEntry.timestamp", stamp)
+                .unwrap_or_else(|_| panic!("{stamp} is a timestamp Paseo really sends"));
+        }
+        assert!(parse_wire_timestamp("PaseoTimelineEntry.timestamp", "yesterday").is_err());
+    }
+
+    #[test]
+    fn a_collapsed_or_split_range_is_a_gap_rather_than_one_event() {
         // The `projected` projection folds a whole tool lifecycle into one
         // entry. Accepting it would advance the cursor past sequences that were
         // never delivered, and the guard downstream cannot see what it was
         // never handed.
         let mut collapsed = entry(4, "tool_call");
-        collapsed.span = 3;
+        collapsed.seq_end = 5;
+        collapsed.source_seq_ranges = vec![PaseoSeqRange {
+            start_seq: 4,
+            end_seq: 5,
+        }];
+        collapsed.collapsed = vec!["tool_lifecycle".to_owned()];
         assert_eq!(
             normalize_entry(&collapsed, 1).expect_err("a range is not an event"),
             RuntimeError::TimelineRefetchRequired {
                 reason: TimelineBreak::SequenceGap
             }
         );
+
+        // …and so is an entry whose source ranges are not contiguous with the
+        // span it claims, which is the same hole reported a different way.
+        let mut split = entry(4, "assistant_message");
+        split.seq_end = 6;
+        split.source_seq_ranges = vec![
+            PaseoSeqRange {
+                start_seq: 4,
+                end_seq: 4,
+            },
+            PaseoSeqRange {
+                start_seq: 6,
+                end_seq: 6,
+            },
+        ];
+        assert!(normalize_entry(&split, 1).is_err());
+
         normalize_entry(&entry(4, "tool_call"), 1).expect("one sequence is one event");
     }
 
     #[test]
-    fn an_unknown_frame_becomes_a_bounded_log_rather_than_disappearing() {
+    fn an_unknown_item_becomes_a_bounded_log_rather_than_disappearing() {
         let mut unknown = entry(2, "something_paseo_added_later");
-        unknown.entry_type = "x".repeat(MAX_UNKNOWN_FRAME_CHARS * 4);
-        let event = normalize_entry(&unknown, 1).expect("an unknown frame is still an event");
+        unknown.item.item_type = "x".repeat(MAX_UNKNOWN_FRAME_CHARS * 4);
+        let event = normalize_entry(&unknown, 1).expect("an unknown item is still an event");
         assert_eq!(event.kind, SessionEventKind::Log);
         assert_eq!(event.position.sequence, 2);
         assert!(
@@ -762,20 +1295,29 @@ mod tests {
     }
 
     #[test]
-    fn a_native_message_id_does_not_become_a_kontor_one() {
-        let mut native = entry(1, "user_message");
-        native.message_id = Some("msg_01HZY8QF".to_owned());
-        let event = normalize_entry(&native, 1).expect("a foreign message is still content");
-        assert_eq!(event.subject, EventSubject::None);
-
+    fn only_the_client_message_id_addresses_a_kontor_message() {
+        // Paseo echoes the caller's own id as `clientMessageId`; `messageId` is
+        // the provider's. Reading the wrong one would make every send look
+        // unconfirmed and every retry look safe.
         let kontor = MessageId::generate();
         let mut ours = entry(2, "user_message");
-        ours.message_id = Some(kontor.to_string());
+        ours.item.client_message_id = Some(kontor.to_string());
+        ours.item.message_id = Some("msg_01HZY8QF".to_owned());
         assert_eq!(
             normalize_entry(&ours, 1)
                 .expect("our own id round-trips")
                 .subject,
             EventSubject::Message(kontor)
+        );
+
+        let mut theirs = entry(3, "user_message");
+        theirs.item.message_id = Some(kontor.to_string());
+        assert_eq!(
+            normalize_entry(&theirs, 1)
+                .expect("a provider message is still content")
+                .subject,
+            EventSubject::None,
+            "a provider's own id is not an acknowledgement of our send"
         );
     }
 
@@ -783,44 +1325,48 @@ mod tests {
     fn an_idle_or_finished_agent_is_a_seat_and_not_a_verdict() {
         assert!(PaseoAgentStatus::Idle.is_reusable_seat());
         assert!(PaseoAgentStatus::Running.is_reusable_seat());
-        assert!(!PaseoAgentStatus::Stopped.is_reusable_seat());
-        assert!(PaseoAgentStatus::Stopped.needs_reload());
-        assert!(PaseoAgentStatus::Archived.is_archived());
-        assert!(!PaseoAgentStatus::Idle.is_archived());
+        assert!(PaseoAgentStatus::Initializing.is_reusable_seat());
+        assert!(!PaseoAgentStatus::Closed.is_reusable_seat());
+        assert!(PaseoAgentStatus::Closed.needs_reload());
+        assert!(!PaseoAgentStatus::Idle.needs_reload());
     }
 
     #[test]
-    fn the_pinned_baseline_advertises_every_required_feature_and_neither_optional_one() {
-        let info = PaseoServerInfo {
-            version: PASEO_VERSION.to_owned(),
-            features: REQUIRED_FEATURES
-                .iter()
-                .map(|feature| feature.as_str().to_owned())
-                .collect(),
-            server_id: None,
+    fn retirement_is_the_archive_stamp_rather_than_a_status() {
+        let mut agent = PaseoAgent {
+            id: "agt_1".to_owned(),
+            workspace_id: Some("wks_1".to_owned()),
+            cwd: "/w/task-1".to_owned(),
+            title: Some("KON-MVP-11 Implement".to_owned()),
+            labels: [
+                (label::ROLE.to_owned(), "implement".to_owned()),
+                (label::ROLE_SLOT.to_owned(), "implement-a".to_owned()),
+                (
+                    label::PARENT_AGENT.to_owned(),
+                    "agt_orchestrator".to_owned(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            status: PaseoAgentStatus::Idle,
+            archived_at: None,
+            attention_reason: Some("finished".to_owned()),
+            persistence: None,
+            pending_permissions: Vec::new(),
         };
-        assert!(info.is_pinned_baseline());
-        assert!(info.missing_required().is_empty());
-        assert!(!info.supports(PaseoFeature::ProjectRename));
-        assert!(!info.supports(PaseoFeature::Compaction));
-
-        let degraded = PaseoServerInfo {
-            version: PASEO_VERSION.to_owned(),
-            features: BTreeSet::new(),
-            server_id: None,
-        };
-        assert_eq!(degraded.missing_required().len(), REQUIRED_FEATURES.len());
+        assert!(!agent.is_archived());
+        agent.archived_at = Some("2026-08-10T09:00:00.000Z".to_owned());
+        assert!(agent.is_archived(), "0.3.1 has no `archived` status");
+        assert_eq!(agent.parent_agent_id(), Some("agt_orchestrator"));
     }
 
     #[test]
     fn a_label_census_is_exact_and_total() {
         let agent = PaseoAgent {
             id: "agt_1".to_owned(),
-            workspace_id: "wks_1".to_owned(),
-            project_id: "prj_1".to_owned(),
+            workspace_id: Some("wks_1".to_owned()),
             cwd: "/w/task-1".to_owned(),
-            parent_agent_id: Some("agt_orchestrator".to_owned()),
-            title: "KON-MVP-11 Implement".to_owned(),
+            title: None,
             labels: [
                 (label::ROLE.to_owned(), "implement".to_owned()),
                 (label::ROLE_SLOT.to_owned(), "implement-a".to_owned()),
@@ -828,8 +1374,10 @@ mod tests {
             .into_iter()
             .collect(),
             status: PaseoAgentStatus::Idle,
-            attention_reason: Some("finished".to_owned()),
-            provider_session_id: None,
+            archived_at: None,
+            attention_reason: None,
+            persistence: None,
+            pending_permissions: Vec::new(),
         };
         let mut wanted: BTreeMap<String, String> = BTreeMap::new();
         wanted.insert(label::ROLE.to_owned(), "implement".to_owned());
@@ -838,5 +1386,127 @@ mod tests {
         // seat however well the role name agrees.
         wanted.insert(label::ROLE_SLOT.to_owned(), "implement-b".to_owned());
         assert!(!agent.matches_labels(&wanted));
+    }
+
+    #[test]
+    fn the_pinned_baseline_advertises_every_required_feature_and_neither_optional_one() {
+        let info = PaseoServerInfo {
+            server_id: "srv_1".to_owned(),
+            version: Some(PASEO_APP_VERSION.to_owned()),
+            hostname: None,
+            features: REQUIRED_FEATURES
+                .iter()
+                .map(|feature| (feature.as_str().to_owned(), true))
+                .collect(),
+        };
+        assert!(info.is_pinned_baseline());
+        assert!(info.missing_required().is_empty());
+        assert!(!info.supports(PaseoFeature::ProjectRename));
+        assert!(!info.supports(PaseoFeature::Compaction));
+
+        // `false` is an answer, not an absence.
+        let mut refused = info.clone();
+        refused
+            .features
+            .insert(PaseoFeature::ProjectList.as_str().to_owned(), false);
+        assert_eq!(refused.missing_required(), vec![PaseoFeature::ProjectList]);
+
+        let unversioned = PaseoServerInfo {
+            version: None,
+            ..info
+        };
+        assert!(
+            !unversioned.is_pinned_baseline(),
+            "a daemon that will not say which build it is has not agreed with the pin"
+        );
+    }
+
+    #[test]
+    fn a_workspace_reports_the_label_kontor_wrote_into_its_title() {
+        // 0.3.1 has no workspace labels, so the round trip is through the one
+        // string a create can set and a readback returns.
+        let titled = workspace_label_suffix("KON-MVP-11 Paseo adapter", "kontor-team-abc");
+        assert_eq!(titled, "KON-MVP-11 Paseo adapter [kontor-team-abc]");
+        assert_eq!(extract_workspace_label(&titled), Some("kontor-team-abc"));
+        // A title Paseo rewrote, or one an operator typed, reports nothing —
+        // which fails correlation rather than inventing it.
+        assert_eq!(extract_workspace_label("KON-MVP-11 Paseo adapter"), None);
+        assert_eq!(extract_workspace_label("something []"), None);
+    }
+
+    #[test]
+    fn a_stream_notification_is_never_numbered_as_content() {
+        let mut frame = PaseoStreamFrame {
+            agent_id: "agt_1".to_owned(),
+            event: PaseoStreamEvent {
+                event_type: "permission_requested".to_owned(),
+                request: Some(PaseoStreamPermissionRequest {
+                    id: "perm_1".to_owned(),
+                }),
+                ..PaseoStreamEvent::default()
+            },
+            timestamp: "2026-08-10T09:00:00.000Z".to_owned(),
+            seq: None,
+            epoch: None,
+        };
+        assert!(frame.as_entry().is_none());
+        assert_eq!(
+            stream_permission_id(&frame.event).as_deref(),
+            Some("perm_1")
+        );
+
+        frame.event = PaseoStreamEvent {
+            event_type: "timeline".to_owned(),
+            item: Some(PaseoTimelineItem {
+                item_type: "assistant_message".to_owned(),
+                ..PaseoTimelineItem::default()
+            }),
+            ..PaseoStreamEvent::default()
+        };
+        frame.seq = Some(7);
+        frame.epoch = Some("epoch-1".to_owned());
+        let (epoch, entry) = frame.as_entry().expect("a timeline event is content");
+        assert_eq!(epoch, "epoch-1");
+        assert_eq!(entry.seq_start, 7);
+        assert!(entry.is_single_sequence());
+    }
+
+    #[test]
+    fn a_page_declares_its_own_break() {
+        let mut page = PaseoTimelinePage {
+            agent_id: "agt_1".to_owned(),
+            direction: PaseoDirection::After,
+            projection: PaseoProjection::Canonical,
+            epoch: "epoch-1".to_owned(),
+            reset: false,
+            stale_cursor: false,
+            gap: false,
+            entries: Vec::new(),
+            start_cursor: None,
+            end_cursor: None,
+            has_older: false,
+            has_newer: false,
+            error: None,
+        };
+        assert_eq!(page.declared_break(), None);
+        page.gap = true;
+        assert_eq!(page.declared_break(), Some(TimelineBreak::SequenceGap));
+        page.gap = false;
+        page.stale_cursor = true;
+        assert_eq!(page.declared_break(), Some(TimelineBreak::EpochChanged));
+        page.reset = true;
+        assert_eq!(page.declared_break(), Some(TimelineBreak::EpochChanged));
+    }
+
+    #[test]
+    fn a_page_cursor_is_followed_only_when_both_halves_agree() {
+        let info = |cursor: Option<&str>, has_more: bool| PaseoPageInfo {
+            next_cursor: cursor.map(str::to_owned),
+            has_more,
+        };
+        assert_eq!(info(Some("cur_1"), true).next(), Some("cur_1"));
+        assert_eq!(info(Some("cur_1"), false).next(), None);
+        assert_eq!(info(None, true).next(), None);
+        assert_eq!(info(Some(""), true).next(), None);
     }
 }

@@ -1,0 +1,22 @@
+{
+  "status": "server_info",
+  "serverId": "srv_kontor_fixture",
+  "hostname": "kontor-fixture-host",
+  "version": "0.3.1",
+  "desktopManaged": true,
+  "capabilities": {
+    "voice": {
+      "dictation": {
+        "enabled": true,
+        "reason": ""
+      },
+      "voice": {
+        "enabled": true,
+        "reason": ""
+      }
+    }
+  },
+  "features": {
+    "providersSnapshot": true
+  }
+}
