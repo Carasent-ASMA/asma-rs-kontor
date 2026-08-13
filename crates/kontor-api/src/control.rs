@@ -171,9 +171,20 @@ pub async fn task_snapshot(
 #[must_use]
 pub const fn command_authority(kind: CommandKind) -> CallerCapability {
     match kind {
+        // Granting or withdrawing authority to act — over a schedule, over a
+        // bounded execution scope, or over the existence of the project and the
+        // fleet a run authenticates as — is a decision about who may act at all,
+        // so all of it sits with the admin tier.
         CommandKind::AuthorizeExecution
         | CommandKind::ApproveScheduleOverride
-        | CommandKind::RevokeScheduleOverride => CallerCapability::Admin,
+        | CommandKind::RevokeScheduleOverride
+        | CommandKind::RevokeExecutionAuthorization
+        | CommandKind::EnsureProject
+        | CommandKind::EnsureAccountProfile
+        | CommandKind::ApplyEpicGraph
+        | CommandKind::SelectTaskProfile
+        | CommandKind::SelectTaskTeam
+        | CommandKind::SelectTaskAccount => CallerCapability::Admin,
         _ => CallerCapability::Operator,
     }
 }

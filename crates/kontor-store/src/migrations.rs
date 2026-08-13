@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -72,6 +72,15 @@ const MIGRATIONS: &[&str] = &[
     // kind on the v1 lease — realm-wide module contention, append-only lease
     // history and the canonical admission decision.
     include_str!("../migrations/0004_scheduler_admission.sql"),
+    // Schema v5. The append-only revocation that disarms an immutable
+    // execution authorization.
+    include_str!("../migrations/0005_authorization_revocation.sql"),
+    // Schema v6. The bootstrap and disarm command kinds, which widen the
+    // closed `command_receipts.kind` list.
+    include_str!("../migrations/0006_bootstrap_command_kinds.sql"),
+    // Schema v7. The pre-run provider-account selection a task carries before
+    // any run exists to record one.
+    include_str!("../migrations/0007_task_account_selection.sql"),
 ];
 
 const _: () = assert!(
@@ -163,6 +172,40 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<RealmMetadata, Stor
     // used when this open is the one that creates the database.
     let realm = RealmMetadata::create(RealmId::generate(), Timestamp::now());
 
+    // Reference enforcement is lifted for the migration and restored before
+    // anything else can use the connection.
+    //
+    // This is SQLite's own documented procedure for a schema change that rebuilds
+    // a table, and it has to happen *here* rather than inside a script, because
+    // `PRAGMA foreign_keys` is silently ignored inside a transaction. A rebuild —
+    // create the new shape, copy, drop the old, rename — necessarily leaves every
+    // child row pointing at a table that does not exist for the space of two
+    // statements, and with enforcement on, the `DROP` fails.
+    //
+    // Nothing is weakened by it: `foreign_key_check` runs against the whole
+    // database before the commit, so a migration that *did* strand a row rolls
+    // back with the same finality as one that failed outright, and
+    // `verify_applied` then proves enforcement is back on before the store is
+    // handed to anyone.
+    connection.pragma_update(None, "foreign_keys", false)?;
+    let outcome = apply_pending(connection, &realm, version);
+    // Restored on both paths, including the early returns inside `apply_pending`:
+    // a failed migration must not leave the connection with enforcement off.
+    connection.pragma_update(None, "foreign_keys", true)?;
+    outcome?;
+
+    verify_applied(connection)?;
+    load_realm(connection)
+}
+
+/// Run every pending migration in one transaction, with reference enforcement
+/// already lifted by [`migrate`].
+fn apply_pending(
+    connection: &mut Connection,
+    realm: &RealmMetadata,
+    version: i64,
+) -> Result<(), StoreError> {
+    let _ = version;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
     // Re-read the version now that the write lock is actually held. The first
@@ -185,7 +228,7 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<RealmMetadata, Stor
         // Someone else brought it up to date while we waited. Their Realm is the
         // Realm; the one generated above is discarded unused.
         drop(transaction);
-        return load_realm(connection);
+        return Ok(());
     }
 
     // Every pending script runs here, in order, in this one transaction. Each
@@ -222,10 +265,23 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<RealmMetadata, Stor
             reason: "initialization did not produce exactly one realm row",
         });
     }
-    transaction.commit()?;
 
-    verify_applied(connection)?;
-    load_realm(connection)
+    // The whole database is checked before the commit, not just the tables the
+    // scripts touched. Enforcement was off while they ran, so this is the only
+    // thing standing between a rebuild that stranded a child row and a committed
+    // database that has one — and it rolls back exactly like any other failure.
+    {
+        let mut statement = transaction.prepare("PRAGMA foreign_key_check")?;
+        let mut rows = statement.query([])?;
+        if let Some(row) = rows.next()? {
+            let table: String = row.get(0)?;
+            return Err(StoreError::Integrity {
+                detail: format!("migration left a dangling foreign key in `{table}`"),
+            });
+        }
+    }
+    transaction.commit()?;
+    Ok(())
 }
 
 /// Load and validate the single Realm row. Never repairs, inserts or replaces.

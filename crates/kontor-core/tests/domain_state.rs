@@ -1419,6 +1419,26 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("revoke_schedule_override", "mini_project", "witness", None),
     ("revoke_schedule_override", "task", "witness", None),
     ("assign_work_calendar", "work_calendar", "witness", None),
+    ("revoke_execution_authorization", "project", "witness", None),
+    (
+        "revoke_execution_authorization",
+        "mini_project",
+        "witness",
+        None,
+    ),
+    ("revoke_execution_authorization", "task", "witness", None),
+    ("ensure_project", "project", "witness", None),
+    ("ensure_account_profile", "project", "witness", None),
+    ("apply_epic_graph", "mini_project", "witness", None),
+    ("transition_epic", "mini_project", "witness", None),
+    ("start_scheduled_work", "mini_project", "witness", None),
+    ("transition_task", "task", "witness", None),
+    ("resolve_context", "task", "witness", None),
+    ("select_task_profile", "task", "witness", None),
+    ("select_task_team", "task", "witness", None),
+    ("select_task_account", "task", "witness", None),
+    ("reconcile_ticket", "task", "witness", None),
+    ("settle_runtime", "agent_run", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.

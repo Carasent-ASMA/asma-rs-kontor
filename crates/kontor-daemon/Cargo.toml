@@ -29,7 +29,16 @@ kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
 kontor-runtime-ao = { path = "../kontor-runtime-ao", version = "=0.1.0" }
 kontor-runtime-paseo = { path = "../kontor-runtime-paseo", version = "=0.1.0" }
 kontor-store = { path = "../kontor-store", version = "=0.1.0" }
+# The application services are composed here and nowhere else: this is the one
+# crate allowed to hold the profile pack, the team layer and the scheduler in the
+# same hand as the store and the adapters.
+kontor-profiles = { path = "../kontor-profiles", version = "=0.1.0" }
+kontor-teams = { path = "../kontor-teams", version = "=0.1.0" }
+kontor-scheduler = { path = "../kontor-scheduler", version = "=0.1.0" }
+kontor-context = { path = "../kontor-context", version = "=0.1.0" }
+async-trait = { workspace = true }
 axum = { workspace = true }
+jiff = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -51,9 +60,6 @@ thiserror = { workspace = true }
 # and never binds a socket, launches this binary or spawns a child process
 # (TST-001). The runtime under test is always the scripted fake.
 kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
-# The harness seats a real team run, so it needs the bundled profile pack rather
-# than a hand-rolled team document no deployment would have.
-kontor-profiles = { path = "../kontor-profiles", version = "=0.1.0" }
 futures = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

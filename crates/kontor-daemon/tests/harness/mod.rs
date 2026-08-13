@@ -107,6 +107,20 @@ impl World {
         Self::open_with(every_capability()).await
     }
 
+    /// Start a Realm with a configured fleet and *nothing else*.
+    ///
+    /// No project, no task, no team run: this is a `kontord` that has been
+    /// installed and configured and never used. It is the only honest starting
+    /// point for the bootstrap journey, because a seeded fixture would prove that
+    /// the public operations work against rows something else created.
+    ///
+    /// `project`, `task` and `team_run` still carry ids, and none of them is
+    /// persisted — a test that reaches for one in this mode is asking about a row
+    /// that does not exist, which is what it should find.
+    pub(crate) async fn open_empty() -> Self {
+        Self::compose_with(every_capability(), true, false).await
+    }
+
     /// Start a Realm holding *no* adapter at all.
     ///
     /// The fake is still built, so a test can name its family on a persisted
@@ -161,6 +175,16 @@ impl World {
 
     /// Start a Realm, registering the fake only when `configured`.
     async fn compose(capabilities: RuntimeCapabilities, configured: bool) -> Self {
+        Self::compose_with(capabilities, configured, true).await
+    }
+
+    /// Start a Realm, registering the fake only when `configured` and seeding the
+    /// fixture work graph only when `seeded`.
+    async fn compose_with(
+        capabilities: RuntimeCapabilities,
+        configured: bool,
+        seeded: bool,
+    ) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
         let fake = Arc::new(ScriptedFakeRuntime::new(capabilities));
         let registry = if configured {
@@ -175,55 +199,57 @@ impl World {
         let project = ProjectId::generate();
         let task = TaskId::generate();
         let team_run = TeamRunId::generate();
-        daemon.state().with_store(|store| {
-            store
-                .create_project(&NewProject {
-                    id: project,
-                    name: name("Loopback project"),
-                    root_path: name("/tmp/kontor-loopback"),
-                    created_at: at("2026-08-10T09:00:00Z"),
-                })
-                .expect("a project is created");
-            store
-                .create_task(&NewTask {
-                    id: task,
-                    project_id: project,
-                    mini_project_id: None,
-                    title: name("A loopback task"),
-                    module: None,
-                    state: TaskState::Ready,
-                    created_at: at("2026-08-10T09:00:00Z"),
-                })
-                .expect("a task is created");
+        if seeded {
+            daemon.state().with_store(|store| {
+                store
+                    .create_project(&NewProject {
+                        id: project,
+                        name: name("Loopback project"),
+                        root_path: name("/tmp/kontor-loopback"),
+                        created_at: at("2026-08-10T09:00:00Z"),
+                    })
+                    .expect("a project is created");
+                store
+                    .create_task(&NewTask {
+                        id: task,
+                        project_id: project,
+                        mini_project_id: None,
+                        title: name("A loopback task"),
+                        module: None,
+                        state: TaskState::Ready,
+                        created_at: at("2026-08-10T09:00:00Z"),
+                    })
+                    .expect("a task is created");
 
-            // The team revision comes from the bundled pack rather than from a
-            // hand-rolled document: the run's foreign key demands a stored
-            // revision, and inventing one would test a shape no deployment has.
-            let pack = bundled_pack().expect("the bundled pack loads");
-            let entry = pack
-                .manifest
-                .iter()
-                .find(|entry| entry.availability == PackAvailability::Seeded)
-                .expect("the bundled pack seeds at least one category");
-            let bundle = resolve_profile(&pack, &entry.category, at("2026-08-10T09:00:00Z"))
-                .expect("the seeded category resolves");
-            let revision = bundle.team.clone().expect("the profile pinned a team");
-            store
-                .insert_work_profile(project, &bundle.profile.definition)
-                .expect("the profile revision is stored");
-            store
-                .insert_team_template(project, &revision)
-                .expect("the team revision is stored");
-            store
-                .create_team_run(&NewTeamRun {
-                    id: team_run,
-                    project_id: project,
-                    task_id: task,
-                    snapshot: TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION),
-                    created_at: at("2026-08-10T09:00:00Z"),
-                })
-                .expect("the team run is created");
-        });
+                // The team revision comes from the bundled pack rather than from a
+                // hand-rolled document: the run's foreign key demands a stored
+                // revision, and inventing one would test a shape no deployment has.
+                let pack = bundled_pack().expect("the bundled pack loads");
+                let entry = pack
+                    .manifest
+                    .iter()
+                    .find(|entry| entry.availability == PackAvailability::Seeded)
+                    .expect("the bundled pack seeds at least one category");
+                let bundle = resolve_profile(&pack, &entry.category, at("2026-08-10T09:00:00Z"))
+                    .expect("the seeded category resolves");
+                let revision = bundle.team.clone().expect("the profile pinned a team");
+                store
+                    .insert_work_profile(project, &bundle.profile.definition)
+                    .expect("the profile revision is stored");
+                store
+                    .insert_team_template(project, &revision)
+                    .expect("the team revision is stored");
+                store
+                    .create_team_run(&NewTeamRun {
+                        id: team_run,
+                        project_id: project,
+                        task_id: task,
+                        snapshot: TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION),
+                        created_at: at("2026-08-10T09:00:00Z"),
+                    })
+                    .expect("the team run is created");
+            });
+        }
 
         Self {
             directory,

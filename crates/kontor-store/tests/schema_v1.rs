@@ -36,6 +36,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "command_receipts",
     "command_targets",
     "context_packs",
+    "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
     "external_comments",
@@ -70,6 +71,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "source_events",
     "status_conflicts",
     "status_transition_receipts",
+    "task_account_selections",
     "task_dependencies",
     "task_gate_evaluations",
     "task_persona_snapshots",
@@ -86,6 +88,16 @@ const EXPECTED_TABLES: &[&str] = &[
 
 /// The frozen v1 script, so the upgrade test can build a genuine v1 file.
 const MIGRATION_0001: &str = include_str!("../migrations/0001_init.sql");
+
+/// Every migration up to schema v5, so a test can build a genuine pre-v6 file
+/// rather than degrading a current one.
+const MIGRATIONS_THROUGH_V5: &[&str] = &[
+    MIGRATION_0001,
+    include_str!("../migrations/0002_account_profiles_expanded.sql"),
+    include_str!("../migrations/0003_guardrails_and_recovery.sql"),
+    include_str!("../migrations/0004_scheduler_admission.sql"),
+    include_str!("../migrations/0005_authorization_revocation.sql"),
+];
 
 /// A minimal project → task → workflow → team run → agent run chain, inserted
 /// with direct SQL so the schema's own constraints are what is under test.
@@ -166,7 +178,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 4);
+    assert_eq!(SCHEMA_VERSION, 7);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
@@ -2698,4 +2710,151 @@ fn a_concurrent_first_open_initializes_exactly_one_realm() {
         realms[0],
         "the realm survives the race and the reopen"
     );
+}
+
+/// Migration 0006 rebuilds `command_receipts` to widen its closed `kind` list,
+/// and a rebuild is the one migration shape that can silently lose rows or
+/// strand the six tables that reference it.
+///
+/// So this builds a genuine v5 file holding a receipt *and* a child row in every
+/// referencing table, upgrades it, and proves all of them are still there and
+/// still joined. The mutants it kills: a rebuild that copies no rows, one that
+/// copies them but drops the referencing tables' rows with the old table, and
+/// one that leaves the new `kind` values unaccepted.
+#[test]
+fn migration_0006_rebuilds_command_receipts_without_losing_a_row_or_a_reference() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000c6";
+    const PROJECT: &str = "0193f000-0000-7000-8000-0000000000d1";
+    const RECEIPT: &str = "0193f000-0000-7000-8000-0000000000d2";
+    let digest = "a".repeat(64);
+
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        for migration in MIGRATIONS_THROUGH_V5 {
+            connection
+                .execute_batch(migration)
+                .expect("every pre-v6 migration runs");
+        }
+        connection
+            .execute(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, ?1, 1, '2026-08-09T10:00:00Z', NULL)",
+                [REALM],
+            )
+            .expect("the realm row is written");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, root_path, revision, created_at)
+                 VALUES (?1, 'P', '/tmp/kontor-v6', 1, '2026-08-09T10:00:00Z')",
+                [PROJECT],
+            )
+            .expect("a project is written");
+        connection
+            .execute(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision,
+                      intent, intent_hash, state, attempts, created_at, updated_at)
+                 VALUES (?1, ?2, 'v5-key', 'authorize_execution',
+                         json_object('kind', 'project', 'project_id', ?2), 1,
+                         '{}', ?3, 'intent_persisted', 0,
+                         '2026-08-09T10:00:00Z', '2026-08-09T10:00:00Z')",
+                rusqlite::params![RECEIPT, PROJECT, digest],
+            )
+            .expect("a v5 receipt is written");
+        connection
+            .execute(
+                "INSERT INTO command_receipt_transitions
+                     (project_id, receipt_id, sequence, state, recorded_at)
+                 VALUES (?1, ?2, 1, 'intent_persisted', '2026-08-09T10:00:00Z')",
+                rusqlite::params![PROJECT, RECEIPT],
+            )
+            .expect("its transition is written");
+        connection
+            .execute(
+                "INSERT INTO command_targets
+                     (project_id, receipt_id, target_kind, target_project_id)
+                 VALUES (?1, ?2, 'project', ?1)",
+                rusqlite::params![PROJECT, RECEIPT],
+            )
+            .expect("its target is written");
+        connection
+            .execute(
+                "INSERT INTO command_outbox
+                     (receipt_id, project_id, payload, payload_hash, not_before, attempts)
+                 VALUES (?1, ?2, '{}', ?3, '2026-08-09T10:00:00Z', 0)",
+                rusqlite::params![RECEIPT, PROJECT, digest],
+            )
+            .expect("its outbox entry is written");
+    }
+
+    let store = SqliteStore::open(&path).expect("a v5 database is upgraded, not refused");
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
+    store
+        .foreign_key_check()
+        .expect("the rebuild must not strand a single reference");
+    store.integrity_check().expect("the file is still sound");
+
+    let connection = raw(&directory);
+    let kept: String = connection
+        .query_row(
+            "SELECT kind FROM command_receipts WHERE id = ?1",
+            [RECEIPT],
+            |row| row.get(0),
+        )
+        .expect("the v5 receipt survived the rebuild");
+    assert_eq!(kept, "authorize_execution");
+    for (table, column) in [
+        ("command_receipt_transitions", "receipt_id"),
+        ("command_targets", "receipt_id"),
+        ("command_outbox", "receipt_id"),
+    ] {
+        let rows: i64 = connection
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE {column} = ?1"),
+                [RECEIPT],
+                |row| row.get(0),
+            )
+            .expect("readable");
+        assert_eq!(rows, 1, "{table} lost its row to the rebuild");
+    }
+    let queued: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM command_outbox WHERE receipt_id = ?1",
+            [RECEIPT],
+            |row| row.get(0),
+        )
+        .expect("readable");
+    assert_eq!(queued, 1, "the outbox lost the entry the receipt owns");
+
+    // And the three kinds the rebuild exists for are now storable.
+    for kind in [
+        "revoke_execution_authorization",
+        "ensure_project",
+        "ensure_account_profile",
+    ] {
+        connection
+            .execute(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision,
+                      intent, intent_hash, state, attempts, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4,
+                         json_object('kind', 'project', 'project_id', ?2), 1,
+                         '{}', ?5, 'intent_persisted', 0,
+                         '2026-08-09T10:00:00Z', '2026-08-09T10:00:00Z')",
+                rusqlite::params![uuid_like(kind), PROJECT, format!("v6-{kind}"), kind, digest],
+            )
+            .unwrap_or_else(|error| panic!("`{kind}` must be storable after v6: {error}"));
+    }
+}
+
+/// A stable, canonical-looking id derived from a short label.
+fn uuid_like(label: &str) -> String {
+    let mut digest = 0u32;
+    for byte in label.bytes() {
+        digest = digest.wrapping_mul(31).wrapping_add(u32::from(byte));
+    }
+    format!("0193f000-0000-7000-8000-{digest:012x}")
 }

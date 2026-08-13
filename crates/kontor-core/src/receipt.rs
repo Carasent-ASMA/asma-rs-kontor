@@ -60,6 +60,60 @@ closed_enum! {
         ResolveStatusConflict => "resolve_status_conflict",
         /// Assign a calendar to a project.
         AssignWorkCalendar => "assign_work_calendar",
+        /// Revoke a bounded execution authorization over a scope.
+        ///
+        /// Deliberately distinct from
+        /// [`CommandKind::RevokeScheduleOverride`], for the same reason that one
+        /// is distinct from its own approval: a calendar override and an
+        /// execution authorization are different grants over the same scope, and
+        /// one kind covering both would let a receipt that revoked a calendar
+        /// window be replayed as the authority that disarmed the work.
+        RevokeExecutionAuthorization => "revoke_execution_authorization",
+        /// Bring a project into existence, or prove the one at that root is the
+        /// one the caller meant.
+        ///
+        /// It is the first command a Realm can record: it targets the project it
+        /// is about, so the receipt is attributable in the ordinary way, and it
+        /// carries no desired state because a project has none.
+        EnsureProject => "ensure_project",
+        /// Apply a declarative epic's whole work graph.
+        ApplyEpicGraph => "apply_epic_graph",
+        /// Move an epic through a lifecycle transition. The action it carries is
+        /// in the intent; the kind says only that epic lifecycle authority was
+        /// exercised, which is what must not be confused with applying one.
+        TransitionEpic => "transition_epic",
+        /// Start an already-planned batch through admission.
+        StartScheduledWork => "start_scheduled_work",
+        /// Move a task through a lifecycle transition other than a resume.
+        ///
+        /// Distinct from [`CommandKind::ResumeTask`] because a resume receipt is
+        /// consumed as the *authority* to leave a held state: one kind covering
+        /// both would let the receipt that blocked a task be replayed as the
+        /// authority that released it.
+        TransitionTask => "transition_task",
+        /// Resolve and freeze a task's context pack.
+        ResolveContext => "resolve_context",
+        /// Correct the work profile a task is pinned to, before a run froze it.
+        SelectTaskProfile => "select_task_profile",
+        /// Confirm the team revision a task's pinned profile prescribes.
+        SelectTaskTeam => "select_task_team",
+        /// Correct the provider account a task will run under.
+        SelectTaskAccount => "select_task_account",
+        /// Converge a task's external tickets towards its own milestone.
+        ReconcileTicket => "reconcile_ticket",
+        /// Settle a run against what its runtime currently reports.
+        ///
+        /// It carries no desired state and no outcome: settling is the act of
+        /// *asking*, and what comes back is the runtime's answer. A kind that
+        /// carried an outcome would be an operator declaring one.
+        SettleRuntime => "settle_runtime",
+        /// Bring a provider-account profile into existence, or prove the one
+        /// with that label matches.
+        ///
+        /// It targets the *project*, because a profile is not an aggregate a
+        /// command may name — which is the point: the authority being recorded is
+        /// authority over the project's fleet, not over one row in it.
+        EnsureAccountProfile => "ensure_account_profile",
     }
 }
 
@@ -230,10 +284,29 @@ impl CommandKind {
             // work scope is exactly one of these three aggregates.
             Self::AuthorizeExecution
             | Self::ApproveScheduleOverride
-            | Self::RevokeScheduleOverride => {
+            | Self::RevokeScheduleOverride
+            | Self::RevokeExecutionAuthorization => {
                 witness(matches!(target, A::Project | A::MiniProject | A::Task))
             }
             Self::AssignWorkCalendar => witness(matches!(target, A::WorkCalendar)),
+            // Bootstrap authority is authority over the project, and over
+            // nothing narrower: neither command names a row inside it.
+            Self::EnsureProject | Self::EnsureAccountProfile => {
+                witness(matches!(target, A::Project))
+            }
+            Self::ApplyEpicGraph | Self::TransitionEpic | Self::StartScheduledWork => {
+                witness(matches!(target, A::MiniProject))
+            }
+            Self::TransitionTask
+            | Self::ResolveContext
+            | Self::SelectTaskProfile
+            | Self::SelectTaskTeam
+            | Self::SelectTaskAccount
+            | Self::ReconcileTicket => witness(matches!(target, A::Task)),
+            // Settlement witnesses the run it is about. It is deliberately not a
+            // `run_intent`: those carry a desired state, and asking a runtime what
+            // is already true desires nothing.
+            Self::SettleRuntime => witness(matches!(target, A::AgentRun)),
         }
     }
 

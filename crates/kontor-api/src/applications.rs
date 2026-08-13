@@ -1,0 +1,1850 @@
+//! The public application operations an empty Realm is brought to life through.
+//!
+//! Everything in [`crate::control`] is either a read or a generic *intent*: it
+//! records that somebody asked for something and answers with a receipt. That is
+//! the right shape for a command whose effect belongs to a dispatcher, and the
+//! wrong shape for bootstrapping — a caller that gets a receipt back does not know
+//! whether the project exists, and cannot ask for the epic it was about to apply.
+//!
+//! The operations here are the other kind. A successful answer means the
+//! application service *ran*, or idempotently replayed, and the body carries the
+//! durable projection rather than a promise about one. Between them they are
+//! sufficient: from a Realm whose database has nothing in it, one admin
+//! credential can ensure a project, apply a whole epic, arm a bounded scope, ask
+//! the scheduler what it would do, start what it admits, and drive the work to a
+//! gated close — with no seed script, no direct SQL and no manual session
+//! creation anywhere in the sequence.
+//!
+//! # Where the decisions live
+//!
+//! Not here. Every handler in this module does the same four things and nothing
+//! else: check the caller's tier, read the `Idempotency-Key` and the path ids,
+//! call exactly one method on [`ApplicationOperations`], and return what it
+//! answered. The service behind that port is composed in `kontor-daemon` out of
+//! the store, the profile pack, the team layer, the scheduler and the runtime
+//! adapters — which is where those crates already live, and where the choice of
+//! which ones a Realm has is already made.
+//!
+//! # What is deliberately absent
+//!
+//! There is no route that creates a native session, names a runtime endpoint,
+//! carries a credential value, or writes a store row the domain did not decide
+//! on. A seat exists because the scheduler admitted work and the runtime agreed
+//! to fill it; `scheduler:start` is the only operation in this module that
+//! reaches a runtime at all, and it reaches it through the same admission path a
+//! background scheduler would.
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::http::HeaderMap;
+use kontor_core::id::{
+    AccountProfileId, AgentRunId, AggregateRevision, ExternalId, ExternalName, IdempotencyKey,
+    MiniProjectId, ProjectId, RuntimeKindKey, SpecVersion, TaskId, Timestamp,
+};
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+use crate::Caller;
+use crate::auth::CallerCapability;
+use crate::control::{idempotency_key, parse_id};
+use crate::error::ApiError;
+use crate::state::ApiState;
+
+// ---------------------------------------------------------------------------
+// Shared wire vocabulary
+// ---------------------------------------------------------------------------
+
+/// Whether an ensure/apply wrote the row or found it already matching.
+///
+/// It is on every item of every declarative answer, because "it worked" and "it
+/// was already like that" are different facts and a caller reconciling a plan
+/// needs to tell them apart without diffing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AppliedDto {
+    /// This call wrote it.
+    Created,
+    /// It already existed and matched, so nothing was written.
+    Unchanged,
+}
+
+/// One immutable specification revision, as a caller pins it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RevisionRefDto {
+    /// The specification's stable id.
+    pub id: String,
+    /// The pinned revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+}
+
+// ---------------------------------------------------------------------------
+// Project bootstrap
+// ---------------------------------------------------------------------------
+
+/// What `projects:ensure` is asked for.
+///
+/// `root_path` is the stable caller key: it is unique across the database and
+/// immutable once the project exists, so the same request always resolves to the
+/// same project without a second identity that could disagree with it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct EnsureProjectRequest {
+    /// Human name. Immutable once the project exists.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// Canonical absolute root path. The natural identity.
+    #[schema(value_type = String)]
+    pub root_path: ExternalName,
+}
+
+/// One project, as a bootstrap caller sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProjectDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Its name.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// Its canonical root path.
+    #[schema(value_type = String)]
+    pub root_path: ExternalName,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// Whether this call created it.
+    pub applied: AppliedDto,
+    /// When it was created.
+    #[schema(value_type = String, format = DateTime)]
+    pub created_at: Timestamp,
+}
+
+// ---------------------------------------------------------------------------
+// Catalogs
+// ---------------------------------------------------------------------------
+
+/// One selectable work profile, as the catalog advertises it.
+///
+/// The revision is what a caller pins in `epics:apply`; the team it prescribes is
+/// reported alongside it so a Lead can see the closure it is choosing rather than
+/// discovering it at apply time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct WorkProfileCatalogDto {
+    /// The pack category this profile is advertised under.
+    pub category: String,
+    /// Human label.
+    #[schema(value_type = String)]
+    pub label: ExternalName,
+    /// The profile revision the category resolves to.
+    pub profile: RevisionRefDto,
+    /// The team revision the profile pins, when it prescribes one.
+    pub team: Option<RevisionRefDto>,
+    /// The digest of the whole resolved bundle. What `epics:apply` freezes.
+    pub bundle_hash: String,
+}
+
+/// One selectable team template revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamTemplateCatalogDto {
+    /// The template revision.
+    pub template: RevisionRefDto,
+    /// Human name.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// The role slots it seats, in declaration order.
+    pub slots: Vec<String>,
+    /// The digest of its canonical definition.
+    pub definition_hash: String,
+}
+
+/// One provider-account profile, with nothing a caller could authenticate with.
+///
+/// The credential reference is an opaque alias whose meaning lives entirely in
+/// the resolver's policy: publishing it discloses nothing, and there is no field
+/// here that a token, a config home or a keychain target could occupy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AccountProfileDto {
+    /// The profile.
+    #[schema(value_type = String)]
+    pub account_profile_id: AccountProfileId,
+    /// Human label.
+    #[schema(value_type = String)]
+    pub label: ExternalName,
+    /// The runtime family it authenticates against.
+    #[schema(value_type = String)]
+    pub harness: RuntimeKindKey,
+    /// Whether launches may select it.
+    pub enabled: bool,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// Whether this call created it, for an ensure.
+    pub applied: AppliedDto,
+}
+
+/// What `provider-account-profiles:ensure` is asked for.
+///
+/// The label is the stable caller key. Only the two mutable fields a profile has
+/// are settable here; everything credential-affecting is immutable for the life
+/// of a profile, which is why rotation is a new profile rather than an edit.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct EnsureAccountProfileRequest {
+    /// Human label. The natural identity inside the project.
+    #[schema(value_type = String)]
+    pub label: ExternalName,
+    /// The runtime family this account authenticates against.
+    #[schema(value_type = String)]
+    pub harness: RuntimeKindKey,
+    /// The approved credential alias the resolver looks the credential up under.
+    /// An alias is not a capability: one the resolver policy does not already
+    /// approve resolves to nothing.
+    pub credential_alias: String,
+    /// Whether launches may select it.
+    pub enabled: bool,
+}
+
+/// What one configured runtime family can currently prove.
+///
+/// The family is a *name*, never an endpoint: there is no field here a URL, a
+/// port or a client configuration could occupy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RuntimeCapabilityDto {
+    /// The runtime family.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// How much of what it reports Kontor may act on.
+    pub trust_grade: String,
+    /// The operations it declares, in a stable order.
+    pub supported: Vec<String>,
+    /// Whether it can prove which coding account a run executes as. Paseo 1.0
+    /// reports `false`, which is why a per-run account pin against it is refused
+    /// rather than silently ignored.
+    pub account_env: bool,
+    /// Largest message body it accepts, in bytes.
+    pub max_message_bytes: u64,
+    /// Largest history page it returns.
+    pub max_history_page: u32,
+    /// Largest number of simultaneous native sessions.
+    pub max_concurrent_sessions: u32,
+    /// Whether the family answered discovery at all. A family that could not be
+    /// reached reports its absence rather than a plausible capability set.
+    pub reachable: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Epic application
+// ---------------------------------------------------------------------------
+
+/// One external ticket an applied task is linked to.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct TicketLinkRequest {
+    /// The connector implementation. Never its vendor semantics.
+    pub connector: String,
+    /// The external issue key.
+    pub external_issue_key: String,
+}
+
+/// One task in a declarative epic.
+///
+/// `title` is the stable caller key: dependencies name it, a reapply matches on
+/// it, and it is immutable for the life of the task.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct EpicTaskRequest {
+    /// The title, which is this task's identity inside the epic.
+    #[schema(value_type = String)]
+    pub title: ExternalName,
+    /// The module the task contends for, if any.
+    pub module: Option<String>,
+    /// The titles of the sibling tasks that must finish first.
+    #[serde(default)]
+    #[schema(value_type = Vec<String>)]
+    pub depends_on: BTreeSet<ExternalName>,
+    /// The external tickets to link.
+    #[serde(default)]
+    pub ticket_links: Vec<TicketLinkRequest>,
+}
+
+/// What `epics:apply` is asked for.
+///
+/// One request, one epic, all of it. The profile category is resolved and frozen
+/// onto every task in the same transaction the tasks are created in, so there is
+/// no window in which a task exists without the workflow it will be judged
+/// against.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct ApplyEpicRequest {
+    /// The revision the caller read the project at.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// The epic's name, which is its identity inside the project.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// The work-profile category to resolve, from `GET /v1/catalog/work-profiles`.
+    pub work_profile_category: String,
+    /// The team template revision the caller believes the profile pins. Checked
+    /// against what it actually pins, so a stale catalog read is refused rather
+    /// than silently applied.
+    pub team_template: Option<RevisionRefDto>,
+    /// The runtime family the epic's work is intended for.
+    #[schema(value_type = String)]
+    pub runtime_family: RuntimeKindKey,
+    /// The provider-account profile to pin, if any.
+    #[schema(value_type = Option<String>)]
+    pub account_profile_id: Option<AccountProfileId>,
+    /// The tasks, in the order they should be created.
+    pub tasks: Vec<EpicTaskRequest>,
+}
+
+/// One external ticket link after an epic was applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedLinkDto {
+    /// The link.
+    pub link_id: String,
+    /// The connector.
+    pub connector: String,
+    /// The external issue key.
+    pub external_issue_key: String,
+    /// Whether this call created it.
+    pub applied: AppliedDto,
+}
+
+/// One task after an epic was applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedTaskDto {
+    /// The title it was addressed by.
+    #[schema(value_type = String)]
+    pub title: ExternalName,
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Whether this call created it.
+    pub applied: AppliedDto,
+    /// Its lifecycle state.
+    pub state: String,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The workflow that froze the epic's profile onto it.
+    pub workflow_id: String,
+    /// The tasks it depends on.
+    #[schema(value_type = Vec<String>)]
+    pub depends_on: Vec<TaskId>,
+    /// Its external ticket links.
+    pub links: Vec<AppliedLinkDto>,
+}
+
+/// One epic after it was applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedEpicDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The goal that carries the epic.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Whether this call created it.
+    pub applied: AppliedDto,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The work-profile revision frozen onto every task.
+    pub work_profile: RevisionRefDto,
+    /// The team revision the profile pins, when it prescribes one.
+    pub team_template: Option<RevisionRefDto>,
+    /// The digest of the resolved bundle every task was frozen from.
+    pub bundle_hash: String,
+    /// The tasks, in the order they were stated.
+    pub tasks: Vec<AppliedTaskDto>,
+}
+
+// ---------------------------------------------------------------------------
+// Epic projection
+// ---------------------------------------------------------------------------
+
+/// One gate the pinned profile declares, and what discharging it needs.
+///
+/// The declared authority travels with the state on purpose. A Lead driving a
+/// task to closure has to know *who* may evaluate each gate and *which* artifacts
+/// it requires, and a projection that reported only a state would make that
+/// knowable solely by reading the profile pack out of band — which is exactly the
+/// out-of-band step the public API exists to remove.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct GateProjectionDto {
+    /// The gate.
+    pub gate: String,
+    /// The phase it belongs to.
+    pub phase: String,
+    /// Its current state, reduced from the append-only evaluations.
+    pub state: String,
+    /// The roles the pinned profile authorizes to evaluate it.
+    pub evaluator_roles: Vec<String>,
+    /// The artifacts a pass or a waiver must cite.
+    pub required_evidence: Vec<String>,
+    /// Whether the profile permits waiving it at all.
+    pub waiver_allowed: bool,
+    /// The roles the profile authorizes to waive it.
+    pub waiver_roles: Vec<String>,
+}
+
+/// One task, as the epic projection reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct EpicTaskProjectionDto {
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Its title.
+    #[schema(value_type = String)]
+    pub title: ExternalName,
+    /// Its lifecycle state.
+    pub state: String,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The module it contends for, if any.
+    pub module: Option<String>,
+    /// The tasks it depends on.
+    #[schema(value_type = Vec<String>)]
+    pub depends_on: Vec<TaskId>,
+    /// The phase its active workflow is in.
+    pub current_phase: Option<String>,
+    /// The revision a gate recording must present.
+    ///
+    /// It is the *workflow's* revision, not the task's: a gate verdict is checked
+    /// against the workflow that pins the profile declaring the gate, and the two
+    /// aggregates move independently. Reporting it here is what makes the gate
+    /// list above actionable — a caller that had to guess it would be right only
+    /// until the first phase advance.
+    ///
+    /// `None` when the task has no active workflow, which is also when `gates` is
+    /// empty: there is no revision to present because there is nothing to record
+    /// a verdict against.
+    #[schema(value_type = Option<u64>)]
+    pub workflow_revision: Option<AggregateRevision>,
+    /// Every gate the pinned profile declares, in declaration order.
+    pub gates: Vec<GateProjectionDto>,
+    /// Every artifact the pinned profile requires, across all its phases and
+    /// gates. What `complete_task` must be able to cite.
+    pub required_artifacts: Vec<String>,
+    /// Its external ticket links.
+    pub links: Vec<AppliedLinkDto>,
+    /// The team runs the scheduler created for it, newest last.
+    pub team_runs: Vec<TeamRunProjectionDto>,
+}
+
+/// One team run and its seats, as the epic projection reports them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamRunProjectionDto {
+    /// The team run.
+    pub team_run_id: String,
+    /// Its lifecycle.
+    pub lifecycle: String,
+    /// One entry per agent run the scheduler admitted into a role slot.
+    pub seats: Vec<SeatProjectionDto>,
+}
+
+/// One seat: a role slot, the run filling it and the native session behind it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SeatProjectionDto {
+    /// The role slot.
+    pub role_slot: String,
+    /// The agent run filling it.
+    pub agent_run_id: String,
+    /// The runtime family that owns the session, if the run is bound.
+    pub runtime_kind: Option<String>,
+    /// The runtime's own session id. Correlation evidence, never identity.
+    pub native_id: Option<String>,
+    /// Whether this process still holds the frozen capability snapshot for it.
+    pub attached: bool,
+}
+
+/// One arming decision, as the projection reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AuthorizationProjectionDto {
+    /// The authorization.
+    pub authorization_id: String,
+    /// What it covers.
+    pub scope: String,
+    /// The tasks it names explicitly, when it is not scope-wide.
+    #[schema(value_type = Vec<String>)]
+    pub selected_tasks: Vec<TaskId>,
+    /// The first instant work may start.
+    #[schema(value_type = String, format = DateTime)]
+    pub allowed_start: Timestamp,
+    /// The last instant work may start.
+    #[schema(value_type = String, format = DateTime)]
+    pub allowed_end: Timestamp,
+    /// Maximum concurrent runs it authorizes.
+    pub max_concurrency: u32,
+    /// Whether it has been disarmed, and when.
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub revoked_at: Option<Timestamp>,
+}
+
+/// The whole of one epic, read at one control-plane position.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct EpicProjectionDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The position this projection is consistent with. A subscriber resumes
+    /// strictly after it.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+    /// The project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The goal that carries the epic.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Its name.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The work-profile revision every task pins.
+    pub work_profile: Option<RevisionRefDto>,
+    /// The team revision that profile pins.
+    pub team_template: Option<RevisionRefDto>,
+    /// The tasks, oldest first.
+    pub tasks: Vec<EpicTaskProjectionDto>,
+    /// Every arming decision that touches this epic.
+    pub authorizations: Vec<AuthorizationProjectionDto>,
+    /// Whether startup reconciliation has finished, and therefore whether
+    /// anything may be scheduled at all.
+    pub scheduling_open: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Arm and disarm
+// ---------------------------------------------------------------------------
+
+/// The budget bounds an arming decision authorizes.
+///
+/// Every bound is mandatory and positive. There is no "unlimited": a bound that
+/// could be omitted would read as "no work allowed" in one place and "no ceiling"
+/// in another, and arming is exactly where that ambiguity is unaffordable.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct BudgetBoundsRequest {
+    /// Maximum tokens across the armed work.
+    pub max_tokens: u64,
+    /// Maximum runtime commands across the armed work.
+    pub max_commands: u64,
+    /// Maximum wall-clock seconds across the armed work.
+    pub max_duration_seconds: u64,
+    /// Maximum monetary cost, in integer minor units.
+    pub max_cost_minor_units: u64,
+    /// The currency those minor units are in.
+    pub cost_currency: String,
+}
+
+/// What `execution:arm` is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct ArmRequest {
+    /// The revision the caller read the epic at.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// The tasks to arm. Empty arms the whole epic.
+    #[serde(default)]
+    #[schema(value_type = Vec<String>)]
+    pub tasks: Vec<TaskId>,
+    /// The first instant work may start.
+    #[schema(value_type = String, format = DateTime)]
+    pub allowed_start: Timestamp,
+    /// The last instant work may start.
+    #[schema(value_type = String, format = DateTime)]
+    pub allowed_end: Timestamp,
+    /// Maximum concurrent runs.
+    pub max_concurrency: u32,
+    /// The budget ceiling.
+    pub budget: BudgetBoundsRequest,
+    /// The account profile acting as the granting authority.
+    #[schema(value_type = String)]
+    pub granted_by: AccountProfileId,
+    /// Why the scope is being armed. Recorded, never interpreted.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// What `execution:disarm` is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct DisarmRequest {
+    /// The authorization to revoke.
+    pub authorization_id: String,
+    /// The account profile acting as the revoking authority.
+    #[schema(value_type = String)]
+    pub revoked_by: AccountProfileId,
+    /// Why it is being disarmed.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler
+// ---------------------------------------------------------------------------
+
+/// One task the planner would admit, and what it would run under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ReadyTaskDto {
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The authorization that arms it.
+    pub authorization_id: String,
+    /// The runtime family it would run on.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// The account profile it is pinned to, if any.
+    #[schema(value_type = Option<String>)]
+    pub account_profile_id: Option<AccountProfileId>,
+}
+
+/// One task the planner refused, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct BlockedTaskDto {
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The stable machine-readable reason.
+    pub code: String,
+    /// The structural evidence behind it. Positions and ids, never values.
+    #[schema(value_type = Vec<Object>)]
+    pub evidence: Vec<serde_json::Value>,
+}
+
+/// What the planner decided, and what it decided against.
+///
+/// A plan is a dry run in the strongest sense available: it reads rows, it calls
+/// no runtime, and it writes nothing. `plan_hash` is what `scheduler:start`
+/// applies, so a caller starts the plan it was shown rather than whatever the
+/// world looks like by the time it decides.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SchedulerPlanDto {
+    /// The Realm it was planned in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The digest of the whole plan.
+    pub plan_hash: String,
+    /// When it was taken.
+    #[schema(value_type = String, format = DateTime)]
+    pub taken_at: Timestamp,
+    /// Whether startup reconciliation has finished. Nothing is admitted until it
+    /// has, and a plan taken before it says so.
+    pub scheduling_open: bool,
+    /// The tasks that would be admitted, in admission order.
+    pub ready: Vec<ReadyTaskDto>,
+    /// The tasks that would not, with the reason for each.
+    pub blocked: Vec<BlockedTaskDto>,
+    /// The arming decisions the plan was computed against.
+    pub authorizations: Vec<String>,
+}
+
+/// What `scheduler:start` is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct StartRequest {
+    /// The plan digest a previous `scheduler:plan` returned. A plan that no
+    /// longer describes the Realm is refused rather than re-derived, because the
+    /// caller authorized *that* batch and not whatever replaced it.
+    pub plan_hash: String,
+}
+
+/// One seat the start actually produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct StartedSeatDto {
+    /// The task the seat is working on.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The team run the scheduler created or reused.
+    pub team_run_id: String,
+    /// The agent run filling the role slot.
+    pub agent_run_id: String,
+    /// The role slot.
+    pub role_slot: String,
+    /// The runtime family that owns the session.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// The runtime's own session id. Correlation evidence, never identity.
+    pub native_id: String,
+    /// Whether this call created the seat, or found the runtime already holding
+    /// one for that `(team run, role slot)` and reused it.
+    pub applied: AppliedDto,
+}
+
+/// What starting a plan produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SchedulerStartDto {
+    /// The Realm it was started in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The plan that was applied.
+    pub plan_hash: String,
+    /// The seats that now exist.
+    pub started: Vec<StartedSeatDto>,
+    /// The tasks the plan named that admission then refused, with the reason.
+    pub blocked: Vec<BlockedTaskDto>,
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+/// The closed set of lifecycle transitions a Lead may ask for.
+///
+/// One endpoint and an enum rather than six routes: the transitions share every
+/// input — an expected revision, a reason, the evidence the domain demands — and
+/// splitting them would make it possible for one to drift out of agreement with
+/// the transition table the others are judged by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleAction {
+    /// Hold a task; it stops being eligible for admission.
+    Block,
+    /// Return a held task to ordinary scheduler eligibility. It never creates or
+    /// resumes a native session on its own.
+    Resume,
+    /// Close a task, against its profile's phases, gates, artifacts and its
+    /// team's role slots.
+    CompleteTask,
+    /// Re-open a closed task as a new, auditable non-terminal revision.
+    ReopenTask,
+    /// Close the epic, once every task, gate, run and ticket is terminal.
+    CloseEpic,
+    /// Re-open a closed epic.
+    ReopenEpic,
+}
+
+/// What `lifecycle` is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct LifecycleRequest {
+    /// Which transition.
+    pub action: LifecycleAction,
+    /// The task it applies to, for the task-scoped actions.
+    #[schema(value_type = Option<String>)]
+    pub task_id: Option<TaskId>,
+    /// The revision the caller read the target at.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Why. Recorded as evidence, never interpreted.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+    /// The artifacts cited as evidence, for a completion.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+/// What a lifecycle transition produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct LifecycleOutcomeDto {
+    /// The Realm it happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The target that moved.
+    pub target: String,
+    /// The state it is now in.
+    pub state: String,
+    /// The revision it now stands at.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The command receipt that authorizes it.
+    pub receipt_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// Lead-required control and evidence operations
+// ---------------------------------------------------------------------------
+
+/// What `context:resolve` is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct ResolveContextRequest {
+    /// Whether to freeze the resolution onto the task's live run.
+    ///
+    /// A preview reads and returns nothing durable. A snapshot needs a run to
+    /// belong to, because a frozen context pack is evidence about *what a run was
+    /// given* and a pack belonging to no run is evidence about nothing.
+    #[serde(default)]
+    pub snapshot: bool,
+}
+
+/// Where one resolved value came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProvenanceDto {
+    /// The JSON pointer the value sits at.
+    pub path: String,
+    /// The layer that last wrote it.
+    pub layer: String,
+    /// The source inside that layer.
+    pub source_id: String,
+    /// That source's revision.
+    #[schema(value_type = u32)]
+    pub revision: SpecVersion,
+}
+
+/// One member the resolver removed, and why.
+///
+/// It carries the path and the reason and never the value, not even its length:
+/// a redaction record that described what it removed would be the disclosure it
+/// exists to prevent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RedactionDto {
+    /// The JSON pointer that was removed.
+    pub path: String,
+    /// The source that declared the redaction.
+    pub source_id: String,
+    /// Why it was removed.
+    pub reason: String,
+}
+
+/// What resolving a task's Context Pack produced.
+///
+/// The resolved document itself is deliberately absent. What a caller needs from
+/// this operation is *determinism and accountability* — the same inputs produce
+/// the same hash, and every path is attributable — and shipping the merged
+/// content back would make this the one route through which everything the
+/// resolver was given leaves the process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ResolvedContextDto {
+    /// The Realm it was resolved in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task it was resolved for.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The digest of the canonical resolved document.
+    pub context_hash: String,
+    /// The frozen pack, when this call snapshotted one.
+    pub context_pack_id: Option<String>,
+    /// The agent run the snapshot belongs to, when there is one.
+    pub agent_run_id: Option<String>,
+    /// Where every resolved path came from.
+    pub provenance: Vec<ProvenanceDto>,
+    /// Every member the resolver removed.
+    pub redactions: Vec<RedactionDto>,
+}
+
+/// What `gates/{gate_id}:record` is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct RecordGateRequest {
+    /// The revision the caller read the task's workflow at.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// The verdict. `waived` is an admin decision; the rest are operator work.
+    pub verdict: String,
+    /// The role recording it. Checked against the pinned profile's authority.
+    pub evaluator_role: String,
+    /// The account profile recording it.
+    #[schema(value_type = String)]
+    pub evaluator_account: AccountProfileId,
+    /// The artifacts cited. A pass or a waiver requires the ones the profile
+    /// declares.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    /// The stable authenticated principal recording it.
+    ///
+    /// Omitting it records the verdict and attributes it to nobody; it never
+    /// silently falls back to the run or the display name.
+    pub reviewer_principal: Option<String>,
+}
+
+/// One recorded gate verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct GateVerdictDto {
+    /// The Realm it was recorded in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The gate.
+    pub gate: String,
+    /// Its position in the gate's append-only history, starting at 1.
+    pub sequence: u32,
+    /// The verdict that was recorded.
+    pub verdict: String,
+    /// The gate's state once this verdict is reduced in.
+    pub state: String,
+    /// The command receipt that authorizes it.
+    pub receipt_id: String,
+}
+
+/// What a selection-correction operation is asked for.
+///
+/// One request shape for all three corrections, because they are the same
+/// decision about three different pins and splitting them would let one drift out
+/// of agreement with the pre-run rule the others obey.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct SelectionRequest {
+    /// The revision the caller read the task at.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// The work-profile category to pin, for a profile correction.
+    pub work_profile_category: Option<String>,
+    /// The team revision the caller believes the profile pins, for a team
+    /// correction.
+    pub team_template: Option<RevisionRefDto>,
+    /// The provider-account profile to pin, for an account correction.
+    #[schema(value_type = Option<String>)]
+    pub account_profile_id: Option<AccountProfileId>,
+    /// Why the correction is being made. Recorded, never interpreted.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// What a selection correction produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SelectionDto {
+    /// The Realm it happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The work-profile revision now pinned.
+    pub work_profile: Option<RevisionRefDto>,
+    /// The team revision that profile pins.
+    pub team_template: Option<RevisionRefDto>,
+    /// The provider-account profile now pinned.
+    #[schema(value_type = Option<String>)]
+    pub account_profile_id: Option<AccountProfileId>,
+    /// Whether this call changed anything.
+    pub applied: AppliedDto,
+    /// The command receipt that authorizes it.
+    pub receipt_id: String,
+}
+
+/// One typed field difference between Kontor and an external ticket.
+///
+/// The set of fields is closed by the pinned field specification: there is no
+/// member here that could carry an arbitrary status, an assignee or a comment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TicketFieldDiffDto {
+    /// The semantic milestone the field maps to.
+    pub milestone: String,
+    /// What Kontor believes, as the pinned mapping spells it.
+    pub kontor: String,
+    /// What the external system last reported, when there is an observation.
+    pub external: Option<String>,
+}
+
+/// What reconciling one task's tickets would do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TicketReconcilePlanDto {
+    /// The Realm it was planned in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The digest `reconcile-apply` must present.
+    pub projection_hash: String,
+    /// The links this plan covers.
+    pub links: Vec<String>,
+    /// The typed differences, if any.
+    pub diff: Vec<TicketFieldDiffDto>,
+    /// Whether every link is already converged.
+    pub converged: bool,
+}
+
+/// What `ticket:reconcile-apply` is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct TicketReconcileApplyRequest {
+    /// The digest a previous `reconcile-plan` returned.
+    pub projection_hash: String,
+}
+
+/// What applying a ticket reconciliation produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TicketReconcileAppliedDto {
+    /// The Realm it happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The plan that was applied.
+    pub projection_hash: String,
+    /// The links that converged.
+    pub converged: Vec<String>,
+    /// The command receipt that authorizes it.
+    pub receipt_id: String,
+}
+
+/// What settling one run against its runtime produced.
+///
+/// Nothing in the request shapes this. There is no field on the way in for a
+/// verdict, a terminal state, an evidence hash or a citation, which is the point:
+/// settlement is Kontor *asking* a runtime what is true and recording the answer,
+/// and an operator who could supply any of those would be closing a run on their
+/// own authority while it looked like the runtime's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RuntimeSettlementDto {
+    /// The Realm it happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The run that was settled.
+    pub agent_run_id: String,
+    /// What the runtime reported the session is doing, right now.
+    pub observed: String,
+    /// How the run closed, when the observation qualified to close it.
+    pub outcome: Option<String>,
+    /// The control-plane position of the observation the closure cites.
+    ///
+    /// It is a position in this Realm's own log, so the closure points at
+    /// evidence the store can re-load and re-prove rather than at a digest the
+    /// caller handed over.
+    #[schema(value_type = Option<i64>)]
+    pub evidence_cursor: Option<kontor_core::id::EventCursor>,
+    /// Whether this call closed the run, or found it already closed.
+    pub applied: AppliedDto,
+    /// The team run, once every declared role slot is terminal and the team's
+    /// closure has been certified.
+    pub team_run_closed: Option<String>,
+    /// Why the team is not closed yet, when it is not. A static rule, never a
+    /// stored value.
+    pub team_pending: Option<String>,
+    /// The command receipt that authorizes the settlement.
+    pub receipt_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// The port
+// ---------------------------------------------------------------------------
+
+/// Every public application operation, as one port.
+///
+/// It is a trait for exactly one reason: `kontor-api` is stated against the
+/// domain ports and the runtime contract, and composing the profile pack, the
+/// team layer, the scheduler and the connectors is the composition root's job.
+/// Making this crate depend on those would put the choice of which services a
+/// Realm has in the layer that is supposed to be indifferent to it.
+///
+/// There is one implementation, in `kontor-daemon`. Every method is expected to
+/// be idempotent under its `Idempotency-Key`: replaying the same key with the
+/// same canonical request returns the original answer, and reusing it with
+/// different bytes is a conflict.
+#[async_trait]
+pub trait ApplicationOperations: Send + Sync {
+    /// Create a project, or return the one already standing at that root.
+    async fn ensure_project(
+        &self,
+        key: &IdempotencyKey,
+        request: &EnsureProjectRequest,
+    ) -> Result<ProjectDto, ApiError>;
+
+    /// Every work profile a caller may select, with the team each one pins.
+    fn work_profiles(&self) -> Result<Vec<WorkProfileCatalogDto>, ApiError>;
+
+    /// Every team template revision a work profile may pin.
+    fn team_templates(&self) -> Result<Vec<TeamTemplateCatalogDto>, ApiError>;
+
+    /// Every provider-account profile in a project, with no credential material.
+    fn account_profiles(&self, project_id: ProjectId) -> Result<Vec<AccountProfileDto>, ApiError>;
+
+    /// Create a provider-account profile, or return the one with that label.
+    async fn ensure_account_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &EnsureAccountProfileRequest,
+    ) -> Result<AccountProfileDto, ApiError>;
+
+    /// What every configured runtime family can currently prove.
+    async fn runtime_capabilities(&self) -> Result<Vec<RuntimeCapabilityDto>, ApiError>;
+
+    /// Apply one whole epic — graph, links, selections — atomically.
+    async fn apply_epic(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ApplyEpicRequest,
+    ) -> Result<AppliedEpicDto, ApiError>;
+
+    /// The whole of one epic, read at one control-plane position.
+    fn read_epic(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<EpicProjectionDto, ApiError>;
+
+    /// Arm a bounded scope, or return the authorization the same key granted.
+    async fn arm(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &ArmRequest,
+    ) -> Result<AuthorizationProjectionDto, ApiError>;
+
+    /// Revoke future admission under one authorization.
+    async fn disarm(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &DisarmRequest,
+    ) -> Result<AuthorizationProjectionDto, ApiError>;
+
+    /// What the scheduler would admit right now, and what it would refuse.
+    async fn plan(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<SchedulerPlanDto, ApiError>;
+
+    /// Apply a named plan through the existing admission path.
+    async fn start(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &StartRequest,
+    ) -> Result<SchedulerStartDto, ApiError>;
+
+    /// Move a task or the epic through one legal, evidenced transition.
+    async fn lifecycle(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &LifecycleRequest,
+    ) -> Result<LifecycleOutcomeDto, ApiError>;
+
+    /// Resolve one task's Context Pack, previewing or freezing it.
+    async fn resolve_context(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &ResolveContextRequest,
+    ) -> Result<ResolvedContextDto, ApiError>;
+
+    /// Append one gate verdict to a task's workflow.
+    async fn record_gate(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        gate: &str,
+        request: &RecordGateRequest,
+    ) -> Result<GateVerdictDto, ApiError>;
+
+    /// Correct one task's pinned work profile before a run snapshots it.
+    async fn select_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &SelectionRequest,
+    ) -> Result<SelectionDto, ApiError>;
+
+    /// Confirm the team revision a task's pinned profile prescribes.
+    async fn select_team(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &SelectionRequest,
+    ) -> Result<SelectionDto, ApiError>;
+
+    /// Correct one task's pinned provider account before a run snapshots it.
+    async fn select_account(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &SelectionRequest,
+    ) -> Result<SelectionDto, ApiError>;
+
+    /// What reconciling one task's external tickets would do. Writes nothing.
+    async fn ticket_reconcile_plan(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<TicketReconcilePlanDto, ApiError>;
+
+    /// Apply a named ticket reconciliation plan.
+    async fn ticket_reconcile_apply(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &TicketReconcileApplyRequest,
+    ) -> Result<TicketReconcileAppliedDto, ApiError>;
+
+    /// Settle one run against a fresh reading of its runtime.
+    async fn settle_runtime(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> Result<RuntimeSettlementDto, ApiError>;
+}
+
+/// The application service the composition root handed this process.
+pub type Applications = Arc<dyn ApplicationOperations>;
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+/// Create a project, or return the one already standing at that root.
+#[utoipa::path(
+    post, path = "/v1/projects:ensure", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = EnsureProjectRequest,
+    responses(
+        (status = 200, body = ProjectDto, description = "Created, or returned unchanged"),
+        (status = 401), (status = 403),
+        (status = 409, description = "The root exists under a different name, or the key was reused")
+    )
+)]
+pub async fn ensure_project(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<EnsureProjectRequest>,
+) -> Result<Json<ProjectDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state.applications().ensure_project(&key, &request).await?,
+    ))
+}
+
+/// The work profiles a caller may select.
+#[utoipa::path(
+    get, path = "/v1/catalog/work-profiles", tag = "applications",
+    responses((status = 200, body = Vec<WorkProfileCatalogDto>), (status = 401), (status = 403))
+)]
+pub async fn work_profiles(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<Vec<WorkProfileCatalogDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    Ok(Json(state.applications().work_profiles()?))
+}
+
+/// The team template revisions a work profile may pin.
+#[utoipa::path(
+    get, path = "/v1/catalog/team-templates", tag = "applications",
+    responses((status = 200, body = Vec<TeamTemplateCatalogDto>), (status = 401), (status = 403))
+)]
+pub async fn team_templates(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<Vec<TeamTemplateCatalogDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    Ok(Json(state.applications().team_templates()?))
+}
+
+/// The provider-account profiles a run may be pinned to.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/provider-account-profiles", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    responses((status = 200, body = Vec<AccountProfileDto>), (status = 401), (status = 403))
+)]
+pub async fn account_profiles(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<Vec<AccountProfileDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().account_profiles(project_id)?))
+}
+
+/// Create a provider-account profile, or return the one with that label.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/provider-account-profiles:ensure", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = EnsureAccountProfileRequest,
+    responses(
+        (status = 200, body = AccountProfileDto),
+        (status = 401), (status = 403), (status = 409)
+    )
+)]
+pub async fn ensure_account_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<EnsureAccountProfileRequest>,
+) -> Result<Json<AccountProfileDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .ensure_account_profile(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// What every configured runtime family can currently prove.
+#[utoipa::path(
+    get, path = "/v1/runtime-capabilities", tag = "applications",
+    responses((status = 200, body = Vec<RuntimeCapabilityDto>), (status = 401), (status = 403))
+)]
+pub async fn runtime_capabilities(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<Vec<RuntimeCapabilityDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    Ok(Json(state.applications().runtime_capabilities().await?))
+}
+
+/// Apply one whole epic atomically.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ApplyEpicRequest,
+    responses(
+        (status = 200, body = AppliedEpicDto, description = "Applied, or returned unchanged"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "Drift, a stale revision, or a reused key")
+    )
+)]
+pub async fn apply_epic(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ApplyEpicRequest>,
+) -> Result<Json<AppliedEpicDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_epic(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// The whole of one epic, read at one control-plane position.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/epics/{epic_id}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic")
+    ),
+    responses((status = 200, body = EpicProjectionDto), (status = 401), (status = 404))
+)]
+pub async fn read_epic(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+) -> Result<Json<EpicProjectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(state.applications().read_epic(project_id, epic_id)?))
+}
+
+/// Arm a bounded scope of an epic.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/execution:arm", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ArmRequest,
+    responses(
+        (status = 200, body = AuthorizationProjectionDto),
+        (status = 401), (status = 403), (status = 404), (status = 409)
+    )
+)]
+pub async fn arm(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ArmRequest>,
+) -> Result<Json<AuthorizationProjectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let (project_id, epic_id, key) = scope(&state, &project_id, &epic_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .arm(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Revoke future admission under one authorization.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/execution:disarm", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = DisarmRequest,
+    responses(
+        (status = 200, body = AuthorizationProjectionDto),
+        (status = 401), (status = 403), (status = 404), (status = 409)
+    )
+)]
+pub async fn disarm(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<DisarmRequest>,
+) -> Result<Json<AuthorizationProjectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let (project_id, epic_id, key) = scope(&state, &project_id, &epic_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .disarm(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// What the scheduler would admit right now, and what it would refuse.
+///
+/// It carries no `Idempotency-Key` because it commits nothing: a dry run has
+/// nothing to replay.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/scheduler:plan", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic")
+    ),
+    responses((status = 200, body = SchedulerPlanDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn plan(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+) -> Result<Json<SchedulerPlanDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(state.applications().plan(project_id, epic_id).await?))
+}
+
+/// Apply a named plan through the existing admission path.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/scheduler:start", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = StartRequest,
+    responses(
+        (status = 200, body = SchedulerStartDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The plan no longer describes this realm"),
+        (status = 503, description = "Startup reconciliation has not finished")
+    )
+)]
+pub async fn start(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<StartRequest>,
+) -> Result<Json<SchedulerStartDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let (project_id, epic_id, key) = scope(&state, &project_id, &epic_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .start(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Move a task or the epic through one legal, evidenced transition.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/lifecycle", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = LifecycleRequest,
+    responses(
+        (status = 200, body = LifecycleOutcomeDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "An illegal transition, a stale revision, or unmet gates")
+    )
+)]
+pub async fn lifecycle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<LifecycleRequest>,
+) -> Result<Json<LifecycleOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let (project_id, epic_id, key) = scope(&state, &project_id, &epic_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .lifecycle(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Settle one run against what its runtime reports right now.
+///
+/// The request body is empty and stays empty. Kontor loads the run's immutable
+/// binding, asks the runtime that issued it for a fresh `inspect`, persists what
+/// came back, and only then asks whether that observation is allowed to close the
+/// run — a question answered by the binding's *frozen* trust grade, not by
+/// anything the caller said. An operator who could post an outcome would be
+/// closing a run on their own authority while it looked like the runtime's, which
+/// is the one thing a control plane must never let happen quietly.
+///
+/// Idempotent: a run that is already closed reports its stored closure and no
+/// second observation is taken.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The run to settle"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    responses(
+        (status = 200, body = RuntimeSettlementDto, description = "Settled, or already settled"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The binding no longer names a session this runtime will act on"),
+        (status = 422, description = "The runtime does not evidence a terminal state"),
+        (status = 503, description = "The runtime could not be reached")
+    )
+)]
+pub async fn settle_runtime(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<RuntimeSettlementDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .settle_runtime(&key, project_id, agent_run_id)
+            .await?,
+    ))
+}
+
+/// Parse the two path ids and the idempotency key every task-scoped mutation
+/// carries.
+fn task_scope(
+    state: &ApiState,
+    project_id: &str,
+    task_id: &str,
+    headers: &HeaderMap,
+) -> Result<(ProjectId, TaskId, IdempotencyKey), ApiError> {
+    let project_id = parse_id(state, ProjectId::parse(project_id))?;
+    let task_id = parse_id(state, TaskId::parse(task_id))?;
+    let key = idempotency_key(state, headers)?;
+    Ok((project_id, task_id, key))
+}
+
+/// Resolve one task's Context Pack.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/context:resolve", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ResolveContextRequest,
+    responses(
+        (status = 200, body = ResolvedContextDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 422, description = "A snapshot was asked for and the task has no live run")
+    )
+)]
+pub async fn resolve_context(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ResolveContextRequest>,
+) -> Result<Json<ResolvedContextDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let (project_id, task_id, key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .resolve_context(&key, project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// Append one gate verdict.
+///
+/// The gate is the addressed resource and `record` is the action, so the action
+/// is its own path segment rather than a `:record` suffix on the identifier. That
+/// is also the only encoding a router can express — a segment holds one parameter
+/// *or* a literal, never both — so the two agree, and no action is smuggled into
+/// a query parameter where it would escape the route contract.
+///
+/// The tier is decided by the *verdict*, not by the route: an ordinary pass or
+/// rejection is operator work, and waiving a gate is a decision about whether the
+/// rule applies at all, which is admin authority.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/record",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("gate_id" = String, Path, description = "The gate the pinned profile declares"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = RecordGateRequest,
+    responses(
+        (status = 200, body = GateVerdictDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "A stale revision or a reused key")
+    )
+)]
+pub async fn record_gate(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id, gate_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<RecordGateRequest>,
+) -> Result<Json<GateVerdictDto>, ApiError> {
+    // Waiving is authority-changing, so it is checked here — before the path ids
+    // are parsed and before the service is reached.
+    let required = if request.verdict == "waived" {
+        CallerCapability::Admin
+    } else {
+        CallerCapability::Operator
+    };
+    caller.require(&state, required)?;
+    let (project_id, task_id, key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .record_gate(&key, project_id, task_id, &gate_id, &request)
+            .await?,
+    ))
+}
+
+/// Correct one task's pinned work profile before a run snapshots it.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/profile-selection",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SelectionRequest,
+    responses(
+        (status = 200, body = SelectionDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "A run already snapshotted the selection")
+    )
+)]
+pub async fn select_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SelectionRequest>,
+) -> Result<Json<SelectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let (project_id, task_id, key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .select_profile(&key, project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// Confirm the team revision a task's pinned profile prescribes.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/team-selection",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SelectionRequest,
+    responses(
+        (status = 200, body = SelectionDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The profile pins a different team revision")
+    )
+)]
+pub async fn select_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SelectionRequest>,
+) -> Result<Json<SelectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let (project_id, task_id, key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .select_team(&key, project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// Correct one task's pinned provider account before a run snapshots it.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/account-selection",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SelectionRequest,
+    responses(
+        (status = 200, body = SelectionDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 422, description = "The runtime cannot prove a per-run account environment")
+    )
+)]
+pub async fn select_account(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SelectionRequest>,
+) -> Result<Json<SelectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let (project_id, task_id, key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .select_account(&key, project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// What reconciling one task's external tickets would do.
+///
+/// A dry run, so it carries no `Idempotency-Key`: there is nothing to replay.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task")
+    ),
+    responses(
+        (status = 200, body = TicketReconcilePlanDto),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn ticket_reconcile_plan(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+) -> Result<Json<TicketReconcilePlanDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .ticket_reconcile_plan(project_id, task_id)
+            .await?,
+    ))
+}
+
+/// Apply a named ticket reconciliation plan.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TicketReconcileApplyRequest,
+    responses(
+        (status = 200, body = TicketReconcileAppliedDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The named plan no longer describes this realm"),
+        (status = 503, description = "The connector this realm would converge through is absent")
+    )
+)]
+pub async fn ticket_reconcile_apply(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TicketReconcileApplyRequest>,
+) -> Result<Json<TicketReconcileAppliedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let (project_id, task_id, key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .ticket_reconcile_apply(&key, project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// Parse the two path ids and the idempotency key every epic-scoped mutation
+/// carries, in that order.
+fn scope(
+    state: &ApiState,
+    project_id: &str,
+    epic_id: &str,
+    headers: &HeaderMap,
+) -> Result<(ProjectId, MiniProjectId, IdempotencyKey), ApiError> {
+    let project_id = parse_id(state, ProjectId::parse(project_id))?;
+    let epic_id = parse_id(state, MiniProjectId::parse(epic_id))?;
+    let key = idempotency_key(state, headers)?;
+    Ok((project_id, epic_id, key))
+}
+
+/// The external identifiers a request carries, parsed once.
+///
+/// It is here rather than in the service so that a malformed connector key or
+/// issue key is a transport-level `invalid_request` rather than something the
+/// application layer has to spell a second way.
+///
+/// # Errors
+/// Returns [`crate::error::ApiErrorCode::InvalidRequest`] for any value that is
+/// not in canonical form.
+pub fn parse_ticket_link(
+    state: &ApiState,
+    request: &TicketLinkRequest,
+) -> Result<(kontor_core::id::ConnectorKey, ExternalId), ApiError> {
+    let connector = parse_id(
+        state,
+        kontor_core::id::ConnectorKey::parse(&request.connector),
+    )?;
+    let issue = parse_id(state, ExternalId::parse(&request.external_issue_key))?;
+    Ok((connector, issue))
+}

@@ -19,6 +19,7 @@ workspace = true
 kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
 kontor-store = { path = "../kontor-store", version = "=0.1.0" }
+async-trait = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

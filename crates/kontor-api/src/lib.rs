@@ -35,6 +35,7 @@
 //! configuration. Those exist only in daemon state, and a DTO cannot leak what it
 //! has nowhere to put.
 
+pub mod applications;
 pub mod auth;
 pub mod control;
 pub mod dto;
@@ -196,6 +197,94 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/v1/commands/{kind}", post(control::command))
         .route("/v1/events", get(control::events))
+        // The declarative application operations. Every one of them answers with
+        // the durable projection its service produced, not with an intent.
+        .route("/v1/projects:ensure", post(applications::ensure_project))
+        .route(
+            "/v1/catalog/work-profiles",
+            get(applications::work_profiles),
+        )
+        .route(
+            "/v1/catalog/team-templates",
+            get(applications::team_templates),
+        )
+        .route(
+            "/v1/runtime-capabilities",
+            get(applications::runtime_capabilities),
+        )
+        .route(
+            "/v1/projects/{project_id}/provider-account-profiles",
+            get(applications::account_profiles),
+        )
+        .route(
+            "/v1/projects/{project_id}/provider-account-profiles:ensure",
+            post(applications::ensure_account_profile),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics:apply",
+            post(applications::apply_epic),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}",
+            get(applications::read_epic),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/execution:arm",
+            post(applications::arm),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/execution:disarm",
+            post(applications::disarm),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/scheduler:plan",
+            post(applications::plan),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/scheduler:start",
+            post(applications::start),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/lifecycle",
+            post(applications::lifecycle),
+        )
+        // The Lead-required control and evidence operations. Every one of them is
+        // task-scoped, because that is the grain at which a profile is pinned, a
+        // gate is judged and a ticket is linked.
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/context:resolve",
+            post(applications::resolve_context),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/record",
+            post(applications::record_gate),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/profile-selection",
+            post(applications::select_profile),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/team-selection",
+            post(applications::select_team),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/account-selection",
+            post(applications::select_account),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
+            post(applications::ticket_reconcile_plan),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply",
+            post(applications::ticket_reconcile_apply),
+        )
+        // Settling a run is addressed by the run, not by the task: a run is what
+        // a runtime holds a session for, and it is the thing being asked about.
+        .route(
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
+            post(applications::settle_runtime),
+        )
         .route(
             "/v1/sessions/{agent_run_id}/timeline",
             get(sessions::timeline),
