@@ -114,6 +114,25 @@ closed_enum! {
         /// command may name — which is the point: the authority being recorded is
         /// authority over the project's fleet, not over one row in it.
         EnsureAccountProfile => "ensure_account_profile",
+        /// Decide one inbound source event under a pinned trigger revision.
+        ///
+        /// Distinct from [`CommandKind::ApproveIntake`], which is the *human
+        /// approval* an approved intake requires. A receipt that merely recorded
+        /// a decision must never be citable as the approval that armed it.
+        SubmitIntake => "submit_intake",
+        /// Mirror one task's inbound external comment revisions.
+        ///
+        /// It reads the external system and writes only the mirror.
+        /// [`CommandKind::SyncTicket`] is the kind that writes *to* a ticket, and
+        /// a pull receipt must not be replayable as authority for a push.
+        PullTicketComments => "pull_ticket_comments",
+        /// Take ownership of a task's external tickets for the principal Kontor
+        /// authenticates as.
+        ///
+        /// Distinct from [`CommandKind::AssignTicket`], which can name any
+        /// assignee the connector accepts. A claim can name only the principal,
+        /// so a claim receipt must not be citable as an arbitrary assignment.
+        ClaimTicket => "claim_ticket",
     }
 }
 
@@ -291,7 +310,11 @@ impl CommandKind {
             Self::AssignWorkCalendar => witness(matches!(target, A::WorkCalendar)),
             // Bootstrap authority is authority over the project, and over
             // nothing narrower: neither command names a row inside it.
-            Self::EnsureProject | Self::EnsureAccountProfile => {
+            // Bootstrap and intake authority is authority over the project. An
+            // intake decision that creates no work graph has no narrower
+            // aggregate to name, and naming one it did not create would be a
+            // claim about work that does not exist.
+            Self::EnsureProject | Self::EnsureAccountProfile | Self::SubmitIntake => {
                 witness(matches!(target, A::Project))
             }
             Self::ApplyEpicGraph | Self::TransitionEpic | Self::StartScheduledWork => {
@@ -302,7 +325,12 @@ impl CommandKind {
             | Self::SelectTaskProfile
             | Self::SelectTaskTeam
             | Self::SelectTaskAccount
-            | Self::ReconcileTicket => witness(matches!(target, A::Task)),
+            | Self::ReconcileTicket
+            // Pulling comments and claiming ownership both cover *every* link a
+            // task holds, so the task is the aggregate the authority is over. A
+            // receipt naming one link would understate what it authorized.
+            | Self::PullTicketComments
+            | Self::ClaimTicket => witness(matches!(target, A::Task)),
             // Settlement witnesses the run it is about. It is deliberately not a
             // `run_intent`: those carry a desired state, and asking a runtime what
             // is already true desires nothing.

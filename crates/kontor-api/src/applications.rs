@@ -1015,6 +1015,340 @@ pub struct RuntimeSettlementDto {
 }
 
 // ---------------------------------------------------------------------------
+// Work-profile detail and validation
+// ---------------------------------------------------------------------------
+
+/// One phase of a work profile, as the catalog spells it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfilePhaseDto {
+    /// The phase.
+    pub phase: String,
+    /// Human label.
+    #[schema(value_type = String)]
+    pub label: ExternalName,
+    /// Artifacts that must exist before the phase can complete.
+    pub required_artifacts: Vec<String>,
+    /// Gates evaluated at the end of it.
+    pub gates: Vec<String>,
+    /// Where rejected work returns to, when the profile routes it.
+    pub rejection_route: Option<String>,
+}
+
+/// One artifact contract a work profile declares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfileArtifactDto {
+    /// The artifact.
+    pub artifact: String,
+    /// Human label.
+    #[schema(value_type = String)]
+    pub label: ExternalName,
+    /// The phase that produces it.
+    pub producer_phase: String,
+    /// Whether stored evidence is required, not merely a declaration.
+    pub evidence_required: bool,
+}
+
+/// One declared handoff of the team a profile prescribes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfileHandoffDto {
+    /// The slot that hands work over.
+    pub from_slot: String,
+    /// The slot that receives it.
+    pub to_slot: String,
+    /// The phase after which the handoff may happen.
+    pub after_phase: String,
+    /// The artifacts the receiving slot needs before it may start.
+    pub required_artifacts: Vec<String>,
+}
+
+/// The whole of one selectable work profile, resolved.
+///
+/// It is the catalog entry plus everything a Lead would otherwise have had to
+/// read the pack out of band to learn: the phase order, the gate authority, the
+/// artifact contracts and the handoff DAG that decides which seat starts first.
+/// Nothing here is per-project — a category resolves to the same bundle in every
+/// Realm running this build, which is why it is a workspace-level read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct WorkProfileDetailDto {
+    /// The pack category this profile is advertised under.
+    pub category: String,
+    /// Human name.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// The profile revision the category resolves to.
+    pub profile: RevisionRefDto,
+    /// The team revision the profile pins, when it prescribes one.
+    pub team: Option<RevisionRefDto>,
+    /// The phase the profile enters at.
+    pub entry_phase: String,
+    /// The phases it declares, in declaration order.
+    pub phases: Vec<ProfilePhaseDto>,
+    /// The phases it may terminate at.
+    pub terminal_phases: Vec<String>,
+    /// Every gate it declares, with the authority and evidence each one names.
+    pub gates: Vec<GateProjectionDto>,
+    /// Every artifact contract it declares.
+    pub artifacts: Vec<ProfileArtifactDto>,
+    /// The declared handoffs of the team it pins.
+    pub handoffs: Vec<ProfileHandoffDto>,
+    /// The role slots that no handoff feeds, which are the seats that start with
+    /// work rather than with an instruction to wait.
+    pub eligible_roots: Vec<String>,
+    /// The digest of the profile's canonical definition.
+    ///
+    /// This is the stable one. `bundle_hash` covers the *resolution*, which
+    /// records when it happened, so two reads of an unchanged category answer
+    /// with two different bundle digests and the same definition digest. A
+    /// caller proving the pack has not moved compares this.
+    pub definition_hash: String,
+    /// The digest of the whole resolved bundle. What `epics:apply` freezes.
+    pub bundle_hash: String,
+}
+
+/// What validating a work-profile category proved.
+///
+/// A validation answers about the *pack*, not about a request: it re-runs the
+/// pack's own invariants and re-derives the bundle digest. There is no field
+/// here a caller could supply a profile through — validating something the
+/// deployment does not ship would prove nothing about what it will run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfileValidationDto {
+    /// The category that was validated.
+    pub category: String,
+    /// Whether the category is backed by a profile revision, or advertises
+    /// vocabulary only. A manifest-only category is deliberately not runnable.
+    pub availability: String,
+    /// Whether the whole pack validates.
+    pub pack_valid: bool,
+    /// Whether the category resolves to a bundle that verifies against its own
+    /// pinned digests.
+    pub bundle_verified: bool,
+    /// The bundle digest, when it resolved.
+    pub bundle_hash: Option<String>,
+    /// Why validation failed, when it did. A rule, never a stored value.
+    pub refused: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Triggers and intake
+// ---------------------------------------------------------------------------
+
+/// One pinned trigger revision, as an operator reads it back.
+///
+/// The filter clauses and the dedup pointers are reported as *pointers*, never
+/// with the values a matching event carried: a trigger is configuration, and an
+/// event's contents belong to the event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TriggerSpecDto {
+    /// The trigger.
+    pub trigger: String,
+    /// This revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// The source kind it listens to.
+    pub source_kind: String,
+    /// The configured connection of that kind.
+    pub source_connection: String,
+    /// The event schema it accepts, at its pinned revision.
+    pub event_schema: RevisionRefDto,
+    /// The envelope pointers its filter constrains.
+    pub filter_pointers: Vec<String>,
+    /// The envelope pointers its dedup key is derived from.
+    pub dedup_pointers: Vec<String>,
+    /// The work profile revision the work it proposes would use.
+    pub work_profile: RevisionRefDto,
+    /// Whether it may arm the work it creates without a human, as the pinned
+    /// policy spells it.
+    pub auto_arm: bool,
+}
+
+/// What `intake:submit` is asked for.
+///
+/// The envelope is the *canonical* event, already redacted by whoever holds the
+/// connection: this operation evaluates it and records the decision, and there is
+/// no field here for a verdict, an approval or a work graph. What a matched event
+/// becomes is the trigger's decision, not the submitter's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct SubmitIntakeRequest {
+    /// The trigger to evaluate under.
+    pub trigger: String,
+    /// The pinned trigger revision.
+    #[schema(value_type = u32)]
+    pub trigger_version: SpecVersion,
+    /// The event id as the source system spells it.
+    #[schema(value_type = String)]
+    pub external_event_id: ExternalId,
+    /// When the source system observed it.
+    #[schema(value_type = String)]
+    pub external_observed_at: Timestamp,
+    /// The canonical, redacted envelope.
+    #[schema(value_type = Object)]
+    pub envelope: serde_json::Value,
+}
+
+/// One recorded intake decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct IntakeReceiptDto {
+    /// The Realm it was decided in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The decision.
+    pub receipt_id: String,
+    /// The event it decided about.
+    pub source_event_id: String,
+    /// The digest of that event's canonical envelope.
+    pub source_event_hash: String,
+    /// The trigger that decided, at the revision it decided under.
+    pub trigger: RevisionRefDto,
+    /// The deterministic outcome.
+    pub result: String,
+    /// The deterministic dedup key of the event.
+    pub dedup_key: String,
+    /// The original decision, when this one repeats it.
+    pub duplicate_of: Option<String>,
+    /// Whether this call recorded it, or found the event already decided.
+    pub applied: AppliedDto,
+}
+
+// ---------------------------------------------------------------------------
+// Connector specifications, conflicts, comments and ownership
+// ---------------------------------------------------------------------------
+
+/// One connector specification revision this build can serve.
+///
+/// `installed` distinguishes "this deployment ships the mapping" from "this
+/// project pinned it": a bundled revision nothing installed is selectable, and a
+/// task linked to a ticket it does not cover is exactly the unmapped link
+/// `ticket:reconcile-plan` already reports rather than silently converging.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ConnectorSpecDto {
+    /// The connector implementation.
+    pub connector: String,
+    /// The external project the mapping is written for.
+    pub external_project: String,
+    /// The external issue type it covers.
+    pub issue_type: String,
+    /// The pinned revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// The digest of its canonical definition.
+    pub definition_hash: String,
+    /// What the revision declares, in declaration order: the closed field keys a
+    /// field mapping covers, or the semantic milestones a workflow mapping does.
+    pub covers: Vec<String>,
+    /// Whether this project has this revision installed in its own store.
+    pub installed: bool,
+}
+
+/// One recorded reconciliation conflict.
+///
+/// A conflict names its *kind* and the observation it was raised from, and
+/// carries neither the external value that disagreed nor the comment that
+/// mentioned it. The kind is what a human acts on; the values are what the
+/// connector holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TicketConflictDto {
+    /// The conflict.
+    pub conflict_id: String,
+    /// The ticket link it was raised on.
+    pub link_id: String,
+    /// Which typed conflict it is.
+    pub kind: String,
+    /// The observation it was raised from.
+    pub observation_id: String,
+    /// The task revision at the time it was raised.
+    #[schema(value_type = u64)]
+    pub task_revision: AggregateRevision,
+    /// The specification revision it was judged against.
+    #[schema(value_type = u32)]
+    pub spec_version: SpecVersion,
+    /// When it was raised.
+    #[schema(value_type = String)]
+    pub detected_at: Timestamp,
+    /// When it was resolved, when it has been.
+    #[schema(value_type = Option<String>)]
+    pub resolved_at: Option<Timestamp>,
+}
+
+/// What `ticket:resolve-conflict` is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct ResolveConflictRequest {
+    /// The conflict to close.
+    pub conflict_id: String,
+}
+
+/// One mirrored inbound comment revision.
+///
+/// The body is deliberately absent and only its digest is reported. A comment is
+/// mirrored so Kontor can prove *that* it saw a revision and in what order; a
+/// read that also handed the prose back would make this the place ticket content
+/// leaves the process, which is the disclosure the mirror exists to avoid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TicketCommentDto {
+    /// The ticket link it arrived on.
+    pub link_id: String,
+    /// The comment id as the external system spells it.
+    #[schema(value_type = String)]
+    pub external_comment_id: ExternalId,
+    /// The digest of the body. Never the body.
+    pub body_hash: String,
+    /// The author's external account id.
+    #[schema(value_type = String)]
+    pub author_account_id: ExternalId,
+    /// When the external system says it was created.
+    #[schema(value_type = String)]
+    pub external_created_at: Timestamp,
+    /// When the external system says it was last updated.
+    #[schema(value_type = String)]
+    pub external_updated_at: Timestamp,
+    /// When Kontor mirrored it.
+    #[schema(value_type = String)]
+    pub observed_at: Timestamp,
+    /// The revision this one edits, when it is an edit.
+    pub supersedes: Option<String>,
+}
+
+/// What pulling one task's inbound comments produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TicketCommentPullDto {
+    /// The Realm it happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The links the pull covered.
+    pub links: Vec<String>,
+    /// How many revisions this pull mirrored. A replay mirrors none.
+    pub mirrored: u32,
+    /// How many revisions the task holds after the pull.
+    pub held: u32,
+    /// The command receipt that authorizes it.
+    pub receipt_id: String,
+}
+
+/// What claiming one task's tickets would do, and did.
+///
+/// The action is always [`OwnershipAction::ReassignToPrincipal`] as the domain
+/// spells it — there is no field on the way in for an assignee, so a caller can
+/// claim a ticket for the principal Kontor authenticates as and for nobody else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TicketClaimDto {
+    /// The Realm it happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The links the claim covers.
+    pub links: Vec<String>,
+    /// The ownership action, as the domain names it.
+    pub action: String,
+    /// The command receipt that authorizes it.
+    pub receipt_id: String,
+}
+
+// ---------------------------------------------------------------------------
 // The port
 // ---------------------------------------------------------------------------
 
@@ -1186,6 +1520,88 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         agent_run_id: AgentRunId,
     ) -> Result<RuntimeSettlementDto, ApiError>;
+
+    /// The whole of one selectable work profile, resolved.
+    fn work_profile(&self, category: &str) -> Result<WorkProfileDetailDto, ApiError>;
+
+    /// Re-run the pack's own invariants over one category.
+    fn validate_work_profile(&self, category: &str) -> Result<ProfileValidationDto, ApiError>;
+
+    /// One pinned trigger revision.
+    fn trigger(
+        &self,
+        project_id: ProjectId,
+        trigger: &str,
+        version: SpecVersion,
+    ) -> Result<TriggerSpecDto, ApiError>;
+
+    /// Evaluate one canonical source event and record the decision.
+    async fn submit_intake(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &SubmitIntakeRequest,
+    ) -> Result<IntakeReceiptDto, ApiError>;
+
+    /// Read one recorded intake decision.
+    fn intake_receipt(
+        &self,
+        project_id: ProjectId,
+        receipt_id: &str,
+    ) -> Result<IntakeReceiptDto, ApiError>;
+
+    /// Every ticket field-mapping revision this build can serve for a connector.
+    fn connector_field_specs(
+        &self,
+        project_id: ProjectId,
+        connector: &str,
+    ) -> Result<Vec<ConnectorSpecDto>, ApiError>;
+
+    /// Every external-workflow revision this build can serve for a connector.
+    fn connector_workflow_specs(
+        &self,
+        project_id: ProjectId,
+        connector: &str,
+    ) -> Result<Vec<ConnectorSpecDto>, ApiError>;
+
+    /// Every reconciliation conflict recorded against one task's tickets.
+    fn ticket_conflicts(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<Vec<TicketConflictDto>, ApiError>;
+
+    /// Close one reconciliation conflict, citing the receipt that authorizes it.
+    async fn resolve_ticket_conflict(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &ResolveConflictRequest,
+    ) -> Result<TicketConflictDto, ApiError>;
+
+    /// Mirror one task's inbound external comments.
+    async fn pull_ticket_comments(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<TicketCommentPullDto, ApiError>;
+
+    /// The inbound comment revisions one task holds, without their bodies.
+    fn ticket_comments(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<Vec<TicketCommentDto>, ApiError>;
+
+    /// Claim one task's external tickets for the principal Kontor acts as.
+    async fn claim_ticket(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<TicketClaimDto, ApiError>;
 }
 
 /// The application service the composition root handed this process.
@@ -1810,6 +2226,336 @@ pub async fn ticket_reconcile_apply(
         state
             .applications()
             .ticket_reconcile_apply(&key, project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// The whole of one selectable work profile.
+#[utoipa::path(
+    get, path = "/v1/catalog/work-profiles/{category}", tag = "applications",
+    params(("category" = String, Path, description = "The pack category")),
+    responses(
+        (status = 200, body = WorkProfileDetailDto),
+        (status = 401), (status = 403),
+        (status = 404, description = "The pack advertises no such category")
+    )
+)]
+pub async fn work_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(category): Path<String>,
+) -> Result<Json<WorkProfileDetailDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    Ok(Json(state.applications().work_profile(&category)?))
+}
+
+/// Re-run the pack's own invariants over one category.
+///
+/// It reports rather than refuses: a category that does not validate answers
+/// `200` saying so, because "this profile is unrunnable" is the finding a caller
+/// asked for, not a transport failure.
+#[utoipa::path(
+    post, path = "/v1/catalog/work-profiles/{category}/validate", tag = "applications",
+    params(("category" = String, Path, description = "The pack category")),
+    responses(
+        (status = 200, body = ProfileValidationDto),
+        (status = 401), (status = 403),
+        (status = 404, description = "The pack advertises no such category")
+    )
+)]
+pub async fn validate_work_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(category): Path<String>,
+) -> Result<Json<ProfileValidationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    Ok(Json(state.applications().validate_work_profile(&category)?))
+}
+
+/// One pinned trigger revision.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/triggers/{trigger}/{version}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("trigger" = String, Path, description = "The trigger"),
+        ("version" = u32, Path, description = "The pinned revision")
+    ),
+    responses(
+        (status = 200, body = TriggerSpecDto),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn trigger(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, trigger, version)): Path<(String, String, u32)>,
+) -> Result<Json<TriggerSpecDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let version = parse_id(&state, SpecVersion::parse(version))?;
+    Ok(Json(
+        state
+            .applications()
+            .trigger(project_id, &trigger, version)?,
+    ))
+}
+
+/// Evaluate one canonical source event and record the decision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/intake:submit", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SubmitIntakeRequest,
+    responses(
+        (status = 200, body = IntakeReceiptDto, description = "Decided, or the original decision"),
+        (status = 401), (status = 403),
+        (status = 404, description = "No such trigger revision"),
+        (status = 409, description = "The same source identity carries different bytes")
+    )
+)]
+pub async fn submit_intake(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<SubmitIntakeRequest>,
+) -> Result<Json<IntakeReceiptDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .submit_intake(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// One recorded intake decision.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/intake/{receipt_id}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("receipt_id" = String, Path, description = "The decision")
+    ),
+    responses(
+        (status = 200, body = IntakeReceiptDto),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn intake_receipt(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, receipt_id)): Path<(String, String)>,
+) -> Result<Json<IntakeReceiptDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .intake_receipt(project_id, &receipt_id)?,
+    ))
+}
+
+/// Every ticket field-mapping revision this build can serve for a connector.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/connectors/{connector}/field-specs",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("connector" = String, Path, description = "The connector implementation")
+    ),
+    responses(
+        (status = 200, body = Vec<ConnectorSpecDto>),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn connector_field_specs(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, connector)): Path<(String, String)>,
+) -> Result<Json<Vec<ConnectorSpecDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .connector_field_specs(project_id, &connector)?,
+    ))
+}
+
+/// Every external-workflow revision this build can serve for a connector.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/connectors/{connector}/workflow-specs",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("connector" = String, Path, description = "The connector implementation")
+    ),
+    responses(
+        (status = 200, body = Vec<ConnectorSpecDto>),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn connector_workflow_specs(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, connector)): Path<(String, String)>,
+) -> Result<Json<Vec<ConnectorSpecDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .connector_workflow_specs(project_id, &connector)?,
+    ))
+}
+
+/// Every reconciliation conflict recorded against one task's tickets.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/tasks/{task_id}/ticket:conflicts",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task")
+    ),
+    responses(
+        (status = 200, body = Vec<TicketConflictDto>),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn ticket_conflicts(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+) -> Result<Json<Vec<TicketConflictDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    Ok(Json(
+        state.applications().ticket_conflicts(project_id, task_id)?,
+    ))
+}
+
+/// Close one reconciliation conflict.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/ticket:resolve-conflict",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ResolveConflictRequest,
+    responses(
+        (status = 200, body = TicketConflictDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The conflict is already resolved, or the key was reused")
+    )
+)]
+pub async fn resolve_ticket_conflict(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ResolveConflictRequest>,
+) -> Result<Json<TicketConflictDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let (project_id, task_id, key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .resolve_ticket_conflict(&key, project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// Mirror one task's inbound external comments.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/ticket:pull-comments",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    responses(
+        (status = 200, body = TicketCommentPullDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The connector this realm would pull through is absent")
+    )
+)]
+pub async fn pull_ticket_comments(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<TicketCommentPullDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let (project_id, task_id, key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .pull_ticket_comments(&key, project_id, task_id)
+            .await?,
+    ))
+}
+
+/// The inbound comment revisions one task holds.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/tasks/{task_id}/ticket:comments",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task")
+    ),
+    responses(
+        (status = 200, body = Vec<TicketCommentDto>),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn ticket_comments(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+) -> Result<Json<Vec<TicketCommentDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    Ok(Json(
+        state.applications().ticket_comments(project_id, task_id)?,
+    ))
+}
+
+/// Claim one task's external tickets for the principal Kontor acts as.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/ticket:claim",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    responses(
+        (status = 200, body = TicketClaimDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The connector this realm would claim through is absent")
+    )
+)]
+pub async fn claim_ticket(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<TicketClaimDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let (project_id, task_id, key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .claim_ticket(&key, project_id, task_id)
             .await?,
     ))
 }

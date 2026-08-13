@@ -2369,6 +2369,18 @@ async fn the_contract_document_lists_every_application_route_and_no_unsafe_surfa
         "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
         "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply",
         "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
+        "/v1/catalog/work-profiles/{category}",
+        "/v1/catalog/work-profiles/{category}/validate",
+        "/v1/projects/{project_id}/triggers/{trigger}/{version}",
+        "/v1/projects/{project_id}/intake:submit",
+        "/v1/projects/{project_id}/intake/{receipt_id}",
+        "/v1/projects/{project_id}/connectors/{connector}/field-specs",
+        "/v1/projects/{project_id}/connectors/{connector}/workflow-specs",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:conflicts",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:resolve-conflict",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:pull-comments",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:comments",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:claim",
     ] {
         assert!(
             paths.get(route).is_some(),
@@ -2393,7 +2405,7 @@ async fn the_contract_document_lists_every_application_route_and_no_unsafe_surfa
     // `bearer_token` would be a disclosure, and only segment matching tells them
     // apart without hand-maintaining an allowlist of near-misses.
     for forbidden in [
-        "endpoint", "url", "token", "secret", "password", "keychain", "assignee", "comment",
+        "endpoint", "url", "token", "secret", "password", "keychain", "assignee",
     ] {
         assert!(
             !names.iter().any(|name| name
@@ -2419,6 +2431,42 @@ async fn the_contract_document_lists_every_application_route_and_no_unsafe_surfa
     // is the whole stored reference and resolves to nothing without a policy that
     // already approves it. Asserting it is *the* one keeps the exception explicit
     // rather than letting the scan above quietly widen.
+    // The comment mirror reports *that* a revision exists, who wrote it, when,
+    // and what it hashes to — never its prose. `external_comment_id` is an
+    // identifier and is allowed by name; anything else comment-shaped would be
+    // the body arriving under a different spelling.
+    let commentish: Vec<&String> = names
+        .iter()
+        .filter(|name| {
+            name.split(['_', '-', '/', ':', '.'])
+                .any(|part| part == "comment")
+        })
+        .collect();
+    assert!(
+        commentish
+            .iter()
+            .all(|name| name.as_str() == "external_comment_id"),
+        "the only comment-shaped name may be the external identifier, found {commentish:?}"
+    );
+    // And the mirror's own schema is checked directly rather than through the
+    // name sweep above: `body` is a legitimate property elsewhere in the
+    // contract (a session message has one), so a global ban would prove nothing
+    // about the place that must not grow one.
+    let mirrored = document.json()["components"]["schemas"]["TicketCommentDto"]["properties"]
+        .as_object()
+        .expect("the comment mirror's schema")
+        .keys()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<String>>();
+    assert!(
+        mirrored.iter().all(|property| !matches!(
+            property.as_str(),
+            "body" | "text" | "prose" | "content" | "rendered"
+        )),
+        "the comment mirror must carry no prose, found {mirrored:?}"
+    );
+    assert!(mirrored.iter().any(|property| property == "body_hash"));
+
     let credentialish: Vec<&String> = names
         .iter()
         .filter(|name| name.contains("credential"))
@@ -4107,4 +4155,431 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
     .await;
     assert_eq!(closed.status, 200, "{}", closed.body);
     assert_eq!(closed.json()["state"], "closed");
+}
+
+#[tokio::test]
+async fn a_profile_category_reports_its_whole_shape_and_validates_itself() {
+    let world = World::open_empty().await;
+    let category = first_category(&world).await;
+
+    let detail = Call::get(format!("/v1/catalog/work-profiles/{category}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(detail.status, 200, "{}", detail.body);
+    let body = detail.json();
+
+    // The catalog entry and the detail must agree about the revision and the
+    // digest: two reads of the same category that disagreed would mean a caller
+    // pinning from one and freezing from the other.
+    let catalog = Call::get("/v1/catalog/work-profiles")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let entry = catalog
+        .json()
+        .as_array()
+        .expect("a catalog")
+        .iter()
+        .find(|entry| entry["category"] == serde_json::json!(category))
+        .cloned()
+        .expect("the category the catalog advertised");
+    assert_eq!(body["profile"], entry["profile"]);
+    assert_eq!(body["team"], entry["team"]);
+    // The *definition* digest is the stable one and is asserted as such. The
+    // bundle digest deliberately is not: it covers the resolution, which records
+    // when it happened, so two reads of an unchanged category answer with two
+    // different bundle digests. Asserting equality there would be asserting that
+    // the two reads happened in the same instant.
+    assert_ne!(
+        body["bundle_hash"], entry["bundle_hash"],
+        "a bundle digest covers its own resolution time"
+    );
+    assert_eq!(
+        body["definition_hash"].as_str().expect("a digest").len(),
+        64
+    );
+
+    // Everything the closure sequence needs is here, which is the point of the
+    // route: a Lead learns the gate authority and the artifact contracts without
+    // reading the pack out of band.
+    let phases = body["phases"].as_array().expect("phases");
+    assert!(!phases.is_empty(), "{}", detail.body);
+    assert!(
+        phases
+            .iter()
+            .any(|phase| phase["phase"] == body["entry_phase"]),
+        "the entry phase must be one of the declared phases: {}",
+        detail.body
+    );
+    let gates = body["gates"].as_array().expect("gates");
+    assert!(!gates.is_empty(), "{}", detail.body);
+    for gate in gates {
+        assert_eq!(gate["state"], "not_ready", "a profile has run nothing");
+        assert!(
+            !gate["evaluator_roles"]
+                .as_array()
+                .expect("roles")
+                .is_empty(),
+            "every gate names who may judge it: {}",
+            detail.body
+        );
+    }
+    assert!(!body["artifacts"].as_array().expect("artifacts").is_empty());
+
+    // The eligible roots are exactly the slots no handoff feeds — the same rule
+    // the seating uses — so what the API reports and what a start actually does
+    // cannot drift apart.
+    let downstream: Vec<&serde_json::Value> = body["handoffs"]
+        .as_array()
+        .expect("handoffs")
+        .iter()
+        .map(|handoff| &handoff["to_slot"])
+        .collect();
+    for root in body["eligible_roots"].as_array().expect("roots") {
+        assert!(
+            !downstream.contains(&root),
+            "a root is fed by no handoff: {}",
+            detail.body
+        );
+    }
+
+    let validated = Call::post(
+        format!("/v1/catalog/work-profiles/{category}/validate"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(validated.status, 200, "{}", validated.body);
+    assert_eq!(validated.json()["availability"], "seeded");
+    assert_eq!(validated.json()["pack_valid"], true);
+    assert_eq!(validated.json()["bundle_verified"], true);
+    assert!(
+        validated.json()["bundle_hash"].is_string(),
+        "{}",
+        validated.body
+    );
+    assert!(validated.json()["refused"].is_null(), "{}", validated.body);
+
+    // A category this build does not advertise is absent, not empty: an empty
+    // answer would say "this profile declares no gates".
+    let unknown = Call::get("/v1/catalog/work-profiles/no-such-category")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+}
+
+#[tokio::test]
+async fn intake_decides_under_a_pinned_trigger_or_reports_it_is_not_installed() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "intake").await;
+
+    // An empty realm has no trigger revisions, and says so. This is the honest
+    // shape of the gap: submitting under a trigger nothing installed cannot
+    // decide anything, and answering `ignored` would be a decision.
+    let missing = Call::get(format!(
+        "/v1/projects/{}/triggers/nightly-sweep/1",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.code(), "not_found");
+
+    let submitted = Call::post(
+        format!("/v1/projects/{}/intake:submit", seed.project),
+        &serde_json::json!({
+            "trigger": "nightly-sweep",
+            "trigger_version": 1,
+            "external_event_id": "EVT-1",
+            "external_observed_at": "2026-08-13T09:00:00Z",
+            "envelope": {"schema_version": 1, "kind": "push"}
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("intake-submit-1")
+    .send(&world)
+    .await;
+    assert_eq!(submitted.status, 404, "{}", submitted.body);
+
+    // An unknown decision id is absent rather than fabricated.
+    let unknown = Call::get(format!(
+        "/v1/projects/{}/intake/0199a0a0-0000-7000-8000-000000000000",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+
+    // Submitting is an operator decision, and an observer may not make it.
+    let refused = Call::post(
+        format!("/v1/projects/{}/intake:submit", seed.project),
+        &serde_json::json!({
+            "trigger": "nightly-sweep",
+            "trigger_version": 1,
+            "external_event_id": "EVT-2",
+            "external_observed_at": "2026-08-13T09:00:00Z",
+            "envelope": {"schema_version": 1}
+        }),
+    )
+    .signed_as(&world, "observer")
+    .with_key("intake-submit-2")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+}
+
+#[tokio::test]
+async fn a_connector_reports_the_specifications_this_build_ships() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "specs").await;
+
+    let fields = Call::get(format!(
+        "/v1/projects/{}/connectors/connector.jira/field-specs",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(fields.status, 200, "{}", fields.body);
+    let fields = fields.json();
+    let fields = fields.as_array().expect("a spec list");
+    assert!(
+        !fields.is_empty(),
+        "this build ships a bundled field mapping"
+    );
+    for spec in fields {
+        assert_eq!(spec["connector"], "connector.jira");
+        assert!(!spec["covers"].as_array().expect("covers").is_empty());
+        assert!(!spec["definition_hash"].as_str().expect("hash").is_empty());
+        // Nothing was installed into this project, and the read says so rather
+        // than implying the mapping is already pinned here.
+        assert_eq!(spec["installed"], false, "{spec}");
+    }
+
+    let workflows = Call::get(format!(
+        "/v1/projects/{}/connectors/connector.jira/workflow-specs",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(workflows.status, 200, "{}", workflows.body);
+    let workflows = workflows.json();
+    let workflows = workflows.as_array().expect("a spec list");
+    assert!(!workflows.is_empty());
+    for spec in workflows {
+        assert!(
+            !spec["covers"].as_array().expect("covers").is_empty(),
+            "a workflow mapping declares the milestones it converges: {spec}"
+        );
+    }
+
+    // A connector this build has no mapping for is an empty list, not a 404:
+    // the connector key is open vocabulary, and "we ship nothing for it" is a
+    // complete answer.
+    let other = Call::get(format!(
+        "/v1/projects/{}/connectors/connector.unknown/field-specs",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(other.status, 200, "{}", other.body);
+    assert_eq!(other.json().as_array().expect("a list").len(), 0);
+}
+
+#[tokio::test]
+async fn conflicts_comments_and_claims_are_task_scoped_and_disclose_no_content() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "tickets").await;
+
+    // A task nothing has reconciled holds no conflicts and no comments, and both
+    // reads say that with an empty list rather than a refusal.
+    let conflicts = Call::get(format!(
+        "/v1/projects/{}/tasks/{}/ticket:conflicts",
+        seed.project, seed.task
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(conflicts.status, 200, "{}", conflicts.body);
+    assert_eq!(conflicts.json().as_array().expect("a list").len(), 0);
+
+    let comments = Call::get(format!(
+        "/v1/projects/{}/tasks/{}/ticket:comments",
+        seed.project, seed.task
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(comments.status, 200, "{}", comments.body);
+    assert_eq!(comments.json().as_array().expect("a list").len(), 0);
+
+    // Resolving a conflict that was never raised is absent, not a silent no-op
+    // that would hand back a receipt for a decision nobody could have made.
+    let phantom = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/ticket:resolve-conflict",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({"conflict_id": "0199a0a0-0000-7000-8000-000000000001"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("tickets-resolve-1")
+    .send(&world)
+    .await;
+    assert_eq!(phantom.status, 404, "{}", phantom.body);
+
+    // A task with no links has nothing to pull, and that is a legitimate zero
+    // rather than a claim about an external system nothing contacted.
+    let pulled = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/ticket:pull-comments",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("tickets-pull-1")
+    .send(&world)
+    .await;
+    assert_eq!(pulled.status, 200, "{}", pulled.body);
+    assert_eq!(pulled.json()["mirrored"], 0);
+    assert_eq!(pulled.json()["held"], 0);
+    assert!(
+        !pulled.json()["receipt_id"]
+            .as_str()
+            .expect("a receipt")
+            .is_empty()
+    );
+
+    // Replaying the key answers from the receipt already recorded rather than
+    // recording a second one.
+    let replayed = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/ticket:pull-comments",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("tickets-pull-1")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt_id"], pulled.json()["receipt_id"]);
+
+    // Claiming a task that is linked to nothing has nothing to claim.
+    let unclaimable = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/ticket:claim",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("tickets-claim-1")
+    .send(&world)
+    .await;
+    assert_eq!(unclaimable.status, 404, "{}", unclaimable.body);
+
+    // Every one of these is an operator decision or an observer read, and the
+    // tiers are checked rather than assumed.
+    let forbidden = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/ticket:claim",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "observer")
+    .with_key("tickets-claim-2")
+    .send(&world)
+    .await;
+    assert_eq!(forbidden.status, 403, "{}", forbidden.body);
+}
+
+#[tokio::test]
+async fn a_linked_task_claims_its_tickets_and_refuses_to_pull_without_a_connector() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+
+    let created = ensure_project(&world, "linked", "Kontor", "/tmp/kontor-linked").await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Linked epic",
+            &category,
+            serde_json::json!([{
+                "title": "The linked task",
+                "ticket_links": [{"connector": "connector.jira", "external_issue_key": "ASMA-1"}]
+            }]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("linked-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // A claim records Kontor's own decision to hold the ticket. It names the
+    // domain's action and the links it covers, and nothing on the way in could
+    // have named an assignee.
+    let claimed = Call::post(
+        format!("/v1/projects/{project}/tasks/{task}/ticket:claim"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("linked-claim-1")
+    .send(&world)
+    .await;
+    assert_eq!(claimed.status, 200, "{}", claimed.body);
+    assert_eq!(claimed.json()["action"], "reassign_to_principal");
+    assert_eq!(claimed.json()["links"].as_array().expect("links").len(), 1);
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/tasks/{task}/ticket:claim"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("linked-claim-1")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt_id"], claimed.json()["receipt_id"]);
+
+    // Pulling comments for a task that *is* linked needs the connector this
+    // realm does not have, and refuses rather than reporting a zero that would
+    // be indistinguishable from "there were no new comments".
+    let pulled = Call::post(
+        format!("/v1/projects/{project}/tasks/{task}/ticket:pull-comments"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("linked-pull-1")
+    .send(&world)
+    .await;
+    assert_eq!(pulled.status, 503, "{}", pulled.body);
+    assert_eq!(pulled.code(), "unavailable");
 }

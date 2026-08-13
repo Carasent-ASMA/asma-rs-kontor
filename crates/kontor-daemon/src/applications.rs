@@ -38,6 +38,12 @@ use kontor_api::applications::{
     WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
+    ConnectorSpecDto, IntakeReceiptDto, ProfileArtifactDto, ProfileHandoffDto, ProfilePhaseDto,
+    ProfileValidationDto, ResolveConflictRequest, SubmitIntakeRequest, TicketClaimDto,
+    TicketCommentDto, TicketCommentPullDto, TicketConflictDto, TriggerSpecDto,
+    WorkProfileDetailDto,
+};
+use kontor_api::applications::{
     GateProjectionDto, GateVerdictDto, ProvenanceDto, RecordGateRequest, RedactionDto,
     ResolveContextRequest, ResolvedContextDto, RuntimeSettlementDto, SelectionDto,
     SelectionRequest, TicketFieldDiffDto, TicketReconcileAppliedDto, TicketReconcileApplyRequest,
@@ -49,21 +55,29 @@ use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, CommandReceiptId,
     ConnectorKey, ContentHash, CurrencyCode, ExecutionAuthorizationId, ExternalId, ExternalName,
-    GateKey, IdempotencyKey, MiniProjectId, ModuleKey, Money, ProjectId, RoleSlotId,
-    RuntimeKindKey, SCHEMA_VERSION, SpecVersion, TaskId, TeamRunId, Timestamp,
+    GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money, ProjectId,
+    RoleSlotId, RuntimeKindKey, SCHEMA_VERSION, SourceEventId, SpecVersion, StatusConflictId,
+    TaskId, TeamRunId, Timestamp, TriggerKey,
 };
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     CalendarRepository, CommandRepository, CredentialReference, CredentialReferenceKind,
-    NewAccountProfile, NewAgentRun, NewCommandIntent, NewGateEvaluation, NewTeamRun,
-    ProjectRepository, RealmRepository, RepositoryError, RunRepository, RuntimeBinding,
-    SpecRepository, TaskTransitionRequest, WorkflowRepository,
+    IntakeOutcome, IntakeRepository, NewAccountProfile, NewAgentRun, NewCommandIntent,
+    NewGateEvaluation, NewSourceEvent, NewTeamRun, ProjectRepository, RealmRepository,
+    RepositoryError, RunRepository, RuntimeBinding, SpecRepository, TaskTransitionRequest,
+    TicketRepository, WorkflowRepository,
 };
-use kontor_core::spec::TeamRunSnapshot;
+use kontor_core::spec::{
+    AutoArmPolicy, CanonicalSourceEvent, IntakeReceipt, IntakeResult, SourceIdentity,
+    SourceProcessingState, TeamRunSnapshot, TriggerSpec,
+};
 use kontor_core::state::{GateVerdict, TaskState, TaskTeamClosure};
+use kontor_core::ticket::OwnershipAction;
+use kontor_integrations_asma::jira::SpecCatalog;
 use kontor_profiles::pack::{
     PackAvailability, PackCategoryKey, ProfilePackSpec, ResolvedProfileBundle, resolve_profile,
+    validate_pack,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::RuntimeCapability;
@@ -77,7 +91,7 @@ use kontor_scheduler::model::{
 };
 use kontor_store::{
     AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication, EpicTask, EpicTicketLink,
-    ProjectEnsure, SqliteStore,
+    ProjectEnsure, SqliteStore, StoredConflict,
 };
 use kontor_teams::run::{TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 
@@ -117,6 +131,8 @@ pub struct Services {
     realm_id: kontor_core::id::RealmId,
     state: OnceLock<ApiState>,
     pack: ProfilePackSpec,
+    /// The connector specifications this build ships, parsed on first use.
+    connectors: OnceLock<SpecCatalog>,
 }
 
 impl std::fmt::Debug for Services {
@@ -140,6 +156,7 @@ impl Services {
             realm_id,
             state: OnceLock::new(),
             pack: kontor_profiles::seeds::bundled_pack()?,
+            connectors: OnceLock::new(),
         }))
     }
 
@@ -432,6 +449,80 @@ impl Services {
             Ok(certificate) => Ok(Ok(certificate.task_team_closure())),
             Err(pending) => Ok(Err(pending)),
         }
+    }
+
+    /// The project row, refusing an id that is not in this Realm.
+    fn project_row(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<kontor_core::repository::Project, ApiError> {
+        let state = self.state()?;
+        state
+            .with_store(|store| store.get_project(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such project exists in this realm",
+                )
+            })
+    }
+
+    /// The category the pack advertises under this name, and its availability.
+    fn advertised(&self, category: &str) -> Result<(PackCategoryKey, PackAvailability), ApiError> {
+        let parsed =
+            PackCategoryKey::parse(category).map_err(|error| self.refuse_domain(&error))?;
+        self.pack
+            .manifest
+            .iter()
+            .find(|entry| entry.category == parsed)
+            .map(|entry| (parsed.clone(), entry.availability))
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this build's profile pack advertises no such category",
+                )
+            })
+    }
+
+    /// One pinned trigger revision, refusing an unknown key or revision.
+    fn trigger_spec(
+        &self,
+        project_id: ProjectId,
+        trigger: &str,
+        version: SpecVersion,
+    ) -> Result<TriggerSpec, ApiError> {
+        let state = self.state()?;
+        self.project_row(project_id)?;
+        let id = TriggerKey::parse(trigger).map_err(|error| self.refuse_domain(&error))?;
+        state
+            .with_store(|store| store.get_trigger_spec(project_id, &id, version))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such trigger revision is installed in this project",
+                )
+            })
+    }
+
+    /// The connector specifications this build ships.
+    ///
+    /// ponytail: parsed once per process and held, because the bundled data is
+    /// compiled into the binary and cannot change while it runs. A deployment
+    /// that later loads specifications of its own would replace this with the
+    /// same loader reading its directory — not with a second catalogue.
+    fn connector_catalog(&self) -> Result<&SpecCatalog, ApiError> {
+        if let Some(catalog) = self.connectors.get() {
+            return Ok(catalog);
+        }
+        let catalog = SpecCatalog::bundled().map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "this build's bundled connector specifications did not load",
+            )
+        })?;
+        Ok(self.connectors.get_or_init(|| catalog))
     }
 
     /// Read one task row, refusing an id that is not in this project.
@@ -3147,6 +3238,604 @@ impl ApplicationOperations for Services {
             receipt_id: receipt.to_string(),
         })
     }
+
+    fn work_profile(&self, category: &str) -> Result<WorkProfileDetailDto, ApiError> {
+        let now = kontor_api::now();
+        // A category the pack does not advertise is *absent*, not malformed:
+        // the key parses fine, and reporting it as a bad request would send a
+        // caller looking for a typo in a name that is simply not shipped here.
+        self.advertised(category)?;
+        let bundle = self.bundle(category, now)?;
+        let definition = &bundle.profile.definition;
+        // The team's handoffs live on the pack's template, not on the pinned
+        // revision the bundle carries: a revision holds the canonical bytes and
+        // the role authority, and re-parsing those to recover a DAG the pack
+        // already has in hand would be a second answer to the same question.
+        let template = bundle.team.as_ref().and_then(|team| {
+            self.pack.teams.iter().find(|candidate| {
+                candidate.template_id == team.template_id && candidate.version == team.version
+            })
+        });
+        let handoffs = template.map_or_else(Vec::new, |team| {
+            team.handoffs
+                .iter()
+                .map(|handoff| ProfileHandoffDto {
+                    from_slot: handoff.from_slot.as_role_key().as_str().to_owned(),
+                    to_slot: handoff.to_slot.as_role_key().as_str().to_owned(),
+                    // A handoff without a declared phase is available as soon as
+                    // its artifacts exist; reporting a phase it does not name
+                    // would invent one.
+                    after_phase: handoff
+                        .after_phase
+                        .as_ref()
+                        .map_or_else(|| "any".to_owned(), |phase| phase.as_str().to_owned()),
+                    required_artifacts: handoff
+                        .required_artifacts
+                        .iter()
+                        .map(|artifact| artifact.as_str().to_owned())
+                        .collect(),
+                })
+                .collect()
+        });
+        let roots = template.map_or_else(Vec::new, |team| {
+            eligible_roots(team)
+                .iter()
+                .map(|slot| slot.as_role_key().as_str().to_owned())
+                .collect()
+        });
+        Ok(WorkProfileDetailDto {
+            category: bundle.category.as_str().to_owned(),
+            name: definition.name.clone(),
+            profile: RevisionRefDto {
+                id: definition.id.as_str().to_owned(),
+                version: definition.version,
+            },
+            team: bundle.team.as_ref().map(|team| RevisionRefDto {
+                id: team.template_id.to_string(),
+                version: team.version,
+            }),
+            entry_phase: definition.entry_phase.as_str().to_owned(),
+            phases: definition
+                .phases
+                .iter()
+                .map(|phase| ProfilePhaseDto {
+                    phase: phase.id.as_str().to_owned(),
+                    label: phase.label.clone(),
+                    required_artifacts: phase
+                        .required_artifacts
+                        .iter()
+                        .map(|artifact| artifact.as_str().to_owned())
+                        .collect(),
+                    gates: phase
+                        .gates
+                        .iter()
+                        .map(|gate| gate.as_str().to_owned())
+                        .collect(),
+                    rejection_route: phase
+                        .rejection_route
+                        .as_ref()
+                        .map(|phase| phase.as_str().to_owned()),
+                })
+                .collect(),
+            terminal_phases: definition
+                .terminal_phases
+                .iter()
+                .map(|phase| phase.as_str().to_owned())
+                .collect(),
+            // Every gate is reported at `not_ready`: this is the profile, not a
+            // task running it, and there is no evidence to reduce a state from.
+            gates: definition
+                .gates
+                .iter()
+                .map(|gate| GateProjectionDto {
+                    gate: gate.id.as_str().to_owned(),
+                    phase: gate.phase.as_str().to_owned(),
+                    state: kontor_core::state::GateState::NotReady.as_str().to_owned(),
+                    evaluator_roles: gate
+                        .evaluator_roles
+                        .iter()
+                        .map(|role| role.as_str().to_owned())
+                        .collect(),
+                    required_evidence: gate
+                        .required_evidence
+                        .iter()
+                        .map(|artifact| artifact.as_str().to_owned())
+                        .collect(),
+                    waiver_allowed: gate.waiver_allowed,
+                    waiver_roles: gate
+                        .waiver_roles
+                        .iter()
+                        .map(|role| role.as_str().to_owned())
+                        .collect(),
+                })
+                .collect(),
+            artifacts: definition
+                .artifacts
+                .iter()
+                .map(|artifact| ProfileArtifactDto {
+                    artifact: artifact.key.as_str().to_owned(),
+                    label: artifact.label.clone(),
+                    producer_phase: artifact.producer_phase.as_str().to_owned(),
+                    evidence_required: artifact.evidence_required,
+                })
+                .collect(),
+            handoffs,
+            eligible_roots: roots,
+            definition_hash: bundle.profile.definition_hash.as_str().to_owned(),
+            bundle_hash: bundle.bundle_hash.as_str().to_owned(),
+        })
+    }
+
+    fn validate_work_profile(&self, category: &str) -> Result<ProfileValidationDto, ApiError> {
+        let (parsed, availability) = self.advertised(category)?;
+        let pack_valid = validate_pack(&self.pack).is_ok();
+        // Resolution runs the pack's invariants *and* the category's own
+        // availability rule, then the bundle re-derives every digest it pins.
+        // A category that resolves but does not verify is the interesting case:
+        // it means the pack drifted from what it says it is.
+        let (bundle_hash, bundle_verified, refused) =
+            match resolve_profile(&self.pack, &parsed, kontor_api::now()) {
+                Ok(bundle) => match bundle.verify() {
+                    Ok(()) => (Some(bundle.bundle_hash.as_str().to_owned()), true, None),
+                    Err(_) => (
+                        Some(bundle.bundle_hash.as_str().to_owned()),
+                        false,
+                        Some("the resolved bundle no longer matches its own pinned digests"),
+                    ),
+                },
+                Err(_) => (
+                    None,
+                    false,
+                    Some("this category does not resolve to a runnable profile revision"),
+                ),
+            };
+        Ok(ProfileValidationDto {
+            category: parsed.as_str().to_owned(),
+            availability: match availability {
+                PackAvailability::Seeded => "seeded".to_owned(),
+                PackAvailability::ManifestOnly => "manifest_only".to_owned(),
+            },
+            pack_valid,
+            bundle_verified,
+            bundle_hash,
+            refused: refused.map(ToOwned::to_owned),
+        })
+    }
+
+    fn trigger(
+        &self,
+        project_id: ProjectId,
+        trigger: &str,
+        version: SpecVersion,
+    ) -> Result<TriggerSpecDto, ApiError> {
+        let spec = self.trigger_spec(project_id, trigger, version)?;
+        Ok(trigger_dto(&spec))
+    }
+
+    async fn submit_intake(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &SubmitIntakeRequest,
+    ) -> Result<IntakeReceiptDto, ApiError> {
+        let state = self.state()?;
+        let spec = self.trigger_spec(project_id, &request.trigger, request.trigger_version)?;
+        let envelope = self.intent(&request.envelope)?;
+        let identity = SourceIdentity {
+            source_kind: spec.source_kind.clone(),
+            source_connection: spec.source_connection.clone(),
+            external_event_id: request.external_event_id.clone(),
+        };
+        // The identity is looked up before anything is built, so a replay
+        // answers from the decision already recorded rather than from a second
+        // evaluation that would have to agree with it.
+        if let Some(original) = state
+            .with_store(|store| store.find_intake_receipt(project_id, &identity))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Ok(intake_dto(
+                state.realm_id(),
+                &original,
+                AppliedDto::Unchanged,
+            ));
+        }
+        let matched = spec
+            .matches(&envelope)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let dedup_key = spec
+            .dedup
+            .evaluate(&envelope)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let now = kontor_api::now();
+        let event = CanonicalSourceEvent {
+            id: SourceEventId::generate(),
+            identity,
+            envelope,
+            external_observed_at: request.external_observed_at,
+            ingested_at: now,
+            processing_state: if matched {
+                SourceProcessingState::Evaluated
+            } else {
+                SourceProcessingState::Ignored
+            },
+        };
+        let receipt = IntakeReceipt {
+            id: IntakeReceiptId::generate(),
+            source_event_id: event.id,
+            source_event_hash: event.envelope.hash().clone(),
+            trigger: spec.id.clone(),
+            trigger_version: spec.version,
+            // A matched event is *proposed* and never approved. Approving one
+            // means arming work without a human, which is the trigger's
+            // auto-arm policy talking — evaluated by the intake service that
+            // owns it, not by the operation that submitted the event.
+            result: if matched {
+                IntakeResult::Proposed
+            } else {
+                IntakeResult::Ignored
+            },
+            approval: None,
+            proposed: None,
+            idempotency_key: key.clone(),
+            dedup_key,
+            duplicate_of: None,
+            predecessor_receipt_id: None,
+            decided_at: now,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "submit_intake",
+            "trigger": spec.id.as_str(),
+            "trigger_version": spec.version.get(),
+            "source_event_hash": event.envelope.hash().as_str(),
+        }))?;
+        let target = AggregateRef::Project { project_id };
+        if self.replayed(key, &intent, Some(&target))?.is_none() {
+            let project = self.project_row(project_id)?;
+            self.record(
+                key,
+                project_id,
+                CommandKind::SubmitIntake,
+                target,
+                project.revision,
+                &intent,
+            )?;
+        }
+        let outcome = state
+            .with_store(|store| {
+                store.record_source_event(&NewSourceEvent {
+                    project_id,
+                    event: event.clone(),
+                    receipt: receipt.clone(),
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let (stored, applied) = match outcome {
+            IntakeOutcome::Recorded(receipt) => (receipt, AppliedDto::Created),
+            IntakeOutcome::Duplicate(receipt) => (receipt, AppliedDto::Unchanged),
+        };
+        Ok(intake_dto(state.realm_id(), &stored, applied))
+    }
+
+    fn intake_receipt(
+        &self,
+        project_id: ProjectId,
+        receipt_id: &str,
+    ) -> Result<IntakeReceiptDto, ApiError> {
+        let state = self.state()?;
+        let id = IntakeReceiptId::parse(receipt_id).map_err(|error| self.refuse_domain(&error))?;
+        let receipt = state
+            .with_store(|store| store.get_intake_receipt(project_id, id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such intake decision exists in this project",
+                )
+            })?;
+        Ok(intake_dto(
+            state.realm_id(),
+            &receipt,
+            AppliedDto::Unchanged,
+        ))
+    }
+
+    fn connector_field_specs(
+        &self,
+        project_id: ProjectId,
+        connector: &str,
+    ) -> Result<Vec<ConnectorSpecDto>, ApiError> {
+        let state = self.state()?;
+        let connector =
+            ConnectorKey::parse(connector).map_err(|error| self.refuse_domain(&error))?;
+        let catalog = self.connector_catalog()?;
+        let mut specs = Vec::new();
+        for compiled in catalog.field_specs() {
+            let spec = compiled.spec();
+            if spec.connector != connector {
+                continue;
+            }
+            let selector = kontor_core::repository::ConnectorSpecSelector {
+                project_id,
+                connector: spec.connector.clone(),
+                project: spec.project.clone(),
+                issue_type: spec.issue_type.clone(),
+                version: spec.version,
+            };
+            let installed = state
+                .with_store(|store| store.get_ticket_field_spec(&selector))
+                .map_err(|error| self.refuse(&error))?
+                .is_some();
+            specs.push(ConnectorSpecDto {
+                connector: spec.connector.as_str().to_owned(),
+                external_project: spec.project.as_str().to_owned(),
+                issue_type: spec.issue_type.as_str().to_owned(),
+                version: spec.version,
+                definition_hash: compiled.hash().as_str().to_owned(),
+                covers: spec
+                    .mappings
+                    .iter()
+                    .map(|mapping| mapping.key.as_str().to_owned())
+                    .collect(),
+                installed,
+            });
+        }
+        Ok(specs)
+    }
+
+    fn connector_workflow_specs(
+        &self,
+        project_id: ProjectId,
+        connector: &str,
+    ) -> Result<Vec<ConnectorSpecDto>, ApiError> {
+        let state = self.state()?;
+        let connector =
+            ConnectorKey::parse(connector).map_err(|error| self.refuse_domain(&error))?;
+        let catalog = self.connector_catalog()?;
+        let mut specs = Vec::new();
+        for compiled in catalog.workflow_specs() {
+            let spec = compiled.spec();
+            if spec.connector != connector {
+                continue;
+            }
+            let installed = state
+                .with_store(|store| {
+                    store.get_external_workflow_spec(
+                        &kontor_core::repository::ConnectorSpecSelector {
+                            project_id,
+                            connector: spec.connector.clone(),
+                            project: spec.project.clone(),
+                            issue_type: spec.issue_type.clone(),
+                            version: spec.version,
+                        },
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+                .is_some();
+            specs.push(ConnectorSpecDto {
+                connector: spec.connector.as_str().to_owned(),
+                external_project: spec.project.as_str().to_owned(),
+                issue_type: spec.issue_type.as_str().to_owned(),
+                version: spec.version,
+                definition_hash: compiled.hash().as_str().to_owned(),
+                covers: spec
+                    .milestones
+                    .iter()
+                    .map(|rule| rule.milestone.as_str().to_owned())
+                    .collect(),
+                installed,
+            });
+        }
+        Ok(specs)
+    }
+
+    fn ticket_conflicts(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<Vec<TicketConflictDto>, ApiError> {
+        let state = self.state()?;
+        self.task_row(project_id, task_id)?;
+        let conflicts = state
+            .with_store(|store| store.list_ticket_conflicts(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(conflicts.iter().map(conflict_dto).collect())
+    }
+
+    async fn resolve_ticket_conflict(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &ResolveConflictRequest,
+    ) -> Result<TicketConflictDto, ApiError> {
+        let state = self.state()?;
+        self.task_row(project_id, task_id)?;
+        let id = StatusConflictId::parse(&request.conflict_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let conflicts = state
+            .with_store(|store| store.list_ticket_conflicts(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        let conflict = conflicts
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such conflict is recorded against this task's tickets",
+                )
+            })?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "resolve_ticket_conflict",
+            "conflict_id": conflict.id.to_string(),
+        }))?;
+        let target = AggregateRef::TicketLink {
+            link_id: conflict.link_id,
+        };
+        // The key is judged before the already-resolved short-circuit, so a
+        // changed request under a used key is a conflict rather than a replay
+        // wearing the previous answer's clothes.
+        let replay = self.replayed(key, &intent, Some(&target))?;
+        if conflict.resolved_at.is_some() {
+            return Ok(conflict_dto(conflict));
+        }
+        let receipt = if let Some(existing) = replay {
+            existing.id
+        } else {
+            self.record(
+                key,
+                project_id,
+                CommandKind::ResolveStatusConflict,
+                target,
+                conflict.task_revision,
+                &intent,
+            )?
+        };
+        let resolved_at = kontor_api::now();
+        state
+            .with_store(|store| store.resolve_conflict(project_id, id, receipt, resolved_at))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(TicketConflictDto {
+            resolved_at: Some(resolved_at),
+            ..conflict_dto(conflict)
+        })
+    }
+
+    async fn pull_ticket_comments(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<TicketCommentPullDto, ApiError> {
+        let state = self.state()?;
+        let task = self.task_row(project_id, task_id)?;
+        let links = state
+            .with_store(|store| store.list_ticket_links(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "pull_ticket_comments",
+            "task_id": task_id.to_string(),
+            "links": links.iter().map(|link| link.id.to_string()).collect::<Vec<_>>(),
+        }))?;
+        let target = AggregateRef::Task { task_id };
+        let receipt = if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
+            existing.id
+        } else {
+            self.record(
+                key,
+                project_id,
+                CommandKind::PullTicketComments,
+                target,
+                task.revision,
+                &intent,
+            )?
+        };
+        if !links.is_empty() {
+            // Mirroring a revision means reading it out of the external system,
+            // and that needs the connector this Realm is configured with.
+            // Answering `mirrored: 0` without one would be a claim about a
+            // system nothing contacted, which is indistinguishable from "there
+            // were no new comments".
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "this realm is not configured with a connector that can read those tickets",
+            ));
+        }
+        let held = state
+            .with_store(|store| store.list_inbound_comments(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(TicketCommentPullDto {
+            realm_id: state.realm_id(),
+            task_id,
+            links: Vec::new(),
+            mirrored: 0,
+            held: u32::try_from(held.len()).unwrap_or(u32::MAX),
+            receipt_id: receipt.to_string(),
+        })
+    }
+
+    fn ticket_comments(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<Vec<TicketCommentDto>, ApiError> {
+        let state = self.state()?;
+        self.task_row(project_id, task_id)?;
+        let comments = state
+            .with_store(|store| store.list_inbound_comments(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(comments
+            .iter()
+            .map(|comment| TicketCommentDto {
+                link_id: comment.link_id.to_string(),
+                external_comment_id: comment.external_comment_id.clone(),
+                body_hash: comment.body_hash.as_str().to_owned(),
+                author_account_id: comment.author_account_id.clone(),
+                external_created_at: comment.external_created_at,
+                external_updated_at: comment.external_updated_at,
+                observed_at: comment.observed_at,
+                supersedes: comment
+                    .supersedes
+                    .as_ref()
+                    .map(|hash| hash.as_str().to_owned()),
+            })
+            .collect())
+    }
+
+    async fn claim_ticket(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<TicketClaimDto, ApiError> {
+        let state = self.state()?;
+        let task = self.task_row(project_id, task_id)?;
+        let links = state
+            .with_store(|store| store.list_ticket_links(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        if links.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::NotFound,
+                "this task is linked to no external ticket to claim",
+            ));
+        }
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "claim_ticket",
+            "task_id": task_id.to_string(),
+            "action": ownership_action_name(OwnershipAction::ReassignToPrincipal),
+            "links": links.iter().map(|link| link.id.to_string()).collect::<Vec<_>>(),
+        }))?;
+        let target = AggregateRef::Task { task_id };
+        let receipt = if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
+            existing.id
+        } else {
+            self.record(
+                key,
+                project_id,
+                CommandKind::ClaimTicket,
+                target,
+                task.revision,
+                &intent,
+            )?
+        };
+        // What is recorded is Kontor's own decision to hold these tickets, and
+        // that is the whole of what this operation may decide. Writing the
+        // assignee is convergence, and convergence needs the principal — which
+        // is read from the external system in the same exchange that observes
+        // the issue, because "is the holder me?" cannot be answered by guessing
+        // an account id. `ticket:reconcile-apply` is where that write happens,
+        // and where its absence is already refused.
+        Ok(TicketClaimDto {
+            realm_id: state.realm_id(),
+            task_id,
+            links: links.iter().map(|link| link.id.to_string()).collect(),
+            action: ownership_action_name(OwnershipAction::ReassignToPrincipal),
+            receipt_id: receipt.to_string(),
+        })
+    }
 }
 
 impl Services {
@@ -3771,6 +4460,83 @@ impl Services {
             receipt_id: receipt.to_string(),
         })
     }
+}
+
+/// One pinned trigger revision, as an operator reads it back.
+fn trigger_dto(spec: &TriggerSpec) -> TriggerSpecDto {
+    TriggerSpecDto {
+        trigger: spec.id.as_str().to_owned(),
+        version: spec.version,
+        source_kind: spec.source_kind.as_str().to_owned(),
+        source_connection: spec.source_connection.as_str().to_owned(),
+        event_schema: RevisionRefDto {
+            id: spec.event_schema.as_str().to_owned(),
+            version: spec.event_schema_version,
+        },
+        filter_pointers: spec
+            .filter
+            .iter()
+            .map(|clause| clause.pointer.as_str().to_owned())
+            .collect(),
+        dedup_pointers: spec
+            .dedup
+            .pointers
+            .iter()
+            .map(|pointer| pointer.as_str().to_owned())
+            .collect(),
+        work_profile: RevisionRefDto {
+            id: spec.work_profile.as_str().to_owned(),
+            version: spec.work_profile_version,
+        },
+        auto_arm: matches!(spec.approval, AutoArmPolicy::BoundedAutoArm { .. }),
+    }
+}
+
+/// One recorded intake decision.
+fn intake_dto(
+    realm_id: kontor_core::id::RealmId,
+    receipt: &IntakeReceipt,
+    applied: AppliedDto,
+) -> IntakeReceiptDto {
+    IntakeReceiptDto {
+        realm_id,
+        receipt_id: receipt.id.to_string(),
+        source_event_id: receipt.source_event_id.to_string(),
+        source_event_hash: receipt.source_event_hash.as_str().to_owned(),
+        trigger: RevisionRefDto {
+            id: receipt.trigger.as_str().to_owned(),
+            version: receipt.trigger_version,
+        },
+        result: receipt.result.as_str().to_owned(),
+        dedup_key: receipt.dedup_key.as_str().to_owned(),
+        duplicate_of: receipt.duplicate_of.map(|id| id.to_string()),
+        applied,
+    }
+}
+
+/// One recorded reconciliation conflict.
+fn conflict_dto(conflict: &StoredConflict) -> TicketConflictDto {
+    TicketConflictDto {
+        conflict_id: conflict.id.to_string(),
+        link_id: conflict.link_id.to_string(),
+        kind: conflict.kind.as_str().to_owned(),
+        observation_id: conflict.observation_id.to_string(),
+        task_revision: conflict.task_revision,
+        spec_version: conflict.spec_version,
+        detected_at: conflict.detected_at,
+        resolved_at: conflict.resolved_at,
+    }
+}
+
+/// The domain's own name for one ownership action.
+///
+/// It goes through the serializer rather than a hand-written string, so a
+/// variant renamed in the domain cannot keep an old spelling alive out here.
+fn ownership_action_name(action: OwnershipAction) -> String {
+    serde_json::to_value(action)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "reassign_to_principal".to_owned())
 }
 
 #[cfg(test)]

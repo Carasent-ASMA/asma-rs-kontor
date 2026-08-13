@@ -1439,6 +1439,11 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("select_task_account", "task", "witness", None),
     ("reconcile_ticket", "task", "witness", None),
     ("settle_runtime", "agent_run", "witness", None),
+    // Intake decides about the project's inbound events, and about no narrower
+    // aggregate: a decision that creates no work graph has none to name.
+    ("submit_intake", "project", "witness", None),
+    ("pull_ticket_comments", "task", "witness", None),
+    ("claim_ticket", "task", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.
@@ -1480,8 +1485,8 @@ fn every_command_kind_declares_its_legal_targets_revision_rule_and_desired_state
         "the expected table must not name the same pair twice"
     );
 
-    // Both closed sets are walked in full: 15 commands against 7 aggregates is
-    // 105 decisions, and every one of them is asserted.
+    // Both closed sets are walked in full: every command against every
+    // aggregate, and every one of those decisions is asserted.
     let mut checked = 0_usize;
     for kind in CommandKind::ALL {
         for target_kind in AggregateKind::ALL {

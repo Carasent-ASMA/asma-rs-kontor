@@ -285,6 +285,61 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
             post(applications::settle_runtime),
         )
+        // Profile detail and validation. Workspace-level, like the catalog they
+        // extend: a category resolves to the same bundle in every Realm running
+        // this build, so there is no project in the address.
+        .route(
+            "/v1/catalog/work-profiles/{category}",
+            get(applications::work_profile),
+        )
+        .route(
+            "/v1/catalog/work-profiles/{category}/validate",
+            post(applications::validate_work_profile),
+        )
+        // Triggers and intake.
+        .route(
+            "/v1/projects/{project_id}/triggers/{trigger}/{version}",
+            get(applications::trigger),
+        )
+        .route(
+            "/v1/projects/{project_id}/intake:submit",
+            post(applications::submit_intake),
+        )
+        .route(
+            "/v1/projects/{project_id}/intake/{receipt_id}",
+            get(applications::intake_receipt),
+        )
+        // Connector specifications, addressed by the connector they map.
+        .route(
+            "/v1/projects/{project_id}/connectors/{connector}/field-specs",
+            get(applications::connector_field_specs),
+        )
+        .route(
+            "/v1/projects/{project_id}/connectors/{connector}/workflow-specs",
+            get(applications::connector_workflow_specs),
+        )
+        // Conflicts, inbound comments and ownership, all task-scoped: a ticket is
+        // linked to a task, and every one of these is a fact about that link.
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:conflicts",
+            get(applications::ticket_conflicts),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:resolve-conflict",
+            post(applications::resolve_ticket_conflict),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:pull-comments",
+            post(applications::pull_ticket_comments),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:comments",
+            get(applications::ticket_comments),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:claim",
+            post(applications::claim_ticket),
+        )
         .route(
             "/v1/sessions/{agent_run_id}/timeline",
             get(sessions::timeline),

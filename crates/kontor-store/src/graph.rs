@@ -30,9 +30,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use kontor_core::DomainError;
 use kontor_core::calendar::ExecutionAuthorization;
 use kontor_core::id::{
-    AccountProfileId, AggregateRevision, CommandReceiptId, ConnectorKey, ExecutionAuthorizationId,
-    ExternalId, ExternalName, MiniProjectId, ModuleKey, ProjectId, SpecVersion, TaskId,
-    TaskWorkflowId, TeamTemplateId, TicketLinkId, Timestamp,
+    AccountProfileId, AggregateRevision, CommandReceiptId, ConnectorKey, ContentHash,
+    ExecutionAuthorizationId, ExternalId, ExternalName, MiniProjectId, ModuleKey, ProjectId,
+    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamTemplateId, TicketLinkId,
+    TicketObservationId, Timestamp,
 };
 use kontor_core::repository::{
     MiniProject, Project, RepositoryError, RepositoryResult, Task, TicketLink,
@@ -40,6 +41,7 @@ use kontor_core::repository::{
 };
 use kontor_core::spec::{ResolvedWorkProfileSnapshot, TeamTemplateRevision, WorkProfileSpec};
 use kontor_core::state::TaskState;
+use kontor_core::ticket::StatusConflictKind;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
@@ -196,6 +198,164 @@ pub struct AppliedEpic {
     pub team: Option<(TeamTemplateId, SpecVersion)>,
     /// The tasks, in the order they were stated.
     pub tasks: Vec<AppliedTask>,
+}
+
+/// One recorded reconciliation conflict, as a reader is told about it.
+///
+/// It carries the *classification* and the positions it was detected at, never
+/// the external values that produced it: a conflict says Kontor and the external
+/// system disagree, and reproducing the disagreement's content here would put
+/// ticket prose in a control-plane read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredConflict {
+    /// The conflict.
+    pub id: StatusConflictId,
+    /// The ticket link it concerns.
+    pub link_id: TicketLinkId,
+    /// Which classification the domain reached.
+    pub kind: StatusConflictKind,
+    /// The observation it was computed from.
+    pub observation_id: TicketObservationId,
+    /// The task revision at detection.
+    pub task_revision: AggregateRevision,
+    /// The pinned specification revision at detection.
+    pub spec_version: SpecVersion,
+    /// When it was detected.
+    pub detected_at: Timestamp,
+    /// When it was resolved, if it has been.
+    pub resolved_at: Option<Timestamp>,
+}
+
+/// One stored inbound comment revision.
+///
+/// The body is deliberately absent. Kontor mirrors inbound comments so a
+/// reviewer's words are not lost, and the *control plane* reads their identity,
+/// authorship and digest — a route that returned the prose would make this the
+/// place external ticket content leaves the process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredComment {
+    /// The ticket link.
+    pub link_id: TicketLinkId,
+    /// The comment's external id.
+    pub external_comment_id: ExternalId,
+    /// Digest of the normalized body. Identity of *this revision*.
+    pub body_hash: ContentHash,
+    /// The author's external account id.
+    pub author_account_id: ExternalId,
+    /// The author's display name, as the external system rendered it.
+    pub author_display: Option<ExternalName>,
+    /// When the external system created the comment.
+    pub external_created_at: Timestamp,
+    /// When the external system last updated it.
+    pub external_updated_at: Timestamp,
+    /// When Kontor observed this revision.
+    pub observed_at: Timestamp,
+    /// The revision this one supersedes, for an edit.
+    pub supersedes: Option<ContentHash>,
+}
+
+impl SqliteStore {
+    /// Every reconciliation conflict recorded against one task's links.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn list_ticket_conflicts(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Vec<StoredConflict>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT c.id, c.link_id, c.kind, c.observation_id, c.task_revision,
+                        c.spec_version, c.detected_at, c.resolved_at
+                 FROM status_conflicts AS c
+                 JOIN jira_links AS l
+                   ON l.project_id = c.project_id AND l.id = c.link_id
+                 WHERE c.project_id = ?1 AND l.task_id = ?2
+                 ORDER BY c.detected_at, c.id",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), task_id.to_string()])
+            .map_err(backend)?;
+        let mut conflicts = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let resolved: Option<String> = row.get(7).map_err(backend)?;
+            conflicts.push(StoredConflict {
+                id: StatusConflictId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+                link_id: TicketLinkId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+                kind: StatusConflictKind::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+                observation_id: TicketObservationId::parse(
+                    &row.get::<_, String>(3).map_err(backend)?,
+                )?,
+                task_revision: revision_of(row.get::<_, i64>(4).map_err(backend)?)?,
+                spec_version: read_version(row.get::<_, i64>(5).map_err(backend)?)?,
+                detected_at: read_timestamp(&row.get::<_, String>(6).map_err(backend)?)?,
+                resolved_at: resolved.as_deref().map(read_timestamp).transpose()?,
+            });
+        }
+        Ok(conflicts)
+    }
+
+    /// Every inbound comment revision mirrored for one task's links.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn list_inbound_comments(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Vec<StoredComment>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT c.link_id, c.external_comment_id, c.body_hash, c.author_account_id,
+                        c.author_display, c.external_created_at, c.external_updated_at,
+                        c.observed_at, c.supersedes_hash
+                 FROM external_comments AS c
+                 JOIN jira_links AS l
+                   ON l.project_id = c.project_id AND l.id = c.link_id
+                 WHERE c.project_id = ?1 AND l.task_id = ?2
+                 ORDER BY c.external_created_at, c.external_comment_id, c.body_hash",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), task_id.to_string()])
+            .map_err(backend)?;
+        let mut comments = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let display: Option<String> = row.get(4).map_err(backend)?;
+            let supersedes: Option<String> = row.get(8).map_err(backend)?;
+            comments.push(StoredComment {
+                link_id: TicketLinkId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+                external_comment_id: ExternalId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+                body_hash: ContentHash::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+                author_account_id: ExternalId::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+                author_display: display.as_deref().map(ExternalName::parse).transpose()?,
+                external_created_at: read_timestamp(&row.get::<_, String>(5).map_err(backend)?)?,
+                external_updated_at: read_timestamp(&row.get::<_, String>(6).map_err(backend)?)?,
+                observed_at: read_timestamp(&row.get::<_, String>(7).map_err(backend)?)?,
+                supersedes: supersedes.as_deref().map(ContentHash::parse).transpose()?,
+            });
+        }
+        Ok(comments)
+    }
+
+    /// One task's ticket link, addressed by the task it belongs to.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn first_ticket_link(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<TicketLink>> {
+        Ok(self
+            .list_ticket_links(project_id, task_id)?
+            .into_iter()
+            .next())
+    }
 }
 
 /// One seat inside a team run: the role slot, its run and its native session.
