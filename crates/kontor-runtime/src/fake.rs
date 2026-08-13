@@ -405,6 +405,14 @@ struct FakeState {
     plane: PlaneRequirement,
     /// The one root this runtime will work in, when it verifies placement.
     canonical_root: Option<WorkspaceRoot>,
+    /// Every seat whose *placement* this runtime can currently prove.
+    ///
+    /// Separate from `bindings` because the two are lost and recovered
+    /// separately on a real plane: a restart can leave a runtime able to say
+    /// *which session this is* and unable to say *where it is working*, and a
+    /// driving operation needs both. Modelling only the binding is what let a
+    /// read-recovers-write-does-not split go unnoticed in-process.
+    placements: BTreeSet<RuntimeBindingId>,
     runtime_kind: RuntimeKindKey,
     host: ExternalName,
     generation: u64,
@@ -704,6 +712,7 @@ impl FakeState {
         self.sessions.insert(native_id, session);
         // The runtime keeps its own copy of what it just issued. Everything a
         // caller later presents is checked against this one.
+        self.placements.insert(request.binding_id());
         self.bindings.insert(request.binding_id(), snapshot.clone());
         for permission_id in raised {
             self.permissions.open(request.binding_id(), permission_id);
@@ -742,6 +751,7 @@ impl ScriptedFakeRuntime {
             state: Mutex::new(FakeState {
                 plane: PlaneRequirement::NotRequired,
                 canonical_root: None,
+                placements: BTreeSet::new(),
                 runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("valid runtime kind"),
                 host: ExternalName::parse("fake-host").expect("valid host name"),
                 generation: 1,
@@ -787,6 +797,21 @@ impl ScriptedFakeRuntime {
     /// could synthesize a placeholder path and no in-process test noticed.
     pub fn verifying_placement_at(&self, root: WorkspaceRoot) {
         self.lock().canonical_root = Some(root);
+    }
+
+    /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
+    ///
+    /// `compose_paseo` builds every adapter from `PaseoCheckpoint::fresh`, so a
+    /// daemon restart destroys the adapter's own ledgers — which bindings it
+    /// issued, and where each seat is placed — while the runtime it talks to
+    /// keeps running with its sessions intact. Modelling the restart *without*
+    /// this leaves those ledgers populated in-process, and a test then proves
+    /// only that the daemon's half recovered. That is precisely how a
+    /// reads-recover-but-writes-do-not split survived a green suite.
+    pub fn rebuild_adapter_state(&self) {
+        let mut state = self.lock();
+        state.bindings.clear();
+        state.placements.clear();
     }
 
     /// Forget that the plane was ever prepared.
@@ -1204,6 +1229,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             if !snapshot.within(&declared) {
                 continue;
             }
+            // Placement travels with the binding, as it does on the real
+            // adapter: a seat restored without one reads and cannot be driven.
+            state.placements.insert(snapshot.binding_id());
             state
                 .bindings
                 .insert(snapshot.binding_id(), snapshot.clone());
@@ -1413,6 +1441,17 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 context_policy: None,
             },
         )?;
+        // The binding is judged before its placement, and the order is the
+        // point: a fabricated binding is a *forgery*, not a seat with a missing
+        // workspace, and reporting it as the latter would tell an operator to
+        // reconcile when they should investigate.
+        state.session(&request.binding)?;
+        // Driving a seat then needs its placement, not only its binding: a
+        // message is delivered *into a workspace*. Reads do not, which is
+        // exactly the asymmetry a restart exposes.
+        if !state.placements.contains(&request.binding.binding_id()) {
+            return Err(RuntimeError::WorkspaceBindingRequired);
+        }
         let step = state.take_step(
             RuntimeCapability::SendMessage,
             RequestKey::Message(request.message_id),
@@ -1621,6 +1660,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         session.binding_id = request.binding_id;
         let raised = session.raised_permissions();
         let observed = session.state;
+        state.placements.insert(request.binding_id);
         state.bindings.insert(request.binding_id, snapshot.clone());
         for permission_id in raised {
             state.permissions.open(request.binding_id, permission_id);

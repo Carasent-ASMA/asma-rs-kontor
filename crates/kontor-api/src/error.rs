@@ -296,6 +296,22 @@ impl ApiError {
             // reported it as "refused the operation" with the rule discarded and
             // nothing logged, which is what made this class of defect cost a
             // source read and an experiment to diagnose.
+            // A seat whose placement this process cannot name is not a runtime
+            // that refused: it is a *seat that cannot be driven*, and the two
+            // want opposite things from an operator. This one is recoverable —
+            // a reconciliation re-proves the placement from the live runtime —
+            // and saying so is the difference between "retry" and "investigate".
+            RuntimeError::WorkspaceBindingRequired => {
+                warn!(
+                    realm_id = %realm_id,
+                    "a seat operation was attempted with no proved workspace placement"
+                );
+                Self::new(
+                    realm_id,
+                    ApiErrorCode::StaleBinding,
+                    "this process cannot prove where the session's seat is placed",
+                )
+            }
             RuntimeError::WorkspaceMismatch { rule } => {
                 warn!(
                     realm_id = %realm_id,

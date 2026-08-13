@@ -571,6 +571,8 @@ pub struct PaseoCheckpoint {
     pub claims: Vec<ClaimedSeat>,
     /// The full correlation chain per seat.
     pub records: Vec<PaseoSeatRecord>,
+    /// The Paseo workspace each live seat is placed in.
+    pub placements: Vec<(RuntimeBindingId, ExternalId)>,
     /// The message delivery ledger, in commit order.
     pub deliveries: Vec<(MessageId, ContentHash, PaseoDelivery)>,
     /// Every permission request observed still pending, with the session that
@@ -606,6 +608,7 @@ impl PaseoCheckpoint {
             seats: Vec::new(),
             claims: Vec::new(),
             records: Vec::new(),
+            placements: Vec::new(),
             deliveries: Vec::new(),
             pending_permissions: Vec::new(),
             permission_acks: Vec::new(),
@@ -629,6 +632,17 @@ struct PaseoState {
     bindings: IssuedBindingRegistry,
     admissions: AdmissionLedger,
     records: BTreeMap<RuntimeBindingId, PaseoSeatRecord>,
+    /// The Paseo workspace each live seat is placed in.
+    ///
+    /// Narrower than [`PaseoSeatRecord`] on purpose. The record is the whole
+    /// correlation chain a launch wrote and carries Kontor-side facts — the task,
+    /// the team run, the role slot — that this adapter cannot re-derive from the
+    /// runtime. Placement is the one part of it every *driving* operation needs,
+    /// and it is the one part the live runtime can still answer for on its own:
+    /// an agent reports which workspace it sits in. Keeping it separately is what
+    /// lets a restart recover the ability to drive a seat without fabricating a
+    /// correlation chain nobody recorded.
+    placements: BTreeMap<RuntimeBindingId, ExternalId>,
     messages: MessageLedger<PaseoDelivery>,
     deliveries: Vec<(MessageId, ContentHash, PaseoDelivery)>,
     permissions: PermissionLedger,
@@ -785,6 +799,7 @@ impl PaseoAdapter {
                     .iter()
                     .map(|snapshot| (snapshot.binding.team_run_id, snapshot.clone()))
                     .collect(),
+                placements: checkpoint.placements.iter().cloned().collect(),
                 bindings: {
                     let mut registry = IssuedBindingRegistry::new();
                     for snapshot in &checkpoint.bindings {
@@ -849,6 +864,11 @@ impl PaseoAdapter {
             seats: state.admissions.occupied_seats().collect(),
             claims: state.admissions.claimed_seats().collect(),
             records: state.records.values().cloned().collect(),
+            placements: state
+                .placements
+                .iter()
+                .map(|(binding, workspace)| (*binding, workspace.clone()))
+                .collect(),
             deliveries: state.deliveries.clone(),
             pending_permissions: state
                 .permission_owners
@@ -866,6 +886,12 @@ impl PaseoAdapter {
     #[must_use]
     pub fn seat_record(&self, binding_id: RuntimeBindingId) -> Option<PaseoSeatRecord> {
         self.lock().records.get(&binding_id).cloned()
+    }
+
+    /// The Paseo workspace one live seat is placed in.
+    #[must_use]
+    pub fn placement(&self, binding_id: RuntimeBindingId) -> Option<ExternalId> {
+        self.lock().placements.get(&binding_id).cloned()
     }
 
     /// The epic project binding, once preparation has established one.
@@ -1280,9 +1306,8 @@ impl PaseoAdapter {
     ) -> RuntimeResult<()> {
         let project = self.require_project()?;
         let workspace_id = self
-            .seat_record(binding.binding_id())
-            .ok_or(RuntimeError::WorkspaceBindingRequired)?
-            .workspace_id;
+            .placement(binding.binding_id())
+            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
         self.verify_agent_location(agent, workspace_id.as_str())?;
         // …and the workspace itself, which is where the project half of the
         // agent's placement is proved on this wire.
@@ -2179,6 +2204,9 @@ impl PaseoAdapter {
                 .admissions
                 .occupy(request, ExternalId::parse(&agent.id)?)?;
             state.bindings.record(snapshot.clone());
+            state
+                .placements
+                .insert(request.binding_id(), record.workspace_id.clone());
             state.records.insert(request.binding_id(), record);
         }
         Ok(LaunchOutcome {
@@ -2260,12 +2288,36 @@ impl RuntimeAdapter for PaseoAdapter {
         // this runtime can currently prove.
         let live = self.discover_sessions().await?;
         let declared = self.declared().await?;
+        // Placement is re-proved from the live agents, not remembered: an agent
+        // reports which workspace it sits in, and that workspace is checked
+        // against this plane exactly as a driving operation checks it. The seat
+        // record a launch wrote carries Kontor-side facts this adapter cannot
+        // re-derive — the task, the team run, the role slot — so it is *not*
+        // fabricated here. Only the placement is recovered, which is the part
+        // every driving operation actually reads and the part the runtime can
+        // still answer for.
+        let placements = self.reprove_placements(snapshots, &live).await?;
         let mut restored = Vec::new();
         let mut state = self.lock();
         for snapshot in snapshots {
             match attest_restored(snapshot, &live, &declared) {
                 Ok(()) => {
+                    // A binding whose placement could not be re-proved is not
+                    // restored at all. Recording the session without it would
+                    // leave a seat that reads and cannot be driven, which is the
+                    // split this round exists to close.
+                    let Some(workspace_id) = placements.get(&snapshot.binding_id()) else {
+                        tracing::warn!(
+                            binding = %snapshot.binding_id(),
+                            agent_run = %snapshot.agent_run_id(),
+                            "refused to restore a binding whose placement could not be re-proved"
+                        );
+                        continue;
+                    };
                     state.bindings.record(snapshot.clone());
+                    state
+                        .placements
+                        .insert(snapshot.binding_id(), workspace_id.clone());
                     restored.push(snapshot.clone());
                 }
                 // Refused, and said so. A claim this runtime cannot attest is
@@ -2860,6 +2912,9 @@ impl RuntimeAdapter for PaseoAdapter {
                 binding_id: request.binding_id,
                 native_id: ExternalId::parse(&after.id)?,
             });
+            state
+                .placements
+                .insert(request.binding_id, record.workspace_id.clone());
             state.records.insert(request.binding_id, record);
             state.adoptions.remove(&request.native.native_id);
         }
@@ -3437,4 +3492,59 @@ fn attest_restored(
         });
     }
     Ok(())
+}
+
+impl PaseoAdapter {
+    /// Re-prove where each attested seat is placed, from the live agents.
+    ///
+    /// The workspace id is taken from the agent's *own* report and then put
+    /// through the same two checks a driving operation makes: the agent must be
+    /// working in this plane's canonical task worktree, and the workspace it
+    /// names must be this plane's project's registration of that worktree. So a
+    /// placement is recovered only when the runtime independently confirms it,
+    /// on the same terms as if it had never been lost.
+    ///
+    /// A seat whose agent cannot be found, has moved, or sits in a workspace this
+    /// plane does not own is simply absent from the answer — and its binding is
+    /// then not restored either.
+    async fn reprove_placements(
+        &self,
+        snapshots: &[RuntimeBindingSnapshot],
+        live: &[NativeSession],
+    ) -> RuntimeResult<BTreeMap<RuntimeBindingId, ExternalId>> {
+        let project = self.require_project()?;
+        let mut placements = BTreeMap::new();
+        for snapshot in snapshots {
+            let native = &snapshot.identity().native_id;
+            if !live
+                .iter()
+                .any(|session| &session.identity == snapshot.identity())
+            {
+                continue;
+            }
+            let Ok(agent) = self.fetch_agent(native.as_str()).await else {
+                continue;
+            };
+            let Some(workspace_id) = agent.workspace_id.clone() else {
+                continue;
+            };
+            // Both halves, exactly as `verify_seat_placement` asks them.
+            if self.verify_agent_location(&agent, &workspace_id).is_err() {
+                continue;
+            }
+            let Ok(workspace) = self.fetch_workspace(&workspace_id).await else {
+                continue;
+            };
+            if self
+                .verify_workspace_placement(&workspace, &project)
+                .is_err()
+            {
+                continue;
+            }
+            if let Ok(parsed) = ExternalId::parse(&workspace_id) {
+                placements.insert(snapshot.binding_id(), parsed);
+            }
+        }
+        Ok(placements)
+    }
 }

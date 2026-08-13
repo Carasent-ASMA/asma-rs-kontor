@@ -5877,16 +5877,31 @@ async fn a_session_bound_before_a_restart_is_operable_after_it() {
     let (run, bound) = world.launch().await;
     world.script(HISTORY_LIVE);
 
-    // Operable before the restart, so the assertion after it is about the
-    // restart and not about the session having never worked.
+    // Operable before the restart, so the assertions after it are about the
+    // restart and not about the session having never worked. Both halves are
+    // exercised, because they are lost and recovered separately: a read needs
+    // the binding, a *write* needs the seat's placement as well.
     let before = Call::get(format!("/v1/sessions/{run}/timeline"))
         .signed_as(&world, "observer")
         .send(&world)
         .await;
     assert_eq!(before.status, 200, "{}", before.body);
+    let sent_before = Call::post(
+        format!("/v1/sessions/{run}/messages"),
+        &serde_json::json!({"body": "before the restart"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(kontor_runtime::request::MessageId::generate().to_string())
+    .send(&world)
+    .await;
+    assert_eq!(sent_before.status, 200, "{}", sent_before.body);
 
     let realm_before = world.realm_id();
     let observer = secret(&world, "observer");
+    // Sending is an operator act; reading is an observer's. Both tiers are held
+    // across the restart so neither assertion below is really about authority.
+    let observer_operator = secret(&world, "operator");
+    let body = serde_json::json!({"body": "after the restart"});
     let World {
         directory,
         daemon,
@@ -5899,7 +5914,11 @@ async fn a_session_bound_before_a_restart_is_operable_after_it() {
 
     // The runtime outlives the control plane — which is the real shape of this:
     // Paseo keeps running while kontord restarts. The *same* fake is registered
-    // with the new daemon, still holding the same native session.
+    // with the new daemon, still holding the same native session. What it does
+    // *not* keep is the adapter's own ledgers: `compose_paseo` rebuilds every
+    // adapter from a fresh checkpoint, so which bindings it issued and where
+    // each seat sits are gone, exactly as they are in production.
+    fake.rebuild_adapter_state();
     let restarted = Daemon::start(
         DaemonConfig::at(&state_root).with_port(0),
         RuntimeRegistry::new().with(
@@ -5962,6 +5981,37 @@ async fn a_session_bound_before_a_restart_is_operable_after_it() {
         after.body
     );
 
+    // The write path, which is what round 4 restored the binding for and did not
+    // restore the *placement* for: a message is delivered into a workspace, so a
+    // seat this process cannot place is a seat it cannot drive. This refused
+    // with `WorkspaceBindingRequired` before.
+    let message = kontor_runtime::request::MessageId::generate().to_string();
+    let sent = Call::post(format!("/v1/sessions/{run}/messages"), &body)
+        .with_token(&observer_operator)
+        .with_key(&message)
+        .send_to(&router)
+        .await;
+    assert_eq!(
+        sent.status, 200,
+        "a seat bound before the restart can be driven after it: {}",
+        sent.body
+    );
+
+    // Same idempotency semantics as before the restart: the identical message id
+    // is answered from the runtime's own ledger rather than delivered twice.
+    let replayed = Call::post(format!("/v1/sessions/{run}/messages"), &body)
+        .with_token(&observer_operator)
+        .with_key(&message)
+        .send_to(&router)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["position"],
+        sent.json()["position"],
+        "a replayed message lands where the first one did: {}",
+        replayed.body
+    );
+
     restarted.state().signals().stop();
     drop(directory);
 }
@@ -5987,8 +6037,10 @@ async fn a_binding_whose_session_is_gone_is_not_restored() {
 
     // The runtime moved to a new generation while the control plane was down. A
     // repeated native id in a new generation is a different session, so the old
-    // binding must not come back pointing at whatever now answers to it.
+    // binding must not come back pointing at whatever now answers to it. The
+    // adapter's own ledgers are rebuilt too, as `compose_paseo` rebuilds them.
     fake.restart();
+    fake.rebuild_adapter_state();
 
     let restarted = Daemon::start(
         DaemonConfig::at(&state_root).with_port(0),
@@ -6020,6 +6072,24 @@ async fn a_binding_whose_session_is_gone_is_not_restored() {
         after.body
     );
     assert_eq!(after.code(), "stale_binding");
+
+    // Neither readable nor drivable. A binding the runtime would not attest gets
+    // no placement either, so the write path refuses as well — the two must not
+    // come apart, which is the whole of BLK-007.
+    let sent = Call::post(
+        format!("/v1/sessions/{run}/messages"),
+        &serde_json::json!({"body": "into a session that is gone"}),
+    )
+    .with_token(secret_from(&state_root, "operator"))
+    .with_key(kontor_runtime::request::MessageId::generate().to_string())
+    .send_to(&router)
+    .await;
+    assert_eq!(
+        sent.status, 409,
+        "an unattested binding is not drivable either: {}",
+        sent.body
+    );
+    assert_eq!(sent.code(), "stale_binding");
 
     restarted.state().signals().stop();
     drop(directory);
