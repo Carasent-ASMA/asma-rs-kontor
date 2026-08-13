@@ -1667,3 +1667,235 @@ fn ensure_links(
     }
     Ok(applied)
 }
+
+// ---------------------------------------------------------------------------
+// Registered profile packs
+// ---------------------------------------------------------------------------
+
+/// One operator-registered profile pack revision, as it was stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredPack {
+    /// The pack's open id.
+    pub pack_id: String,
+    /// This revision.
+    pub version: SpecVersion,
+    /// The canonical document, byte-for-byte as it was admitted.
+    pub document: String,
+    /// Its digest.
+    pub document_hash: ContentHash,
+    /// When it was registered.
+    pub registered_at: Timestamp,
+}
+
+impl SqliteStore {
+    /// Register one profile-pack revision, or prove the one already stored under
+    /// that `(pack_id, version)` is the same document.
+    ///
+    /// Returns [`Applied::Unchanged`] with the stored revision when the digests
+    /// match, and refuses with a conflict when they do not — a revision is
+    /// immutable, so the same version carrying different bytes is a publishing
+    /// mistake and never an update.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] for a revision that already exists
+    /// with different content, and a backend error otherwise.
+    pub fn register_profile_pack(
+        &self,
+        pack: &RegisteredPack,
+        binding: &IdempotencyBinding,
+    ) -> RepositoryResult<(RegisteredPack, Applied)> {
+        let transaction = self.begin()?;
+
+        // The key is judged first, and against the *logical operation* rather
+        // than against the pack alone. A key already bound to a different
+        // fingerprint was used for something else, and answering it here would
+        // let one key stand for two registrations.
+        let bound: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT operation, fingerprint FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![binding.key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let replayed = match bound {
+            Some((operation, fingerprint))
+                if operation == binding.operation
+                    && fingerprint == binding.fingerprint.as_str() =>
+            {
+                true
+            }
+            Some(_) => {
+                return Err(conflict(
+                    "idempotency key",
+                    "this key is already bound to a different operation",
+                ));
+            }
+            None => {
+                transaction
+                    .execute(
+                        "INSERT INTO realm_idempotency_bindings
+                             (idempotency_key, operation, fingerprint, bound_at)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            binding.key,
+                            binding.operation,
+                            binding.fingerprint.as_str(),
+                            text(binding.bound_at)
+                        ],
+                    )
+                    .map_err(backend)?;
+                false
+            }
+        };
+
+        // Content is judged second, and independently: the same revision with
+        // different bytes is a conflict whatever key it arrives under, because a
+        // revision is immutable and a fresh key cannot buy an edit.
+        let existing = read_pack_row(&transaction, &pack.pack_id, pack.version)?;
+        if let Some(existing) = existing {
+            if existing.document_hash != pack.document_hash {
+                return Err(conflict(
+                    "profile pack",
+                    "this pack revision is already registered with different content",
+                ));
+            }
+            transaction.commit().map_err(backend)?;
+            return Ok((existing, Applied::Unchanged));
+        }
+        // A replayed key whose pack is absent means the first attempt bound the
+        // key and then failed. Registering now is the convergent answer: the
+        // binding already names this exact operation, so nothing else can be
+        // claiming it.
+        let _ = replayed;
+        transaction
+            .execute(
+                "INSERT INTO registered_profile_packs
+                     (pack_id, version, document, document_hash, registered_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    pack.pack_id,
+                    version_column(pack.version),
+                    pack.document,
+                    pack.document_hash.as_str(),
+                    text(pack.registered_at)
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok((pack.clone(), Applied::Created))
+    }
+
+    /// Read one registered pack revision.
+    ///
+    /// # Errors
+    /// Refuses a stored document whose bytes no longer match the digest they
+    /// were admitted under.
+    pub fn get_profile_pack(
+        &self,
+        pack_id: &str,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<RegisteredPack>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT pack_id, version, document, document_hash, registered_at
+                 FROM registered_profile_packs
+                 WHERE pack_id = ?1 AND version = ?2",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![pack_id, version_column(version)])
+            .map_err(backend)?;
+        let Some(row) = rows.next().map_err(backend)? else {
+            return Ok(None);
+        };
+        read_pack(row).map(Some)
+    }
+
+    /// Every registered pack revision, oldest first.
+    ///
+    /// # Errors
+    /// As [`SqliteStore::get_profile_pack`].
+    pub fn list_profile_packs(&self) -> RepositoryResult<Vec<RegisteredPack>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT pack_id, version, document, document_hash, registered_at
+                 FROM registered_profile_packs
+                 ORDER BY registered_at, pack_id, version",
+            )
+            .map_err(backend)?;
+        let mut rows = statement.query([]).map_err(backend)?;
+        let mut packs = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            packs.push(read_pack(row)?);
+        }
+        Ok(packs)
+    }
+}
+
+/// One key, bound to the logical operation it was first used for.
+///
+/// The fingerprint is what makes a key mean something narrower than "some
+/// registration happened": it is the digest of a canonical document naming the
+/// operation and everything that identifies *this* one, so a key reused for a
+/// different pack, a different revision or different bytes is refused rather
+/// than quietly succeeding a second time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdempotencyBinding {
+    /// The caller's key.
+    pub key: String,
+    /// Which realm-scoped operation it is bound to.
+    pub operation: &'static str,
+    /// The digest identifying this operation.
+    pub fingerprint: ContentHash,
+    /// When the binding was made.
+    pub bound_at: Timestamp,
+}
+
+/// One pack row read inside an open transaction.
+fn read_pack_row(
+    transaction: &Transaction<'_>,
+    pack_id: &str,
+    version: SpecVersion,
+) -> RepositoryResult<Option<RegisteredPack>> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT pack_id, version, document, document_hash, registered_at
+             FROM registered_profile_packs
+             WHERE pack_id = ?1 AND version = ?2",
+        )
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![pack_id, version_column(version)])
+        .map_err(backend)?;
+    let Some(row) = rows.next().map_err(backend)? else {
+        return Ok(None);
+    };
+    read_pack(row).map(Some)
+}
+
+/// One registered pack row, re-proved against its own digest.
+///
+/// The digest is re-derived rather than trusted. A catalogue is what a frozen
+/// epic's pinned profile is resolved from, so bytes that drifted underneath it
+/// must be refused rather than silently resolved into a different phase DAG.
+fn read_pack(row: &rusqlite::Row<'_>) -> RepositoryResult<RegisteredPack> {
+    let document: String = row.get(2).map_err(backend)?;
+    let stored: String = row.get(3).map_err(backend)?;
+    let document_hash = ContentHash::of(document.as_bytes());
+    if document_hash.as_str() != stored {
+        return Err(RepositoryError::Backend {
+            detail: "a registered profile pack no longer matches its digest".to_owned(),
+        });
+    }
+    Ok(RegisteredPack {
+        pack_id: row.get(0).map_err(backend)?,
+        version: read_version(row.get(1).map_err(backend)?)?,
+        document,
+        document_hash,
+        registered_at: read_timestamp(&row.get::<_, String>(4).map_err(backend)?)?,
+    })
+}

@@ -4727,3 +4727,653 @@ async fn the_preview_reads_and_the_compact_command_requires_an_operator() {
     .await;
     assert_eq!(as_observer.status, 403);
 }
+
+/// Bring an empty realm to "one armed epic with one ready task", and return the
+/// project, the epic and the plan hash the next `scheduler:start` must present.
+async fn armed_and_planned(world: &World, slug: &'static str) -> (String, String, String) {
+    let created = ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-account"))
+    .send(world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Planed epic",
+            &category,
+            serde_json::json!([{"title": "Only task"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-epic"))
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Start the epic"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-arm"))
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert_eq!(
+        plan.json()["ready"].as_array().expect("ready").len(),
+        1,
+        "the armed task is ready: {}",
+        plan.body
+    );
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    (project, epic, plan_hash)
+}
+
+/// BLK-001. A runtime that holds a plane-level container is unusable until
+/// something creates it, and until this round nothing did: `prepare_project` had
+/// no production caller, so startup reconciliation failed, the barrier settled
+/// `Failed`, and admission blocked every armed task. Deleting either
+/// `prepare_plane` call fails this test.
+#[tokio::test]
+async fn a_runtime_with_a_plane_is_prepared_by_startup_so_a_seat_can_be_materialized() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+
+    // Nothing has prepared it yet, which is the whole starting condition.
+    assert!(
+        !world.fake.plane_is_prepared(),
+        "a freshly composed plane is not prepared"
+    );
+
+    // Startup reconciliation prepares the plane and *then* takes its census. The
+    // barrier opening is the observable difference: a census inside a plane that
+    // does not exist refuses, and a refusal is not an empty realm.
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    assert!(
+        world.fake.plane_is_prepared(),
+        "startup reconciliation prepared the plane"
+    );
+
+    let health = Call::get("/v1/health")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(health.json()["scheduling_open"], serde_json::json!(true));
+
+    let (project, epic, plan_hash) = armed_and_planned(&world, "plane-start").await;
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash.clone()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("plane-start-run")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let seats = started.json()["started"].as_array().expect("seats").clone();
+    assert!(
+        !seats.is_empty(),
+        "a seat is materialized on a plane-holding runtime: {}",
+        started.body
+    );
+    for seat in &seats {
+        assert_eq!(seat["applied"], "created");
+    }
+
+    // Same-seat: one team run, no slot seated twice, and this process holds the
+    // frozen snapshot for every seat it launched. A plane prepared once per
+    // admission — rather than a fresh project per seat — is what makes that true;
+    // a second project would have put the team's seats in two places.
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    let runs = projection.json()["tasks"][0]["team_runs"]
+        .as_array()
+        .expect("runs")
+        .clone();
+    assert_eq!(runs.len(), 1, "exactly one team run: {}", projection.body);
+    let projected = runs[0]["seats"].as_array().expect("seats");
+    assert_eq!(projected.len(), seats.len(), "{}", projection.body);
+    let slots: std::collections::BTreeSet<&str> = projected
+        .iter()
+        .map(|seat| seat["role_slot"].as_str().expect("a slot"))
+        .collect();
+    assert_eq!(slots.len(), projected.len(), "no role slot is seated twice");
+    for seat in projected {
+        assert!(
+            seat["attached"].as_bool().expect("a flag"),
+            "every seat is a live attached session: {}",
+            projection.body
+        );
+    }
+
+    // The plane was prepared, not re-created, on the way through: reconciliation
+    // asked once and admission asked again, and both are the same plane.
+    assert!(world.fake.plane_is_prepared());
+
+    // ponytail: `scheduler:start` re-derives its batch before consulting the
+    // receipt, so replaying an identical start after the task has left `ready` is
+    // a `409` rather than the original answer. That is existing behaviour and is
+    // deliberately not asserted here — it is unrelated to the plane and changing
+    // it is not this round's scope.
+    let _ = plan_hash;
+}
+
+/// BLK-001, second caller. Startup is not the only path that needs the plane:
+/// `prepare_workspace` is addressed inside it too, and a realm whose runtime lost
+/// its plane after the census — a restarted Paseo daemon, a plane registered
+/// after this process started — would otherwise admit nothing until the next
+/// restart. Dropping the plane after reconciliation isolates the admission-path
+/// caller: with it removed, this fails while the test above still passes.
+#[tokio::test]
+async fn admission_prepares_the_plane_itself_rather_than_relying_on_startup() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let (project, epic, plan_hash) = armed_and_planned(&world, "plane-admit").await;
+
+    // The runtime forgets its plane after the census and before admission — a
+    // restarted Paseo daemon, or a plane registered after this process started.
+    world.fake.forget_the_plane();
+    assert!(!world.fake.plane_is_prepared());
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("plane-admit-run")
+    .send(&world)
+    .await;
+    assert_eq!(
+        started.status, 200,
+        "admission prepares the plane it is about to work inside: {}",
+        started.body
+    );
+    assert!(
+        world.fake.plane_is_prepared(),
+        "the admission path prepared the plane"
+    );
+    assert!(
+        !started.json()["started"]
+            .as_array()
+            .expect("seats")
+            .is_empty(),
+        "{}",
+        started.body
+    );
+}
+
+/// FND-001. A byte-identical reapply of an unchanged graph returned a *different*
+/// `bundle_hash`, so a caller diffing it to detect drift saw drift on every
+/// replay. The digest is now over the stored graph and carries nothing about the
+/// call that stored it.
+#[tokio::test]
+async fn reapplying_an_identical_epic_returns_the_identical_graph_digest() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "digest", "Kontor", "/tmp/kontor-digest").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let body = epic_body(
+        revision,
+        "Digest epic",
+        &category,
+        serde_json::json!([
+            {"title": "First", "ticket_links": [{"connector": "connector.jira",
+                                                 "external_issue_key": "ASMA-1"}]},
+            {"title": "Second", "depends_on": ["First"]}
+        ]),
+    );
+
+    let first = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("digest-1")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["applied"], "created");
+
+    // A *different* key, so this is a genuine second application of the same
+    // graph rather than a receipt replay handing back the first answer.
+    let again = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("digest-2")
+        .send(&world)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["applied"], "unchanged");
+
+    assert_eq!(
+        again.json()["bundle_hash"],
+        first.json()["bundle_hash"],
+        "an unchanged graph digests identically:\nfirst {}\nagain {}",
+        first.body,
+        again.body
+    );
+    // And it is a digest, not an empty string that would compare equal to itself.
+    assert_eq!(
+        first.json()["bundle_hash"]
+            .as_str()
+            .expect("a digest")
+            .len(),
+        64
+    );
+
+    // The other reapply facts the finding named still hold, so the digest is
+    // stable *because the graph is*, not because it stopped describing it.
+    assert_eq!(again.json()["epic_id"], first.json()["epic_id"]);
+    assert_eq!(again.json()["revision"], first.json()["revision"]);
+    assert_eq!(again.json()["work_profile"], first.json()["work_profile"]);
+    assert_eq!(again.json()["team_template"], first.json()["team_template"]);
+
+    // A graph that genuinely moved digests differently. Without this the test
+    // above passes for a constant.
+    let grown = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Digest epic",
+            &category,
+            serde_json::json!([
+                {"title": "First", "ticket_links": [{"connector": "connector.jira",
+                                                     "external_issue_key": "ASMA-1"}]},
+                {"title": "Second", "depends_on": ["First"]},
+                {"title": "Third"}
+            ]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("digest-3")
+    .send(&world)
+    .await;
+    assert_eq!(grown.status, 200, "{}", grown.body);
+    assert_ne!(
+        grown.json()["bundle_hash"],
+        first.json()["bundle_hash"],
+        "a third task changes the graph digest: {}",
+        grown.body
+    );
+}
+
+/// The incident pack the pilot fixture ships — a profile and a team this build's
+/// compiled catalogue has never seen.
+const INCIDENT_PACK: &str =
+    include_str!("../../../tests/fixtures/pilot/incident-response-pack.json");
+
+/// BLK-002. The catalogue was compiled in and `/v1/catalog/**` was read-only, so
+/// a custom work profile or team template could not enter over the MCP-only
+/// boundary at all. It can now, additively and revisioned — and an epic can pin
+/// it, which is the only thing that makes registration worth anything.
+#[tokio::test]
+async fn a_registered_pack_widens_the_catalogue_and_an_epic_can_pin_its_profile() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+
+    let pack: serde_json::Value =
+        serde_json::from_str(INCIDENT_PACK).expect("the fixture pack parses");
+    let category = pack["manifest"][0]["category"]
+        .as_str()
+        .expect("a category")
+        .to_owned();
+
+    // Before registration the realm advertises the compiled seeds and nothing
+    // else, and the custom category is absent rather than empty.
+    let before = Call::get("/v1/catalog/work-profiles")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        !before
+            .json()
+            .as_array()
+            .expect("a catalog")
+            .iter()
+            .any(|entry| entry["category"] == serde_json::json!(category)),
+        "the build ships no incident profile: {}",
+        before.body
+    );
+    let absent = Call::get(format!("/v1/catalog/work-profiles/{category}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(absent.status, 404, "{}", absent.body);
+
+    // Registration is an admin decision: it widens what every later apply in
+    // this realm may freeze onto a task.
+    let refused = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack.clone()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("pack-register-forbidden")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack.clone()}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("pack-register-1")
+    .send(&world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+    assert_eq!(registered.json()["applied"], "created");
+    assert_eq!(registered.json()["source"], "registered");
+    assert_eq!(registered.json()["pack_id"], pack["pack_id"]);
+    assert_eq!(
+        registered.json()["categories"],
+        serde_json::json!([category])
+    );
+    assert!(
+        !registered.json()["team_templates"]
+            .as_array()
+            .expect("templates")
+            .is_empty(),
+        "the pack carried a team template: {}",
+        registered.body
+    );
+
+    // Same key, same fingerprint: the original answer.
+    let again = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack.clone()}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("pack-register-1")
+    .send(&world)
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["applied"], "unchanged");
+    assert_eq!(
+        again.json()["document_hash"],
+        registered.json()["document_hash"]
+    );
+
+    // A revision is immutable: the same version carrying different bytes is a
+    // conflict, not an update, because an epic already frozen against it must
+    // keep meaning what it meant.
+    let mut edited = pack.clone();
+    edited["manifest"][0]["label"] = serde_json::json!("Incident response (edited)");
+    let drifted = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": edited}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("pack-register-3")
+    .send(&world)
+    .await;
+    assert_eq!(drifted.status, 409, "{}", drifted.body);
+
+    // A document that does not validate never reaches the store.
+    let malformed = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": {"schema_version": 1, "pack_id": "nope"}}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("pack-register-4")
+    .send(&world)
+    .await;
+    assert_eq!(malformed.status, 400, "{}", malformed.body);
+
+    // The catalogue now advertises it, alongside — never instead of — the seeds.
+    let listed = Call::get("/v1/catalog/packs")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let listed_body = listed.json();
+    let sources: Vec<&str> = listed_body
+        .as_array()
+        .expect("packs")
+        .iter()
+        .map(|entry| entry["source"].as_str().expect("a source"))
+        .collect();
+    assert!(sources.contains(&"bundled"), "{}", listed.body);
+    assert!(sources.contains(&"registered"), "{}", listed.body);
+
+    let after = Call::get("/v1/catalog/work-profiles")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let after_body = after.json();
+    let categories: Vec<&str> = after_body
+        .as_array()
+        .expect("a catalog")
+        .iter()
+        .map(|entry| entry["category"].as_str().expect("a category"))
+        .collect();
+    assert!(categories.contains(&category.as_str()), "{}", after.body);
+    assert!(
+        categories.len() > 1,
+        "the compiled seeds are still there: {}",
+        after.body
+    );
+
+    // It resolves like any other category, with its own gates and its own team.
+    let detail = Call::get(format!("/v1/catalog/work-profiles/{category}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(detail.status, 200, "{}", detail.body);
+    assert!(detail.json()["team"].is_object(), "{}", detail.body);
+
+    // And the whole point: an epic pins it, and every task is frozen against it.
+    let created = ensure_project(&world, "incident", "Kontor", "/tmp/kontor-incident").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Incident epic",
+            &category,
+            serde_json::json!([{"title": "Contain the incident"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("incident-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        applied.json()["work_profile"]["id"],
+        serde_json::json!(category),
+        "the epic froze the registered profile: {}",
+        applied.body
+    );
+}
+
+/// A registered pack may not redefine a category the build ships. Registration
+/// widens the catalogue; it never changes what an already-frozen epic pinned.
+#[tokio::test]
+async fn a_registered_pack_may_not_shadow_a_compiled_category() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seeded = first_category(&world).await;
+
+    let mut pack: serde_json::Value =
+        serde_json::from_str(INCIDENT_PACK).expect("the fixture pack parses");
+    pack["manifest"][0]["category"] = serde_json::json!(seeded);
+
+    let refused = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("pack-shadow-1")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "revision_conflict");
+}
+
+/// The idempotency key on a realm-scoped registration is bound to a fingerprint
+/// of the whole logical operation, not to the pack alone. Content immutability
+/// alone cannot refuse a key reused for a *different* pack — two registrations of
+/// two different packs are each independently valid, and nothing would be
+/// comparing them to each other. This is that comparison.
+#[tokio::test]
+async fn a_registration_key_is_bound_to_one_logical_operation() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+
+    let pack: serde_json::Value =
+        serde_json::from_str(INCIDENT_PACK).expect("the fixture pack parses");
+
+    let first = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack.clone()}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("bound-key")
+    .send(&world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["applied"], "created");
+
+    // Same key, same fingerprint → the original answer, and nothing written.
+    let replayed = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack.clone()}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("bound-key")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["document_hash"],
+        first.json()["document_hash"]
+    );
+
+    // Same key, same (pack_id, version), different bytes → refused. Both the
+    // key binding and the revision's immutability say no; the key is judged
+    // first, so this is reported as the key having meant something else.
+    let mut edited = pack.clone();
+    edited["manifest"][0]["label"] = serde_json::json!("Incident response (edited)");
+    let drifted = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": edited}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("bound-key")
+    .send(&world)
+    .await;
+    assert_eq!(drifted.status, 409, "{}", drifted.body);
+
+    // Same key, a *different* pack entirely → refused. This is the case the
+    // content check could never have caught: a second pack at a fresh id and a
+    // fresh version is a perfectly valid registration on its own, and only the
+    // key binding knows the key already stood for another one.
+    let mut other = pack.clone();
+    other["pack_id"] = serde_json::json!("kontor-pilot-other");
+    other["manifest"][0]["category"] = serde_json::json!("other-response-v1");
+    other["profiles"][0]["id"] = serde_json::json!("other-response-v1");
+    other["manifest"][0]["profile"] = serde_json::json!("other-response-v1");
+    let reused = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": other.clone()}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("bound-key")
+    .send(&world)
+    .await;
+    assert_eq!(
+        reused.status, 409,
+        "one key may stand for one registration: {}",
+        reused.body
+    );
+    assert_eq!(reused.code(), "revision_conflict");
+
+    // And the refusal changed nothing: the second pack is genuinely absent, not
+    // half-registered by the call that was refused.
+    let listed = Call::get("/v1/catalog/packs")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let listed_body = listed.json();
+    assert!(
+        !listed_body
+            .as_array()
+            .expect("packs")
+            .iter()
+            .any(|entry| entry["pack_id"] == serde_json::json!("kontor-pilot-other")),
+        "a refused registration wrote nothing: {}",
+        listed.body
+    );
+
+    // Under its own key it registers, so the refusal above was about the key and
+    // not about the pack.
+    let accepted = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": other}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("other-key")
+    .send(&world)
+    .await;
+    assert_eq!(accepted.status, 200, "{}", accepted.body);
+    assert_eq!(accepted.json()["applied"], "created");
+}

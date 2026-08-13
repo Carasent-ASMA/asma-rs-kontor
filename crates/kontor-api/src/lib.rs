@@ -288,6 +288,11 @@ pub fn router(state: ApiState) -> Router {
         // Profile detail and validation. Workspace-level, like the catalog they
         // extend: a category resolves to the same bundle in every Realm running
         // this build, so there is no project in the address.
+        .route("/v1/catalog/packs", get(applications::profile_packs))
+        .route(
+            "/v1/catalog/packs:register",
+            post(applications::register_pack),
+        )
         .route(
             "/v1/catalog/work-profiles/{category}",
             get(applications::work_profile),

@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        43,
+        45,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        45,
+        47,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -520,6 +520,11 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_ticket_comments_pull", CallerTier::Operator),
         ("kontor_ticket_comments_list", CallerTier::Observer),
         ("kontor_ticket_claim", CallerTier::Operator),
+        // KON-15 round 2: registering a catalogue widens what every later apply
+        // in this realm may freeze onto a task, so it is an admin act; listing
+        // what the realm can resolve from is a read.
+        ("kontor_profile_packs_list", CallerTier::Observer),
+        ("kontor_profile_pack_register", CallerTier::Admin),
         // KON-24: the context-window preview reads and changes nothing; the
         // explicit compaction drives a session and is an operator act.
         ("kontor_context_policy_preview", CallerTier::Observer),

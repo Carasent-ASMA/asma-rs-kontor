@@ -13,6 +13,91 @@
     "version": "1.0.0"
   },
   "paths": {
+    "/v1/catalog/packs": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every pack this Realm can resolve a category from.",
+        "operationId": "profile_packs",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProfilePackDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/catalog/packs:register": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Register one profile pack alongside the compiled seeds.",
+        "description": "Admin, because it widens what every later `epics:apply` in this Realm may\nfreeze onto a task.\n\n# Idempotency\n\nIt takes an `Idempotency-Key` like every other write on this surface. A\nreceipt cannot carry it — a receipt is written against a project and a\nrealm-scoped catalogue has none — so the key is bound, once and permanently,\nto a **fingerprint of this logical operation**: a digest over the operation\nname, the pack, its revision and its content, canonicalized exactly the way a\ncommand intent is.\n\nThree answers, and no fourth:\n\n* same key, same fingerprint → the original answer, `unchanged`;\n* same key, same `(pack_id, version)`, different bytes → `409`;\n* same key reused for a *different* pack, revision or content → `409`, the\n  key is already bound to another logical operation.\n\nBinding to a fingerprint rather than to the pack alone is what makes the\nthird case refusable. Content immutability answers \"may these bytes be this\nrevision?\" and cannot answer \"was this key already used for something else?\",\nbecause two registrations of two different packs are each independently\nvalid and nothing would be comparing them.",
+        "operationId": "register_pack",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterPackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Registered, or already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilePackDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The pack document does not validate"
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": "This revision is registered with different content"
+          }
+        }
+      }
+    },
     "/v1/catalog/team-templates": {
       "get": {
         "tags": [
@@ -2591,7 +2676,7 @@
           },
           "bundle_hash": {
             "type": "string",
-            "description": "The digest of the resolved bundle every task was frozen from."
+            "description": "A stable digest of the graph this call applied.\n\nIt covers the *content* — the epic and its revision, the pinned profile\nand team revisions, and every task's identity, title, state, dependency\nset and ticket links — and nothing about the call that applied it. So a\nbyte-identical reapply of an unchanged graph returns the same digest, and\na caller diffing it to detect drift sees drift only when the graph\nactually moved.\n\nIt is deliberately *not* the resolved bundle's digest: that one covers the\nresolution, including when it happened, and therefore differs on every\ncall. Reporting it here made drift detection fire on every replay."
           },
           "epic_id": {
             "type": "string",
@@ -4301,6 +4386,59 @@
           }
         }
       },
+      "ProfilePackDto": {
+        "type": "object",
+        "description": "One profile pack this Realm can resolve a category from.",
+        "required": [
+          "pack_id",
+          "version",
+          "source",
+          "categories",
+          "team_templates",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call registered it, for a register."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The categories it advertises, in manifest order."
+          },
+          "document_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The digest of the canonical document. `None` for the compiled pack, which\nis not stored as a document."
+          },
+          "pack_id": {
+            "type": "string",
+            "description": "The pack's open id."
+          },
+          "source": {
+            "type": "string",
+            "description": "Whether it is compiled into this build or was registered by an operator."
+          },
+          "team_templates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RevisionRefDto"
+            },
+            "description": "The team templates it carries."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "This revision.",
+            "minimum": 0
+          }
+        }
+      },
       "ProfilePhaseDto": {
         "type": "object",
         "description": "One phase of a work profile, as the catalog spells it.",
@@ -4728,6 +4866,19 @@
           "source_id": {
             "type": "string",
             "description": "The source that declared the redaction."
+          }
+        }
+      },
+      "RegisterPackRequest": {
+        "type": "object",
+        "description": "What `catalog/packs:register` is asked for.\n\nThe whole pack, as a document. It is one operation and not two — \"register a\nprofile\" and \"register a team template\" — because a work profile prescribes a\nteam, pins role and skill revisions, and cannot be resolved without them: a\nprofile admitted alone would be a catalogue entry that refuses to resolve, and\na team admitted alone would be one nothing can select.",
+        "required": [
+          "pack"
+        ],
+        "properties": {
+          "pack": {
+            "type": "object",
+            "description": "The pack document. Validated in full before anything is stored."
           }
         }
       },

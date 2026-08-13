@@ -38,10 +38,10 @@ use kontor_api::applications::{
     WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
-    ConnectorSpecDto, IntakeReceiptDto, ProfileArtifactDto, ProfileHandoffDto, ProfilePhaseDto,
-    ProfileValidationDto, ResolveConflictRequest, SubmitIntakeRequest, TicketClaimDto,
-    TicketCommentDto, TicketCommentPullDto, TicketConflictDto, TriggerSpecDto,
-    WorkProfileDetailDto,
+    ConnectorSpecDto, IntakeReceiptDto, ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto,
+    ProfilePhaseDto, ProfileValidationDto, RegisterPackRequest, ResolveConflictRequest,
+    SubmitIntakeRequest, TicketClaimDto, TicketCommentDto, TicketCommentPullDto, TicketConflictDto,
+    TriggerSpecDto, WorkProfileDetailDto,
 };
 use kontor_api::applications::{
     GateProjectionDto, GateVerdictDto, ProvenanceDto, RecordGateRequest, RedactionDto,
@@ -77,8 +77,8 @@ use kontor_core::state::{GateVerdict, TaskState, TaskTeamClosure};
 use kontor_core::ticket::OwnershipAction;
 use kontor_integrations_asma::jira::SpecCatalog;
 use kontor_profiles::pack::{
-    PackAvailability, PackCategoryKey, ProfilePackSpec, ResolvedProfileBundle, resolve_profile,
-    validate_pack,
+    PackAvailability, PackCategoryKey, ProfilePackSpec, ResolvedProfileBundle, parse_pack,
+    resolve_profile, validate_pack,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::RuntimeCapability;
@@ -91,10 +91,17 @@ use kontor_scheduler::model::{
     ReconciliationScope, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
 };
 use kontor_store::{
-    AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication, EpicTask, EpicTicketLink,
-    ProjectEnsure, SqliteStore, StoredConflict,
+    AdmissionCommit, Applied, AppliedEpic, AuthorizationRevocation, EpicApplication, EpicTask,
+    EpicTicketLink, IdempotencyBinding, ProjectEnsure, RegisteredPack, SqliteStore, StoredConflict,
 };
 use kontor_teams::run::{TeamClosureCertificate, TeamRunLease, TeamRunSlots};
+
+/// The realm-scoped operation a pack registration binds its key to.
+///
+/// A `&'static str` and not a free string: it is half of what a key is bound to,
+/// and it is also a closed `CHECK` value in the schema, so the two spellings have
+/// to be the same one.
+const REGISTER_PACK: &str = "register_profile_pack";
 
 /// How many simultaneous runs a Realm allows before the planner refuses.
 ///
@@ -193,10 +200,49 @@ impl Services {
     }
 
     /// Resolve one advertised profile category into its frozen bundle.
-    fn bundle(&self, category: &str, at: Timestamp) -> Result<ResolvedProfileBundle, ApiError> {
-        let category =
+    /// Every pack this Realm may resolve a category from: the compiled seeds
+    /// first, then the operator-registered ones in registration order.
+    ///
+    /// The seeds come first deliberately. Registration is *additive* — a
+    /// deployment introducing an incident profile must not be able to silently
+    /// redefine `code` underneath every epic already frozen against it — so a
+    /// category the build ships always wins, and a registered pack that
+    /// re-advertises one is reported as shadowed rather than applied.
+    fn packs(&self) -> Result<Vec<ProfilePackSpec>, ApiError> {
+        let state = self.state()?;
+        let registered = state
+            .with_store(SqliteStore::list_profile_packs)
+            .map_err(|error| self.refuse(&error))?;
+        let mut packs = vec![self.pack.clone()];
+        for pack in &registered {
+            // A stored pack is re-parsed and re-validated rather than trusted.
+            // It was validated when it was registered, but the rules that
+            // validate it live in this binary and this binary may be newer than
+            // the row.
+            packs.push(parse_pack(&pack.document).map_err(|error| self.refuse_domain(&error))?);
+        }
+        Ok(packs)
+    }
+
+    /// The pack that owns `category`, and the category key.
+    fn owning_pack(&self, category: &str) -> Result<(ProfilePackSpec, PackCategoryKey), ApiError> {
+        let parsed =
             PackCategoryKey::parse(category).map_err(|error| self.refuse_domain(&error))?;
-        resolve_profile(&self.pack, &category, at).map_err(|error| self.refuse_domain(&error))
+        self.packs()?
+            .into_iter()
+            .find(|pack| pack.category(&parsed).is_some())
+            .map(|pack| (pack, parsed))
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no pack this realm holds advertises that category",
+                )
+            })
+    }
+
+    fn bundle(&self, category: &str, at: Timestamp) -> Result<ResolvedProfileBundle, ApiError> {
+        let (pack, category) = self.owning_pack(category)?;
+        resolve_profile(&pack, &category, at).map_err(|error| self.refuse_domain(&error))
     }
 
     /// The profile carrying `label` in this project, if there is one.
@@ -471,17 +517,15 @@ impl Services {
 
     /// The category the pack advertises under this name, and its availability.
     fn advertised(&self, category: &str) -> Result<(PackCategoryKey, PackAvailability), ApiError> {
-        let parsed =
-            PackCategoryKey::parse(category).map_err(|error| self.refuse_domain(&error))?;
-        self.pack
-            .manifest
+        let (pack, parsed) = self.owning_pack(category)?;
+        pack.manifest
             .iter()
             .find(|entry| entry.category == parsed)
             .map(|entry| (parsed.clone(), entry.availability))
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::NotFound,
-                    "this build's profile pack advertises no such category",
+                    "no pack this realm holds advertises that category",
                 )
             })
     }
@@ -747,6 +791,59 @@ impl Services {
     /// store.
     fn intent(&self, value: &serde_json::Value) -> Result<CanonicalDocument, ApiError> {
         CanonicalDocument::from_value(value).map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// A stable digest of one applied epic graph.
+    ///
+    /// Two properties matter, and both are about what is *left out*. Nothing
+    /// here describes the call: no timestamp, no receipt, no resolution instant,
+    /// and not the per-row `applied` flags — those say "this call created it"
+    /// versus "it was already there", which is precisely the difference between
+    /// a first apply and a replay of it. And nothing here is minted per write:
+    /// the workflow id a task's profile was frozen under is deliberately absent,
+    /// because a caller diffing this wants to know whether the *graph* moved.
+    ///
+    /// What is left is the graph: the epic and its revision, the pinned profile
+    /// and team revisions, and every task's identity, title, state, revision,
+    /// dependency set and ticket links. Dependencies arrive as a `BTreeSet` and
+    /// links are sorted here, so a re-derivation cannot differ by ordering.
+    fn graph_digest(&self, applied: &AppliedEpic) -> Result<String, ApiError> {
+        let tasks: Vec<serde_json::Value> = applied
+            .tasks
+            .iter()
+            .map(|task| {
+                let mut links: Vec<String> = task
+                    .links
+                    .iter()
+                    .map(|link| format!("{}\u{1f}{}", link.connector, link.external_issue_key))
+                    .collect();
+                links.sort();
+                serde_json::json!({
+                    "task_id": task.task_id.to_string(),
+                    "title": task.title.as_str(),
+                    "state": task.state.as_str(),
+                    "revision": task.revision.get(),
+                    "depends_on": task
+                        .depends_on
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                    "links": links,
+                })
+            })
+            .collect();
+        let document = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "epic_id": applied.mini_project_id.to_string(),
+            "revision": applied.revision.get(),
+            "work_profile": [applied.profile.0.as_str(), applied.profile.1.get()],
+            "team_template": applied
+                .team
+                .as_ref()
+                .map(|(id, version)| serde_json::json!([id.to_string(), version.get()])),
+            "tasks": tasks,
+        }))?;
+        Ok(document.hash().as_str().to_owned())
     }
 
     /// Record one command intent and return its receipt.
@@ -1415,48 +1512,52 @@ impl ApplicationOperations for Services {
     fn work_profiles(&self) -> Result<Vec<WorkProfileCatalogDto>, ApiError> {
         let now = kontor_api::now();
         let mut catalog = Vec::new();
-        for entry in &self.pack.manifest {
-            if entry.availability != PackAvailability::Seeded {
-                continue;
+        for pack in &self.packs()? {
+            for entry in &pack.manifest {
+                if entry.availability != PackAvailability::Seeded {
+                    continue;
+                }
+                let bundle = resolve_profile(pack, &entry.category, now)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                catalog.push(WorkProfileCatalogDto {
+                    category: entry.category.as_str().to_owned(),
+                    label: entry.label.clone(),
+                    profile: RevisionRefDto {
+                        id: bundle.profile.definition.id.as_str().to_owned(),
+                        version: bundle.profile.definition.version,
+                    },
+                    team: bundle.team.as_ref().map(|team| RevisionRefDto {
+                        id: team.template_id.to_string(),
+                        version: team.version,
+                    }),
+                    bundle_hash: bundle.bundle_hash.as_str().to_owned(),
+                });
             }
-            let bundle = resolve_profile(&self.pack, &entry.category, now)
-                .map_err(|error| self.refuse_domain(&error))?;
-            catalog.push(WorkProfileCatalogDto {
-                category: entry.category.as_str().to_owned(),
-                label: entry.label.clone(),
-                profile: RevisionRefDto {
-                    id: bundle.profile.definition.id.as_str().to_owned(),
-                    version: bundle.profile.definition.version,
-                },
-                team: bundle.team.as_ref().map(|team| RevisionRefDto {
-                    id: team.template_id.to_string(),
-                    version: team.version,
-                }),
-                bundle_hash: bundle.bundle_hash.as_str().to_owned(),
-            });
         }
         Ok(catalog)
     }
 
     fn team_templates(&self) -> Result<Vec<TeamTemplateCatalogDto>, ApiError> {
         let mut catalog = Vec::new();
-        for team in &self.pack.teams {
-            let revision = team
-                .to_revision()
-                .map_err(|error| self.refuse_domain(&error))?;
-            catalog.push(TeamTemplateCatalogDto {
-                template: RevisionRefDto {
-                    id: team.template_id.to_string(),
-                    version: team.version,
-                },
-                name: team.name.clone(),
-                slots: team
-                    .slots
-                    .iter()
-                    .map(|slot| slot.id.as_role_key().as_str().to_owned())
-                    .collect(),
-                definition_hash: revision.definition.hash().as_str().to_owned(),
-            });
+        for pack in &self.packs()? {
+            for team in &pack.teams {
+                let revision = team
+                    .to_revision()
+                    .map_err(|error| self.refuse_domain(&error))?;
+                catalog.push(TeamTemplateCatalogDto {
+                    template: RevisionRefDto {
+                        id: team.template_id.to_string(),
+                        version: team.version,
+                    },
+                    name: team.name.clone(),
+                    slots: team
+                        .slots
+                        .iter()
+                        .map(|slot| slot.id.as_role_key().as_str().to_owned())
+                        .collect(),
+                    definition_hash: revision.definition.hash().as_str().to_owned(),
+                });
+            }
         }
         Ok(catalog)
     }
@@ -1776,6 +1877,10 @@ impl ApplicationOperations for Services {
             &intent,
         )?;
 
+        // Digested from what was *stored*, not from what resolved it. The
+        // resolved bundle's own digest covers `resolved_at`, so returning it here
+        // made an unchanged reapply look like drift on every replay.
+        let graph_digest = self.graph_digest(&applied)?;
         Ok(AppliedEpicDto {
             realm_id: state.realm_id(),
             project_id,
@@ -1790,7 +1895,7 @@ impl ApplicationOperations for Services {
                 id: id.to_string(),
                 version,
             }),
-            bundle_hash: bundle.bundle_hash.as_str().to_owned(),
+            bundle_hash: graph_digest,
             tasks: applied
                 .tasks
                 .into_iter()
@@ -3274,6 +3379,95 @@ impl ApplicationOperations for Services {
         })
     }
 
+    async fn register_pack(
+        &self,
+        key: &IdempotencyKey,
+        request: &RegisterPackRequest,
+    ) -> Result<ProfilePackDto, ApiError> {
+        let state = self.state()?;
+        // Validated in full *before* anything is stored, by the pack's own
+        // validator and not a second one written here: a pack that resolves in
+        // this process and refuses in the next would be a catalogue entry an
+        // epic could freeze and never run.
+        let document = serde_json::to_string(&request.pack).map_err(|_| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the pack is not a serializable document",
+            )
+        })?;
+        let parsed = parse_pack(&document).map_err(|error| self.refuse_domain(&error))?;
+
+        // The seeds win every category they advertise. Registration widens the
+        // catalogue; it never redefines what an already-frozen epic pinned.
+        if let Some(shadowed) = parsed
+            .manifest
+            .iter()
+            .find(|entry| self.pack.category(&entry.category).is_some())
+        {
+            let _ = shadowed;
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "this pack re-advertises a category the build already ships",
+            ));
+        }
+
+        // The key is bound to a *fingerprint of this logical operation*, not to
+        // the pack alone. Content immutability answers "may these bytes be this
+        // revision?"; it cannot answer "was this key already used for something
+        // else?", because two registrations of two different packs are each
+        // independently valid and nothing was comparing them. The fingerprint is
+        // what makes the key mean one operation: a digest of a canonical
+        // document — the same convention a command intent is digested by, so the
+        // two cannot disagree about what identity means.
+        let fingerprint = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": REGISTER_PACK,
+            "pack_id": parsed.pack_id.as_str(),
+            "version": parsed.version.get(),
+            "content_hash": ContentHash::of(document.as_bytes()).as_str(),
+        }))?;
+        let binding = IdempotencyBinding {
+            key: key.as_str().to_owned(),
+            operation: REGISTER_PACK,
+            fingerprint: fingerprint.hash().clone(),
+            bound_at: kontor_api::now(),
+        };
+        let registered = RegisteredPack {
+            pack_id: parsed.pack_id.as_str().to_owned(),
+            version: parsed.version,
+            document_hash: ContentHash::of(document.as_bytes()),
+            document,
+            registered_at: kontor_api::now(),
+        };
+        let (stored, applied) = state
+            .with_store(|store| store.register_profile_pack(&registered, &binding))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(pack_dto(
+            &parsed,
+            "registered",
+            Some(stored.document_hash.as_str().to_owned()),
+            applied_dto(applied),
+        ))
+    }
+
+    fn profile_packs(&self) -> Result<Vec<ProfilePackDto>, ApiError> {
+        let state = self.state()?;
+        let registered = state
+            .with_store(SqliteStore::list_profile_packs)
+            .map_err(|error| self.refuse(&error))?;
+        let mut packs = vec![pack_dto(&self.pack, "bundled", None, AppliedDto::Unchanged)];
+        for pack in &registered {
+            let parsed = parse_pack(&pack.document).map_err(|error| self.refuse_domain(&error))?;
+            packs.push(pack_dto(
+                &parsed,
+                "registered",
+                Some(pack.document_hash.as_str().to_owned()),
+                AppliedDto::Unchanged,
+            ));
+        }
+        Ok(packs)
+    }
+
     fn work_profile(&self, category: &str) -> Result<WorkProfileDetailDto, ApiError> {
         let now = kontor_api::now();
         // A category the pack does not advertise is *absent*, not malformed:
@@ -3286,8 +3480,13 @@ impl ApplicationOperations for Services {
         // revision the bundle carries: a revision holds the canonical bytes and
         // the role authority, and re-parsing those to recover a DAG the pack
         // already has in hand would be a second answer to the same question.
+        // Every pack, not only the compiled one: a registered pack carries the
+        // team its own profile pins, and looking only in the seeds would report
+        // a custom profile as having no handoffs and therefore every slot as an
+        // eligible root.
+        let packs = self.packs()?;
         let template = bundle.team.as_ref().and_then(|team| {
-            self.pack.teams.iter().find(|candidate| {
+            packs.iter().flat_map(|pack| &pack.teams).find(|candidate| {
                 candidate.template_id == team.template_id && candidate.version == team.version
             })
         });
@@ -3403,13 +3602,14 @@ impl ApplicationOperations for Services {
 
     fn validate_work_profile(&self, category: &str) -> Result<ProfileValidationDto, ApiError> {
         let (parsed, availability) = self.advertised(category)?;
-        let pack_valid = validate_pack(&self.pack).is_ok();
+        let (owner, _) = self.owning_pack(category)?;
+        let pack_valid = validate_pack(&owner).is_ok();
         // Resolution runs the pack's invariants *and* the category's own
         // availability rule, then the bundle re-derives every digest it pins.
         // A category that resolves but does not verify is the interesting case:
         // it means the pack drifted from what it says it is.
         let (bundle_hash, bundle_verified, refused) =
-            match resolve_profile(&self.pack, &parsed, kontor_api::now()) {
+            match resolve_profile(&owner, &parsed, kontor_api::now()) {
                 Ok(bundle) => match bundle.verify() {
                     Ok(()) => (Some(bundle.bundle_hash.as_str().to_owned()), true, None),
                     Err(_) => (
@@ -4090,6 +4290,15 @@ impl Services {
         });
         commit.map_err(|error| self.refuse(&error))?;
 
+        // A workspace is prepared *inside* the runtime's plane, so the plane has
+        // to exist first. This is idempotent and re-attests a binding the
+        // adapter already holds, so the cost of asking on every admission is one
+        // readback — and the cost of not asking is a seat that can never be
+        // materialized on a runtime whose plane nothing else creates.
+        adapter
+            .prepare_plane()
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let workspace = adapter
             .prepare_workspace(&WorkspacePrepareRequest {
                 team_run_id,
@@ -4258,6 +4467,12 @@ impl Services {
             })?
             .snapshot;
 
+        // The plane is deliberately *not* prepared again here. `fill_slot` is
+        // reached from `seat` and from nowhere else, and `seat` prepares it
+        // immediately before the first slot — so a second call could never
+        // observe a different answer, and a line no test can kill is worse than
+        // no line.
+        //
         // The workspace is idempotent per team run, so every seat of the team
         // lands in the one verified root rather than each preparing its own.
         let workspace = adapter
@@ -4557,6 +4772,35 @@ impl Services {
             revision: epic.revision,
             receipt_id: receipt.to_string(),
         })
+    }
+}
+
+/// One profile pack, as the catalogue advertises it.
+fn pack_dto(
+    pack: &ProfilePackSpec,
+    source: &str,
+    document_hash: Option<String>,
+    applied: AppliedDto,
+) -> ProfilePackDto {
+    ProfilePackDto {
+        pack_id: pack.pack_id.as_str().to_owned(),
+        version: pack.version,
+        source: source.to_owned(),
+        document_hash,
+        categories: pack
+            .manifest
+            .iter()
+            .map(|entry| entry.category.as_str().to_owned())
+            .collect(),
+        team_templates: pack
+            .teams
+            .iter()
+            .map(|team| RevisionRefDto {
+                id: team.template_id.to_string(),
+                version: team.version,
+            })
+            .collect(),
+        applied,
     }
 }
 

@@ -1429,6 +1429,17 @@ impl PaseoAdapter {
 // ---------------------------------------------------------------------------
 
 impl PaseoAdapter {
+    /// The correlation id the plane's own preparation carries.
+    ///
+    /// It is derived from the mini-project this plane serves and is therefore
+    /// the *same string* on every startup, every retry and every process. That
+    /// is the whole point: `project.add` carries no label, so the request id is
+    /// the only correlation a redelivery has, and a fresh id per attempt would
+    /// make two attempts look like two intents.
+    fn plane_command_id(&self) -> String {
+        format!("kontor-plane-{}", self.config.mini_project_id)
+    }
+
     /// Make the epic project exist, idempotently, and say whether its name
     /// drifted.
     ///
@@ -2215,6 +2226,22 @@ impl RuntimeAdapter for PaseoAdapter {
         claimed: &RuntimeBindingSnapshot,
     ) -> RuntimeResult<IssuedBinding> {
         self.lock().bindings.attest(claimed)
+    }
+
+    /// Every Paseo operation is addressed inside the epic's project, so this is
+    /// the step that has to happen before a census, a workspace or a seat.
+    ///
+    /// It delegates to [`PaseoAdapter::prepare_project`] unchanged — the
+    /// correlated-prior-effect test, the exact-id readback and the persisted
+    /// binding are all that method's, and none of them move here. What this adds
+    /// is the one thing that was missing: a caller.
+    ///
+    /// The rename-pending outcome is deliberately *not* an error. A display
+    /// string that drifted is not authority, the binding it carries is usable
+    /// exactly as it is, and refusing here would shut scheduling over a label.
+    async fn prepare_plane(&self) -> RuntimeResult<()> {
+        self.prepare_project(&self.plane_command_id()).await?;
+        Ok(())
     }
 
     /// Admission is bookkeeping about seats: it starts nothing and reaches no

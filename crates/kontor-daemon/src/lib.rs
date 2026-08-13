@@ -387,6 +387,23 @@ impl Daemon {
                 .filter(|binding| binding.binding.identity.runtime_kind == family)
                 .filter_map(|binding| self.state.sessions().get(binding.binding.id))
                 .collect();
+            // The plane's own container has to exist before a census can be
+            // taken inside it. A runtime that holds one answers "the project has
+            // not been prepared" to *every* question until this call has
+            // succeeded, and an unprepared plane looks exactly like an
+            // unreachable one — which is why it is prepared here, on the path
+            // that already owns "is this runtime ready?", rather than left to
+            // whichever operation happened to ask first.
+            if let Err(error) = adapter.prepare_plane().await {
+                warn!(
+                    realm_id = %self.realm_id(),
+                    runtime = %family,
+                    detail = %error,
+                    "runtime plane could not be prepared; scheduling stays shut"
+                );
+                settled = BarrierState::Failed;
+                continue;
+            }
             match adapter.reconcile(&held).await {
                 Ok(report) => {
                     info!(

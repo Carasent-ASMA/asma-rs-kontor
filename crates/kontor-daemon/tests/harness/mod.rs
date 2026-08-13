@@ -119,7 +119,18 @@ impl World {
     /// persisted — a test that reaches for one in this mode is asking about a row
     /// that does not exist, which is what it should find.
     pub(crate) async fn open_empty() -> Self {
-        Self::compose_with(every_capability(), true, false).await
+        Self::compose_with(every_capability(), true, false, false).await
+    }
+
+    /// Start an empty Realm whose runtime holds a **plane-level container**.
+    ///
+    /// This is the shipped Paseo shape and the one no in-process fake had: every
+    /// operation is addressed inside a project the runtime must create first, so
+    /// startup reconciliation and workspace preparation both refuse until the
+    /// daemon has asked for it. A realm composed this way can only reach a seat
+    /// if the composition root actually prepares the plane.
+    pub(crate) async fn open_empty_with_a_plane() -> Self {
+        Self::compose_with(every_capability(), true, false, true).await
     }
 
     /// Start a Realm holding *no* adapter at all.
@@ -176,18 +187,24 @@ impl World {
 
     /// Start a Realm, registering the fake only when `configured`.
     async fn compose(capabilities: RuntimeCapabilities, configured: bool) -> Self {
-        Self::compose_with(capabilities, configured, true).await
+        Self::compose_with(capabilities, configured, true, false).await
     }
 
-    /// Start a Realm, registering the fake only when `configured` and seeding the
-    /// fixture work graph only when `seeded`.
+    /// Start a Realm, registering the fake only when `configured`, seeding the
+    /// fixture work graph only when `seeded`, and giving the runtime a
+    /// plane-level container only when `planed`.
     async fn compose_with(
         capabilities: RuntimeCapabilities,
         configured: bool,
         seeded: bool,
+        planed: bool,
     ) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
-        let fake = Arc::new(ScriptedFakeRuntime::new(capabilities));
+        let fake = Arc::new(if planed {
+            ScriptedFakeRuntime::requiring_a_plane(capabilities)
+        } else {
+            ScriptedFakeRuntime::new(capabilities)
+        });
         let registry = if configured {
             RuntimeRegistry::new().with(fake_family(), Arc::clone(&fake) as Arc<dyn RuntimeAdapter>)
         } else {

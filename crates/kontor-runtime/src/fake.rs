@@ -283,6 +283,44 @@ pub enum AdapterCall {
     RespondPermission(RuntimeBindingId),
     /// A session was asked to compact its context in place.
     Compact(RuntimeBindingId),
+    /// The runtime's plane-level container was prepared.
+    PreparePlane,
+}
+
+impl FakeState {
+    /// Refuse any operation addressed inside a plane that was never prepared.
+    ///
+    /// The refusal is deliberately the *same* one a real Paseo adapter raises,
+    /// so a caller cannot tell the two apart and a test written against this
+    /// fake proves something about the real one.
+    fn require_plane(&self) -> RuntimeResult<()> {
+        if self.plane == PlaneRequirement::Unprepared {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the plane has not been prepared on this runtime host",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Whether this fake behaves like a runtime with a plane-level container.
+///
+/// It exists to reproduce, deterministically and in-process, the one shape a
+/// real Paseo plane has and the in-memory fakes did not: *every* operation is
+/// addressed inside a project that has to be created first, so a runtime whose
+/// plane was never prepared refuses a census and a workspace with a refusal that
+/// is indistinguishable — to the caller — from being unreachable.
+///
+/// The default is [`PlaneRequirement::NotRequired`], so every existing fake keeps
+/// behaving exactly as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaneRequirement {
+    /// This runtime has no plane-level container. Nothing to prepare.
+    NotRequired,
+    /// This runtime has one, and it has not been prepared yet.
+    Unprepared,
+    /// This runtime has one and it is ready.
+    Prepared,
 }
 
 /// One native session the fake owns.
@@ -362,6 +400,9 @@ struct ScriptedSession {
 
 #[derive(Debug)]
 struct FakeState {
+    /// Whether this runtime holds a plane-level container, and whether it has
+    /// been prepared yet.
+    plane: PlaneRequirement,
     runtime_kind: RuntimeKindKey,
     host: ExternalName,
     generation: u64,
@@ -697,6 +738,7 @@ impl ScriptedFakeRuntime {
     pub fn new(capabilities: RuntimeCapabilities) -> Self {
         Self {
             state: Mutex::new(FakeState {
+                plane: PlaneRequirement::NotRequired,
                 runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("valid runtime kind"),
                 host: ExternalName::parse("fake-host").expect("valid host name"),
                 generation: 1,
@@ -718,6 +760,43 @@ impl ScriptedFakeRuntime {
                 admissions: AdmissionLedger::new(),
             }),
         }
+    }
+
+    /// The same fake, but holding a plane-level container that nothing has
+    /// prepared yet.
+    ///
+    /// A runtime built this way refuses [`RuntimeAdapter::discover_sessions`]
+    /// and [`RuntimeAdapter::prepare_workspace`] until
+    /// [`RuntimeAdapter::prepare_plane`] has succeeded — which is exactly the
+    /// shape of a real Paseo plane, and exactly the shape no in-process fake had
+    /// while a whole runtime family was unreachable in the shipped composition.
+    #[must_use]
+    pub fn requiring_a_plane(capabilities: RuntimeCapabilities) -> Self {
+        let fake = Self::new(capabilities);
+        fake.lock().plane = PlaneRequirement::Unprepared;
+        fake
+    }
+
+    /// Forget that the plane was ever prepared.
+    ///
+    /// It is how a test isolates *which* caller prepares it: reconcile has
+    /// already run, the plane is dropped underneath it, and whatever still
+    /// works must be preparing the plane on its own path rather than riding
+    /// startup's.
+    pub fn forget_the_plane(&self) {
+        let mut state = self.lock();
+        if state.plane == PlaneRequirement::Prepared {
+            state.plane = PlaneRequirement::Unprepared;
+        }
+    }
+
+    /// Whether this fake's plane has been prepared.
+    ///
+    /// A fake with no plane answers `true`: there was nothing to prepare and
+    /// nothing is blocked, which is the same thing a caller needs to know.
+    #[must_use]
+    pub fn plane_is_prepared(&self) -> bool {
+        self.lock().plane != PlaneRequirement::Unprepared
     }
 
     /// The shared root this runtime refuses to hand out as a task workspace.
@@ -1074,11 +1153,23 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(state.capabilities.clone())
     }
 
+    async fn prepare_plane(&self) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        state.calls.push(AdapterCall::PreparePlane);
+        // Idempotent, and idempotent the way the real one is: a plane that is
+        // already prepared is re-attested rather than re-created.
+        if state.plane == PlaneRequirement::Unprepared {
+            state.plane = PlaneRequirement::Prepared;
+        }
+        Ok(())
+    }
+
     async fn prepare_workspace(
         &self,
         request: &WorkspacePrepareRequest,
     ) -> RuntimeResult<WorkspaceOutcome> {
         let mut state = self.lock();
+        state.require_plane()?;
         // A repeated preparation is governed by the snapshot it will return,
         // exactly as a bound session operation is governed by its own binding.
         // A retry after a lost answer must not start failing because the
@@ -1483,6 +1574,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
 
     async fn discover_sessions(&self) -> RuntimeResult<Vec<NativeSession>> {
         let mut state = self.lock();
+        state.require_plane()?;
         let declared = state.capabilities.clone();
         preflight(
             &declared,

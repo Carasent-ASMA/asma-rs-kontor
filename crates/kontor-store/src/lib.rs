@@ -57,8 +57,8 @@ pub use events::types::{
 };
 pub use graph::{
     Applied, AppliedEpic, AppliedLink, AppliedTask, AuthorizationRevocation, EpicApplication,
-    EpicTask, EpicTicketLink, ProjectEnsure, SeatRow, StoredAuthorization, StoredComment,
-    StoredConflict,
+    EpicTask, EpicTicketLink, IdempotencyBinding, ProjectEnsure, RegisteredPack, SeatRow,
+    StoredAuthorization, StoredComment, StoredConflict,
 };
 pub use migrations::SCHEMA_VERSION;
 pub use policy::{

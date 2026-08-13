@@ -360,7 +360,18 @@ pub struct AppliedEpicDto {
     pub work_profile: RevisionRefDto,
     /// The team revision the profile pins, when it prescribes one.
     pub team_template: Option<RevisionRefDto>,
-    /// The digest of the resolved bundle every task was frozen from.
+    /// A stable digest of the graph this call applied.
+    ///
+    /// It covers the *content* — the epic and its revision, the pinned profile
+    /// and team revisions, and every task's identity, title, state, dependency
+    /// set and ticket links — and nothing about the call that applied it. So a
+    /// byte-identical reapply of an unchanged graph returns the same digest, and
+    /// a caller diffing it to detect drift sees drift only when the graph
+    /// actually moved.
+    ///
+    /// It is deliberately *not* the resolved bundle's digest: that one covers the
+    /// resolution, including when it happened, and therefore differs on every
+    /// call. Reporting it here made drift detection fire on every replay.
     pub bundle_hash: String,
     /// The tasks, in the order they were stated.
     pub tasks: Vec<AppliedTaskDto>,
@@ -1130,6 +1141,45 @@ pub struct ProfileValidationDto {
 }
 
 // ---------------------------------------------------------------------------
+// Catalogue registration
+// ---------------------------------------------------------------------------
+
+/// What `catalog/packs:register` is asked for.
+///
+/// The whole pack, as a document. It is one operation and not two — "register a
+/// profile" and "register a team template" — because a work profile prescribes a
+/// team, pins role and skill revisions, and cannot be resolved without them: a
+/// profile admitted alone would be a catalogue entry that refuses to resolve, and
+/// a team admitted alone would be one nothing can select.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct RegisterPackRequest {
+    /// The pack document. Validated in full before anything is stored.
+    #[schema(value_type = Object)]
+    pub pack: serde_json::Value,
+}
+
+/// One profile pack this Realm can resolve a category from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfilePackDto {
+    /// The pack's open id.
+    pub pack_id: String,
+    /// This revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// Whether it is compiled into this build or was registered by an operator.
+    pub source: String,
+    /// The digest of the canonical document. `None` for the compiled pack, which
+    /// is not stored as a document.
+    pub document_hash: Option<String>,
+    /// The categories it advertises, in manifest order.
+    pub categories: Vec<String>,
+    /// The team templates it carries.
+    pub team_templates: Vec<RevisionRefDto>,
+    /// Whether this call registered it, for a register.
+    pub applied: AppliedDto,
+}
+
+// ---------------------------------------------------------------------------
 // Triggers and intake
 // ---------------------------------------------------------------------------
 
@@ -1520,6 +1570,16 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         agent_run_id: AgentRunId,
     ) -> Result<RuntimeSettlementDto, ApiError>;
+
+    /// Register one profile pack, additively, alongside the compiled seeds.
+    async fn register_pack(
+        &self,
+        key: &IdempotencyKey,
+        request: &RegisterPackRequest,
+    ) -> Result<ProfilePackDto, ApiError>;
+
+    /// Every pack this Realm can resolve a category from.
+    fn profile_packs(&self) -> Result<Vec<ProfilePackDto>, ApiError>;
 
     /// The whole of one selectable work profile, resolved.
     fn work_profile(&self, category: &str) -> Result<WorkProfileDetailDto, ApiError>;
@@ -2228,6 +2288,69 @@ pub async fn ticket_reconcile_apply(
             .ticket_reconcile_apply(&key, project_id, task_id, &request)
             .await?,
     ))
+}
+
+/// Register one profile pack alongside the compiled seeds.
+///
+/// Admin, because it widens what every later `epics:apply` in this Realm may
+/// freeze onto a task.
+///
+/// # Idempotency
+///
+/// It takes an `Idempotency-Key` like every other write on this surface. A
+/// receipt cannot carry it — a receipt is written against a project and a
+/// realm-scoped catalogue has none — so the key is bound, once and permanently,
+/// to a **fingerprint of this logical operation**: a digest over the operation
+/// name, the pack, its revision and its content, canonicalized exactly the way a
+/// command intent is.
+///
+/// Three answers, and no fourth:
+///
+/// * same key, same fingerprint → the original answer, `unchanged`;
+/// * same key, same `(pack_id, version)`, different bytes → `409`;
+/// * same key reused for a *different* pack, revision or content → `409`, the
+///   key is already bound to another logical operation.
+///
+/// Binding to a fingerprint rather than to the pack alone is what makes the
+/// third case refusable. Content immutability answers "may these bytes be this
+/// revision?" and cannot answer "was this key already used for something else?",
+/// because two registrations of two different packs are each independently
+/// valid and nothing would be comparing them.
+#[utoipa::path(
+    post, path = "/v1/catalog/packs:register", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = RegisterPackRequest,
+    responses(
+        (status = 200, body = ProfilePackDto, description = "Registered, or already registered"),
+        (status = 400, description = "The pack document does not validate"),
+        (status = 401), (status = 403),
+        (status = 409, description = "This revision is registered with different content")
+    )
+)]
+pub async fn register_pack(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<RegisterPackRequest>,
+) -> Result<Json<ProfilePackDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state.applications().register_pack(&key, &request).await?,
+    ))
+}
+
+/// Every pack this Realm can resolve a category from.
+#[utoipa::path(
+    get, path = "/v1/catalog/packs", tag = "applications",
+    responses((status = 200, body = Vec<ProfilePackDto>), (status = 401), (status = 403))
+)]
+pub async fn profile_packs(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<Vec<ProfilePackDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    Ok(Json(state.applications().profile_packs()?))
 }
 
 /// The whole of one selectable work profile.

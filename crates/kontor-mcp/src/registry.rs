@@ -362,6 +362,38 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "A bounded read of the durable control-plane event stream.",
     },
     ToolSpec {
+        name: "kontor_profile_packs_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/catalog/packs",
+        kind: OpKind::Read,
+        args: &[],
+        about: "Every profile pack this realm resolves categories from: the compiled seeds and \
+                whatever an operator registered.",
+    },
+    ToolSpec {
+        name: "kontor_profile_pack_register",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/catalog/packs:register",
+        kind: OpKind::Write,
+        // The key is bound to a fingerprint of the whole logical operation
+        // rather than carried by a command receipt: a receipt is written against
+        // a project and a realm-wide catalogue has none. Same key and same
+        // fingerprint replays; the same key for a different pack, revision or
+        // content is refused.
+        args: &[
+            req(
+                "pack",
+                Place::Body,
+                ArgType::Json,
+                "The whole profile-pack document: manifest, profiles, teams, roles, skills.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Register a work profile and its team template additively, without a rebuild.",
+    },
+    ToolSpec {
         name: "kontor_work_profiles_list",
         tier: CallerTier::Observer,
         method: Method::Get,

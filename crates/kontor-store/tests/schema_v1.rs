@@ -64,9 +64,11 @@ const EXPECTED_TABLES: &[&str] = &[
     "persona_scenarios",
     "policy_evaluations",
     "projects",
+    "realm_idempotency_bindings",
     "realm_metadata",
     "recovery_episodes",
     "recovery_steps",
+    "registered_profile_packs",
     "resource_leases",
     "run_context_policies",
     "run_park_closures",
@@ -194,7 +196,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 13);
+    assert_eq!(SCHEMA_VERSION, 15);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it

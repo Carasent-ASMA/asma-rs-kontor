@@ -269,11 +269,43 @@ pub trait RuntimeAdapter: Send + Sync {
         claimed: &RuntimeBindingSnapshot,
     ) -> RuntimeResult<IssuedBinding>;
 
+    /// Make whatever this runtime needs *before* a census or a workspace can be
+    /// asked for exist.
+    ///
+    /// Some runtimes hold a plane-level container — a project, a namespace, a
+    /// tenant — that every later operation is addressed inside. Kontor cannot
+    /// discover sessions in it, prepare a workspace under it or admit a seat
+    /// into it until it exists, and the runtime is the only thing that can
+    /// create it. This is where that happens.
+    ///
+    /// It is **idempotent and cheap**: a runtime that has already prepared its
+    /// plane re-attests the binding it holds and creates nothing, so calling it
+    /// on every startup census and before every workspace preparation is
+    /// correct rather than wasteful.
+    ///
+    /// The default is `Ok(())`, because most runtimes have no such container and
+    /// a lifecycle step that does nothing should not have to be written out. An
+    /// implementation that *does* need one overrides this; nothing else about
+    /// the contract changes.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::Transport`] when the runtime could not be
+    /// reached, and a runtime-specific refusal when the plane cannot be
+    /// prepared unambiguously. A failure here is the same class of fact as a
+    /// census that did not finish: it proves nothing about the plane, so a
+    /// caller must treat it as "not ready" rather than as "empty".
+    async fn prepare_plane(&self) -> RuntimeResult<()> {
+        Ok(())
+    }
+
     /// Make a team run's task workspace exist and be usable.
     ///
     /// This is **idempotent** per team run: preparing the same team run's
     /// workspace again returns the original binding and creates nothing, so a
     /// retry after a lost answer cannot leave a second workspace behind.
+    ///
+    /// A runtime with a plane-level container expects [`RuntimeAdapter::prepare_plane`]
+    /// to have succeeded first; this is not the place that creates one.
     ///
     /// # Errors
     /// Refuses a workspace that is the runtime's shared root, and a second
