@@ -1,0 +1,38 @@
+{
+  "requestId": "req-fixture",
+  "serverId": "srv_kontor_fixture",
+  "version": "0.3.1",
+  "pid": 21362,
+  "nodePath": "synthetic nodePath",
+  "startedAt": "2026-08-10T09:00:00.000Z",
+  "listen": "127.0.0.1:6767",
+  "relay": {
+    "enabled": true,
+    "endpoint": "relay.invalid:443",
+    "publicEndpoint": "relay.invalid:443",
+    "useTls": true,
+    "publicUseTls": true
+  },
+  "providers": [
+    {
+      "provider": "claude",
+      "available": true,
+      "error": null
+    },
+    {
+      "provider": "codex",
+      "available": true,
+      "error": null
+    },
+    {
+      "provider": "opencode",
+      "available": true,
+      "error": null
+    },
+    {
+      "provider": "cursor",
+      "available": true,
+      "error": null
+    }
+  ]
+}

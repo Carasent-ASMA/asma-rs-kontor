@@ -1,0 +1,9 @@
+{
+  "requestId": "req-fixture",
+  "entries": [],
+  "pageInfo": {
+    "nextCursor": null,
+    "prevCursor": null,
+    "hasMore": false
+  }
+}

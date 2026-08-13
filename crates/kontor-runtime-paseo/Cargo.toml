@@ -21,22 +21,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
-# The CLI `--host` target carries a remote password in Paseo 0.2.5, so it is held
-# in a zeroizing wrapper inside the transport and never crosses back out.
+# The CLI `--host` target carries a remote password, so it is held in a
+# zeroizing wrapper inside the transport and never crosses back out.
 secrecy = { workspace = true }
 
-# KON-MVP-11 deliberately declares no WebSocket client, exactly as
-# `kontor-runtime-ao` deliberately declares none for AO's `/mux`. The daemon
-# protocol's *semantics* — request-id correlation, canonical timeline paging,
-# selective subscription, idempotent send, permission response — are implemented
-# in `wire.rs` and driven through the `PaseoTransport` seam, so every acceptance
-# criterion is proved against recorded frames. What is missing is only the socket
-# that carries them, and opening one needs an exact workspace-pinned
-# `tokio-tungstenite` that the root manifest does not carry. Adding that pin
-# rewrites `Cargo.lock`, which KON-MVP-20 owns and this ticket must leave byte
-# identical; and neither `tungstenite` nor `webpki-roots` is in the offline
-# registry the workspace gates build against. Hand-rolled framing to dodge that
-# gate is rejected outright (ALT-006). See `client::PaseoDaemonTransport`.
+# The Paseo 0.3.1 session socket. `connect` only: the qualified endpoint is
+# plaintext loopback, so no TLS feature is enabled and no trust-anchor crate
+# (`webpki-roots`) enters this adapter's graph. Hand-rolled framing to avoid the
+# dependency gate is rejected outright (ALT-006).
+tokio-tungstenite = { workspace = true }
+# `SinkExt`/`StreamExt` and the split halves the reader task owns. Already a
+# workspace dependency; no new package enters the graph for it.
+futures = { workspace = true }
 
 [dev-dependencies]
 # The capability-aware shared contract, so this adapter is judged by the same

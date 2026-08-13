@@ -1,0 +1,80 @@
+{
+  "requestId": "req-fixture",
+  "entries": [
+    {
+      "id": "",
+      "projectId": "prj_epic",
+      "projectDisplayName": "Epic ASMA-7744 Kontor MVP",
+      "projectCustomName": "Epic ASMA-7744 Kontor MVP",
+      "projectCustomIconRevision": null,
+      "projectRootPath": "/w/epic/task-11",
+      "workspaceDirectory": "/w/epic/task-11",
+      "projectKind": "git",
+      "workspaceKind": "worktree",
+      "name": "KON-MVP-11 Paseo adapter [kontor-team-01890000-0000-7000-8000-0000000000a1]",
+      "title": "KON-MVP-11 Paseo adapter [kontor-team-01890000-0000-7000-8000-0000000000a1]",
+      "pinnedAt": null,
+      "archivingAt": null,
+      "status": "attention",
+      "statusEnteredAt": "2026-08-10T09:00:00.000Z",
+      "activityAt": null,
+      "diffStat": {
+        "additions": 2051,
+        "deletions": 54
+      },
+      "scripts": [
+        {
+          "scriptName": "asma-commit",
+          "type": "script",
+          "hostname": "kontor-fixture-host",
+          "port": null,
+          "proxyUrl": null,
+          "lifecycle": "stopped",
+          "health": null,
+          "exitCode": null,
+          "terminalId": null
+        }
+      ],
+      "project": {
+        "projectKey": "github.com/kontor/epic",
+        "projectName": "Epic ASMA-7744 Kontor MVP",
+        "workspaceName": "KON-MVP-11 Paseo adapter",
+        "checkout": {
+          "cwd": "/w/epic/task-11",
+          "currentBranch": "feat/kontor-fixture",
+          "remoteUrl": null,
+          "worktreeRoot": "/w/epic/task-11",
+          "isGit": true,
+          "isPaseoOwnedWorktree": false,
+          "mainRepoRoot": null
+        }
+      },
+      "gitRuntime": {
+        "currentBranch": "feat/kontor-fixture",
+        "remoteUrl": "synthetic remoteUrl",
+        "isPaseoOwnedWorktree": false,
+        "isDirty": true,
+        "aheadBehind": {
+          "ahead": 1,
+          "behind": 84
+        },
+        "aheadOfOrigin": 0,
+        "behindOfOrigin": 0
+      },
+      "githubRuntime": {
+        "featuresEnabled": true,
+        "pullRequest": null,
+        "error": {
+          "message": "synthetic message"
+        }
+      },
+      "forge": "github"
+    }
+  ],
+  "emptyProjects": [],
+  "pageInfo": {
+    "nextCursor": null,
+    "prevCursor": null,
+    "hasMore": false
+  }
+}

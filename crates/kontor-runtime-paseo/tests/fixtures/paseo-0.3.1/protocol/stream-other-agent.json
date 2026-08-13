@@ -1,0 +1,19 @@
+[
+  {
+    "type": "agent_stream",
+    "payload": {
+      "agentId": "agt_qa",
+      "event": {
+        "type": "timeline",
+        "provider": "claude",
+        "item": {
+          "type": "assistant_message",
+          "text": "synthetic text"
+        }
+      },
+      "timestamp": "2026-08-10T09:00:00.000Z",
+      "seq": 2,
+      "epoch": "8f2b1c34-0000-4000-8000-000000000001"
+    }
+  }
+]

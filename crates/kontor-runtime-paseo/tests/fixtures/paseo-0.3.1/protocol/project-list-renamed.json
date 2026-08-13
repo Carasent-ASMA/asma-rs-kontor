@@ -1,0 +1,14 @@
+{
+  "requestId": "req-fixture",
+  "projects": [
+    {
+      "projectId": "prj_epic",
+      "projectKey": "github.com/kontor/epic",
+      "projectDisplayName": "kontor mvp (old name)",
+      "projectCustomName": null,
+      "projectCustomIconRevision": null,
+      "projectRootPath": "/w/epic/task-11",
+      "projectKind": "git"
+    }
+  ]
+}

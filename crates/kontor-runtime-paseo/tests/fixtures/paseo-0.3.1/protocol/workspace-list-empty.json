@@ -1,0 +1,10 @@
+{
+  "requestId": "req-fixture",
+  "entries": [],
+  "emptyProjects": [],
+  "pageInfo": {
+    "nextCursor": null,
+    "prevCursor": null,
+    "hasMore": false
+  }
+}

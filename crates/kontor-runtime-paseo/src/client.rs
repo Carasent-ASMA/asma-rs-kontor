@@ -12,9 +12,31 @@
 //! * a fault can be injected *after* the fixture-side effect committed, which is
 //!   the one ordering that matters for confirmation-unknown.
 //!
+//! # The 0.3.1 socket
+//!
+//! [`PaseoLiveTransport`] speaks the live session protocol at
+//! `ws://127.0.0.1:6767/ws`:
+//!
+//! 1. connect, then send exactly one `hello` carrying
+//!    [`PASEO_WS_PROTOCOL_VERSION`] and [`PASEO_APP_VERSION`] as separate
+//!    fields;
+//! 2. wait for the daemon's pushed `status/server_info` and gate on it — no
+//!    operational request is written before that push agrees with both pins;
+//! 3. wrap every request as `{"type":"session","message":{…}}`, and accept an
+//!    answer only when its `requestId` *and* its response type are the exact
+//!    pair the request declared;
+//! 4. route `agent_stream` frames by `payload.agentId` into a bounded per-agent
+//!    queue, because they are never anybody's answer.
+//!
+//! One reader task owns the socket's read half and demultiplexes; writes are
+//! serialized behind the connection lock. A reconnect throws away pending
+//! correlation and buffered frames and re-gates from a fresh push, because a
+//! request issued before a disconnect is not answered by a daemon that has
+//! since restarted.
+//!
 //! # Secrets
 //!
-//! Paseo 0.2.5 accepts a remote password only inside its `--host` URI, so the
+//! Paseo accepts a remote password only inside its `--host` URI, so the
 //! complete host target is a credential. It lives in a [`SecretString`] owned by
 //! the live transport and is appended immediately before dispatch. It is not a
 //! field of [`PaseoCommand`], so it cannot reach a ledger, a checkpoint, an
@@ -27,15 +49,26 @@
 //! prompt is interpolated into, so a hostile display name is an argument and
 //! never a second command.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::{SinkExt, StreamExt};
 use kontor_core::DomainError;
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 use secrecy::{ExposeSecret, SecretString};
+use tokio::net::TcpStream;
+use tokio::sync::{Mutex, oneshot};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::wire::{MAX_FRAME_BYTES, MAX_OUTPUT_BYTES, PaseoProjection};
+use crate::wire::{
+    MAX_FRAME_BYTES, MAX_OUTPUT_BYTES, MAX_STREAM_QUEUE, PASEO_APP_VERSION,
+    PASEO_CAP_SELECTIVE_AGENT_TIMELINE, PASEO_CLIENT_TYPE, PASEO_WS_PROTOCOL_VERSION,
+    PaseoDirection, PaseoProjection, PaseoServerInfo, PaseoTimelineCursor,
+};
 
 /// The JSON flag every lifecycle command carries.
 const JSON_FLAG: &str = "--json";
@@ -55,6 +88,15 @@ pub const PARENT_AGENT_ENV: &str = "PASEO_AGENT_ID";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaseoCommand {
     argv: Vec<String>,
+    /// The final positional argument, when the subcommand takes one.
+    ///
+    /// Held apart from `argv` because it has to be written **last**, after the
+    /// transport has appended its own `--host`. A trailing positional placed
+    /// while the command is being built ends up in front of that flag, and
+    /// everything after the `--` terminator is a positional — so the host target
+    /// would arrive as two more prompt words and the CLI would refuse the whole
+    /// invocation. A live Grade-A launch caught exactly that.
+    trailing: Option<String>,
     /// Every argv element that came from outside this adapter.
     ///
     /// Recorded separately because "is this argument flag-shaped?" is only a
@@ -69,6 +111,9 @@ pub struct PaseoCommand {
 
 impl PaseoCommand {
     /// `paseo --version --json`.
+    ///
+    /// 0.3.1 prints the bare version string for this one, not JSON, so its
+    /// answer is read as text. See [`PaseoOutput::version`].
     #[must_use]
     pub fn version() -> Self {
         Self::read(Argv::new(&["--version"]), "version".to_owned())
@@ -80,25 +125,18 @@ impl PaseoCommand {
     /// than asking Paseo to provision one of its own, which would put the role
     /// in a tree Kontor never prepared.
     ///
-    /// `labels` carries the Kontor team-run label, which is what makes the
-    /// workspace's correlation evidence evidence. See
-    /// [`crate::wire::PaseoWorkspace::labels`] for why that flag is the least
-    /// certain part of this adapter's CLI surface.
+    /// There is no `--label`: 0.3.1's `workspace create` does not have one and
+    /// its workspaces carry no labels at all, so the correlation label rides in
+    /// the title. See [`crate::wire::workspace_label_suffix`].
     #[must_use]
-    pub fn workspace_create(
-        canonical_cwd: &str,
-        project_id: &str,
-        title: &str,
-        labels: &BTreeMap<String, String>,
-    ) -> Self {
-        let mut argv = Argv::new(&["workspace", "create", "--isolation", "local"])
-            .option("--path", canonical_cwd)
-            .option("--project", project_id)
-            .option("--title", title);
-        for (key, value) in labels {
-            argv = argv.option("--label", &format!("{key}={value}"));
-        }
-        Self::mutate(argv, "workspace create".to_owned())
+    pub fn workspace_create(canonical_cwd: &str, project_id: &str, title: &str) -> Self {
+        Self::mutate(
+            Argv::new(&["workspace", "create", "--isolation", "local"])
+                .option("--path", canonical_cwd)
+                .option("--project", project_id)
+                .option("--title", title),
+            "workspace create".to_owned(),
+        )
     }
 
     /// `paseo workspace archive {id}`.
@@ -110,16 +148,22 @@ impl PaseoCommand {
         )
     }
 
-    /// `paseo agent run --background --workspace … --cwd … --title … --label …`.
+    /// `paseo agent run --background --workspace … --cwd … --title … --label … {prompt}`.
     ///
     /// Both `--workspace` and `--cwd` travel. Either alone is a hierarchy that
     /// can be right by accident: a workspace id with no directory would let
     /// Paseo pick one, and a directory with no workspace id would place the
     /// agent wherever that path currently resolves.
+    ///
+    /// The prompt is the trailing **positional** argument, which is 0.3.1's
+    /// shape (`paseo agent run [options] <prompt>`); there is no `--prompt`.
+    ///
+    /// `--provider` is mandatory on this release.
     #[must_use]
     pub fn agent_run(
         workspace_id: &str,
         canonical_cwd: &str,
+        provider: &str,
         title: &str,
         labels: &BTreeMap<String, String>,
         parent_agent_id: &str,
@@ -128,25 +172,22 @@ impl PaseoCommand {
         let mut argv = Argv::new(&["agent", "run", "--background"])
             .option("--workspace", workspace_id)
             .option("--cwd", canonical_cwd)
+            // 0.3.1 refuses a launch with no provider: `MISSING_PROVIDER`,
+            // before it creates anything. It is a plane-level choice, so it
+            // comes from configuration rather than from the run.
+            .option("--provider", provider)
             .option("--title", title);
         for (key, value) in labels {
             argv = argv.option("--label", &format!("{key}={value}"));
         }
-        argv = argv.option("--prompt", prompt);
+        // Everything Paseo parses as a flag is already behind us, so the prompt
+        // is positional and terminates the option list.
+        argv = argv.trailing(prompt);
         let mut command = Self::mutate(argv, "agent run".to_owned());
         command
             .env
             .push((PARENT_AGENT_ENV.to_owned(), parent_agent_id.to_owned()));
         command
-    }
-
-    /// `paseo agent inspect {id}`.
-    #[must_use]
-    pub fn agent_inspect(agent_id: &str) -> Self {
-        Self::read(
-            Argv::new(&["agent", "inspect"]).value(agent_id),
-            format!("agent inspect {agent_id}"),
-        )
     }
 
     /// `paseo agent update {id} --label …` — the adoption write, and nothing else.
@@ -159,8 +200,8 @@ impl PaseoCommand {
         Self::mutate(argv, format!("agent update {agent_id}"))
     }
 
-    /// `paseo agent reload {id}` — a process restart for an explicitly stopped
-    /// agent, and never a way to simulate a new turn or a compaction.
+    /// `paseo agent reload {id}` — a process restart for a closed agent, and
+    /// never a way to simulate a new turn or a compaction.
     #[must_use]
     pub fn agent_reload(agent_id: &str) -> Self {
         Self::mutate(
@@ -187,10 +228,34 @@ impl PaseoCommand {
         )
     }
 
-    /// The argv the transport dispatches, without `--host`.
+    /// The option half of the argv, without `--host` and without the trailing
+    /// positional.
     #[must_use]
     pub fn argv(&self) -> &[String] {
         &self.argv
+    }
+
+    /// The final positional argument, when this command has one.
+    ///
+    /// A transport writes it after every flag it appends of its own, preceded by
+    /// `--` so a value beginning with a dash is that value and not an option.
+    #[must_use]
+    pub fn trailing(&self) -> Option<&str> {
+        self.trailing.as_deref()
+    }
+
+    /// The complete argv a dispatch produces, `--host` aside.
+    ///
+    /// Only for evidence and assertions; the live transport builds the real one
+    /// itself because it alone holds the host target.
+    #[must_use]
+    pub fn dispatched_argv(&self) -> Vec<String> {
+        let mut argv = self.argv.clone();
+        if let Some(trailing) = &self.trailing {
+            argv.push("--".to_owned());
+            argv.push(trailing.clone());
+        }
+        argv
     }
 
     /// The environment the child process is given.
@@ -223,11 +288,8 @@ impl PaseoCommand {
     /// which is the argv analogue of interpolating an id into a URL path: a
     /// workspace id of `--force` is not a workspace at all.
     ///
-    /// ponytail: this also refuses a legitimate prompt that happens to begin
-    /// with `-`. Paseo 0.2.5's recorded CLI shape is space-separated and this
-    /// adapter will not invent a `--flag=value` or `--` contract it has not
-    /// observed; refusing typed beats guessing at the parser. Relax it to
-    /// `--prompt=<text>` once a live probe confirms that spelling.
+    /// The trailing prompt is exempt, because it is positional and this adapter
+    /// puts `--` in front of it.
     ///
     /// # Errors
     /// Returns [`RuntimeError::Domain`] for an empty value and for one that
@@ -259,11 +321,16 @@ impl PaseoCommand {
     }
 
     fn build(argv: Argv, route: String, mutates: bool) -> Self {
-        let Argv { mut argv, values } = argv;
+        let Argv {
+            mut argv,
+            values,
+            trailing,
+        } = argv;
         argv.push(JSON_FLAG.to_owned());
         Self {
             argv,
             values,
+            trailing,
             route,
             env: Vec::new(),
             mutates,
@@ -275,6 +342,7 @@ impl PaseoCommand {
 struct Argv {
     argv: Vec<String>,
     values: Vec<String>,
+    trailing: Option<String>,
 }
 
 impl Argv {
@@ -283,6 +351,7 @@ impl Argv {
         Self {
             argv: parts.iter().map(|part| (*part).to_owned()).collect(),
             values: Vec::new(),
+            trailing: None,
         }
     }
 
@@ -297,6 +366,12 @@ impl Argv {
     fn option(mut self, flag: &str, value: &str) -> Self {
         self.argv.push(flag.to_owned());
         self.value(value)
+    }
+
+    /// The final positional argument, placed after `--`.
+    fn trailing(mut self, value: &str) -> Self {
+        self.trailing = Some(value.to_owned());
+        self
     }
 }
 
@@ -324,112 +399,189 @@ impl PaseoOutput {
     ///
     /// # Errors
     /// * [`RuntimeError::Transport`] — a non-zero exit.
-    /// * [`RuntimeError::Domain`] — output that is not the pinned 0.2.5 shape,
+    /// * [`RuntimeError::Domain`] — output that is not the pinned 0.3.1 shape,
     ///   which includes output that is not JSON at all.
     pub fn parse<T: serde::de::DeserializeOwned>(&self, subject: &'static str) -> RuntimeResult<T> {
-        if self.status != 0 {
-            return Err(RuntimeError::Transport {
-                rule: "runtime refused the command",
-            });
-        }
-        serde_json::from_str(&self.stdout).map_err(|_| {
+        self.succeeded()?;
+        serde_json::from_str(self.json_body()).map_err(|_| {
             RuntimeError::Domain(DomainError::invalid(
                 subject,
-                "is not the Paseo 0.2.5 JSON this adapter is pinned to",
+                "is not the Paseo 0.3.1 JSON this adapter is pinned to",
             ))
+        })
+    }
+
+    /// The JSON document inside `--json` output.
+    ///
+    /// 0.3.1 writes operator chatter to **stdout** ahead of the payload — a
+    /// launch prints `Using workspace wks_…` before its object — so the stream
+    /// is "a notice, then JSON" rather than JSON. Parsing from the first opening
+    /// brace is the smallest thing that reads the document Paseo meant to send
+    /// without inventing a tolerance for anything else: a body that is not JSON
+    /// from there on still fails, and the notice never reaches a DTO.
+    fn json_body(&self) -> &str {
+        let start = self.stdout.find(['{', '[']).unwrap_or(self.stdout.len());
+        self.stdout.get(start..).unwrap_or_default()
+    }
+
+    /// The bare version string `paseo --version --json` prints.
+    ///
+    /// Text rather than JSON, because that is what 0.3.1 actually writes: the
+    /// root `--version` flag short-circuits the formatter.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::Transport`] for a non-zero exit.
+    pub fn version(&self) -> RuntimeResult<String> {
+        self.succeeded()?;
+        Ok(self.stdout.trim().to_owned())
+    }
+
+    fn succeeded(&self) -> RuntimeResult<()> {
+        if self.status == 0 {
+            return Ok(());
+        }
+        Err(RuntimeError::Transport {
+            rule: "runtime refused the command",
         })
     }
 }
 
 // ---------------------------------------------------------------------------
-// Daemon protocol requests
+// Session protocol requests
 // ---------------------------------------------------------------------------
 
-/// One authenticated daemon protocol request.
+/// One session-protocol request, with the exact response type that answers it.
 ///
-/// `request_id` is the correlation key, and the transport must refuse an answer
-/// that carries a different one. That is not defensive plumbing: the socket is
-/// multiplexed, so an answer matched by arrival order rather than by id is an
-/// answer about somebody else's agent.
+/// `request_id` is the correlation key and `response_type` is the other half of
+/// it. Neither alone is enough on a multiplexed socket: an answer matched by
+/// arrival order is an answer about somebody else's agent, and an answer matched
+/// by id alone accepts an `rpc_error` — or any other frame the daemon chose to
+/// stamp with that id — as the readback a placement rule is about to be decided
+/// from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaseoRpc {
-    /// The protocol method.
-    pub method: &'static str,
+    /// The session message, ready to be wrapped in the `session` envelope.
+    pub message: serde_json::Value,
+    /// The inbound message type, for the ledger.
+    pub request_type: &'static str,
+    /// The exact outbound message type that answers it.
+    pub response_type: &'static str,
     /// The request correlation id.
     pub request_id: String,
-    /// The request parameters.
-    pub params: serde_json::Value,
     /// Whether this request can change Paseo.
     pub mutates: bool,
 }
 
 impl PaseoRpc {
-    /// `server_info` — identity, version and advertised features.
+    /// `daemon.get_status.request` — the correlated version readback.
     #[must_use]
-    pub fn server_info(request_id: String) -> Self {
-        Self::read("server_info", request_id, serde_json::json!({}))
+    pub fn daemon_status(request_id: String) -> Self {
+        Self::read(
+            "daemon.get_status.request",
+            "daemon.get_status.response",
+            request_id,
+            serde_json::json!({}),
+        )
     }
 
     /// `project.list.request`.
     #[must_use]
     pub fn project_list(request_id: String) -> Self {
-        Self::read("project.list.request", request_id, serde_json::json!({}))
+        Self::read(
+            "project.list.request",
+            "project.list.response",
+            request_id,
+            serde_json::json!({}),
+        )
     }
 
     /// `project.add.request`, keyed by the durable command id.
     ///
+    ///
     /// The request id *is* the command id, so a redelivery of the same intent
     /// carries the same correlation and cannot be mistaken for a second one.
     #[must_use]
-    pub fn project_add(request_id: String, path: &str, name: &str) -> Self {
+    pub fn project_add(request_id: String, cwd: &str) -> Self {
         Self::mutate(
             "project.add.request",
+            "project.add.response",
             request_id,
-            serde_json::json!({ "path": path, "name": name }),
+            // `cwd`, and only `cwd`. The 0.2.5 spelling was `path` with a
+            // `name`, and 0.3.1 accepts neither: a live probe against the
+            // qualified daemon answered `path` with "Unknown request, try
+            // upgrading the daemon", because the inbound schema is
+            // `{type, cwd, requestId}` and a message that misses it never
+            // reaches a handler. There is no name field at all — the daemon
+            // derives a project's display name from the directory, which is why
+            // `prepare_project` reports drift instead of setting one.
+            serde_json::json!({ "cwd": cwd }),
         )
     }
 
-    /// `workspace.list.request`, narrowed to one project.
+    /// `fetch_workspaces_request`, narrowed to one project and one bounded page.
+    ///
+    /// 0.3.1 has no fetch-one-workspace request; the authoritative readback of a
+    /// single workspace is this list plus an exact-id select, which is why the
+    /// filter and the page bound are not optional here.
     #[must_use]
-    pub fn workspace_list(request_id: String, project_id: &str) -> Self {
+    pub fn workspace_list(
+        request_id: String,
+        project_id: &str,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Self {
+        let mut page = serde_json::json!({ "limit": limit });
+        if let Some(cursor) = cursor {
+            page["cursor"] = serde_json::json!(cursor);
+        }
         Self::read(
-            "workspace.list.request",
+            "fetch_workspaces_request",
+            "fetch_workspaces_response",
             request_id,
-            serde_json::json!({ "projectId": project_id }),
+            serde_json::json!({
+                "filter": { "projectId": project_id },
+                "page": page,
+            }),
         )
     }
 
-    /// `workspace.fetch.request` — the authoritative readback by exact id.
+    /// `fetch_agents_request`, narrowed by exact labels and one bounded page.
     #[must_use]
-    pub fn workspace_fetch(request_id: String, workspace_id: &str) -> Self {
+    pub fn agent_list(
+        request_id: String,
+        labels: &BTreeMap<String, String>,
+        include_archived: bool,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Self {
+        let mut page = serde_json::json!({ "limit": limit });
+        if let Some(cursor) = cursor {
+            page["cursor"] = serde_json::json!(cursor);
+        }
+        let mut filter = serde_json::json!({ "includeArchived": include_archived });
+        if !labels.is_empty() {
+            filter["labels"] = serde_json::json!(labels);
+        }
         Self::read(
-            "workspace.fetch.request",
+            "fetch_agents_request",
+            "fetch_agents_response",
             request_id,
-            serde_json::json!({ "workspaceId": workspace_id }),
+            serde_json::json!({ "filter": filter, "page": page }),
         )
     }
 
-    /// `agent.list.request` — the census discovery and recovery run over.
-    #[must_use]
-    pub fn agent_list(request_id: String, project_id: &str) -> Self {
-        Self::read(
-            "agent.list.request",
-            request_id,
-            serde_json::json!({ "projectId": project_id }),
-        )
-    }
-
-    /// `agent.fetch.request` — the authoritative readback by exact id.
+    /// `fetch_agent_request` — the authoritative readback by exact id.
     #[must_use]
     pub fn agent_fetch(request_id: String, agent_id: &str) -> Self {
         Self::read(
-            "agent.fetch.request",
+            "fetch_agent_request",
+            "fetch_agent_response",
             request_id,
             serde_json::json!({ "agentId": agent_id }),
         )
     }
 
-    /// `fetch_agent_timeline_request` under one projection.
+    /// `fetch_agent_timeline_request` under one projection and direction.
     ///
     /// The projection is a parameter rather than a constant so the recorded
     /// suite can prove what `projected` costs; every production call site passes
@@ -439,28 +591,42 @@ impl PaseoRpc {
         request_id: String,
         agent_id: &str,
         projection: PaseoProjection,
-        after: Option<u64>,
+        direction: PaseoDirection,
+        cursor: Option<&PaseoTimelineCursor>,
         limit: u32,
     ) -> Self {
+        let mut message = serde_json::json!({
+            "agentId": agent_id,
+            "projection": projection.as_str(),
+            "direction": direction.as_str(),
+            "limit": limit,
+        });
+        if let Some(cursor) = cursor {
+            message["cursor"] = serde_json::json!({
+                "epoch": cursor.epoch,
+                "seq": cursor.seq,
+            });
+        }
         Self::read(
             "fetch_agent_timeline_request",
+            "fetch_agent_timeline_response",
             request_id,
-            serde_json::json!({
-                "agentId": agent_id,
-                "projection": projection.as_str(),
-                "after": after,
-                "limit": limit,
-            }),
+            message,
         )
     }
 
-    /// `setAgentTimelineSubscription` — narrow the live stream to one agent.
+    /// `agent.timeline.set_subscription.request` — narrow the live stream.
+    ///
+    /// The whole subscribed set travels on every call, because that is what the
+    /// request means: it *replaces* this connection's set rather than adding to
+    /// it.
     #[must_use]
-    pub fn timeline_subscribe(request_id: String, agent_id: &str, after: u64) -> Self {
+    pub fn timeline_subscribe(request_id: String, agent_ids: &[String]) -> Self {
         Self::read(
-            "setAgentTimelineSubscription",
+            "agent.timeline.set_subscription.request",
+            "agent.timeline.set_subscription.response",
             request_id,
-            serde_json::json!({ "agentId": agent_id, "after": after }),
+            serde_json::json!({ "agentIds": agent_ids }),
         )
     }
 
@@ -469,55 +635,85 @@ impl PaseoRpc {
     pub fn send_message(request_id: String, agent_id: &str, message_id: &str, body: &str) -> Self {
         Self::mutate(
             "send_agent_message_request",
+            "send_agent_message_response",
             request_id,
             serde_json::json!({
                 "agentId": agent_id,
+                "text": body,
                 "messageId": message_id,
-                "body": body,
             }),
         )
     }
 
     /// `agent_permission_response`, bound to the exact pending request.
+    ///
+    /// The correlation id *is* the permission request id, because that is the
+    /// only id both halves of this exchange carry:
+    /// `agent_permission_resolved` reports `payload.requestId`, and it is the
+    /// permission's.
     #[must_use]
-    pub fn permission_response(
-        request_id: String,
-        agent_id: &str,
-        permission_id: &str,
-        decision: &str,
-    ) -> Self {
+    pub fn permission_response(agent_id: &str, permission_id: &str, allow: bool) -> Self {
+        let response = if allow {
+            serde_json::json!({ "behavior": "allow" })
+        } else {
+            serde_json::json!({ "behavior": "deny" })
+        };
         Self::mutate(
             "agent_permission_response",
-            request_id,
-            serde_json::json!({
-                "agentId": agent_id,
-                "permissionId": permission_id,
-                "decision": decision,
-            }),
+            "agent_permission_resolved",
+            permission_id.to_owned(),
+            serde_json::json!({ "agentId": agent_id, "response": response }),
         )
     }
 
-    /// The ledger key: the method only, never the parameters.
+    /// The ledger key: the request type only, never the parameters.
     #[must_use]
     pub fn route(&self) -> String {
-        format!("rpc {}", self.method)
+        format!("rpc {}", self.request_type)
     }
 
-    const fn read(method: &'static str, request_id: String, params: serde_json::Value) -> Self {
-        Self {
-            method,
-            request_id,
-            params,
-            mutates: false,
-        }
+    /// The complete outbound frame, envelope and all.
+    #[must_use]
+    pub fn envelope(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "session", "message": self.message })
     }
 
-    const fn mutate(method: &'static str, request_id: String, params: serde_json::Value) -> Self {
+    fn read(
+        request_type: &'static str,
+        response_type: &'static str,
+        request_id: String,
+        params: serde_json::Value,
+    ) -> Self {
+        Self::build(request_type, response_type, request_id, params, false)
+    }
+
+    fn mutate(
+        request_type: &'static str,
+        response_type: &'static str,
+        request_id: String,
+        params: serde_json::Value,
+    ) -> Self {
+        Self::build(request_type, response_type, request_id, params, true)
+    }
+
+    fn build(
+        request_type: &'static str,
+        response_type: &'static str,
+        request_id: String,
+        mut params: serde_json::Value,
+        mutates: bool,
+    ) -> Self {
+        // Type and correlation id are written last and by this constructor
+        // only, so no call site can build a message whose declared type and
+        // expected answer disagree.
+        params["type"] = serde_json::json!(request_type);
+        params["requestId"] = serde_json::json!(request_id);
         Self {
-            method,
+            message: params,
+            request_type,
+            response_type,
             request_id,
-            params,
-            mutates: true,
+            mutates,
         }
     }
 }
@@ -525,46 +721,57 @@ impl PaseoRpc {
 /// One daemon answer, still correlated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaseoFrame {
-    /// The request this frame answers.
+    /// The outbound message type this frame arrived as.
+    pub response_type: String,
+    /// The correlation id its payload carried.
     pub request_id: String,
-    /// The payload, when the daemon answered successfully.
-    pub result: Option<serde_json::Value>,
+    /// The payload, when the daemon answered.
+    pub payload: Option<serde_json::Value>,
     /// The daemon's own error code, when it refused.
     pub error_code: Option<String>,
 }
 
 impl PaseoFrame {
-    /// A successful answer.
+    /// A successful answer of `response_type`.
     #[must_use]
-    pub const fn ok(request_id: String, result: serde_json::Value) -> Self {
+    pub fn ok(
+        response_type: impl Into<String>,
+        request_id: String,
+        payload: serde_json::Value,
+    ) -> Self {
         Self {
+            response_type: response_type.into(),
             request_id,
-            result: Some(result),
+            payload: Some(payload),
             error_code: None,
         }
     }
 
     /// A refusal.
     #[must_use]
-    pub const fn failed(request_id: String, error_code: String) -> Self {
+    pub fn failed(request_id: String, error_code: String) -> Self {
         Self {
+            response_type: "rpc_error".to_owned(),
             request_id,
-            result: None,
+            payload: None,
             error_code: Some(error_code),
         }
     }
 
     /// Resolve this frame against the request it must answer.
     ///
-    /// The correlation check is the whole point of the type. On one multiplexed
-    /// socket an answer taken by arrival order is an answer about whatever the
-    /// daemon happened to finish first, which for a `workspace.fetch` is another
-    /// project's workspace — accepted, bound, and then edited in.
+    /// Both halves are checked. On one multiplexed socket an answer taken by
+    /// arrival order is an answer about whatever the daemon happened to finish
+    /// first, which for a workspace readback is another project's workspace —
+    /// accepted, bound, and then edited in. And an answer taken by id alone
+    /// accepts an `rpc_error` frame, or a `fetch_agent_response` where a
+    /// `fetch_workspaces_response` was asked for, as though the daemon had
+    /// answered the question.
     ///
     /// # Errors
-    /// * [`RuntimeError::Transport`] — the frame answers another request, or the
-    ///   daemon refused.
-    /// * [`RuntimeError::Domain`] — the payload is not the pinned 0.2.5 shape.
+    /// * [`RuntimeError::Transport`] — the frame answers another request, is
+    ///   another kind of answer, or the daemon refused.
+    /// * [`RuntimeError::Domain`] — the payload is not the pinned 0.3.1 shape.
     pub fn resolve<T: serde::de::DeserializeOwned>(
         &self,
         request: &PaseoRpc,
@@ -575,18 +782,23 @@ impl PaseoFrame {
                 rule: "answer carried another request's correlation id",
             });
         }
-        let Some(result) = &self.result else {
+        if self.response_type != request.response_type {
+            return Err(RuntimeError::Transport {
+                rule: "answer was not the response type this request declared",
+            });
+        }
+        let Some(payload) = &self.payload else {
             // The daemon's own message can quote a path or a prompt, so only the
             // fact of refusal survives into the error.
             return Err(RuntimeError::Transport {
                 rule: "runtime refused the request",
             });
         };
-        ensure_frame_bounded(result)?;
-        serde_json::from_value(result.clone()).map_err(|_| {
+        ensure_frame_bounded(payload)?;
+        serde_json::from_value(payload.clone()).map_err(|_| {
             RuntimeError::Domain(DomainError::invalid(
                 subject,
-                "is not the Paseo 0.2.5 frame this adapter is pinned to",
+                "is not the Paseo 0.3.1 frame this adapter is pinned to",
             ))
         })
     }
@@ -599,6 +811,17 @@ impl PaseoFrame {
 /// The seam between the adapter's policy and Paseo's two surfaces.
 #[async_trait]
 pub trait PaseoTransport: Send + Sync + fmt::Debug {
+    /// The identity the daemon pushed when this connection was established.
+    ///
+    /// A push rather than a request, so the adapter asks the transport for the
+    /// copy it gated on instead of inventing a `server_info` request 0.3.1 does
+    /// not have.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::Transport`] when no gated connection could be
+    /// established.
+    async fn server_identity(&self) -> RuntimeResult<PaseoServerInfo>;
+
     /// Run one CLI command.
     ///
     /// # Errors
@@ -607,7 +830,7 @@ pub trait PaseoTransport: Send + Sync + fmt::Debug {
     /// not turn a timeout into an empty success.
     async fn run(&self, command: &PaseoCommand) -> RuntimeResult<PaseoOutput>;
 
-    /// Make one daemon protocol request.
+    /// Make one session-protocol request.
     ///
     /// # Errors
     /// As [`PaseoTransport::run`].
@@ -626,55 +849,159 @@ pub trait PaseoTransport: Send + Sync + fmt::Debug {
     async fn drain_stream(&self, agent_id: &str) -> RuntimeResult<Vec<serde_json::Value>>;
 }
 
-/// The live transport: a real Paseo executable, and the daemon socket that is
-/// not built into this adapter.
+// ---------------------------------------------------------------------------
+// The live socket
+// ---------------------------------------------------------------------------
+
+/// Everything one live connection owns, shared with its reader task.
+#[derive(Debug, Default)]
+struct Multiplex {
+    /// Answers still owed, by correlation id.
+    pending: std::sync::Mutex<HashMap<String, oneshot::Sender<PaseoFrame>>>,
+    /// Unsolicited frames, by agent.
+    streams: std::sync::Mutex<BTreeMap<String, VecDeque<serde_json::Value>>>,
+}
+
+impl Multiplex {
+    /// Route one decoded outbound frame, or drop it.
+    ///
+    /// Three outcomes and no fourth: it answers a pending request, it is an
+    /// `agent_stream` for some agent, or it is neither and nothing here is
+    /// interested. A frame that is "close enough" to an answer is dropped, not
+    /// delivered — the wrong-type check lives in [`PaseoFrame::resolve`] and it
+    /// can only work if this side never guesses.
+    fn route(&self, message: &serde_json::Value) {
+        let Some(response_type) = message.get("type").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        let payload = message.get("payload");
+        if response_type == "agent_stream" {
+            let agent_id = payload
+                .and_then(|payload| payload.get("agentId"))
+                .and_then(serde_json::Value::as_str);
+            if let Some(agent_id) = agent_id {
+                let mut streams = self.streams.lock().expect("the transport lock is intact");
+                let queue = streams.entry(agent_id.to_owned()).or_default();
+                if queue.len() >= MAX_STREAM_QUEUE {
+                    queue.pop_front();
+                }
+                queue.push_back(message.clone());
+            }
+            return;
+        }
+        let Some(request_id) = payload
+            .and_then(|payload| payload.get("requestId"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return;
+        };
+        let waiting = self
+            .pending
+            .lock()
+            .expect("the transport lock is intact")
+            .remove(request_id);
+        if let Some(waiting) = waiting {
+            let frame = if response_type == "rpc_error" {
+                PaseoFrame::failed(request_id.to_owned(), "rpc_error".to_owned())
+            } else {
+                PaseoFrame::ok(
+                    response_type,
+                    request_id.to_owned(),
+                    payload.cloned().unwrap_or(serde_json::Value::Null),
+                )
+            };
+            // A receiver that has already given up is not an error here: the
+            // request timed out, and its slot is gone.
+            let _ = waiting.send(frame);
+        }
+    }
+}
+
+type LiveSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+/// One gated connection: the write half, the shared multiplex, and the identity
+/// the daemon pushed.
+struct LiveConnection {
+    writer: futures::stream::SplitSink<LiveSocket, Message>,
+    multiplex: Arc<Multiplex>,
+    identity: PaseoServerInfo,
+    reader: tokio::task::JoinHandle<()>,
+}
+
+impl fmt::Debug for LiveConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LiveConnection")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for LiveConnection {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
+}
+
+/// The live transport: a real Paseo executable, and the real 0.3.1 session
+/// socket.
 ///
 /// # What runs
 ///
-/// [`PaseoTransport::run`] dispatches the real CLI with an argv array, one
-/// deadline, one output bound, and `--host` appended from a [`SecretString`]
-/// this type owns. No shell is involved at any point.
+/// [`PaseoTransport::run`] dispatches the CLI with an argv array, one deadline,
+/// one output bound, and `--host` appended from a [`SecretString`] this type
+/// owns. No shell is involved at any point.
 ///
-/// # What does not
-///
-/// [`PaseoTransport::request`] and [`PaseoTransport::drain_stream`] refuse. The
-/// daemon protocol's semantics are implemented — see [`PaseoRpc`],
-/// [`PaseoFrame`] and [`crate::wire`] — and the whole adapter is proved against
-/// them through [`crate::fixture::RecordedPaseo`]; what is absent is the
-/// WebSocket that carries the frames, which needs an exact workspace-pinned
-/// dependency the root manifest does not have. `kontor-runtime-ao` left its
-/// `/mux` client out for the same reason and in the same shape. Hand-rolling
-///framing to dodge that gate is rejected (ALT-006), and answering a protocol
-/// request with a plausible empty success would be worse than refusing: every
-/// readback in this adapter exists precisely because the CLI's answer is not
-/// enough.
+/// [`PaseoTransport::request`] and [`PaseoTransport::drain_stream`] speak the
+/// WebSocket session protocol described in the module docs. The connection is
+/// established lazily and gated on the pushed `status/server_info`: a daemon
+/// that never pushes one, or pushes one off the pins, is refused before any
+/// operational frame is written.
 #[derive(Debug)]
 pub struct PaseoLiveTransport {
     executable: String,
     host: SecretString,
+    endpoint: String,
+    client_id: String,
     timeout_seconds: u64,
+    connection: Mutex<Option<LiveConnection>>,
 }
 
+/// The default loopback endpoint Kontor 1.0 qualifies.
+pub const PASEO_DEFAULT_ENDPOINT: &str = "ws://127.0.0.1:6767/ws";
+
 impl PaseoLiveTransport {
-    /// Build a transport that dispatches `executable` against `host_target`.
+    /// Build a transport that dispatches `executable` against `host_target` and
+    /// speaks the session protocol at `endpoint`.
     ///
     /// `host_target` is the complete `--host` argument, password and all. It is
     /// taken as a [`SecretString`] so the caller cannot have been holding it in
     /// an ordinary `String` that a `Debug` derive would print.
     ///
+    /// `client_id` must be stable for this Kontor plane: the daemon keys a
+    /// resumable session on it, so a fresh id per connection leaks one session
+    /// per reconnect.
+    ///
     /// # Errors
-    /// Returns [`RuntimeError::Domain`] for an empty executable or an empty host
-    /// target.
+    /// Returns [`RuntimeError::Domain`] for an empty executable, host target,
+    /// endpoint or client id.
     pub fn new(
         executable: &str,
         host_target: SecretString,
+        endpoint: &str,
+        client_id: &str,
         timeout_seconds: u64,
     ) -> RuntimeResult<Self> {
-        if executable.is_empty() {
-            return Err(RuntimeError::Domain(DomainError::invalid(
-                "PaseoExecutable",
-                "must not be empty",
-            )));
+        for (subject, value) in [
+            ("PaseoExecutable", executable),
+            ("PaseoEndpoint", endpoint),
+            ("PaseoClientId", client_id),
+        ] {
+            if value.is_empty() {
+                return Err(RuntimeError::Domain(DomainError::invalid(
+                    subject,
+                    "must not be empty",
+                )));
+            }
         }
         if host_target.expose_secret().is_empty() {
             return Err(RuntimeError::Domain(DomainError::invalid(
@@ -685,34 +1012,191 @@ impl PaseoLiveTransport {
         Ok(Self {
             executable: executable.to_owned(),
             host: host_target,
+            endpoint: endpoint.to_owned(),
+            client_id: client_id.to_owned(),
             timeout_seconds,
+            connection: Mutex::new(None),
         })
+    }
+
+    /// The hello this transport opens every connection with.
+    ///
+    /// Protocol and app version are separate fields, because they are separate
+    /// pins: the daemon closes the socket on a protocol number it does not
+    /// implement, and the app version is what this adapter's own gate reads.
+    #[must_use]
+    pub fn hello(client_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "hello",
+            "clientId": client_id,
+            "clientType": PASEO_CLIENT_TYPE,
+            "protocolVersion": PASEO_WS_PROTOCOL_VERSION,
+            "appVersion": PASEO_APP_VERSION,
+            "capabilities": { PASEO_CAP_SELECTIVE_AGENT_TIMELINE: true },
+        })
+    }
+
+    /// The pushed server identity, connecting first if necessary.
+    async fn gated(&self) -> RuntimeResult<PaseoServerInfo> {
+        let mut held = self.connection.lock().await;
+        if held.is_none() {
+            *held = Some(self.connect().await?);
+        }
+        let connection = held.as_ref().expect("a connection was just established");
+        if connection.reader.is_finished() {
+            // The reader ended, so the socket is gone and every pending
+            // correlation with it. Reconnecting here rather than writing into a
+            // dead socket is what keeps a stale answer from a previous daemon
+            // out of a fresh request.
+            *held = Some(self.connect().await?);
+        }
+        Ok(held
+            .as_ref()
+            .expect("a connection is held")
+            .identity
+            .clone())
+    }
+
+    /// Establish one gated connection: connect, hello, wait for the push.
+    async fn connect(&self) -> RuntimeResult<LiveConnection> {
+        let deadline = Duration::from_secs(self.timeout_seconds);
+        let (socket, _) = tokio::time::timeout(
+            deadline,
+            tokio_tungstenite::connect_async(self.endpoint.as_str()),
+        )
+        .await
+        .map_err(|_| RuntimeError::Transport {
+            rule: "runtime did not accept a connection within the deadline",
+        })?
+        .map_err(|_| RuntimeError::Transport {
+            rule: "the daemon protocol socket could not be opened",
+        })?;
+
+        let (mut writer, mut readable) = socket.split();
+        writer
+            .send(Message::Text(
+                Self::hello(&self.client_id).to_string().into(),
+            ))
+            .await
+            .map_err(|_| RuntimeError::Transport {
+                rule: "channel failed before the runtime answered",
+            })?;
+
+        // Read until the daemon volunteers its identity. Nothing else may be
+        // written before this arrives, so the loop is here rather than in the
+        // reader task: an operational frame written against an ungated
+        // connection is exactly the ordering the gate exists to prevent.
+        let identity = tokio::time::timeout(deadline, Self::await_identity(&mut readable))
+            .await
+            .map_err(|_| RuntimeError::Transport {
+                rule: "runtime did not announce itself within the deadline",
+            })??;
+
+        let multiplex = Arc::new(Multiplex::default());
+        let routed = Arc::clone(&multiplex);
+        let reader = tokio::spawn(async move {
+            while let Some(Ok(message)) = readable.next().await {
+                if let Some(decoded) = decode_session_frame(&message) {
+                    routed.route(&decoded);
+                }
+            }
+        });
+        Ok(LiveConnection {
+            writer,
+            multiplex,
+            identity,
+            reader,
+        })
+    }
+
+    /// Read frames until the pushed `status/server_info` arrives.
+    async fn await_identity(
+        readable: &mut futures::stream::SplitStream<LiveSocket>,
+    ) -> RuntimeResult<PaseoServerInfo> {
+        while let Some(message) = readable.next().await {
+            let message = message.map_err(|_| RuntimeError::Transport {
+                rule: "channel failed before the runtime announced itself",
+            })?;
+            let Some(decoded) = decode_session_frame(&message) else {
+                continue;
+            };
+            if decoded.get("type").and_then(serde_json::Value::as_str) != Some("status") {
+                continue;
+            }
+            let Some(payload) = decoded.get("payload") else {
+                continue;
+            };
+            if payload.get("status").and_then(serde_json::Value::as_str) != Some("server_info") {
+                continue;
+            }
+            return serde_json::from_value(payload.clone()).map_err(|_| {
+                RuntimeError::Domain(DomainError::invalid(
+                    "PaseoServerInfo",
+                    "is not the Paseo 0.3.1 frame this adapter is pinned to",
+                ))
+            });
+        }
+        // A daemon that closed the socket instead of announcing itself is the
+        // shape a protocol-version rejection takes: 0.3.1 closes with
+        // `Incompatible protocol version` and says nothing else.
+        Err(RuntimeError::Transport {
+            rule: "runtime closed the connection without announcing itself",
+        })
+    }
+}
+
+/// Decode one WebSocket message into the session message it carries.
+///
+/// Binary frames, oversized frames, malformed JSON and unknown outer envelopes
+/// all decode to `None` — they are not answers and they are not content, so the
+/// only safe thing to do with them is nothing.
+fn decode_session_frame(message: &Message) -> Option<serde_json::Value> {
+    let Message::Text(text) = message else {
+        return None;
+    };
+    if text.len() > MAX_FRAME_BYTES {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
+    match parsed.get("type").and_then(serde_json::Value::as_str)? {
+        "session" => parsed.get("message").cloned(),
+        // `pong` is the only other outer envelope 0.3.1 sends, and nothing here
+        // asks for one.
+        _ => None,
     }
 }
 
 #[async_trait]
 impl PaseoTransport for PaseoLiveTransport {
+    async fn server_identity(&self) -> RuntimeResult<PaseoServerInfo> {
+        self.gated().await
+    }
+
     async fn run(&self, command: &PaseoCommand) -> RuntimeResult<PaseoOutput> {
         command.ensure_dispatchable()?;
         let mut process = tokio::process::Command::new(&self.executable);
         process.args(command.argv());
         // Resolved here and nowhere else, immediately before dispatch.
         process.arg("--host").arg(self.host.expose_secret());
+        // …and only then the trailing positional, behind `--`. Everything after
+        // that terminator is a positional, so any flag written after it — this
+        // `--host` included — would arrive as prompt text.
+        if let Some(trailing) = command.trailing() {
+            process.arg("--").arg(trailing);
+        }
         for (name, value) in command.env() {
             process.env(name, value);
         }
         process.stdin(std::process::Stdio::null());
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(self.timeout_seconds),
-            process.output(),
-        )
-        .await
-        .map_err(|_| RuntimeError::Transport {
-            rule: "runtime did not answer within the command deadline",
-        })?
-        .map_err(|_| RuntimeError::Transport {
-            rule: "channel failed before the runtime answered",
-        })?;
+        let output =
+            tokio::time::timeout(Duration::from_secs(self.timeout_seconds), process.output())
+                .await
+                .map_err(|_| RuntimeError::Transport {
+                    rule: "runtime did not answer within the command deadline",
+                })?
+                .map_err(|_| RuntimeError::Transport {
+                    rule: "channel failed before the runtime answered",
+                })?;
         if output.stdout.len() > MAX_OUTPUT_BYTES {
             return Err(RuntimeError::Transport {
                 rule: "answer exceeded the bounded output size",
@@ -726,16 +1210,79 @@ impl PaseoTransport for PaseoLiveTransport {
         Ok(PaseoOutput::new(output.status.code().unwrap_or(-1), stdout))
     }
 
-    async fn request(&self, _request: &PaseoRpc) -> RuntimeResult<PaseoFrame> {
-        Err(RuntimeError::Transport {
-            rule: "daemon protocol socket is not compiled into this adapter build",
-        })
+    async fn request(&self, request: &PaseoRpc) -> RuntimeResult<PaseoFrame> {
+        // The gate first, always. `gated` establishes the connection if there
+        // is none and re-establishes it if the reader died, so no frame is ever
+        // written before a pushed identity has been read on *this* socket.
+        self.gated().await?;
+        let (answered, waiting) = oneshot::channel();
+        let deadline = Duration::from_secs(self.timeout_seconds);
+        {
+            let mut held = self.connection.lock().await;
+            let connection = held.as_mut().ok_or(RuntimeError::Transport {
+                rule: "the daemon protocol socket is not connected",
+            })?;
+            connection
+                .multiplex
+                .pending
+                .lock()
+                .expect("the transport lock is intact")
+                .insert(request.request_id.clone(), answered);
+            let sent = connection
+                .writer
+                .send(Message::Text(request.envelope().to_string().into()))
+                .await;
+            if sent.is_err() {
+                connection
+                    .multiplex
+                    .pending
+                    .lock()
+                    .expect("the transport lock is intact")
+                    .remove(&request.request_id);
+                return Err(RuntimeError::Transport {
+                    rule: "channel failed before the runtime answered",
+                });
+            }
+        }
+        match tokio::time::timeout(deadline, waiting).await {
+            Ok(Ok(frame)) => Ok(frame),
+            // The sender was dropped, which means the reader task ended: the
+            // socket died with this request in flight.
+            Ok(Err(_)) => Err(RuntimeError::Transport {
+                rule: "channel failed before the runtime answered",
+            }),
+            Err(_) => {
+                let held = self.connection.lock().await;
+                if let Some(connection) = held.as_ref() {
+                    connection
+                        .multiplex
+                        .pending
+                        .lock()
+                        .expect("the transport lock is intact")
+                        .remove(&request.request_id);
+                }
+                Err(RuntimeError::Transport {
+                    rule: "runtime did not answer within the request deadline",
+                })
+            }
+        }
     }
 
-    async fn drain_stream(&self, _agent_id: &str) -> RuntimeResult<Vec<serde_json::Value>> {
-        Err(RuntimeError::Transport {
-            rule: "daemon protocol socket is not compiled into this adapter build",
-        })
+    async fn drain_stream(&self, agent_id: &str) -> RuntimeResult<Vec<serde_json::Value>> {
+        self.gated().await?;
+        let held = self.connection.lock().await;
+        let connection = held.as_ref().ok_or(RuntimeError::Transport {
+            rule: "the daemon protocol socket is not connected",
+        })?;
+        let mut streams = connection
+            .multiplex
+            .streams
+            .lock()
+            .expect("the transport lock is intact");
+        Ok(streams
+            .get_mut(agent_id)
+            .map(|frames| frames.drain(..).collect())
+            .unwrap_or_default())
     }
 }
 
@@ -744,14 +1291,15 @@ impl PaseoTransport for PaseoLiveTransport {
 /// Enforced at every point a frame is accepted — [`PaseoFrame::resolve`] for the
 /// request/response half and the subscription drain for the pushed half — and
 /// *before* the frame is deserialized into anything, because a bound checked
-/// after parsing has already paid the cost it exists to refuse.
+/// after parsing has already paid the cost it exists to refuse. The live reader
+/// enforces the same bound on the raw text, where the bytes actually arrive.
 ///
 /// # Errors
 /// Returns [`RuntimeError::Transport`] for a frame over [`MAX_FRAME_BYTES`].
 pub fn ensure_frame_bounded(raw: &serde_json::Value) -> RuntimeResult<()> {
     // ponytail: re-serializing to measure is one pass over a frame that is
-    // about to be parsed anyway; a streaming byte count belongs with the
-    // WebSocket reader, which is where the bytes actually arrive.
+    // about to be parsed anyway; the streaming byte count lives in
+    // `decode_session_frame`, which is where the bytes actually arrive.
     if serde_json::to_string(raw).is_ok_and(|text| text.len() <= MAX_FRAME_BYTES) {
         return Ok(());
     }
@@ -774,22 +1322,17 @@ mod tests {
     fn every_lifecycle_command_is_json_and_carries_no_host() {
         let commands = [
             PaseoCommand::version(),
-            PaseoCommand::workspace_create(
-                "/w/task-1",
-                "prj_1",
-                "KON-MVP-11 Paseo adapter",
-                &labels(),
-            ),
+            PaseoCommand::workspace_create("/w/task-1", "prj_1", "KON-MVP-11 Paseo adapter"),
             PaseoCommand::workspace_archive("wks_1"),
             PaseoCommand::agent_run(
                 "wks_1",
                 "/w/task-1",
+                "codex",
                 "KON-MVP-11 Implement",
                 &labels(),
                 "agt_orchestrator",
                 "do the work",
             ),
-            PaseoCommand::agent_inspect("agt_1"),
             PaseoCommand::agent_update_labels("agt_1", &labels()),
             PaseoCommand::agent_reload("agt_1"),
             PaseoCommand::agent_stop("agt_1"),
@@ -810,10 +1353,39 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_is_the_trailing_positional_argument() {
+        // 0.3.1 spells it `paseo agent run [options] <prompt>`. Sending
+        // `--prompt` would be an unknown flag, and a prompt that starts with a
+        // dash is why `--` precedes it.
+        let command = PaseoCommand::agent_run(
+            "wks_1",
+            "/w/task-1",
+            "codex",
+            "t",
+            &labels(),
+            "agt_p",
+            "--not-a-flag",
+        );
+        // The option half never carries it, because the transport writes its
+        // own `--host` after these and everything past `--` is a positional.
+        assert_eq!(command.trailing(), Some("--not-a-flag"));
+        assert!(!command.argv().iter().any(|arg| arg == "--not-a-flag"));
+        assert!(!command.argv().iter().any(|arg| arg == "--"));
+        let dispatched = command.dispatched_argv();
+        assert_eq!(dispatched[dispatched.len() - 2], "--");
+        assert_eq!(dispatched[dispatched.len() - 1], "--not-a-flag");
+        assert!(!dispatched.iter().any(|arg| arg == "--prompt"));
+        command
+            .ensure_dispatchable()
+            .expect("a positional prompt after `--` is not another option");
+    }
+
+    #[test]
     fn the_ledger_route_never_quotes_the_operators_work() {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/private/worktrees/secret-project",
+            "codex",
             "KON-MVP-11 Implement",
             &labels(),
             "agt_orchestrator",
@@ -822,8 +1394,14 @@ mod tests {
         assert_eq!(command.route(), "agent run");
         assert!(!command.route().contains("the actual prompt"));
         assert!(!command.route().contains("secret-project"));
-        // …while the argv, which only the transport sees, still carries them.
-        assert!(command.argv().iter().any(|arg| arg == "the actual prompt"));
+        // …while the dispatched argv, which only the transport sees, still
+        // carries them.
+        assert!(
+            command
+                .dispatched_argv()
+                .iter()
+                .any(|arg| arg == "the actual prompt")
+        );
     }
 
     #[test]
@@ -831,6 +1409,7 @@ mod tests {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/w/task-1",
+            "codex",
             "t",
             &labels(),
             "agt_orchestrator",
@@ -847,21 +1426,21 @@ mod tests {
         // Paseo ids are opaque foreign strings. `--force` interpolated where a
         // workspace id belongs is an option, not a value.
         assert!(
-            PaseoCommand::agent_inspect("--force")
+            PaseoCommand::agent_archive("--force")
                 .ensure_dispatchable()
                 .is_err()
         );
         assert!(
-            PaseoCommand::workspace_create("--isolation", "prj_1", "t", &labels())
+            PaseoCommand::workspace_create("--isolation", "prj_1", "t")
                 .ensure_dispatchable()
                 .is_err()
         );
         // …and a command whose own flags sit next to each other is fine, which
         // a whole-argv scan would have refused.
-        PaseoCommand::agent_run("wks_1", "/w/task-1", "t", &labels(), "agt_p", "p")
+        PaseoCommand::agent_run("wks_1", "/w/task-1", "codex", "t", &labels(), "agt_p", "p")
             .ensure_dispatchable()
             .expect("`--background --workspace wks_1` is an ordinary command");
-        PaseoCommand::agent_inspect("agt_1")
+        PaseoCommand::agent_stop("agt_1")
             .ensure_dispatchable()
             .expect("an ordinary id dispatches");
     }
@@ -869,27 +1448,81 @@ mod tests {
     #[test]
     fn only_writes_are_counted_as_mutations() {
         assert!(!PaseoCommand::version().mutates());
-        assert!(!PaseoCommand::agent_inspect("agt_1").mutates());
-        assert!(PaseoCommand::agent_run("w", "/w/t", "t", &labels(), "agt_p", "p").mutates());
-        assert!(PaseoCommand::workspace_create("/w/t", "p", "t", &labels()).mutates());
+        assert!(
+            PaseoCommand::agent_run("w", "/w/t", "codex", "t", &labels(), "agt_p", "p").mutates()
+        );
+        assert!(PaseoCommand::workspace_create("/w/t", "p", "t").mutates());
         assert!(PaseoCommand::agent_update_labels("agt_1", &labels()).mutates());
         assert!(!PaseoRpc::project_list("req-1".to_owned()).mutates);
-        assert!(PaseoRpc::project_add("req-1".to_owned(), "/w", "n").mutates);
+        assert!(!PaseoRpc::daemon_status("req-1".to_owned()).mutates);
+        assert!(PaseoRpc::project_add("req-1".to_owned(), "/w").mutates);
+        assert!(PaseoRpc::send_message("req-1".to_owned(), "agt_1", "msg", "body").mutates);
     }
 
     #[test]
-    fn an_answer_for_another_request_is_refused_rather_than_read() {
+    fn every_request_carries_its_type_and_correlation_id_in_the_session_envelope() {
         let request = PaseoRpc::agent_fetch("req-1".to_owned(), "agt_1");
-        let mine = PaseoFrame::ok("req-1".to_owned(), serde_json::json!({ "id": "agt_1" }));
-        let theirs = PaseoFrame::ok("req-2".to_owned(), serde_json::json!({ "id": "agt_9" }));
-        mine.resolve::<serde_json::Value>(&request, "PaseoAgent")
+        let envelope = request.envelope();
+        assert_eq!(envelope["type"], "session");
+        assert_eq!(envelope["message"]["type"], "fetch_agent_request");
+        assert_eq!(envelope["message"]["requestId"], "req-1");
+        assert_eq!(envelope["message"]["agentId"], "agt_1");
+        assert_eq!(request.response_type, "fetch_agent_response");
+        assert_eq!(request.route(), "rpc fetch_agent_request");
+    }
+
+    #[test]
+    fn the_hello_pins_protocol_and_app_version_as_separate_fields() {
+        let hello = PaseoLiveTransport::hello("kontor-plane-1");
+        assert_eq!(hello["type"], "hello");
+        assert_eq!(hello["clientId"], "kontor-plane-1");
+        assert_eq!(hello["clientType"], "cli");
+        assert_eq!(hello["protocolVersion"], 1);
+        assert_eq!(hello["appVersion"], "0.3.1");
+        // The daemon's capability table spells this one snake_case; the
+        // camelCase spelling is silently ignored, which is worse than an error.
+        assert_eq!(hello["capabilities"]["selective_agent_timeline"], true);
+    }
+
+    #[test]
+    fn an_answer_for_another_request_or_of_another_type_is_refused_rather_than_read() {
+        let request = PaseoRpc::agent_fetch("req-1".to_owned(), "agt_1");
+        let mine = PaseoFrame::ok(
+            "fetch_agent_response",
+            "req-1".to_owned(),
+            serde_json::json!({ "agent": null }),
+        );
+        mine.resolve::<serde_json::Value>(&request, "PaseoAgentAnswer")
             .expect("my own answer resolves");
+
+        let theirs = PaseoFrame::ok(
+            "fetch_agent_response",
+            "req-2".to_owned(),
+            serde_json::json!({ "agent": null }),
+        );
         assert_eq!(
             theirs
-                .resolve::<serde_json::Value>(&request, "PaseoAgent")
+                .resolve::<serde_json::Value>(&request, "PaseoAgentAnswer")
                 .expect_err("another request's answer is not mine"),
             RuntimeError::Transport {
                 rule: "answer carried another request's correlation id"
+            }
+        );
+
+        // Same id, wrong kind of answer. This is the one an id-only check lets
+        // through, and it is the one that decides a placement rule from a
+        // frame about something else.
+        let wrong_kind = PaseoFrame::ok(
+            "fetch_workspaces_response",
+            "req-1".to_owned(),
+            serde_json::json!({ "entries": [] }),
+        );
+        assert_eq!(
+            wrong_kind
+                .resolve::<serde_json::Value>(&request, "PaseoAgentAnswer")
+                .expect_err("a workspace page does not answer an agent fetch"),
+            RuntimeError::Transport {
+                rule: "answer was not the response type this request declared"
             }
         );
     }
@@ -902,45 +1535,194 @@ mod tests {
             "/Users/someone/secret-project".to_owned(),
         );
         let error = refused
-            .resolve::<serde_json::Value>(&request, "PaseoAgent")
+            .resolve::<serde_json::Value>(&request, "PaseoAgentAnswer")
             .expect_err("a refusal is not an answer");
         assert!(!format!("{error:?}").contains("secret-project"));
     }
 
     #[test]
     fn a_non_zero_exit_is_a_channel_fact_and_reads_no_output() {
-        let refused = PaseoOutput::new(1, "{\"id\":\"agt_1\"}".to_owned());
+        let refused = PaseoOutput::new(1, "{\"agentId\":\"agt_1\"}".to_owned());
         assert_eq!(
             refused
-                .parse::<serde_json::Value>("PaseoCliAgent")
+                .parse::<serde_json::Value>("PaseoCliAgentStarted")
                 .expect_err("a non-zero exit is not an answer"),
             RuntimeError::Transport {
                 rule: "runtime refused the command"
             }
         );
+        assert!(refused.version().is_err());
+        assert_eq!(
+            PaseoOutput::new(0, "0.3.1\n".to_owned())
+                .version()
+                .expect("a bare version string"),
+            "0.3.1"
+        );
     }
 
     #[test]
-    fn a_live_transport_needs_an_executable_and_a_host() {
+    fn a_live_transport_needs_an_executable_a_host_an_endpoint_and_a_client_id() {
+        let host = || SecretString::from("127.0.0.1:6767".to_owned());
         assert!(
-            PaseoLiveTransport::new("paseo", SecretString::from("https://host".to_owned()), 30)
-                .is_ok()
+            PaseoLiveTransport::new("paseo", host(), PASEO_DEFAULT_ENDPOINT, "kon-1", 30).is_ok()
         );
+        assert!(PaseoLiveTransport::new("", host(), PASEO_DEFAULT_ENDPOINT, "kon-1", 30).is_err());
+        assert!(PaseoLiveTransport::new("paseo", host(), "", "kon-1", 30).is_err());
+        assert!(PaseoLiveTransport::new("paseo", host(), PASEO_DEFAULT_ENDPOINT, "", 30).is_err());
         assert!(
-            PaseoLiveTransport::new("", SecretString::from("https://host".to_owned()), 30).is_err()
+            PaseoLiveTransport::new(
+                "paseo",
+                SecretString::from(String::new()),
+                PASEO_DEFAULT_ENDPOINT,
+                "kon-1",
+                30
+            )
+            .is_err()
         );
-        assert!(PaseoLiveTransport::new("paseo", SecretString::from(String::new()), 30).is_err());
     }
 
     #[test]
     fn a_live_transport_never_prints_its_host_target() {
         let transport = PaseoLiveTransport::new(
             "paseo",
-            SecretString::from("https://u:p@host".to_owned()),
+            SecretString::from("tcp://u:p@host?password=secret".to_owned()),
+            PASEO_DEFAULT_ENDPOINT,
+            "kon-1",
             30,
         )
         .expect("a valid transport");
         let printed = format!("{transport:?}");
+        assert!(!printed.contains("password=secret"), "got {printed}");
         assert!(!printed.contains("u:p@host"), "got {printed}");
+    }
+
+    #[test]
+    fn the_reader_routes_answers_by_id_and_streams_by_agent() {
+        let multiplex = Multiplex::default();
+        let (sender, mut receiver) = oneshot::channel();
+        multiplex
+            .pending
+            .lock()
+            .expect("lock")
+            .insert("req-1".to_owned(), sender);
+
+        // An unsolicited frame that arrives *before* the answer must not be
+        // handed to the request that is waiting.
+        multiplex.route(&serde_json::json!({
+            "type": "agent_stream",
+            "payload": { "agentId": "agt_1", "event": { "type": "timeline" }, "seq": 2 },
+        }));
+        assert!(
+            receiver.try_recv().is_err(),
+            "a pushed frame is not an answer"
+        );
+
+        multiplex.route(&serde_json::json!({
+            "type": "fetch_agent_response",
+            "payload": { "requestId": "req-1", "agent": null },
+        }));
+        let frame = receiver.try_recv().expect("the answer arrives");
+        assert_eq!(frame.response_type, "fetch_agent_response");
+        assert_eq!(frame.request_id, "req-1");
+
+        // …and agent B's frame never lands in agent A's queue.
+        multiplex.route(&serde_json::json!({
+            "type": "agent_stream",
+            "payload": { "agentId": "agt_2", "event": { "type": "timeline" }, "seq": 9 },
+        }));
+        let streams = multiplex.streams.lock().expect("lock");
+        assert_eq!(streams.get("agt_1").map(VecDeque::len), Some(1));
+        assert_eq!(streams.get("agt_2").map(VecDeque::len), Some(1));
+    }
+
+    #[test]
+    fn the_stream_queue_is_bounded() {
+        let multiplex = Multiplex::default();
+        for seq in 0..(MAX_STREAM_QUEUE + 10) {
+            multiplex.route(&serde_json::json!({
+                "type": "agent_stream",
+                "payload": { "agentId": "agt_1", "event": { "type": "timeline" }, "seq": seq },
+            }));
+        }
+        let streams = multiplex.streams.lock().expect("lock");
+        assert_eq!(streams["agt_1"].len(), MAX_STREAM_QUEUE);
+    }
+
+    #[test]
+    fn an_rpc_error_is_a_refusal_rather_than_an_answer() {
+        let multiplex = Multiplex::default();
+        let (sender, mut receiver) = oneshot::channel();
+        multiplex
+            .pending
+            .lock()
+            .expect("lock")
+            .insert("req-1".to_owned(), sender);
+        multiplex.route(&serde_json::json!({
+            "type": "rpc_error",
+            "payload": { "requestId": "req-1", "error": "/Users/someone/secret" },
+        }));
+        let frame = receiver.try_recv().expect("a refusal is delivered");
+        assert!(frame.payload.is_none());
+        assert!(!format!("{frame:?}").contains("secret"));
+    }
+
+    #[test]
+    fn a_binary_or_malformed_or_oversized_frame_decodes_to_nothing() {
+        assert!(decode_session_frame(&Message::Binary(vec![1, 2, 3].into())).is_none());
+        assert!(decode_session_frame(&Message::Text("not json".into())).is_none());
+        assert!(
+            decode_session_frame(&Message::Text(
+                serde_json::json!({ "type": "pong" }).to_string().into()
+            ))
+            .is_none()
+        );
+        let oversized = format!(
+            "{{\"type\":\"session\",\"message\":{{\"pad\":\"{}\"}}}}",
+            "x".repeat(MAX_FRAME_BYTES + 1)
+        );
+        assert!(decode_session_frame(&Message::Text(oversized.into())).is_none());
+        assert!(
+            decode_session_frame(&Message::Text(
+                serde_json::json!({ "type": "session", "message": { "type": "status" } })
+                    .to_string()
+                    .into()
+            ))
+            .is_some()
+        );
+    }
+}
+
+#[cfg(test)]
+mod stdout_tests {
+    use super::*;
+
+    #[test]
+    fn a_leading_operator_notice_does_not_stop_the_json_being_read() {
+        // 0.3.1 prints `Using workspace wks_…` on stdout before a launch's JSON,
+        // so a whole-stream parse fails against the very build this adapter is
+        // pinned to.
+        let noisy = PaseoOutput::new(
+            0,
+            "Using workspace wks_1\n{\"agentId\":\"agt_1\",\"status\":\"created\"}\n".to_owned(),
+        );
+        let started: crate::wire::PaseoCliAgentStarted = noisy
+            .parse("PaseoCliAgentStarted")
+            .expect("the document is read");
+        assert_eq!(started.agent_id, "agt_1");
+
+        // …and a body that is not JSON from the first brace on is still a
+        // refusal, so the tolerance is for the notice and nothing else.
+        let broken = PaseoOutput::new(0, "Using workspace wks_1\n{not json".to_owned());
+        assert!(
+            broken
+                .parse::<crate::wire::PaseoCliAgentStarted>("x")
+                .is_err()
+        );
+        let empty = PaseoOutput::new(0, "Using workspace wks_1\n".to_owned());
+        assert!(
+            empty
+                .parse::<crate::wire::PaseoCliAgentStarted>("x")
+                .is_err()
+        );
     }
 }

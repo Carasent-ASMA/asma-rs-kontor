@@ -61,6 +61,11 @@ tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", 
 async-trait = "=0.1.92"
 futures = "=0.3.33"
 tokio-stream = "=0.1.19"
+# The Paseo 0.3.1 session socket, and nothing more. `connect` is stream +
+# tokio/net + handshake; every TLS feature stays off because the qualified
+# endpoint is plaintext loopback (`ws://127.0.0.1:6767/ws`), so no trust-anchor
+# crate enters the graph and no CDLA exception is needed for it.
+tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect"] }
 
 axum = "=0.8.9"
 tower = "=0.5.3"

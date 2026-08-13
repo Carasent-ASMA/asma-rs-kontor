@@ -1,0 +1,23 @@
+{
+  "requestId": "req-fixture",
+  "projects": [
+    {
+      "projectId": "prj_epic",
+      "projectKey": "github.com/kontor/epic",
+      "projectDisplayName": "Epic ASMA-7744 Kontor MVP",
+      "projectCustomName": null,
+      "projectCustomIconRevision": null,
+      "projectRootPath": "/w/epic/task-11",
+      "projectKind": "git"
+    },
+    {
+      "projectId": "prj_epic_twin",
+      "projectKey": "github.com/kontor/epic",
+      "projectDisplayName": "Epic ASMA-7744 Kontor MVP",
+      "projectCustomName": null,
+      "projectCustomIconRevision": null,
+      "projectRootPath": "/w/epic/task-11",
+      "projectKind": "git"
+    }
+  ]
+}

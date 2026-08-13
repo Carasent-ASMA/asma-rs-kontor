@@ -23,12 +23,24 @@
 //!   because the CLI's JSON omits exactly the fields the placement rules are
 //!   about.
 //!
-//! # What Paseo 0.2.5 cannot do
+//! # What Paseo 0.3.1 cannot do
 //!
 //! No supported project rename, no supported compaction, and no per-run coding
 //! account. None is filled in with a guess: the first two are typed adapter
 //! outcomes, and the third is declared unsupported so an account-pinned run is
 //! refused before dispatch.
+//!
+//! Three more absences are 0.3.1's own and are handled here rather than papered
+//! over:
+//!
+//! * a workspace has no labels, so its correlation label rides in the one string
+//!   a create can write and a readback returns — see
+//!   [`crate::wire::workspace_label_suffix`];
+//! * an agent snapshot has no `projectId`, so "is this agent in the epic
+//!   project?" is answered through its workspace, which does carry one;
+//! * the canonical timeline carries no permission items, so a permission's fate
+//!   is read from [`crate::wire::PaseoAgent::pending_permissions`] and from the
+//!   unsolicited stream rather than from history.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -63,7 +75,7 @@ use kontor_runtime::request::{
 };
 use kontor_runtime::timeline::{
     Admission, EventSubject, HistoryCursor, HistoryPage, LiveSubscription, MessageLedger,
-    PermissionLedger, SessionEvent, SessionEventKind, TimelineBreak, TimelinePosition,
+    PermissionLedger, SessionEvent, TimelineBreak, TimelinePosition,
 };
 use kontor_runtime::workspace::{
     WorkspaceBinding, WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspaceCorrelationEvidence,
@@ -72,14 +84,17 @@ use kontor_runtime::workspace::{
 
 use crate::client::{PaseoCommand, PaseoRpc, PaseoTransport, ensure_frame_bounded};
 use crate::wire::{
-    MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES, PASEO_VERSION, PaseoAgent, PaseoAgentList,
-    PaseoAgentStatus, PaseoCliAck, PaseoCliAgent, PaseoCliVersion, PaseoCliWorkspace,
-    PaseoPermissionAccepted, PaseoProject, PaseoProjectList, PaseoProjection, PaseoSendAccepted,
-    PaseoServerInfo, PaseoStreamFrame, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind,
-    PaseoWorkspaceList, label, normalize_entry,
+    MAX_DIRECTORY_PAGE, MAX_DIRECTORY_PAGES, MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES,
+    PASEO_APP_VERSION, PaseoAgent, PaseoAgentAnswer, PaseoAgentPage, PaseoAgentStatus,
+    PaseoCliAgentReloaded, PaseoCliAgentStarted, PaseoCliAgentUpdated, PaseoCliArchived,
+    PaseoCliStopped, PaseoCliWorkspaceCreated, PaseoDirection, PaseoPermissionResolved,
+    PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjection, PaseoSendAccepted,
+    PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck, PaseoTimelineCursor,
+    PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage, label,
+    normalize_entry, stream_permission_external_id, workspace_label_suffix,
 };
 
-/// Everything Paseo 0.2.5 can prove at trust grade A.
+/// Everything Paseo 0.3.1 can prove at trust grade A.
 const SUPPORTED: &[RuntimeCapability] = &[
     RuntimeCapability::Discovery,
     RuntimeCapability::PrepareWorkspace,
@@ -129,10 +144,32 @@ pub struct PaseoExecutionScope {
     pub plan_item_key: ExternalId,
     /// The compact task title, e.g. `Paseo adapter`.
     pub task_short_title: ExternalName,
+    /// The repository root the **epic's project** is registered from.
+    ///
+    /// Distinct from [`Self::canonical_worktree_cwd`], and 0.3.1 is why. Its
+    /// `project.add.request` takes a `cwd` and nothing else: the daemon runs
+    /// `findOrCreateProjectForDirectory` and names the project after that
+    /// directory. Registering the *task worktree* would therefore mint one
+    /// project per task — the exact opposite of one epic, one project, many task
+    /// workspaces — and it would do it silently, because each such project is
+    /// perfectly valid on its own.
+    ///
+    /// So the project root travels separately and is the only thing
+    /// [`PaseoAdapter::prepare_project`] ever registers. A live Grade-A run
+    /// caught this: the first composed attempt created a second project rooted
+    /// at the worktree.
+    pub project_root_cwd: WorkspaceRoot,
     /// The filesystem-canonical task worktree. Authority, never display data.
     pub canonical_worktree_cwd: WorkspaceRoot,
     /// The persisted Orchestrator agent every role of this ticket launches
     /// under.
+    ///
+    /// It must name a **live Paseo agent**. 0.3.1 reads `PASEO_AGENT_ID` as the
+    /// *caller's* identity and resolves it against its own registry: a launch
+    /// carrying an id the daemon does not hold is refused outright with
+    /// `Caller agent … not found`, before anything is created. That is the right
+    /// direction to fail in, and it is a configuration contract rather than an
+    /// adapter guess — a live Grade-A launch proved it.
     pub orchestrator_agent_id: ExternalId,
 }
 
@@ -185,6 +222,14 @@ pub struct PaseoConfig {
     pub host_key: ExternalName,
     /// The Kontor mini-project this plane serves.
     pub mini_project_id: ExternalId,
+    /// The Paseo provider every seat on this plane runs under, e.g. `codex`.
+    ///
+    /// A property of the plane rather than of a run: 0.3.1's `agent run` refuses
+    /// outright without `--provider`, and picking one per launch would be
+    /// account routing this adapter has explicitly declared it cannot prove
+    /// (`account_env: false`). One plane, one provider, named in configuration
+    /// where an operator can see it.
+    pub provider: ExternalName,
     /// The validated command variables.
     pub scope: PaseoExecutionScope,
     /// The most sessions Kontor will hold open on this plane at once.
@@ -257,7 +302,7 @@ pub enum PaseoProjectOutcome {
     },
     /// The project exists and its display name has drifted.
     ///
-    /// Paseo 0.2.5 advertises no `projectRename`, and the bundled client's
+    /// Paseo 0.3.1 advertises no `projectRename`, and the bundled client's
     /// internal rename is not a supported operation. So the drift is reported
     /// and persisted rather than repaired: writing another owner's internal
     /// state can corrupt the identity everything else here is keyed on, and
@@ -296,7 +341,7 @@ impl PaseoProjectOutcome {
 /// other one answer a question it was not asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaseoCompaction {
-    /// The inspected 0.2.5 surface exposes no compaction operation at all.
+    /// The inspected 0.3.1 surface exposes no compaction operation at all.
     ///
     /// Not "it failed": there is nothing to call. A reload restarts a process
     /// and a replacement starts a different session; neither compacts anything,
@@ -472,6 +517,19 @@ impl EpochRegistry {
     /// The Kontor epoch for `raw`, without allocating.
     fn known(&self, raw: &str) -> Option<u64> {
         self.by_raw.get(raw).copied()
+    }
+
+    /// The raw epoch a Kontor one was allocated for.
+    ///
+    /// The inverse lookup exists because 0.3.1 cursors are `{epoch, seq}` pairs
+    /// in Paseo's own spelling: reading strictly after a stored position means
+    /// naming the raw epoch again, and a Kontor `u64` cannot be turned back into
+    /// a UUID by anything but this map.
+    fn raw(&self, epoch: u64) -> Option<String> {
+        self.by_raw
+            .iter()
+            .find(|(_, mapped)| **mapped == epoch)
+            .map(|(raw, _)| raw.clone())
     }
 
     fn pairs(&self) -> Vec<(String, u64)> {
@@ -862,14 +920,15 @@ impl PaseoAdapter {
 
     // -- Fresh reads --------------------------------------------------------
 
-    /// Read the daemon's identity and advertised features, now.
+    /// The daemon identity this connection was gated on.
     ///
-    /// Never cached. A capability answer is a claim about the daemon Kontor is
-    /// about to drive, and last minute's answer is a claim about the past.
+    /// 0.3.1 pushes `status/server_info` once per accepted connection instead of
+    /// answering a `server_info` request, so the transport holds it and this
+    /// reads that copy. It is still a claim about the daemon Kontor is driving
+    /// *now*: a reconnect re-gates, and an ungated transport refuses here rather
+    /// than returning a stale one.
     async fn fetch_server_info(&self) -> RuntimeResult<PaseoServerInfo> {
-        let request = PaseoRpc::server_info(self.next_request_id());
-        let frame = self.transport.request(&request).await?;
-        frame.resolve(&request, "PaseoServerInfo")
+        self.transport.server_identity().await
     }
 
     async fn fetch_projects(&self) -> RuntimeResult<Vec<PaseoProject>> {
@@ -879,29 +938,111 @@ impl PaseoAdapter {
         Ok(listed.projects)
     }
 
+    /// Every workspace in one project, over a bounded number of bounded pages.
+    ///
+    /// The page budget is a refusal rather than a truncation: an enumeration
+    /// that ran out of budget has *not* seen every workspace, and "no workspace
+    /// claims this path" read off a partial list is how a second workspace gets
+    /// created at a path that already had one.
     async fn fetch_workspaces(&self, project_id: &str) -> RuntimeResult<Vec<PaseoWorkspace>> {
-        let request = PaseoRpc::workspace_list(self.next_request_id(), project_id);
-        let frame = self.transport.request(&request).await?;
-        let listed: PaseoWorkspaceList = frame.resolve(&request, "PaseoWorkspaceList")?;
-        Ok(listed.workspaces)
+        let mut found = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_DIRECTORY_PAGES {
+            let request = PaseoRpc::workspace_list(
+                self.next_request_id(),
+                project_id,
+                MAX_DIRECTORY_PAGE,
+                cursor.as_deref(),
+            );
+            let frame = self.transport.request(&request).await?;
+            let page: PaseoWorkspacePage = frame.resolve(&request, "PaseoWorkspacePage")?;
+            found.extend(page.entries);
+            match page.page_info.next() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => return Ok(found),
+            }
+        }
+        Err(RuntimeError::Transport {
+            rule: "the workspace directory did not end within the bounded page budget",
+        })
     }
 
     /// The authoritative readback of one workspace, by exact id.
+    ///
+    /// 0.3.1 has no fetch-one-workspace request, so this is the project's
+    /// directory plus an exact-id select. The select is exact on purpose: a
+    /// prefix or a name match would resolve to whichever workspace sorted first.
     async fn fetch_workspace(&self, workspace_id: &str) -> RuntimeResult<PaseoWorkspace> {
-        let request = PaseoRpc::workspace_fetch(self.next_request_id(), workspace_id);
-        let frame = self.transport.request(&request).await?;
-        let workspace: PaseoWorkspace = frame.resolve(&request, "PaseoWorkspace")?;
-        if workspace.id != workspace_id {
-            return Err(RuntimeError::CorrelationFailed);
-        }
-        Ok(workspace)
+        let project = self.require_project()?;
+        self.fetch_workspaces(project.project_id.as_str())
+            .await?
+            .into_iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .ok_or(RuntimeError::CorrelationFailed)
     }
 
-    async fn fetch_agents(&self, project_id: &str) -> RuntimeResult<Vec<PaseoAgent>> {
-        let request = PaseoRpc::agent_list(self.next_request_id(), project_id);
-        let frame = self.transport.request(&request).await?;
-        let listed: PaseoAgentList = frame.resolve(&request, "PaseoAgentList")?;
-        Ok(listed.agents)
+    /// Every agent carrying exactly `labels`, over a bounded number of pages.
+    ///
+    /// The filter is the daemon's, and the exact-label check is still this
+    /// adapter's: [`PaseoAgent::matches_labels`] runs again at every decision
+    /// point, so a daemon that widened its filter cannot widen a census.
+    async fn fetch_agents(
+        &self,
+        labels: &BTreeMap<String, String>,
+        include_archived: bool,
+    ) -> RuntimeResult<Vec<PaseoAgent>> {
+        let mut found = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_DIRECTORY_PAGES {
+            let request = PaseoRpc::agent_list(
+                self.next_request_id(),
+                labels,
+                include_archived,
+                MAX_DIRECTORY_PAGE,
+                cursor.as_deref(),
+            );
+            let frame = self.transport.request(&request).await?;
+            let page: PaseoAgentPage = frame.resolve(&request, "PaseoAgentPage")?;
+            found.extend(page.entries.into_iter().map(|entry| entry.agent));
+            match page.page_info.next() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => return Ok(found),
+            }
+        }
+        Err(RuntimeError::Transport {
+            rule: "the agent directory did not end within the bounded page budget",
+        })
+    }
+
+    /// Every agent this plane's epic project holds, placed through its
+    /// workspaces.
+    ///
+    /// A 0.3.1 agent snapshot has no `projectId`, and the directory's own
+    /// project filter keys on `projectKey` — the Git remote, which the live
+    /// daemon shares between several projects, and which this adapter refuses to
+    /// bind an epic by (ALT-003). So the project census is: every workspace in
+    /// the bound project, then every agent sitting in one of them.
+    async fn fetch_project_agents(
+        &self,
+        project: &PaseoProjectBinding,
+    ) -> RuntimeResult<Vec<PaseoAgent>> {
+        let workspaces: BTreeSet<String> = self
+            .fetch_workspaces(project.project_id.as_str())
+            .await?
+            .into_iter()
+            .map(|workspace| workspace.id)
+            .collect();
+        Ok(self
+            .fetch_agents(&BTreeMap::new(), false)
+            .await?
+            .into_iter()
+            .filter(|agent| {
+                agent
+                    .workspace_id
+                    .as_deref()
+                    .is_some_and(|id| workspaces.contains(id))
+            })
+            .collect())
     }
 
     /// The authoritative readback of one agent, by exact id.
@@ -910,10 +1051,16 @@ impl PaseoAdapter {
     /// is checked against the id that was asked for. Every caller therefore
     /// branches on a validated view, which matters because the branch is what
     /// decides whether a process is restarted.
+    ///
+    /// 0.3.1 resolves `agentId` by full id, unique prefix *or* exact title, and
+    /// answers an unknown one with `agent: null` and an error string. Both are
+    /// refusals here: a prefix that resolved to somebody else's session is not
+    /// this seat, and a null agent is not a readback.
     async fn fetch_agent(&self, agent_id: &str) -> RuntimeResult<PaseoAgent> {
         let request = PaseoRpc::agent_fetch(self.next_request_id(), agent_id);
         let frame = self.transport.request(&request).await?;
-        let agent: PaseoAgent = frame.resolve(&request, "PaseoAgent")?;
+        let answer: PaseoAgentAnswer = frame.resolve(&request, "PaseoAgentAnswer")?;
+        let agent = answer.agent.ok_or(RuntimeError::CorrelationFailed)?;
         if agent.id != agent_id {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -955,7 +1102,7 @@ impl PaseoAdapter {
                 rule: "the workspace belongs to another epic project",
             });
         }
-        let reported = WorkspaceRoot::parse(&workspace.cwd)?;
+        let reported = WorkspaceRoot::parse(&workspace.workspace_directory)?;
         if reported != self.config.scope.canonical_worktree_cwd {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the workspace is not the canonical task worktree",
@@ -966,7 +1113,7 @@ impl PaseoAdapter {
                 rule: "a ticket role may not be placed in a root or plain local workspace",
             });
         }
-        if workspace.is_paseo_owned_worktree {
+        if workspace.is_paseo_owned_worktree() {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "Paseo provisioned its own worktree instead of registering the prepared one",
             });
@@ -1022,35 +1169,13 @@ impl PaseoAdapter {
         .collect()
     }
 
-    /// The labels one task workspace carries.
-    ///
-    /// [`label::TEAM_RUN`] holds the Kontor workspace label verbatim, because
-    /// that is the string
-    /// [`WorkspaceCorrelationEvidence::establish`] judges. The rest is
-    /// operator-facing context that no rule branches on.
-    fn workspace_labels(
-        &self,
-        request: &WorkspacePrepareRequest,
-        project: &PaseoProjectBinding,
-    ) -> BTreeMap<String, String> {
-        [
-            (
-                label::TEAM_RUN,
-                WorkspaceLabel::for_team_run(request.team_run_id).to_string(),
-            ),
-            (label::TICKET, request.task_id.to_string()),
-            (
-                label::PROJECT_ID,
-                project.mini_project_id.as_str().to_owned(),
-            ),
-            (
-                label::JIRA_ISSUE,
-                self.config.scope.plan_item_key.as_str().to_owned(),
-            ),
-            (label::WORKTREE, request.root.as_str().to_owned()),
-        ]
+    /// The one label every seat of a team run carries, for a run-wide census.
+    fn team_labels(&self, team_run_id: TeamRunId) -> BTreeMap<String, String> {
+        [(
+            label::TEAM_RUN.to_owned(),
+            WorkspaceLabel::for_team_run(team_run_id).to_string(),
+        )]
         .into_iter()
-        .map(|(key, value)| (key.to_owned(), value))
         .collect()
     }
 
@@ -1076,29 +1201,24 @@ impl PaseoAdapter {
 
     /// Refuse an agent Paseo returned that is not the one this launch asked for.
     ///
-    /// The parent is checked twice, from two independent places: the raw
-    /// `parentAgentId` Paseo recorded, and the correlation label Kontor planted.
-    /// Either alone can be right by accident — a raw parent can be inherited
-    /// from an ambient environment variable, and a label is only ever what was
-    /// asked for — so the seat is only proven when both agree.
+    /// The parent is checked from the one place 0.3.1 records it: the
+    /// [`label::PARENT_AGENT`] label. The 0.2.5 adapter checked that label *and*
+    /// an independent `parentAgentId` field and called the seat proven only when
+    /// both agreed; the field is gone from this wire, so this is now a single
+    /// source and the check is exactly as strong as that source is. Reading the
+    /// same label twice under two names would be a second check that cannot
+    /// fail, which is worse than one honest one.
     fn verify_agent_placement(
         &self,
         agent: &PaseoAgent,
-        project: &PaseoProjectBinding,
         workspace_id: &str,
         wanted_labels: &BTreeMap<String, String>,
     ) -> RuntimeResult<()> {
-        self.verify_agent_location(agent, project, workspace_id)?;
-        // The raw parent Paseo recorded, checked separately from the label
-        // Kontor planted. Both halves are needed and only this one needs its own
-        // line: `paseo.parent-agent-id` is part of `wanted_labels`, so the
-        // exact-label census below already owns the planted half. The raw half
-        // is the one nothing else can see, and it is the one that catches a
-        // parent inherited from an ambient environment variable rather than from
-        // this launch.
-        if agent.parent_agent_id.as_deref()
-            != Some(self.config.scope.orchestrator_agent_id.as_str())
-        {
+        self.verify_agent_location(agent, workspace_id)?;
+        // `paseo.parent-agent-id` is part of `wanted_labels`, so the exact-label
+        // census below already covers it; this line is what makes the refusal
+        // legible when the parent is the half that is wrong.
+        if agent.parent_agent_id() != Some(self.config.scope.orchestrator_agent_id.as_str()) {
             return Err(RuntimeError::CorrelationFailed);
         }
         if !agent.matches_labels(wanted_labels) {
@@ -1114,21 +1234,17 @@ impl PaseoAdapter {
     /// when a seat is created; *location* has to be re-proved on every turn,
     /// because Paseo can move an agent between one turn and the next and the
     /// labels would follow it unchanged.
-    fn verify_agent_location(
-        &self,
-        agent: &PaseoAgent,
-        project: &PaseoProjectBinding,
-        workspace_id: &str,
-    ) -> RuntimeResult<()> {
+    ///
+    /// The project half is not checked here and cannot be: a 0.3.1 agent
+    /// snapshot has no `projectId`. It is proved one level up, by the workspace
+    /// this agent must be in being verified as the bound project's — which is
+    /// why every caller of this pairs it with
+    /// [`PaseoAdapter::verify_workspace_placement`] on the same workspace id.
+    fn verify_agent_location(&self, agent: &PaseoAgent, workspace_id: &str) -> RuntimeResult<()> {
         if agent.id.is_empty() {
             return Err(RuntimeError::CorrelationFailed);
         }
-        if agent.project_id != project.project_id.as_str() {
-            return Err(RuntimeError::WorkspaceMismatch {
-                rule: "the agent is placed in another epic project",
-            });
-        }
-        if agent.workspace_id != workspace_id {
+        if agent.workspace_id.as_deref() != Some(workspace_id) {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the agent is placed in another workspace",
             });
@@ -1165,7 +1281,9 @@ impl PaseoAdapter {
             .seat_record(binding.binding_id())
             .ok_or(RuntimeError::WorkspaceBindingRequired)?
             .workspace_id;
-        self.verify_agent_location(agent, &project, workspace_id.as_str())?;
+        self.verify_agent_location(agent, workspace_id.as_str())?;
+        // …and the workspace itself, which is where the project half of the
+        // agent's placement is proved on this wire.
         let workspace = self.fetch_workspace(workspace_id.as_str()).await?;
         self.verify_workspace_placement(&workspace, &project)
     }
@@ -1181,23 +1299,34 @@ impl PaseoAdapter {
     /// process is the single most consequential mistake available here, and it
     /// is also how a seat that is simply waiting gets replaced.
     ///
-    /// The one terminal mapping is `archived`, and it only ever closes a run
-    /// when a *fresh* read reports it — which by construction can only follow an
-    /// explicit archive intent, since nothing else archives an agent.
+    /// The one terminal mapping is the archive stamp, and it only ever closes a
+    /// run when a *fresh* read reports it — which by construction can only
+    /// follow an explicit archive intent, since nothing else archives an agent.
     #[must_use]
     pub fn normalize_agent(agent: &PaseoAgent) -> (ObservedRunState, RuntimeContact) {
+        // Retirement is a stamp rather than a status in 0.3.1, and it outranks
+        // whatever the lifecycle says: an archived agent may still report
+        // `idle`, and reading that as a live seat would resume a retired one.
+        if agent.is_archived() {
+            return (ObservedRunState::Cancelled, RuntimeContact::Reachable);
+        }
         match agent.status {
             PaseoAgentStatus::Running => (ObservedRunState::Running, RuntimeContact::Reachable),
             // Alive, reusable, nothing in flight. `WaitingInput` is the honest
             // reading of a seat between turns, and it is non-terminal.
             PaseoAgentStatus::Idle => (ObservedRunState::WaitingInput, RuntimeContact::Reachable),
+            PaseoAgentStatus::Initializing => {
+                (ObservedRunState::Launching, RuntimeContact::Reachable)
+            }
+            // The session is stuck on something. `Blocked` is non-terminal and
+            // says nothing about the work: a provider error, a refused tool and
+            // an expired credential all land here, and none of them is a run
+            // that failed.
+            PaseoAgentStatus::Error => (ObservedRunState::Blocked, RuntimeContact::Reachable),
             // The process is gone. That is lost contact, and emphatically not a
             // verdict: an agent someone stopped and one that crashed look
             // identical from here.
-            PaseoAgentStatus::Stopped => {
-                (ObservedRunState::Unknown, RuntimeContact::ProcessMissing)
-            }
-            PaseoAgentStatus::Archived => (ObservedRunState::Cancelled, RuntimeContact::Reachable),
+            PaseoAgentStatus::Closed => (ObservedRunState::Unknown, RuntimeContact::ProcessMissing),
             PaseoAgentStatus::Unknown => (ObservedRunState::Unknown, RuntimeContact::Reachable),
         }
     }
@@ -1214,16 +1343,21 @@ impl PaseoAdapter {
             .map_err(|_| DomainError::invalid("PaseoAgent", "is not serializable as JSON"))?;
         CanonicalDocument::from_value(&serde_json::json!({
             "schema_version": 1,
-            "paseo_version": PASEO_VERSION,
+            "paseo_version": PASEO_APP_VERSION,
             "raw_digest": ContentHash::of(raw.as_bytes()).as_str(),
             "read": {
                 "agent_id": agent.id,
                 "workspace_id": agent.workspace_id,
-                "project_id": agent.project_id,
                 "status": format!("{:?}", agent.status),
+                "archived_at": agent.archived_at,
                 "attention_reason": agent.attention_reason,
-                "parent_agent_id": agent.parent_agent_id,
-                "provider_session_id": agent.provider_session_id,
+                "parent_agent_id": agent.parent_agent_id(),
+                "provider_session_id": agent.provider_session_id(),
+                "pending_permissions": agent
+                    .pending_permissions
+                    .iter()
+                    .map(|pending| pending.id.as_str())
+                    .collect::<Vec<_>>(),
             },
             "normalized": {
                 "run_state": state.as_str(),
@@ -1315,7 +1449,7 @@ impl PaseoAdapter {
         let bound = self.lock().project.clone();
         if let Some(binding) = bound {
             let project = self.read_project_by_id(binding.project_id.as_str()).await?;
-            return Ok(self.settle_project(binding.project_id, project.name, desired));
+            return Ok(self.settle_project(binding.project_id, project.display_name, desired));
         }
 
         let projects = self.fetch_projects().await?;
@@ -1326,18 +1460,22 @@ impl PaseoAdapter {
         // must not become a second project.
         let mut correlated = projects
             .iter()
-            .filter(|project| project.name == desired)
+            .filter(|project| project.display_name == desired)
             .collect::<Vec<_>>();
         let project = match correlated.len() {
             1 => correlated.remove(0).clone(),
             0 => {
                 let request = PaseoRpc::project_add(
                     command_id.to_owned(),
-                    self.config.scope.canonical_worktree_cwd.as_str(),
-                    &desired,
+                    // The epic's repository root, never the task worktree: see
+                    // `PaseoExecutionScope::project_root_cwd`.
+                    self.config.scope.project_root_cwd.as_str(),
                 );
                 let frame = self.transport.request(&request).await?;
-                let added: PaseoProject = frame.resolve(&request, "PaseoProject")?;
+                let added: PaseoProjectAdded = frame.resolve(&request, "PaseoProjectAdded")?;
+                let added = added.project.ok_or(RuntimeError::Transport {
+                    rule: "runtime refused to register the epic project",
+                })?;
                 // Read back by exact id: the answer to `add` is an
                 // acknowledgement, and a binding is made from a readback.
                 self.read_project_by_id(&added.id).await?
@@ -1350,7 +1488,7 @@ impl PaseoAdapter {
         };
 
         let project_id = ExternalId::parse(&project.id)?;
-        Ok(self.settle_project(project_id, project.name, desired))
+        Ok(self.settle_project(project_id, project.display_name, desired))
     }
 
     async fn read_project_by_id(&self, project_id: &str) -> RuntimeResult<PaseoProject> {
@@ -1403,7 +1541,15 @@ impl PaseoAdapter {
         declared: &[RoleSlotId],
     ) -> RuntimeResult<Vec<PaseoSlotPlan>> {
         let project = self.require_project()?;
-        let agents = self.fetch_agents(project.project_id.as_str()).await?;
+        // Every agent of *this team run*, wherever it sits — not every agent of
+        // the project. The seat rules are about labels, and an agent carrying
+        // this run's slot label that has been moved out of the task workspace is
+        // exactly the case that must block rather than vanish: a census scoped
+        // to the project's own workspaces would filter it out and then
+        // cheerfully materialize a second seat beside it.
+        let agents = self
+            .fetch_agents(&self.team_labels(team_run_id), false)
+            .await?;
         let prepared = self
             .lock()
             .workspaces
@@ -1442,15 +1588,13 @@ impl PaseoAdapter {
                 let wanted = self.slot_labels(team_run_id, role_slot_id);
                 let live = agents
                     .iter()
-                    .filter(|agent| agent.matches_labels(&wanted) && !agent.status.is_archived());
+                    .filter(|agent| agent.matches_labels(&wanted) && !agent.is_archived());
                 // Labels alone do not say *where*. They travel with an agent, so
                 // one that has been moved to another workspace or another tree
                 // still answers this census wearing the right name — and reusing
                 // it would drive the seat's next turn in the wrong repository.
-                let (placed, misplaced): (Vec<_>, Vec<_>) = live.partition(|agent| {
-                    self.verify_agent_location(agent, &project, workspace_id)
-                        .is_ok()
-                });
+                let (placed, misplaced): (Vec<_>, Vec<_>) =
+                    live.partition(|agent| self.verify_agent_location(agent, workspace_id).is_ok());
                 match (placed.as_slice(), misplaced.is_empty()) {
                     // Two live agents for one seat is the state AC-4 forbids.
                     // Picking one would bind a run to a session that may belong
@@ -1508,14 +1652,14 @@ impl PaseoAdapter {
         let native_id = binding.identity().native_id.as_str().to_owned();
         let command = PaseoCommand::agent_archive(&native_id);
         let output = self.transport.run(&command).await?;
-        let ack: PaseoCliAck = output.parse("PaseoCliAck")?;
-        if !ack.ok || (!ack.id.is_empty() && ack.id != native_id) {
+        let ack: PaseoCliArchived = output.parse("PaseoCliArchived")?;
+        if ack.agent_id.as_deref() != Some(native_id.as_str()) || ack.archived_at.is_none() {
             return Err(RuntimeError::CorrelationFailed);
         }
-        // The acknowledgement is not the evidence. A fresh readback reporting
-        // `archived` is, and until it does no successor may be admitted.
+        // The acknowledgement is not the evidence. A fresh readback carrying an
+        // archive stamp is, and until it does no successor may be admitted.
         let agent = self.fetch_agent(&native_id).await?;
-        if !agent.status.is_archived() {
+        if !agent.is_archived() {
             return Err(RuntimeError::CorrelationFailed);
         }
         self.observation(
@@ -1569,22 +1713,64 @@ impl PaseoAdapter {
 // ---------------------------------------------------------------------------
 
 impl PaseoAdapter {
-    /// One canonical page for `agent_id`, with its raw epoch resolved.
+    /// One canonical page for `agent_id`, strictly after `cursor`.
+    ///
+    /// A page that declares `reset`, `staleCursor` or `gap` is a break rather
+    /// than a page: 0.3.1 puts those flags on the *response*, so this is the one
+    /// place they have to be read, and reading its entries anyway would page
+    /// over the hole the daemon just declared. Same for the daemon's own
+    /// `error`: a page that failed is not an empty transcript.
     async fn fetch_canonical(
         &self,
         agent_id: &str,
-        after: Option<u64>,
+        cursor: Option<&PaseoTimelineCursor>,
         limit: u32,
         projection: PaseoProjection,
     ) -> RuntimeResult<PaseoTimelinePage> {
-        let request =
-            PaseoRpc::timeline_fetch(self.next_request_id(), agent_id, projection, after, limit);
+        let direction = if cursor.is_some() {
+            PaseoDirection::After
+        } else {
+            // No cursor means "from the start of what exists", and `tail` is the
+            // only direction 0.3.1 answers without one.
+            PaseoDirection::Tail
+        };
+        let request = PaseoRpc::timeline_fetch(
+            self.next_request_id(),
+            agent_id,
+            projection,
+            direction,
+            cursor,
+            limit,
+        );
         let frame = self.transport.request(&request).await?;
         let page: PaseoTimelinePage = frame.resolve(&request, "PaseoTimelinePage")?;
         if page.agent_id != agent_id {
             return Err(RuntimeError::CorrelationFailed);
         }
+        if let Some(reason) = page.declared_break() {
+            return Err(RuntimeError::TimelineRefetchRequired { reason });
+        }
+        if page.error.is_some() {
+            return Err(RuntimeError::Transport {
+                rule: "runtime refused the canonical timeline read",
+            });
+        }
         Ok(page)
+    }
+
+    /// The cursor a stored position reads from, in Paseo's own spelling.
+    ///
+    /// `None` when this adapter has never mapped that epoch, which is not a
+    /// cursor it can express: asking `after` a raw epoch it cannot name would
+    /// mean inventing one.
+    fn wire_cursor(&self, position: TimelinePosition) -> Option<PaseoTimelineCursor> {
+        self.lock()
+            .epochs
+            .raw(position.epoch)
+            .map(|epoch| PaseoTimelineCursor {
+                epoch,
+                seq: position.sequence,
+            })
     }
 
     /// The Kontor epoch a raw one resolves to, given what the cursor expects.
@@ -1607,37 +1793,55 @@ impl PaseoAdapter {
         }
     }
 
-    /// Normalize a page's entries, tracking the permission lifecycle it carries.
+    /// Normalize a page's entries.
     ///
-    /// Both halves of the lifecycle, and both for the same reason: canonical
-    /// history is the only place a permission's fate is recorded, so a run of
-    /// content that opens a request without closing it leaves the adapter
-    /// believing an answered request is still answerable. Every read path —
-    /// history, live catch-up, delivery reconciliation — comes through here, so
-    /// this is the one place either half has to be got right.
+    /// No permission bookkeeping happens here, and that is 0.3.1's doing rather
+    /// than an omission: its canonical timeline has no permission items at all.
+    /// The lifecycle is read from [`PaseoAdapter::observe_permissions`] — a
+    /// fresh agent readback — and from the unsolicited stream, which are the two
+    /// places this wire records it.
     fn normalize_page(
         &self,
-        binding_id: RuntimeBindingId,
         page: &PaseoTimelinePage,
         epoch: u64,
     ) -> RuntimeResult<Vec<SessionEvent>> {
-        let mut events = Vec::with_capacity(page.entries.len());
-        for entry in &page.entries {
-            let event = normalize_entry(entry, epoch)?;
-            if let EventSubject::Permission(permission_id) = &event.subject {
-                match event.kind {
-                    SessionEventKind::PermissionRequest => {
-                        self.open_permission(binding_id, permission_id);
-                    }
-                    SessionEventKind::PermissionResolved => {
-                        self.close_permission(permission_id);
-                    }
-                    _ => {}
-                }
+        page.entries
+            .iter()
+            .map(|entry| normalize_entry(entry, epoch))
+            .collect()
+    }
+
+    /// Reconcile the permission ledger against one fresh agent readback.
+    ///
+    /// `pendingPermissions` is a complete list, so it settles both halves at
+    /// once: a request that is present is open, and one this adapter believed
+    /// open that is *absent* has been answered — by the operator in Paseo's UI,
+    /// by a provider timeout, or by Kontor itself. Absence is the only
+    /// resolution evidence 0.3.1 offers, and it is enough for the rule that
+    /// matters: never answer a request a second time.
+    fn observe_permissions(&self, binding_id: RuntimeBindingId, agent: &PaseoAgent) {
+        let live: BTreeSet<String> = agent
+            .pending_permissions
+            .iter()
+            .map(|pending| pending.id.clone())
+            .collect();
+        for pending in &agent.pending_permissions {
+            if let Ok(permission_id) = ExternalId::parse(&pending.id) {
+                self.open_permission(binding_id, &permission_id);
             }
-            events.push(event);
         }
-        Ok(events)
+        let vanished: Vec<ExternalId> = self
+            .lock()
+            .permission_owners
+            .iter()
+            .filter(|(permission_id, owner)| {
+                **owner == binding_id && !live.contains(permission_id.as_str())
+            })
+            .map(|(permission_id, _)| permission_id.clone())
+            .collect();
+        for permission_id in &vanished {
+            self.close_permission(permission_id);
+        }
     }
 
     /// Note that `binding_id`'s session is waiting on `permission_id`.
@@ -1658,7 +1862,7 @@ impl PaseoAdapter {
             .or_insert(binding_id);
     }
 
-    /// Note that history shows `permission_id` answered.
+    /// Note that Paseo shows `permission_id` no longer awaiting an answer.
     fn close_permission(&self, permission_id: &ExternalId) {
         let state = &mut *self.lock();
         state.resolved_in_history.insert(permission_id.clone());
@@ -1699,14 +1903,14 @@ impl PaseoAdapter {
             .cursors
             .get(&binding.binding_id())
             .map(|position| position.epoch);
-        let mut after: Option<u64> = None;
+        let mut after: Option<PaseoTimelineCursor> = None;
         let mut found: Option<TimelinePosition> = None;
         let mut hits = 0usize;
         for _ in 0..RECONCILE_PAGE_BUDGET {
             let page = self
                 .fetch_canonical(
                     &native_id,
-                    after,
+                    after.as_ref(),
                     MAX_HISTORY_PAGE,
                     PaseoProjection::Canonical,
                 )
@@ -1720,15 +1924,19 @@ impl PaseoAdapter {
             // transcript is then reconciled as though it continued page one —
             // which is exactly the `no` that authorizes a resend.
             expected = Some(epoch);
-            for event in self.normalize_page(binding.binding_id(), &page, epoch)? {
+            for event in self.normalize_page(&page, epoch)? {
                 if matches(&event) {
                     hits += 1;
                     found.get_or_insert(event.position);
                 }
             }
-            match page.next_after {
-                Some(next) => after = Some(next),
-                None => break,
+            // The daemon's own end cursor, never a position this adapter
+            // counted: `hasNewer` says another page exists and `endCursor` says
+            // exactly where it starts, and deriving that anchor from the last
+            // entry instead would re-read or skip whatever the daemon merged.
+            match (page.has_newer, page.end_cursor) {
+                (true, Some(end)) => after = Some(end),
+                _ => break,
             }
         }
         // The whole scan came back under one epoch, so from here on there *is*
@@ -1759,31 +1967,32 @@ impl PaseoAdapter {
 
 impl PaseoAdapter {
     /// The capability set to judge an operation by, read fresh.
+    ///
+    /// The gate is the identity the daemon *pushed* on the connection this
+    /// adapter is about to use. 0.3.1 volunteers `status/server_info` right
+    /// after the hello and answers no `server_info` request, so there is nothing
+    /// to ask: the transport holds what it gated on, and a connection it could
+    /// not gate is a transport error rather than a low grade.
+    ///
+    /// A daemon that does not advertise every feature the placement rules depend
+    /// on is observed rather than driven — the shared preflight then refuses
+    /// each undeclared operation before it can produce an effect. So is one off
+    /// the pinned application version. Every DTO, argv and label spelling here
+    /// was recorded against Paseo 0.3.1, and a feature list is not a version: a
+    /// daemon can advertise all five required features and still have renamed a
+    /// field this adapter reads a placement rule out of. Grade A says "believe
+    /// these readbacks", and that claim is only underwritten for the version
+    /// they were recorded from. An unrecognized build is observed instead — the
+    /// same honest degradation as a daemon that cannot be reached at all.
+    ///
+    /// The protocol number is the other half of the pin and is not checked here,
+    /// because it cannot fail this far in: the daemon closes the socket on a
+    /// protocol mismatch, so the transport never produces a gated connection to
+    /// grade.
     async fn declared(&self) -> RuntimeResult<RuntimeCapabilities> {
-        // The CLI probe first: it is what says whether Paseo is there at all, and
-        // an unreachable runtime is a transport fact rather than a low grade.
-        let command = PaseoCommand::version();
-        let output = self.transport.run(&command).await?;
-        let version: PaseoCliVersion = output.parse("PaseoCliVersion")?;
-
-        // Then the daemon's own claim about itself. A daemon that cannot be
-        // asked, or that does not advertise every feature the placement rules
-        // depend on, is observed rather than driven — the shared preflight then
-        // refuses each undeclared operation before it can produce an effect.
-        //
-        // So is one off the pinned baseline, on either surface. Every DTO, argv
-        // and label spelling here was recorded against Paseo 0.2.5, and a
-        // feature list is not a version: a daemon can advertise all five
-        // required features and still have renamed a field this adapter reads a
-        // placement rule out of. Grade A says "believe these readbacks", and
-        // that claim is only underwritten for the version they were recorded
-        // from. An unrecognized build is observed instead — the same honest
-        // degradation as a daemon that cannot be reached at all.
         match self.fetch_server_info().await {
             Ok(info) => {
-                let degraded = !info.missing_required().is_empty()
-                    || !info.is_pinned_baseline()
-                    || version.version != PASEO_VERSION;
+                let degraded = !info.missing_required().is_empty() || !info.is_pinned_baseline();
                 self.lock().server = Some(info);
                 if degraded {
                     Ok(self.config.degraded_capabilities())
@@ -1869,10 +2078,10 @@ impl PaseoAdapter {
         // what *this* adapter admitted; it cannot know about an agent a previous
         // process left behind, and launching over one is how a seat acquires two
         // live sessions.
-        let census = self.fetch_agents(project.project_id.as_str()).await?;
+        let census = self.fetch_agents(&slot_labels, false).await?;
         if census
             .iter()
-            .any(|agent| agent.matches_labels(&slot_labels) && !agent.status.is_archived())
+            .any(|agent| agent.matches_labels(&slot_labels) && !agent.is_archived())
         {
             return Err(RuntimeError::SlotAlreadyAdmitted {
                 rule: "a live Paseo agent already carries this role slot's labels",
@@ -1882,6 +2091,7 @@ impl PaseoAdapter {
         let command = PaseoCommand::agent_run(
             &workspace_id,
             self.config.scope.canonical_worktree_cwd.as_str(),
+            self.config.provider.as_str(),
             &self.config.scope.agent_display_name(request.role_slot_id()),
             &labels,
             self.config.scope.orchestrator_agent_id.as_str(),
@@ -1889,22 +2099,22 @@ impl PaseoAdapter {
         );
         let native_id = match self.transport.run(&command).await {
             Ok(output) => {
-                let started: PaseoCliAgent = output.parse("PaseoCliAgent")?;
-                started.id
+                let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
+                started.agent_id
             }
             // The command may have landed. An exact-label census before deciding
             // anything is the whole of the recovery rule; running `agent run`
             // again would be how one seat acquires two agents.
-            Err(RuntimeError::Transport { .. }) => self.recover_launch(&project, &labels).await?,
+            Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
             Err(other) => return Err(other),
         };
 
-        // The CLI's answer is an id and nothing else — no project, no workspace,
-        // no labels, no parent. Every placement rule is decided from the
-        // protocol readback, which is why trusting the CLI here is a defect the
-        // fixtures name explicitly.
+        // The CLI's answer is an id, a status, a provider and two display
+        // strings — no project, no workspace, no labels, no parent. Every
+        // placement rule is decided from the session readback, which is why
+        // trusting the CLI here is a defect the fixtures name explicitly.
         let agent = self.fetch_agent(&native_id).await?;
-        self.verify_agent_placement(&agent, &project, &workspace_id, &labels)?;
+        self.verify_agent_placement(&agent, &workspace_id, &labels)?;
 
         let snapshot = self.bind(
             request.agent_run_id(),
@@ -1939,8 +2149,7 @@ impl PaseoAdapter {
             workspace_id: ExternalId::parse(&workspace_id)?,
             agent_id: ExternalId::parse(&agent.id)?,
             provider_session_id: agent
-                .provider_session_id
-                .as_deref()
+                .provider_session_id()
                 .map(ExternalId::parse)
                 .transpose()?,
             parent_agent_id: self.config.scope.orchestrator_agent_id.clone(),
@@ -1976,15 +2185,11 @@ impl PaseoAdapter {
     /// * none — it is *not* known whether Paseo created an agent. The receipt
     ///   stays confirmation-unknown and reconciliation looks again. A blind
     ///   relaunch here is how one seat ends up with two agents editing one tree.
-    async fn recover_launch(
-        &self,
-        project: &PaseoProjectBinding,
-        labels: &BTreeMap<String, String>,
-    ) -> RuntimeResult<String> {
-        let agents = self.fetch_agents(project.project_id.as_str()).await?;
+    async fn recover_launch(&self, labels: &BTreeMap<String, String>) -> RuntimeResult<String> {
+        let agents = self.fetch_agents(labels, false).await?;
         let mut matches = agents
             .into_iter()
-            .filter(|agent| agent.matches_labels(labels) && !agent.status.is_archived())
+            .filter(|agent| agent.matches_labels(labels) && !agent.is_archived())
             .collect::<Vec<_>>();
         match matches.len() {
             1 => Ok(matches.remove(0).id),
@@ -2061,25 +2266,32 @@ impl RuntimeAdapter for PaseoAdapter {
             .into_iter()
             .filter(|workspace| {
                 workspace.project_id == project.project_id.as_str()
-                    && WorkspaceRoot::parse(&workspace.cwd).is_ok_and(|root| root == request.root)
+                    && WorkspaceRoot::parse(&workspace.workspace_directory)
+                        .is_ok_and(|root| root == request.root)
             })
             .collect::<Vec<_>>();
 
-        let workspace_labels = self.workspace_labels(request, &project);
+        // 0.3.1 has no workspace labels, so the correlation label travels in the
+        // title — the one string a create writes and a readback returns. See
+        // `wire::workspace_label_suffix` for why that is a real round trip and
+        // not a fabricated one.
+        let workspace_title = workspace_label_suffix(
+            &self.config.scope.workspace_display_name(),
+            &WorkspaceLabel::for_team_run(request.team_run_id).to_string(),
+        );
         let (workspace, created) = match exact.len() {
             1 => (exact.remove(0), false),
             0 => {
                 let command = PaseoCommand::workspace_create(
                     request.root.as_str(),
                     project.project_id.as_str(),
-                    &self.config.scope.workspace_display_name(),
-                    &workspace_labels,
+                    &workspace_title,
                 );
                 let output = self.transport.run(&command).await?;
-                let created: PaseoCliWorkspace = output.parse("PaseoCliWorkspace")?;
+                let created: PaseoCliWorkspaceCreated = output.parse("PaseoCliWorkspaceCreated")?;
                 // The CLI answer omits `projectId`, so it cannot be believed.
                 // The readback is what says which project this landed in.
-                (self.fetch_workspace(&created.id).await?, true)
+                (self.fetch_workspace(&created.workspace_id).await?, true)
             }
             // Two workspaces at one canonical path inside one project is a
             // hierarchy that has diverged. Picking one would place half the
@@ -2094,13 +2306,14 @@ impl RuntimeAdapter for PaseoAdapter {
         self.verify_workspace_placement(&workspace, &project)?;
 
         let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
+        // What Paseo *reported*, extracted from the title it returned. A
+        // workspace whose title Paseo rewrote, or that an operator renamed,
+        // reports nothing here and fails correlation — which is the point:
+        // passing Kontor's own computed label in instead would make this
+        // evidence prove nothing while looking identical.
         let correlation = WorkspaceCorrelationEvidence::establish(
             request.team_run_id,
-            workspace
-                .labels
-                .get(label::TEAM_RUN)
-                .map(String::as_str)
-                .unwrap_or_default(),
+            workspace.reported_label().unwrap_or_default(),
             identity.clone(),
             request.requested_at,
         )?;
@@ -2179,8 +2392,9 @@ impl RuntimeAdapter for PaseoAdapter {
         let native_id = binding.identity().native_id.as_str().to_owned();
         let fresh = self.fetch_agent(&native_id).await?;
         self.verify_seat_placement(&binding, &fresh).await?;
+        self.observe_permissions(binding.binding_id(), &fresh);
 
-        if fresh.status.is_archived() {
+        if fresh.is_archived() {
             return Err(RuntimeError::StaleBinding {
                 rule: "this session has been retired and cannot be resumed",
             });
@@ -2189,8 +2403,8 @@ impl RuntimeAdapter for PaseoAdapter {
         if fresh.status.needs_reload() {
             let command = PaseoCommand::agent_reload(&native_id);
             let output = self.transport.run(&command).await?;
-            let reloaded: PaseoCliAgent = output.parse("PaseoCliAgent")?;
-            if reloaded.id != native_id {
+            let reloaded: PaseoCliAgentReloaded = output.parse("PaseoCliAgentReloaded")?;
+            if reloaded.agent_id != native_id {
                 return Err(RuntimeError::CorrelationFailed);
             }
             // The same agent, in the same place, under the same parent, with the
@@ -2198,10 +2412,9 @@ impl RuntimeAdapter for PaseoAdapter {
             // a different session wearing the id.
             let after = self.fetch_agent(&native_id).await?;
             if after.workspace_id != fresh.workspace_id
-                || after.project_id != fresh.project_id
-                || after.parent_agent_id != fresh.parent_agent_id
-                || (fresh.provider_session_id.is_some()
-                    && after.provider_session_id != fresh.provider_session_id)
+                || after.parent_agent_id() != fresh.parent_agent_id()
+                || (fresh.provider_session_id().is_some()
+                    && after.provider_session_id() != fresh.provider_session_id())
             {
                 return Err(RuntimeError::CorrelationFailed);
             }
@@ -2289,12 +2502,12 @@ impl RuntimeAdapter for PaseoAdapter {
         match sent {
             Ok(frame) => {
                 let accepted: PaseoSendAccepted = frame.resolve(&rpc, "PaseoSendAccepted")?;
-                // Paseo must echo this exact agent and this exact id back.
-                // Accepting a bare acknowledgement would let a receipt for
-                // another message satisfy this one.
-                if accepted.agent_id != native_id
-                    || accepted.message_id != request.message_id.to_string()
-                {
+                // Paseo must echo this exact agent and say it took the message.
+                // 0.3.1's acknowledgement does not carry the caller's message id
+                // back — that echo lands on the resulting user message as
+                // `clientMessageId` — so the id half is settled below, by the
+                // canonical read, and never by this frame.
+                if accepted.agent_id != native_id || !accepted.accepted {
                     self.record_delivery(
                         request.message_id,
                         body_hash,
@@ -2358,8 +2571,13 @@ impl RuntimeAdapter for PaseoAdapter {
         let native_id = binding.identity().native_id.as_str().to_owned();
         let command = PaseoCommand::agent_stop(&native_id);
         let output = self.transport.run(&command).await?;
-        let ack: PaseoCliAck = output.parse("PaseoCliAck")?;
-        if !ack.ok || (!ack.id.is_empty() && ack.id != native_id) {
+        let ack: PaseoCliStopped = output.parse("PaseoCliStopped")?;
+        // 0.3.1's stop is a bulk operation: it reports every agent it
+        // interrupted. Exactly this one, and no other, is the only shape that
+        // acknowledges *this* cancel — an empty list is a no-op on an idle agent
+        // and a longer one means the command reached somebody else's session
+        // too.
+        if ack.agent_ids != [native_id.clone()] {
             return Err(RuntimeError::CorrelationFailed);
         }
         // Paseo acknowledged that it accepted the request. It has not said the
@@ -2393,9 +2611,13 @@ impl RuntimeAdapter for PaseoAdapter {
             },
         )?;
         let native_id = binding.identity().native_id.as_str().to_owned();
-        // Always a fresh protocol read. A cached answer is a description of the
+        // Always a fresh session read. A cached answer is a description of the
         // past, and no previous observation may authorize a new edit or verdict.
         let agent = self.fetch_agent(&native_id).await?;
+        // An inspect is also the cheapest honest look at the permission
+        // lifecycle, which on this wire lives in the agent snapshot rather than
+        // in the transcript.
+        self.observe_permissions(binding.binding_id(), &agent);
         self.observation(
             binding.agent_run_id(),
             binding.identity().clone(),
@@ -2442,13 +2664,12 @@ impl RuntimeAdapter for PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
-        if before.status.is_archived() {
+        if before.is_archived() {
             return Err(RuntimeError::StaleBinding {
                 rule: "a retired session cannot be adopted",
             });
         }
-        if before.project_id != project.project_id.as_str()
-            || before.workspace_id != workspace_id
+        if before.workspace_id.as_deref() != Some(workspace_id.as_str())
             || WorkspaceRoot::parse(&before.cwd)? != self.config.scope.canonical_worktree_cwd
         {
             return Err(RuntimeError::WorkspaceMismatch {
@@ -2490,8 +2711,8 @@ impl RuntimeAdapter for PaseoAdapter {
         );
         let command = PaseoCommand::agent_update_labels(&native_id, &labels);
         let output = self.transport.run(&command).await?;
-        let updated: PaseoCliAgent = output.parse("PaseoCliAgent")?;
-        if updated.id != native_id {
+        let updated: PaseoCliAgentUpdated = output.parse("PaseoCliAgentUpdated")?;
+        if updated.agent_id != native_id {
             return Err(RuntimeError::CorrelationFailed);
         }
 
@@ -2507,10 +2728,10 @@ impl RuntimeAdapter for PaseoAdapter {
         // and adopting it would bind a run to a transcript that no longer
         // contains the work the operator wanted kept.
         let after = self.fetch_agent(&native_id).await?;
-        if after.provider_session_id != before.provider_session_id {
+        if after.provider_session_id() != before.provider_session_id() {
             return Err(RuntimeError::CorrelationFailed);
         }
-        self.verify_agent_placement(&after, &project, &workspace_id, &labels)?;
+        self.verify_agent_placement(&after, &workspace_id, &labels)?;
 
         let snapshot = self.bind(
             request.agent_run_id,
@@ -2543,8 +2764,7 @@ impl RuntimeAdapter for PaseoAdapter {
             workspace_id: ExternalId::parse(&workspace_id)?,
             agent_id: ExternalId::parse(&after.id)?,
             provider_session_id: after
-                .provider_session_id
-                .as_deref()
+                .provider_session_id()
                 .map(ExternalId::parse)
                 .transpose()?,
             parent_agent_id: self.config.scope.orchestrator_agent_id.clone(),
@@ -2586,7 +2806,7 @@ impl RuntimeAdapter for PaseoAdapter {
         let project = self.require_project()?;
         let generation = self.generation();
         let mut found = Vec::new();
-        for agent in self.fetch_agents(project.project_id.as_str()).await? {
+        for agent in self.fetch_project_agents(&project).await? {
             let (state, _) = Self::normalize_agent(&agent);
             found.push(NativeSession {
                 identity: self.identity(ExternalId::parse(&agent.id)?, generation),
@@ -2670,10 +2890,22 @@ impl RuntimeAdapter for PaseoAdapter {
             .transpose()?;
 
         let native_id = binding.identity().native_id.as_str().to_owned();
+        // A cursor this adapter cannot spell in Paseo's own terms is a refusal
+        // rather than a read from the start: 0.3.1 addresses a position by raw
+        // epoch, and a raw epoch the registry never mapped names a numbering
+        // this session was not read in.
+        let cursor = match anchor {
+            Some(position) => Some(self.wire_cursor(position).ok_or(
+                RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                },
+            )?),
+            None => None,
+        };
         let page = self
             .fetch_canonical(
                 &native_id,
-                anchor.map(|position| position.sequence),
+                cursor.as_ref(),
                 request.page_size,
                 // Canonical, always. `projected` collapses tool lifecycles into
                 // single entries, so a cursor built on it advances over
@@ -2682,7 +2914,7 @@ impl RuntimeAdapter for PaseoAdapter {
             )
             .await?;
         let epoch = self.resolve_epoch(&page.epoch, anchor.map(|position| position.epoch))?;
-        let items = self.normalize_page(binding.binding_id(), &page, epoch)?;
+        let items = self.normalize_page(&page, epoch)?;
         let end = items.last().map_or(
             anchor.unwrap_or(TimelinePosition::start_of(epoch)),
             |event| event.position,
@@ -2692,8 +2924,8 @@ impl RuntimeAdapter for PaseoAdapter {
             epoch,
             items,
             next: page
-                .next_after
-                .map(|_| HistoryCursor::issue(binding.binding_id(), end)),
+                .has_newer
+                .then(|| HistoryCursor::issue(binding.binding_id(), end)),
             end,
         })
     }
@@ -2723,13 +2955,20 @@ impl RuntimeAdapter for PaseoAdapter {
         // subscription is activated *first* so frames start buffering, then the
         // canonical catch-up is fetched, then the two are merged. Fetching first
         // would drop everything Paseo emitted while the socket was being set up.
-        let subscribe = PaseoRpc::timeline_subscribe(
-            self.next_request_id(),
-            &native_id,
-            request.strict_after.sequence,
-        );
+        // The whole subscribed set travels, because the request replaces this
+        // connection's set rather than adding to it.
+        let subscribe =
+            PaseoRpc::timeline_subscribe(self.next_request_id(), std::slice::from_ref(&native_id));
         let frame = self.transport.request(&subscribe).await?;
-        let _: serde_json::Value = frame.resolve(&subscribe, "PaseoSubscriptionAck")?;
+        let acknowledged: PaseoSubscriptionAck =
+            frame.resolve(&subscribe, "PaseoSubscriptionAck")?;
+        // The daemon echoes exactly what it subscribed this connection to. A
+        // set that does not contain this agent means the frames about to be
+        // drained are somebody else's, and the catch-up would then be merged
+        // against a stream that never carried this session.
+        if !acknowledged.agent_ids.contains(&native_id) {
+            return Err(RuntimeError::CorrelationFailed);
+        }
 
         let buffered = self.transport.drain_stream(&native_id).await?;
         let mut merged: BTreeMap<(u64, u64), SessionEvent> = BTreeMap::new();
@@ -2738,43 +2977,61 @@ impl RuntimeAdapter for PaseoAdapter {
             // registry is touched: an oversized frame is refused while it is
             // still only bytes.
             ensure_frame_bounded(&raw)?;
-            let frame: PaseoStreamFrame = serde_json::from_value(raw).map_err(|_| {
+            let envelope: PaseoStreamFrame = serde_json::from_value(
+                raw.get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .map_err(|_| {
                 RuntimeError::Domain(DomainError::invalid(
                     "PaseoStreamFrame",
-                    "is not the Paseo 0.2.5 frame this adapter is pinned to",
+                    "is not the Paseo 0.3.1 frame this adapter is pinned to",
                 ))
             })?;
-            if frame.agent_id != native_id {
+            // The transport routes by agent, so this is the second, independent
+            // check that what was drained is this session's. A frame for
+            // another agent here means the router is wrong, and continuing
+            // would merge somebody else's content into this timeline.
+            if envelope.agent_id != native_id {
                 return Err(RuntimeError::CorrelationFailed);
             }
-            // A reset, a stale cursor or a declared gap ends delivery and
-            // demands a canonical refetch. None of them says anything about the
-            // run, so none of them touches lifecycle state.
-            if let Some(control) = frame.control {
-                return Err(RuntimeError::TimelineRefetchRequired {
-                    reason: control.as_break(),
-                });
+            // The permission lifecycle arrives here rather than in the
+            // transcript, so this is where it is recorded. It carries no
+            // sequence and is never merged into content.
+            if let Some(permission_id) = stream_permission_external_id(&envelope.event)? {
+                match envelope.event.event_type.as_str() {
+                    "permission_requested" => {
+                        self.open_permission(binding.binding_id(), &permission_id);
+                    }
+                    "permission_resolved" => self.close_permission(&permission_id),
+                    _ => {}
+                }
             }
-            let epoch = self.resolve_epoch(&frame.epoch, Some(request.strict_after.epoch))?;
-            if let Some(entry) = &frame.entry {
-                let event = normalize_entry(entry, epoch)?;
-                merged.insert((epoch, entry.seq), event);
+            if let Some((raw_epoch, entry)) = envelope.as_entry() {
+                let epoch = self.resolve_epoch(&raw_epoch, Some(request.strict_after.epoch))?;
+                let event = normalize_entry(&entry, epoch)?;
+                merged.insert((epoch, entry.seq_start), event);
             }
         }
 
         // The catch-up fetch closes the window between the history anchor and
         // the first buffered frame. Deduplication is by raw `(epoch, sequence)`,
         // so an entry that arrives both ways is one event.
+        let anchor = self.wire_cursor(request.strict_after).ok_or(
+            RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            },
+        )?;
         let catch_up = self
             .fetch_canonical(
                 &native_id,
-                Some(request.strict_after.sequence),
+                Some(&anchor),
                 MAX_HISTORY_PAGE,
                 PaseoProjection::Canonical,
             )
             .await?;
         let epoch = self.resolve_epoch(&catch_up.epoch, Some(request.strict_after.epoch))?;
-        for event in self.normalize_page(binding.binding_id(), &catch_up, epoch)? {
+        for event in self.normalize_page(&catch_up, epoch)? {
             merged.insert((epoch, event.position.sequence), event);
         }
 
@@ -2841,20 +3098,22 @@ impl RuntimeAdapter for PaseoAdapter {
         }
 
         let native_id = binding.identity().native_id.as_str().to_owned();
+        // The correlation id *is* the permission request id: 0.3.1 answers an
+        // `agent_permission_response` with an `agent_permission_resolved` whose
+        // `requestId` is the permission's, and there is no second id on either
+        // half to correlate by.
         let rpc = PaseoRpc::permission_response(
-            self.next_request_id(),
             &native_id,
             request.permission_id.as_str(),
-            request.decision_body(),
+            request.decision == PermissionDecision::Allow,
         );
         let outcome = self.transport.request(&rpc).await;
         match outcome {
             Ok(frame) => {
-                let accepted: PaseoPermissionAccepted =
-                    frame.resolve(&rpc, "PaseoPermissionAccepted")?;
+                let accepted: PaseoPermissionResolved =
+                    frame.resolve(&rpc, "PaseoPermissionResolved")?;
                 if accepted.agent_id != native_id
-                    || accepted.permission_id != request.permission_id.as_str()
-                    || accepted.decision != request.decision_body()
+                    || accepted.resolution.behavior != request.decision_body()
                 {
                     return Err(RuntimeError::Transport {
                         rule: "runtime acknowledged something other than this permission answer",
@@ -2938,22 +3197,38 @@ impl PaseoAdapter {
         Ok(Some(acknowledgement))
     }
 
-    /// Settle one permission answer against canonical history.
+    /// Settle one permission answer against a fresh agent readback.
+    ///
+    /// Not against canonical history, because 0.3.1's canonical timeline has no
+    /// permission items at all: `pendingPermissions` on the agent snapshot is
+    /// where an open request lives, so a request that is *gone* from that list
+    /// is the resolution evidence this wire offers.
+    ///
+    /// The position recorded is the session's current end rather than the
+    /// resolution's own, because the resolution has no position in a transcript
+    /// that does not contain it. Minting one would be an adapter-local number
+    /// claiming to be a place in Paseo's content.
     async fn reconcile_permission(
         &self,
         binding: &RuntimeBindingSnapshot,
         request: &PermissionResponseRequest,
     ) -> RuntimeResult<Option<PermissionAck>> {
-        let wanted = request.permission_id.clone();
-        let found = self
-            .scan_canonical(binding, |event| {
-                event.kind == SessionEventKind::PermissionResolved
-                    && event.subject == EventSubject::Permission(wanted.clone())
-            })
-            .await?;
-        let Some((position, _)) = found else {
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        let agent = self.fetch_agent(&native_id).await?;
+        self.observe_permissions(binding.binding_id(), &agent);
+        let still_pending = agent
+            .pending_permissions
+            .iter()
+            .any(|pending| pending.id == request.permission_id.as_str());
+        if still_pending {
             return Ok(None);
-        };
+        }
+        let position = self
+            .lock()
+            .cursors
+            .get(&binding.binding_id())
+            .copied()
+            .unwrap_or_else(|| TimelinePosition::start_of(0));
         let acknowledgement = PermissionAck {
             permission_id: request.permission_id.clone(),
             response_id: request.response_id,
@@ -2970,11 +3245,12 @@ impl PaseoAdapter {
             state
                 .permission_acks
                 .push((request.permission_id.clone(), acknowledgement.clone()));
-            // Nothing to close here: this acknowledgement exists because
-            // `scan_canonical` found the resolution, which means `normalize_page`
-            // already closed it on the way past. What this adds is the half
-            // history cannot carry — that the answer was *Kontor's*, under this
-            // response id — which is what lets the same answer replay.
+            // Nothing to close here: this acknowledgement exists because the
+            // request had left `pendingPermissions`, which means
+            // `observe_permissions` already closed it on the way past. What this
+            // adds is the half Paseo cannot carry — that the answer was
+            // *Kontor's*, under this response id — which is what lets the same
+            // answer replay.
         }
         Ok(Some(acknowledgement))
     }

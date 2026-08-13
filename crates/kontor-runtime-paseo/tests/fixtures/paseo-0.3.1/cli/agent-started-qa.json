@@ -1,0 +1,7 @@
+{
+  "agentId": "agt_qa",
+  "status": "created",
+  "provider": "claude",
+  "cwd": "/w/epic/task-11",
+  "title": "KON-MVP-11 qa-a"
+}
