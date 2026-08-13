@@ -89,6 +89,13 @@ pub struct EpicTask {
     pub depends_on: BTreeSet<ExternalName>,
     /// The external tickets to link. Immutable as a set.
     pub ticket_links: Vec<EpicTicketLink>,
+    /// Where this task's work happens. Absolute, validated by the caller.
+    ///
+    /// `None` leaves whatever was already declared alone rather than clearing
+    /// it: an apply that omits the field is not a statement that the task has no
+    /// worktree, and silently unplacing a task would be a strange way to say
+    /// nothing.
+    pub worktree: Option<ExternalName>,
 }
 
 /// One whole epic, stated declaratively.
@@ -168,6 +175,8 @@ pub struct AppliedTask {
     pub depends_on: BTreeSet<TaskId>,
     /// Its external ticket links.
     pub links: Vec<AppliedLink>,
+    /// Where its work happens, once declared.
+    pub worktree: Option<ExternalName>,
 }
 
 /// One ticket link after an epic was applied.
@@ -1477,6 +1486,18 @@ fn ensure_task(
         }
     };
 
+    // Declared inside the epic's own transaction, so a graph never half-applies
+    // into a state where a task exists and its placement does not.
+    if let Some(worktree) = &plan.worktree {
+        upsert_worktree(
+            transaction,
+            request.project_id,
+            task.id,
+            worktree,
+            request.applied_at,
+        )?;
+    }
+
     let workflow_id = ensure_workflow(transaction, request, task.id)?;
     Ok(AppliedTask {
         title: plan.title.clone(),
@@ -1487,7 +1508,50 @@ fn ensure_task(
         workflow_id,
         depends_on: BTreeSet::new(),
         links: Vec::new(),
+        worktree: read_worktree(transaction, request.project_id, task.id)?,
     })
+}
+
+/// One task's declared worktree, read inside an open transaction.
+fn read_worktree(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    task_id: TaskId,
+) -> RepositoryResult<Option<ExternalName>> {
+    let found: Option<String> = transaction
+        .query_row(
+            "SELECT worktree FROM task_worktrees WHERE project_id = ?1 AND task_id = ?2",
+            params![project_id.to_string(), task_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    Ok(found.as_deref().map(ExternalName::parse).transpose()?)
+}
+
+/// Declare one task's worktree inside an open transaction.
+fn upsert_worktree(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    task_id: TaskId,
+    worktree: &ExternalName,
+    declared_at: Timestamp,
+) -> RepositoryResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO task_worktrees (project_id, task_id, worktree, declared_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (project_id, task_id)
+             DO UPDATE SET worktree = excluded.worktree, declared_at = excluded.declared_at",
+            params![
+                project_id.to_string(),
+                task_id.to_string(),
+                worktree.as_str(),
+                text(declared_at)
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
 }
 
 /// Freeze the epic's profile onto one task, or prove the frozen one matches.
@@ -1898,4 +1962,95 @@ fn read_pack(row: &rusqlite::Row<'_>) -> RepositoryResult<RegisteredPack> {
         document_hash,
         registered_at: read_timestamp(&row.get::<_, String>(4).map_err(backend)?)?,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Task worktrees
+// ---------------------------------------------------------------------------
+
+impl SqliteStore {
+    /// Declare, or re-declare, where a task's work happens.
+    ///
+    /// Replaceable until a run has snapshotted it, exactly like the account
+    /// selection: correcting where a task will run is a pre-run decision. What a
+    /// run *did* use is the workspace binding its runtime issued, which lives
+    /// with the run and is never this row.
+    ///
+    /// # Errors
+    /// Refuses a dangling or cross-project task, and a path SQL can see is not
+    /// absolute.
+    pub fn set_task_worktree(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        worktree: &ExternalName,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT worktree FROM task_worktrees WHERE project_id = ?1 AND task_id = ?2",
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if existing.as_deref() == Some(worktree.as_str()) {
+            return Ok(Applied::Unchanged);
+        }
+        let declared_at = text(Timestamp::now());
+        if existing.is_some() {
+            transaction
+                .execute(
+                    "UPDATE task_worktrees SET worktree = ?3, declared_at = ?4
+                     WHERE project_id = ?1 AND task_id = ?2",
+                    params![
+                        project_id.to_string(),
+                        task_id.to_string(),
+                        worktree.as_str(),
+                        declared_at
+                    ],
+                )
+                .map_err(backend)?;
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO task_worktrees (project_id, task_id, worktree, declared_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        project_id.to_string(),
+                        task_id.to_string(),
+                        worktree.as_str(),
+                        declared_at
+                    ],
+                )
+                .map_err(backend)?;
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
+    /// Where a task's work happens, if it has been declared.
+    ///
+    /// `None` means nobody said, which is a refusal to seat rather than a
+    /// licence to invent one: a control plane that guesses a path decides where
+    /// code gets edited by string formatting.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn task_worktree(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<ExternalName>> {
+        let found: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT worktree FROM task_worktrees WHERE project_id = ?1 AND task_id = ?2",
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(found.as_deref().map(ExternalName::parse).transpose()?)
+    }
 }

@@ -1852,6 +1852,27 @@ fn epic_body(
     category: &str,
     tasks: serde_json::Value,
 ) -> serde_json::Value {
+    // Every task gets a worktree unless the caller stated one. A task with no
+    // declared worktree cannot be seated — there is nowhere to prepare its
+    // workspace — so a helper that omitted it would make most of this suite
+    // assert against a graph that could never run.
+    let tasks = tasks
+        .as_array()
+        .expect("a task array")
+        .iter()
+        .enumerate()
+        .map(|(index, task)| {
+            let mut task = task.clone();
+            if task.get("worktree").is_none() {
+                task["worktree"] = serde_json::json!(
+                    format!("/w/{name}/{index}")
+                        .to_lowercase()
+                        .replace(' ', "-")
+                );
+            }
+            task
+        })
+        .collect::<Vec<_>>();
     serde_json::json!({
         "expected_revision": revision,
         "name": name,
@@ -5376,4 +5397,466 @@ async fn a_registration_key_is_bound_to_one_logical_operation() {
     .await;
     assert_eq!(accepted.status, 200, "{}", accepted.body);
     assert_eq!(accepted.json()["applied"], "created");
+}
+
+/// BLK-003. Seat admission used to synthesize `/w/<task_id>` because no field in
+/// the model carried a worktree. A runtime that verifies placement refuses that
+/// root, so no seat could ever bind a native session; one that does not verify
+/// would have run the work in a directory nobody chose. The task now declares
+/// where its work happens, and admission passes exactly that.
+#[tokio::test]
+async fn a_seat_is_prepared_at_the_worktree_the_task_declares() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    // This runtime serves exactly one worktree and refuses every other root —
+    // the shape a real Paseo plane has, and the one the default fake does not.
+    let canonical = "/w/declared-tree";
+    world.fake.verifying_placement_at(
+        kontor_runtime::workspace::WorkspaceRoot::parse(canonical).expect("a valid root"),
+    );
+
+    let created = ensure_project(&world, "worktree", "Kontor", "/tmp/kontor-worktree").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("worktree-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Worktree epic",
+            &category,
+            serde_json::json!([{"title": "Placed task", "worktree": canonical}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("worktree-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        applied.json()["tasks"][0]["worktree"],
+        serde_json::json!(canonical),
+        "the apply reports where the task will run: {}",
+        applied.body
+    );
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    // The projection reports it too, so a Lead can see a task's placement
+    // without having to discover it by failing to seat one.
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        projection.json()["tasks"][0]["worktree"],
+        serde_json::json!(canonical),
+        "{}",
+        projection.body
+    );
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Place the work"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("worktree-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    // The seat is prepared at the declared root, so a placement-verifying
+    // runtime accepts it. Before the model carried the path this call refused.
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("worktree-start")
+    .send(&world)
+    .await;
+    assert_eq!(
+        started.status, 200,
+        "the seat is prepared where the task says it lives: {}",
+        started.body
+    );
+    assert!(
+        !started.json()["started"]
+            .as_array()
+            .expect("seats")
+            .is_empty(),
+        "{}",
+        started.body
+    );
+}
+
+/// The other half of BLK-003: a task nobody placed is refused rather than placed
+/// at a guess, and a task placed somewhere the runtime will not work reports what
+/// actually happened instead of a bare "the runtime refused the operation" —
+/// which is BLK-004.
+#[tokio::test]
+async fn an_unplaced_task_is_refused_and_a_misplaced_one_says_why() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    world.fake.verifying_placement_at(
+        kontor_runtime::workspace::WorkspaceRoot::parse("/w/only-here").expect("a valid root"),
+    );
+
+    let created = ensure_project(&world, "unplaced", "Kontor", "/tmp/kontor-unplaced").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("unplaced-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // Stated with an explicit `null`, so this is a task nobody placed rather
+    // than one the helper placed for us.
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &serde_json::json!({
+            "expected_revision": revision,
+            "name": "Unplaced epic",
+            "work_profile_category": category,
+            "runtime_family": "fake.runtime",
+            "tasks": [{"title": "Nowhere task", "worktree": serde_json::Value::Null}],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("unplaced-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert!(
+        applied.json()["tasks"][0]["worktree"].is_null(),
+        "nobody placed it: {}",
+        applied.body
+    );
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Try to place nothing"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("unplaced-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    // Refused, and refused for the stated reason — never seated at a guessed
+    // path. This is the assertion that makes the placeholder unreachable.
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("unplaced-start")
+    .send(&world)
+    .await;
+    // The batch succeeds and the *task* is reported blocked, which is right: one
+    // task's placement problem is not a reason to fail the others. What matters
+    // is that it was not seated, and that the reason travelled.
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert!(
+        started.json()["started"]
+            .as_array()
+            .expect("seats")
+            .is_empty(),
+        "an unplaced task is never seated at a guessed path: {}",
+        started.body
+    );
+    let blocked = started.json()["blocked"]
+        .as_array()
+        .expect("blocked")
+        .clone();
+    assert_eq!(blocked.len(), 1, "{}", started.body);
+    assert_eq!(blocked[0]["code"], "not_found");
+    assert!(
+        blocked[0]["evidence"][0]["rule"]
+            .as_str()
+            .expect("a rule")
+            .contains("worktree"),
+        "the refusal names what is missing: {}",
+        started.body
+    );
+}
+
+/// BLK-004. A workspace refusal used to fall through the error catch-all and
+/// reach an operator as "the session's runtime refused the operation", with the
+/// runtime's own rule discarded. It is now a named, distinct refusal.
+#[tokio::test]
+async fn a_workspace_refusal_is_reported_as_a_placement_fact() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    world.fake.verifying_placement_at(
+        kontor_runtime::workspace::WorkspaceRoot::parse("/w/the-only-tree").expect("a valid root"),
+    );
+
+    let created = ensure_project(&world, "misplaced", "Kontor", "/tmp/kontor-misplaced").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("misplaced-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // A real path, correctly formed, and simply not the one this runtime serves.
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Misplaced epic",
+            &category,
+            serde_json::json!([{"title": "Elsewhere task", "worktree": "/w/somewhere-else"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("misplaced-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Place it wrong"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("misplaced-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("misplaced-start")
+    .send(&world)
+    .await;
+
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert!(
+        started.json()["started"]
+            .as_array()
+            .expect("seats")
+            .is_empty(),
+        "{}",
+        started.body
+    );
+    let blocked = started.json()["blocked"]
+        .as_array()
+        .expect("blocked")
+        .clone();
+    assert_eq!(blocked.len(), 1, "{}", started.body);
+
+    // The distinguishing assertions: `unsupported_capability`, not the
+    // `unavailable` catch-all a transport failure also produces — so an operator
+    // can tell "this runtime will not work there" from "this runtime could not
+    // be reached" — and a rule that says which of the two it was. Before the
+    // mapping, this arrived as `unavailable` / "the session's runtime refused
+    // the operation", with the runtime's own rule discarded.
+    assert_eq!(blocked[0]["code"], "unsupported_capability");
+    assert!(
+        blocked[0]["evidence"][0]["rule"]
+            .as_str()
+            .expect("a rule")
+            .contains("workspace"),
+        "the refusal is about placement: {}",
+        started.body
+    );
+}
+
+/// FND-002. `bundle_hash` disagreed between a fresh apply and the *same key*
+/// served from the receipt: the two paths built the answer by different routes
+/// and each digested its own shape. They now share one digest by construction.
+#[tokio::test]
+async fn a_receipt_served_replay_returns_the_digest_the_apply_returned() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "receipt", "Kontor", "/tmp/kontor-receipt").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let body = epic_body(
+        revision,
+        "Receipt epic",
+        &category,
+        serde_json::json!([
+            {"title": "First", "ticket_links": [{"connector": "connector.jira",
+                                                 "external_issue_key": "ASMA-1"}]},
+            {"title": "Second", "depends_on": ["First"]}
+        ]),
+    );
+
+    let first = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("receipt-key")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["applied"], "created");
+
+    // The *same* key. This is served from the receipt, by a different code path
+    // than the apply above, which is exactly where the two used to disagree.
+    let replayed = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("receipt-key")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["bundle_hash"],
+        first.json()["bundle_hash"],
+        "a receipt-served replay digests the same graph identically:\nfirst {}\nreplay {}",
+        first.body,
+        replayed.body
+    );
+
+    // And a genuine second application under a *different* key agrees with both,
+    // so all three routes to the same graph produce one digest.
+    let reapplied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("receipt-key-2")
+        .send(&world)
+        .await;
+    assert_eq!(reapplied.status, 200, "{}", reapplied.body);
+    assert_eq!(reapplied.json()["applied"], "unchanged");
+    assert_eq!(
+        reapplied.json()["bundle_hash"],
+        first.json()["bundle_hash"],
+        "{}",
+        reapplied.body
+    );
 }

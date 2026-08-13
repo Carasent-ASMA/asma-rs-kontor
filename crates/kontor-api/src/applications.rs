@@ -269,6 +269,16 @@ pub struct EpicTaskRequest {
     /// The external tickets to link.
     #[serde(default)]
     pub ticket_links: Vec<TicketLinkRequest>,
+    /// The absolute path this task's work happens in.
+    ///
+    /// It is the task's *placement*, and admission has nowhere else to learn it
+    /// from: a seat is a session opened in a directory, and a control plane with
+    /// no field for one either refuses to seat or invents a path — which is
+    /// deciding where code gets edited by string formatting.
+    ///
+    /// Omitting it leaves any previously declared worktree alone rather than
+    /// clearing it. A task that has never had one cannot be seated, and says so.
+    pub worktree: Option<String>,
 }
 
 /// What `epics:apply` is asked for.
@@ -337,6 +347,9 @@ pub struct AppliedTaskDto {
     pub depends_on: Vec<TaskId>,
     /// Its external ticket links.
     pub links: Vec<AppliedLinkDto>,
+    /// Where its work happens, once declared.
+    #[schema(value_type = Option<String>)]
+    pub worktree: Option<ExternalName>,
 }
 
 /// One epic after it was applied.
@@ -415,6 +428,10 @@ pub struct EpicTaskProjectionDto {
     /// Its title.
     #[schema(value_type = String)]
     pub title: ExternalName,
+    /// Where its work happens. `None` is why a task cannot be seated, so it is
+    /// reported rather than left to be discovered at admission.
+    #[schema(value_type = Option<String>)]
+    pub worktree: Option<ExternalName>,
     /// Its lifecycle state.
     pub state: String,
     /// The revision a write must present.

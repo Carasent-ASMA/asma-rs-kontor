@@ -2855,6 +2855,13 @@
           "workflow_id": {
             "type": "string",
             "description": "The workflow that froze the epic's profile onto it."
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where its work happens, once declared."
           }
         }
       },
@@ -3773,6 +3780,13 @@
             "format": "int64",
             "description": "The revision a gate recording must present.\n\nIt is the *workflow's* revision, not the task's: a gate verdict is checked\nagainst the workflow that pins the profile declaring the gate, and the two\naggregates move independently. Reporting it here is what makes the gate\nlist above actionable — a caller that had to guess it would be right only\nuntil the first phase advance.\n\n`None` when the task has no active workflow, which is also when `gates` is\nempty: there is no revision to present because there is nothing to record\na verdict against.",
             "minimum": 0
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where its work happens. `None` is why a task cannot be seated, so it is\nreported rather than left to be discovered at admission."
           }
         }
       },
@@ -3807,6 +3821,13 @@
           "title": {
             "type": "string",
             "description": "The title, which is this task's identity inside the epic."
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The absolute path this task's work happens in.\n\nIt is the task's *placement*, and admission has nowhere else to learn it\nfrom: a seat is a session opened in a directory, and a control plane with\nno field for one either refuses to seat or invents a path — which is\ndeciding where code gets edited by string formatting.\n\nOmitting it leaves any previously declared worktree alone rather than\nclearing it. A task that has never had one cannot be seated, and says so."
           }
         }
       },

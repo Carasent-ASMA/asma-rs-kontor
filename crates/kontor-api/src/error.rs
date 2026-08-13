@@ -19,6 +19,7 @@ use kontor_core::repository::RepositoryError;
 use kontor_core::{DomainError, closed_enum};
 use kontor_runtime::adapter::RuntimeError;
 use serde::Serialize;
+use tracing::warn;
 use utoipa::ToSchema;
 
 closed_enum! {
@@ -289,12 +290,41 @@ impl ApiError {
                 ApiErrorCode::Unavailable,
                 "the session's runtime could not be reached",
             ),
+            // A workspace refusal is a *placement* fact, not a channel fact: the
+            // runtime answered, and what it said is that the root it was handed
+            // is not one it will work in. Letting it fall to the catch-all below
+            // reported it as "refused the operation" with the rule discarded and
+            // nothing logged, which is what made this class of defect cost a
+            // source read and an experiment to diagnose.
+            RuntimeError::WorkspaceMismatch { rule } => {
+                warn!(
+                    realm_id = %realm_id,
+                    rule = %rule,
+                    "runtime refused the workspace this realm asked for"
+                );
+                Self::new(
+                    realm_id,
+                    ApiErrorCode::UnsupportedCapability,
+                    "the runtime will not work in the workspace this realm asked for",
+                )
+            }
             RuntimeError::Domain(domain) => Self::from_domain(realm_id, domain),
-            _ => Self::new(
-                realm_id,
-                ApiErrorCode::Unavailable,
-                "the session's runtime refused the operation",
-            ),
+            // Whatever is left is genuinely unclassified, and it says so in the
+            // log rather than only in the answer: an operator who sees this
+            // refusal and finds nothing written down has to read the adapter
+            // source to learn what happened.
+            other => {
+                warn!(
+                    realm_id = %realm_id,
+                    detail = %other,
+                    "runtime refused an operation with no mapped refusal"
+                );
+                Self::new(
+                    realm_id,
+                    ApiErrorCode::Unavailable,
+                    "the session's runtime refused the operation",
+                )
+            }
         }
     }
 

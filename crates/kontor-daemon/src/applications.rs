@@ -91,8 +91,8 @@ use kontor_scheduler::model::{
     ReconciliationScope, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
 };
 use kontor_store::{
-    AdmissionCommit, Applied, AppliedEpic, AuthorizationRevocation, EpicApplication, EpicTask,
-    EpicTicketLink, IdempotencyBinding, ProjectEnsure, RegisteredPack, SqliteStore, StoredConflict,
+    AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication, EpicTask, EpicTicketLink,
+    IdempotencyBinding, ProjectEnsure, RegisteredPack, SqliteStore, StoredConflict,
 };
 use kontor_teams::run::{TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 
@@ -290,6 +290,9 @@ impl Services {
             let links = state
                 .with_store(|store| store.list_task_ticket_links(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?;
+            let worktree = state
+                .with_store(|store| store.task_worktree(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?;
             applied.push(AppliedTaskDto {
                 title: task.title.clone(),
                 task_id: task.id,
@@ -312,9 +315,10 @@ impl Services {
                         applied: AppliedDto::Unchanged,
                     })
                     .collect(),
+                worktree,
             });
         }
-        Ok(AppliedEpicDto {
+        self.sealed(AppliedEpicDto {
             realm_id: state.realm_id(),
             project_id,
             epic_id,
@@ -328,7 +332,11 @@ impl Services {
                 id: team.template_id.to_string(),
                 version: team.version,
             }),
-            bundle_hash: bundle.bundle_hash.as_str().to_owned(),
+            // Sealed below, from the finished shape, exactly as the fresh apply
+            // is. Reporting the resolved bundle's digest here is what made a
+            // receipt-served replay of an unchanged graph disagree with the
+            // apply that created it.
+            bundle_hash: String::new(),
             tasks: applied,
         })
     }
@@ -570,6 +578,31 @@ impl Services {
         Ok(self.connectors.get_or_init(|| catalog))
     }
 
+    /// The root a task's workspace is prepared at.
+    ///
+    /// It is read from the task's declared worktree and from nowhere else.
+    /// Before this existed, admission synthesized `/w/<task_id>` — a path that
+    /// names a real task and no real directory — because the model carried no
+    /// worktree at all. A runtime that verifies placement refused it; one that
+    /// did not would have run the work in a directory nobody chose.
+    ///
+    /// A task with no declared worktree is refused rather than placed at a
+    /// guess. There is no safe default: the whole point of the field is that
+    /// only the operator knows where this task's tree is.
+    fn task_root(&self, project_id: ProjectId, task_id: TaskId) -> Result<WorkspaceRoot, ApiError> {
+        let state = self.state()?;
+        let declared = state
+            .with_store(|store| store.task_worktree(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this task declares no worktree, so there is nowhere to prepare its workspace",
+                )
+            })?;
+        WorkspaceRoot::parse(declared.as_str()).map_err(|error| self.refuse_domain(&error))
+    }
+
     /// Read one task row, refusing an id that is not in this project.
     fn task_row(
         &self,
@@ -807,8 +840,15 @@ impl Services {
     /// and team revisions, and every task's identity, title, state, revision,
     /// dependency set and ticket links. Dependencies arrive as a `BTreeSet` and
     /// links are sorted here, so a re-derivation cannot differ by ordering.
-    fn graph_digest(&self, applied: &AppliedEpic) -> Result<String, ApiError> {
-        let tasks: Vec<serde_json::Value> = applied
+    /// It takes the finished [`AppliedEpicDto`] rather than the store's
+    /// `AppliedEpic`, and that is the fix for the second half of this defect. A
+    /// fresh apply and a receipt-served replay build the same DTO by different
+    /// routes — one from what the transaction wrote, one from what the store
+    /// holds — and while each computed its own digest from its own shape, the
+    /// two could disagree without either being wrong on its own terms. One
+    /// function over one shape makes that structurally impossible.
+    fn graph_digest(&self, epic: &AppliedEpicDto) -> Result<String, ApiError> {
+        let tasks: Vec<serde_json::Value> = epic
             .tasks
             .iter()
             .map(|task| {
@@ -818,32 +858,41 @@ impl Services {
                     .map(|link| format!("{}\u{1f}{}", link.connector, link.external_issue_key))
                     .collect();
                 links.sort();
+                let mut depends_on: Vec<String> =
+                    task.depends_on.iter().map(ToString::to_string).collect();
+                depends_on.sort();
                 serde_json::json!({
                     "task_id": task.task_id.to_string(),
                     "title": task.title.as_str(),
-                    "state": task.state.as_str(),
+                    "state": task.state,
                     "revision": task.revision.get(),
-                    "depends_on": task
-                        .depends_on
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>(),
+                    "depends_on": depends_on,
                     "links": links,
                 })
             })
             .collect();
         let document = self.intent(&serde_json::json!({
             "schema_version": 1,
-            "epic_id": applied.mini_project_id.to_string(),
-            "revision": applied.revision.get(),
-            "work_profile": [applied.profile.0.as_str(), applied.profile.1.get()],
-            "team_template": applied
-                .team
+            "epic_id": epic.epic_id.to_string(),
+            "revision": epic.revision.get(),
+            "work_profile": [epic.work_profile.id.as_str(), epic.work_profile.version.get()],
+            "team_template": epic
+                .team_template
                 .as_ref()
-                .map(|(id, version)| serde_json::json!([id.to_string(), version.get()])),
+                .map(|team| serde_json::json!([team.id.as_str(), team.version.get()])),
             "tasks": tasks,
         }))?;
         Ok(document.hash().as_str().to_owned())
+    }
+
+    /// Fill in an epic answer's digest, whichever path built it.
+    ///
+    /// Both callers construct the whole DTO with an empty `bundle_hash` and hand
+    /// it here. There is no route by which one of them computes a digest the
+    /// other would not.
+    fn sealed(&self, mut epic: AppliedEpicDto) -> Result<AppliedEpicDto, ApiError> {
+        epic.bundle_hash = self.graph_digest(&epic)?;
+        Ok(epic)
     }
 
     /// Record one command intent and return its receipt.
@@ -1839,12 +1888,29 @@ impl ApplicationOperations for Services {
                         .map_err(|error| self.refuse_domain(&error))?,
                 });
             }
+            // Parsed here, where `WorkspaceRoot` exists, and stored as the
+            // `ExternalName` it wraps. `kontor-core` cannot depend on
+            // `kontor-runtime`, so the path's rules — absolute, no `.`, no `..`,
+            // no repeated separators — are enforced at this boundary and the
+            // store holds a value already known to satisfy them.
+            let worktree = task
+                .worktree
+                .as_deref()
+                .map(|root| {
+                    WorkspaceRoot::parse(root)
+                        .map(|root| ExternalName::parse(root.as_str()))
+                        .map_err(|error| self.refuse_domain(&error))
+                })
+                .transpose()?
+                .transpose()
+                .map_err(|error| self.refuse_domain(&error))?;
             tasks.push(EpicTask {
                 title: task.title.clone(),
                 module,
                 state: TaskState::Ready,
                 depends_on: task.depends_on.clone(),
                 ticket_links: links,
+                worktree,
             });
         }
 
@@ -1880,8 +1946,7 @@ impl ApplicationOperations for Services {
         // Digested from what was *stored*, not from what resolved it. The
         // resolved bundle's own digest covers `resolved_at`, so returning it here
         // made an unchanged reapply look like drift on every replay.
-        let graph_digest = self.graph_digest(&applied)?;
-        Ok(AppliedEpicDto {
+        self.sealed(AppliedEpicDto {
             realm_id: state.realm_id(),
             project_id,
             epic_id: applied.mini_project_id,
@@ -1895,7 +1960,7 @@ impl ApplicationOperations for Services {
                 id: id.to_string(),
                 version,
             }),
-            bundle_hash: graph_digest,
+            bundle_hash: String::new(),
             tasks: applied
                 .tasks
                 .into_iter()
@@ -1907,6 +1972,7 @@ impl ApplicationOperations for Services {
                     revision: task.revision,
                     workflow_id: task.workflow_id.to_string(),
                     depends_on: task.depends_on.into_iter().collect(),
+                    worktree: task.worktree,
                     links: task
                         .links
                         .into_iter()
@@ -2055,9 +2121,13 @@ impl ApplicationOperations for Services {
                         .collect(),
                 });
             }
+            let worktree = state
+                .with_store(|store| store.task_worktree(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?;
             projected.push(EpicTaskProjectionDto {
                 task_id: task.id,
                 title: task.title.clone(),
+                worktree,
                 state: task.state.as_str().to_owned(),
                 revision: task.revision,
                 module: task.module.as_ref().map(|key| key.as_str().to_owned()),
@@ -2598,8 +2668,12 @@ impl ApplicationOperations for Services {
                     "a context snapshot belongs to a run, and this task has none",
                 )
             })?;
+            // The task's declared worktree, not a synthesized one: a frozen
+            // context pack that named a directory nobody chose would be evidence
+            // about a place the run never worked in.
+            let root = self.task_root(project_id, task_id)?;
             let workspace = kontor_context::model::WorkspaceRef {
-                root: kontor_core::id::BoundedText::parse(&format!("/w/{task_id}"))
+                root: kontor_core::id::BoundedText::parse(root.as_str())
                     .map_err(|error| self.refuse_domain(&error))?,
                 branch: ExternalName::parse("main").map_err(|error| self.refuse_domain(&error))?,
                 baseline_commit: ExternalId::parse(pack.hash().as_str())
@@ -4304,8 +4378,7 @@ impl Services {
                 team_run_id,
                 task_id: admitted.task_id,
                 workspace_binding_id: WorkspaceBindingId::generate(),
-                root: WorkspaceRoot::parse(&format!("/w/{}", admitted.task_id))
-                    .map_err(|error| self.refuse_domain(&error))?,
+                root: self.task_root(project_id, admitted.task_id)?,
                 requested_at: now,
             })
             .await
@@ -4480,8 +4553,7 @@ impl Services {
                 team_run_id,
                 task_id: admitted.task_id,
                 workspace_binding_id: WorkspaceBindingId::generate(),
-                root: WorkspaceRoot::parse(&format!("/w/{}", admitted.task_id))
-                    .map_err(|error| self.refuse_domain(&error))?,
+                root: self.task_root(project_id, admitted.task_id)?,
                 requested_at: now,
             })
             .await

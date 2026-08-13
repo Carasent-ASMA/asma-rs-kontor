@@ -403,6 +403,8 @@ struct FakeState {
     /// Whether this runtime holds a plane-level container, and whether it has
     /// been prepared yet.
     plane: PlaneRequirement,
+    /// The one root this runtime will work in, when it verifies placement.
+    canonical_root: Option<WorkspaceRoot>,
     runtime_kind: RuntimeKindKey,
     host: ExternalName,
     generation: u64,
@@ -739,6 +741,7 @@ impl ScriptedFakeRuntime {
         Self {
             state: Mutex::new(FakeState {
                 plane: PlaneRequirement::NotRequired,
+                canonical_root: None,
                 runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("valid runtime kind"),
                 host: ExternalName::parse("fake-host").expect("valid host name"),
                 generation: 1,
@@ -775,6 +778,15 @@ impl ScriptedFakeRuntime {
         let fake = Self::new(capabilities);
         fake.lock().plane = PlaneRequirement::Unprepared;
         fake
+    }
+
+    /// Make this runtime verify *where* it is asked to work.
+    ///
+    /// A real plane serves one canonical worktree and refuses any other root.
+    /// The default fake accepts anything, which is exactly why a control plane
+    /// could synthesize a placeholder path and no in-process test noticed.
+    pub fn verifying_placement_at(&self, root: WorkspaceRoot) {
+        self.lock().canonical_root = Some(root);
     }
 
     /// Forget that the plane was ever prepared.
@@ -1170,6 +1182,15 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     ) -> RuntimeResult<WorkspaceOutcome> {
         let mut state = self.lock();
         state.require_plane()?;
+        // The same refusal a real plane raises, for the same reason: a root that
+        // is not this runtime's canonical worktree is a place it will not edit.
+        if let Some(canonical) = &state.canonical_root
+            && &request.root != canonical
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the requested root is not the canonical task worktree of this plane",
+            });
+        }
         // A repeated preparation is governed by the snapshot it will return,
         // exactly as a bound session operation is governed by its own binding.
         // A retry after a lost answer must not start failing because the
