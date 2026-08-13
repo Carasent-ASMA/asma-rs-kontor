@@ -58,7 +58,9 @@ pub(crate) fn parse_kontor_uuid(subject: &'static str, text: &str) -> DomainResu
 /// never be parsed into one. That is the structural half of "native ids never
 /// replace Kontor ids"; [`crate::observation::CorrelationEvidence::establish`]
 /// is the behavioral half.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct CorrelationLabel(AgentRunId);
 
 impl CorrelationLabel {

@@ -2239,6 +2239,52 @@ impl RuntimeAdapter for PaseoAdapter {
     /// The rename-pending outcome is deliberately *not* an error. A display
     /// string that drifted is not authority, the binding it carries is usable
     /// exactly as it is, and refusing here would shut scheduling over a label.
+    /// Confirm each snapshot's session is still there in the same generation,
+    /// then re-record it verbatim.
+    ///
+    /// Verbatim is the whole property. The trust grade, the limits, the
+    /// correlation and the native identity all come out of the persisted
+    /// snapshot; the live census is consulted only to answer *does this session
+    /// still exist here?*. Rebuilding capabilities from a fresh
+    /// `discover_capabilities` would re-grade a binding whose session never
+    /// changed, which is precisely what the freeze rule exists to stop.
+    async fn restore_bindings(
+        &self,
+        snapshots: &[RuntimeBindingSnapshot],
+    ) -> RuntimeResult<Vec<RuntimeBindingSnapshot>> {
+        if snapshots.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Two independent sources of runtime truth, both read before anything is
+        // recorded: what sessions this daemon actually holds right now, and what
+        // this runtime can currently prove.
+        let live = self.discover_sessions().await?;
+        let declared = self.declared().await?;
+        let mut restored = Vec::new();
+        let mut state = self.lock();
+        for snapshot in snapshots {
+            match attest_restored(snapshot, &live, &declared) {
+                Ok(()) => {
+                    state.bindings.record(snapshot.clone());
+                    restored.push(snapshot.clone());
+                }
+                // Refused, and said so. A claim this runtime cannot attest is
+                // never silently dropped: it is named here and reported as an
+                // `Unattested` finding by the census that follows, because a
+                // binding nothing ever reviews is how a forged one survives.
+                Err(error) => {
+                    tracing::warn!(
+                        binding = %snapshot.binding_id(),
+                        agent_run = %snapshot.agent_run_id(),
+                        detail = %error,
+                        "refused to restore a binding this runtime cannot attest"
+                    );
+                }
+            }
+        }
+        Ok(restored)
+    }
+
     async fn prepare_plane(&self) -> RuntimeResult<()> {
         self.prepare_project(&self.plane_command_id()).await?;
         Ok(())
@@ -3340,4 +3386,55 @@ pub const fn decision_body(decision: PermissionDecision) -> &'static str {
         PermissionDecision::Allow => "allow",
         PermissionDecision::Deny => "deny",
     }
+}
+
+/// Attest one persisted claim against what this runtime independently knows.
+///
+/// # What the runtime can still source after a restart, and what it cannot
+///
+/// The registry that recorded what this adapter issued lives in adapter memory
+/// and is rebuilt empty on every daemon start, so there is no stored copy of the
+/// issued bytes left to compare against. What the *live daemon* can still answer
+/// independently is checked here, and nothing is recorded until all of it holds:
+///
+/// * **whole native identity** — runtime kind, host, generation and native id.
+///   A repeated native id in a new generation is a different session.
+/// * **the session's own correlation** — the live session must itself report the
+///   Kontor label of the run the claim names. This is what refuses a forged but
+///   self-consistent claim: an attacker can write any `agent_run_id` into a
+///   stored document, and cannot make a running session report a label it does
+///   not carry.
+/// * **internal consistency** — the correlation travelling inside the snapshot
+///   must be evidence *for that snapshot*.
+/// * **a capability upper bound** — a claim may be weaker than the live runtime
+///   and never stronger, so one asserting a grade, capability or limit beyond
+///   what this runtime declares today was never issued by it.
+///
+/// What it cannot prove is a claim tampered *within* what the runtime can
+/// currently do — downgrading a limit, or promoting a grade the runtime already
+/// declares. Detecting that needs a runtime-side durable record of the issued
+/// bytes, which this adapter has nowhere to keep. The bound above is deliberately
+/// one-directional so the dangerous direction — claiming more authority than the
+/// runtime has — is the one that is refused.
+fn attest_restored(
+    snapshot: &RuntimeBindingSnapshot,
+    live: &[NativeSession],
+    declared: &RuntimeCapabilities,
+) -> RuntimeResult<()> {
+    snapshot.ensure_correlated()?;
+    let session = live
+        .iter()
+        .find(|session| &session.identity == snapshot.identity())
+        .ok_or(RuntimeError::StaleBinding {
+            rule: "this runtime holds no session with that native identity in this generation",
+        })?;
+    if session.correlation != Some(CorrelationLabel::for_run(snapshot.agent_run_id())) {
+        return Err(RuntimeError::CorrelationFailed);
+    }
+    if !snapshot.within(declared) {
+        return Err(RuntimeError::StaleBinding {
+            rule: "the claim asserts capability this runtime cannot currently prove",
+        });
+    }
+    Ok(())
 }

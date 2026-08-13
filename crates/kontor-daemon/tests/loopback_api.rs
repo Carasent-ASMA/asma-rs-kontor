@@ -31,6 +31,8 @@
 
 mod harness;
 
+use std::sync::Arc;
+
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
@@ -5859,4 +5861,380 @@ async fn a_receipt_served_replay_returns_the_digest_the_apply_returned() {
         "{}",
         reapplied.body
     );
+}
+
+/// BLK-006. A session bound before a restart could not be operated after one.
+/// The binding survived, the native session survived, and every session
+/// operation refused `stale_binding` — the frozen capability snapshot lived only
+/// in process memory, and startup reconciliation censused the same empty
+/// registry, so it re-attested nothing.
+///
+/// The snapshot is now persisted and handed back to the issuing runtime at
+/// startup, which confirms the session and re-records the snapshot *verbatim*.
+#[tokio::test]
+async fn a_session_bound_before_a_restart_is_operable_after_it() {
+    let world = World::open().await;
+    let (run, bound) = world.launch().await;
+    world.script(HISTORY_LIVE);
+
+    // Operable before the restart, so the assertion after it is about the
+    // restart and not about the session having never worked.
+    let before = Call::get(format!("/v1/sessions/{run}/timeline"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(before.status, 200, "{}", before.body);
+
+    let realm_before = world.realm_id();
+    let observer = secret(&world, "observer");
+    let World {
+        directory,
+        daemon,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(daemon);
+
+    // The runtime outlives the control plane — which is the real shape of this:
+    // Paseo keeps running while kontord restarts. The *same* fake is registered
+    // with the new daemon, still holding the same native session.
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same state root reopens");
+    assert_eq!(restarted.realm_id(), realm_before);
+
+    // A fresh process holds nothing until it asks the runtime.
+    assert!(
+        restarted.state().sessions().is_empty(),
+        "a restarted process starts with no frozen snapshots"
+    );
+
+    assert_eq!(
+        restarted.reconcile().await,
+        BarrierState::Open,
+        "the restart's census completes"
+    );
+
+    // The binding is held again, and it is the *same* binding: same id, same
+    // native session, same generation, same trust grade. Re-attestation
+    // re-records what was issued; it does not re-derive it.
+    let restored = restarted
+        .state()
+        .sessions()
+        .get(bound.binding_id())
+        .expect("the runtime re-attested the binding this realm held");
+    assert_eq!(
+        restored, bound,
+        "a re-attested binding is the one that was issued, whole"
+    );
+    assert_eq!(restored.identity(), bound.identity(), "same native session");
+    assert_eq!(
+        restored.capabilities.trust_grade, bound.capabilities.trust_grade,
+        "the binding is not re-graded across a restart"
+    );
+
+    // The operability proof: the pre-restart session answers through the new
+    // process. This refused `409 stale_binding` before.
+    let router = restarted.router();
+    let after = Call::get(format!("/v1/sessions/{run}/timeline"))
+        .with_token(&observer)
+        .send_to(&router)
+        .await;
+    assert_eq!(
+        after.status, 200,
+        "a session bound before the restart is operable after it: {}",
+        after.body
+    );
+
+    // And it is the same session's content, not a new one: the run addressed is
+    // the run that was bound.
+    assert_eq!(
+        after.json()["agent_run_id"],
+        serde_json::json!(run.to_string()),
+        "{}",
+        after.body
+    );
+
+    restarted.state().signals().stop();
+    drop(directory);
+}
+
+/// The other half of the rule: a binding whose native session did *not* survive
+/// is not restored, and is not operable. Re-attestation asks the runtime; it does
+/// not assume a persisted claim is still true.
+#[tokio::test]
+async fn a_binding_whose_session_is_gone_is_not_restored() {
+    let world = World::open().await;
+    let (run, bound) = world.launch().await;
+
+    let observer = secret(&world, "observer");
+    let World {
+        directory,
+        daemon,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(daemon);
+
+    // The runtime moved to a new generation while the control plane was down. A
+    // repeated native id in a new generation is a different session, so the old
+    // binding must not come back pointing at whatever now answers to it.
+    fake.restart();
+
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same state root reopens");
+    restarted.reconcile().await;
+
+    assert!(
+        restarted
+            .state()
+            .sessions()
+            .get(bound.binding_id())
+            .is_none(),
+        "a binding whose session did not survive is not re-attested"
+    );
+
+    let router = restarted.router();
+    let after = Call::get(format!("/v1/sessions/{run}/timeline"))
+        .with_token(&observer)
+        .send_to(&router)
+        .await;
+    assert_eq!(
+        after.status, 409,
+        "and it is not operable, which is the honest answer: {}",
+        after.body
+    );
+    assert_eq!(after.code(), "stale_binding");
+
+    restarted.state().signals().stop();
+    drop(directory);
+}
+
+/// Persist a claim under `binding_id` without any runtime having issued it.
+///
+/// This is the forger's position exactly: write to the store, restart, and see
+/// whether the control plane hands the session over on the strength of the row.
+fn plant_claim(daemon: &Daemon, snapshot: &kontor_runtime::capability::RuntimeBindingSnapshot) {
+    let document = serde_json::to_string(snapshot).expect("the snapshot serializes");
+    daemon.state().with_store(|store| {
+        store
+            .persist_binding_snapshot(snapshot.binding_id(), snapshot.agent_run_id(), &document)
+            .expect("the claim is persisted");
+    });
+}
+
+/// A claim naming a session this runtime does not have is refused, however
+/// self-consistent it is.
+///
+/// The forgery is a *good* one: valid JSON, a correlation that agrees with its
+/// own run, capabilities within what the runtime declares. Only the runtime's own
+/// census can tell that no such session exists, which is the point — the row is a
+/// claim, and the runtime is the authority.
+#[tokio::test]
+async fn a_forged_but_self_consistent_claim_is_not_restored() {
+    let world = World::open().await;
+    let (_, bound) = world.launch().await;
+
+    // The claim for a *real, open* binding is rewritten in the store to hand
+    // its session to a different run. Keeping the binding id is what makes this
+    // a test of attestation: the daemon only presents claims for bindings it
+    // durably holds, so a forged binding id never reaches the runtime at all and
+    // would prove nothing. Session existence, generation and capability bounds
+    // all pass here; only the live session's own ownership can refuse it.
+    let forged_run = AgentRunId::generate();
+    let mut forged = bound.clone();
+    forged.binding.agent_run_id = forged_run;
+    forged.correlation = kontor_runtime::observation::CorrelationEvidence::establish(
+        forged_run,
+        &kontor_runtime::request::CorrelationLabel::for_run(forged_run).to_string(),
+        forged.binding.identity.clone(),
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("the forgery is internally consistent");
+    assert_eq!(
+        forged.identity(),
+        bound.identity(),
+        "the forgery names a session the runtime really has"
+    );
+    // It passes the snapshot's own consistency check, which is exactly why that
+    // check alone was never enough.
+    assert!(
+        forged.ensure_correlated().is_ok(),
+        "the forgery is self-consistent"
+    );
+    plant_claim(&world.daemon, &forged);
+
+    let World {
+        directory,
+        daemon,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(daemon);
+
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same state root reopens");
+    restarted.reconcile().await;
+
+    assert!(
+        restarted
+            .state()
+            .sessions()
+            .get(forged.binding_id())
+            .is_none(),
+        "a claim handing a live session to a run that does not own it is refused"
+    );
+
+    restarted.state().signals().stop();
+    drop(directory);
+}
+
+/// A claim tampered to assert more authority than the runtime has is refused.
+///
+/// The dangerous direction is promotion: a binding frozen at a degraded grade
+/// being handed back as a trusted one. A claim may be weaker than the live
+/// runtime and never stronger, so the runtime refuses one that exceeds what it
+/// can currently prove.
+#[tokio::test]
+async fn a_claim_that_exceeds_what_the_runtime_can_prove_is_not_restored() {
+    let world = World::open_with(capabilities_without(&[
+        kontor_runtime::capability::RuntimeCapability::Compact,
+    ]))
+    .await;
+    let (run, bound) = world.launch().await;
+
+    // Tampered in the store after the fact: the same binding, the same session,
+    // with a capability the runtime does not declare written into it.
+    let mut tampered = bound.clone();
+    tampered
+        .capabilities
+        .supported
+        .insert(kontor_runtime::capability::RuntimeCapability::Compact);
+    assert!(
+        !tampered.within(&world.fake.capabilities()),
+        "the tampering claims more than the runtime declares"
+    );
+    plant_claim(&world.daemon, &tampered);
+
+    let observer = secret(&world, "observer");
+    let World {
+        directory,
+        daemon,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(daemon);
+
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same state root reopens");
+    restarted.reconcile().await;
+
+    assert!(
+        restarted
+            .state()
+            .sessions()
+            .get(bound.binding_id())
+            .is_none(),
+        "a claim asserting capability the runtime cannot prove is not restored"
+    );
+
+    // And it is not operable either: refusing to restore is not cosmetic.
+    let router = restarted.router();
+    let after = Call::get(format!("/v1/sessions/{run}/timeline"))
+        .with_token(&observer)
+        .send_to(&router)
+        .await;
+    assert_eq!(after.status, 409, "{}", after.body);
+    assert_eq!(after.code(), "stale_binding");
+
+    restarted.state().signals().stop();
+    drop(directory);
+}
+
+/// A persisted claim that will not parse fails the startup census loudly rather
+/// than disappearing from it.
+///
+/// Silently skipping the row is the quietest possible way to lose a live
+/// session: every later census would be taken over a set the binding is simply
+/// absent from, which is indistinguishable from never having had one.
+#[tokio::test]
+async fn an_unreadable_binding_claim_shuts_scheduling_rather_than_vanishing() {
+    let world = World::open().await;
+    let (_, bound) = world.launch().await;
+
+    // A row that is valid JSON and not a snapshot — corruption, a partial write,
+    // or a schema this binary no longer understands.
+    world.daemon.state().with_store(|store| {
+        store
+            .persist_binding_snapshot(
+                bound.binding_id(),
+                bound.agent_run_id(),
+                "{\"schema_version\":1,\"not\":\"a snapshot\"}",
+            )
+            .expect("the row is written");
+    });
+
+    let World {
+        directory,
+        daemon,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(daemon);
+
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same state root reopens");
+
+    assert_eq!(
+        restarted.reconcile().await,
+        BarrierState::Failed,
+        "an unreadable claim shuts scheduling instead of being skipped"
+    );
+    let health = Call::get("/v1/health")
+        .with_token(secret_from(&state_root, "observer"))
+        .send_to(&restarted.router())
+        .await;
+    assert_eq!(health.json()["scheduling_open"], serde_json::json!(false));
+
+    restarted.state().signals().stop();
+    drop(directory);
 }

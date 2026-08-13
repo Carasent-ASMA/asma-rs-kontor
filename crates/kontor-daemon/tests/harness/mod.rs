@@ -373,8 +373,22 @@ impl World {
                 })
                 .expect("the run and its binding are persisted");
         });
-        // What a launch path does last: hand the frozen snapshot to the process so
-        // the session can be addressed at the evidence quality it was bound at.
+        // What a launch path does last, and it is two things rather than one:
+        // hand the frozen snapshot to this process so the session can be
+        // addressed at the evidence quality it was bound at, *and* persist it so
+        // the next process can present it to the runtime for re-attestation.
+        // Recording only the first is what left a live session unusable after a
+        // restart.
+        let document = serde_json::to_string(&outcome.snapshot).expect("the snapshot serializes");
+        self.daemon.state().with_store(|store| {
+            store
+                .persist_binding_snapshot(
+                    outcome.snapshot.binding_id(),
+                    outcome.snapshot.agent_run_id(),
+                    &document,
+                )
+                .expect("the snapshot is persisted");
+        });
         self.daemon
             .state()
             .sessions()

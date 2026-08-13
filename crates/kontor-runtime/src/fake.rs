@@ -1165,6 +1165,53 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(state.capabilities.clone())
     }
 
+    /// Re-record each snapshot whose session this fake still holds, verbatim.
+    ///
+    /// The same rule the real adapter keeps: the live census answers only
+    /// *does this session still exist here?*, and everything else comes out of
+    /// the persisted snapshot. A fake that rebuilt capabilities here would let a
+    /// re-grading bug pass its own restart test.
+    async fn restore_bindings(
+        &self,
+        snapshots: &[RuntimeBindingSnapshot],
+    ) -> RuntimeResult<Vec<RuntimeBindingSnapshot>> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        let mut restored = Vec::new();
+        for snapshot in snapshots {
+            let identity = snapshot.identity();
+            // The same four checks the real adapter makes, in the same order, so
+            // a test written against this fake proves something about that one.
+            if snapshot.ensure_correlated().is_err() {
+                continue;
+            }
+            // Whole native identity: a repeated native id in a new generation is
+            // a different session.
+            let Some(session) = state.sessions.get(&identity.native_id) else {
+                continue;
+            };
+            if identity.generation != generation {
+                continue;
+            }
+            // The live session's *own* correlation. This is what refuses a
+            // forged but self-consistent claim: a stored document can name any
+            // run, and cannot make a running session belong to it.
+            if session.agent_run_id != snapshot.agent_run_id() {
+                continue;
+            }
+            // A claim may be weaker than the live runtime and never stronger.
+            if !snapshot.within(&declared) {
+                continue;
+            }
+            state
+                .bindings
+                .insert(snapshot.binding_id(), snapshot.clone());
+            restored.push(snapshot.clone());
+        }
+        Ok(restored)
+    }
+
     async fn prepare_plane(&self) -> RuntimeResult<()> {
         let mut state = self.lock();
         state.calls.push(AdapterCall::PreparePlane);

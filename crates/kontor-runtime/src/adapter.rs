@@ -298,6 +298,45 @@ pub trait RuntimeAdapter: Send + Sync {
         Ok(())
     }
 
+    /// Take back into this runtime's own registry the bindings a previous
+    /// process issued, so a restart does not orphan a live session.
+    ///
+    /// A binding's authority comes from the issuing runtime's copy of it
+    /// ([`crate::capability::IssuedBindingRegistry`]), and that copy lives in the
+    /// adapter's memory. After a restart the registry is empty, so every binding
+    /// the realm still holds is unattestable — the session is alive, Kontor knows
+    /// its identity, and nothing can operate it. This is the path back.
+    ///
+    /// **It re-records, it does not re-grade.** An implementation confirms the
+    /// native session named by each snapshot is still there in the same
+    /// generation, and then records *that snapshot, verbatim*: the trust grade,
+    /// the limits, the correlation and the native identity are the ones the
+    /// original binding was issued under, not ones re-derived from a fresh
+    /// discovery. Re-deriving them would be exactly the re-grading the freeze
+    /// rule forbids — a session bound at grade C would come back as A because the
+    /// runtime happens to answer better today.
+    ///
+    /// A snapshot whose session is gone, or whose generation has moved, is
+    /// **not** restored: a repeated native id in a new generation is a different
+    /// session. Those are omitted from the answer rather than reported as errors,
+    /// because a binding that did not survive is a reconciliation finding and not
+    /// a failure of this call.
+    ///
+    /// The default restores nothing, which is the old behaviour: a runtime that
+    /// cannot confirm its sessions across a restart must not pretend it can.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::Transport`] when the runtime could not be reached
+    /// at all. Being unable to confirm *any* session is a fact about the channel,
+    /// and is different from confirming that none survived.
+    async fn restore_bindings(
+        &self,
+        snapshots: &[RuntimeBindingSnapshot],
+    ) -> RuntimeResult<Vec<RuntimeBindingSnapshot>> {
+        let _ = snapshots;
+        Ok(Vec::new())
+    }
+
     /// Make a team run's task workspace exist and be usable.
     ///
     /// This is **idempotent** per team run: preparing the same team run's

@@ -160,7 +160,7 @@ impl ControlPlaneObservation {
 }
 
 /// Proof that a native session belongs to the run that asked for it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CorrelationEvidence {
     /// The Kontor label the runtime reported back.
     pub label: CorrelationLabel,

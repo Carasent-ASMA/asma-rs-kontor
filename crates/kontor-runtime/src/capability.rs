@@ -265,7 +265,7 @@ impl RuntimeCapabilities {
 /// The `capabilities` field is a *frozen copy*: the binding keeps answering with
 /// what the runtime could prove when the session was bound, whatever a later
 /// discovery reports.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeBindingSnapshot {
     /// The KON-MVP-03 binding between an agent run and a native session.
     pub binding: RuntimeBinding,
@@ -276,6 +276,32 @@ pub struct RuntimeBindingSnapshot {
 }
 
 impl RuntimeBindingSnapshot {
+    /// Whether this snapshot claims nothing the runtime cannot currently prove.
+    ///
+    /// The freeze rule says a binding keeps what the runtime could prove *then*,
+    /// which may be **less** than it can prove now — a binding is allowed to be
+    /// weaker than the live runtime and never stronger. So this is a
+    /// one-directional bound, and it is the only statement about frozen
+    /// capabilities a runtime can still make once the registry that recorded
+    /// them is gone: a claim asserting a grade, a capability or a limit beyond
+    /// what the runtime declares today was never issued by it.
+    ///
+    /// It refuses; it never rewrites. Narrowing a claim to fit would be the
+    /// re-grading the freeze rule forbids, wearing a different hat.
+    #[must_use]
+    pub fn within(&self, declared: &RuntimeCapabilities) -> bool {
+        declared.trust_grade.at_least(self.capabilities.trust_grade)
+            && self
+                .capabilities
+                .supported
+                .iter()
+                .all(|capability| declared.supports(*capability))
+            && self.capabilities.limits.max_message_bytes <= declared.limits.max_message_bytes
+            && self.capabilities.limits.max_history_page <= declared.limits.max_history_page
+            && self.capabilities.limits.max_concurrent_sessions
+                <= declared.limits.max_concurrent_sessions
+    }
+
     /// The Kontor run this binding serves.
     #[must_use]
     pub const fn agent_run_id(&self) -> AgentRunId {

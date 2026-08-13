@@ -81,7 +81,7 @@ use kontor_profiles::pack::{
     resolve_profile, validate_pack,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
-use kontor_runtime::capability::RuntimeCapability;
+use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::request::LaunchParts;
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_scheduler::model::{
@@ -576,6 +576,48 @@ impl Services {
             )
         })?;
         Ok(self.connectors.get_or_init(|| catalog))
+    }
+
+    /// Hold a runtime's frozen snapshot in this process *and* durably.
+    ///
+    /// Both, because they answer different questions. The in-process registry is
+    /// what session operations read on the hot path; the durable row is what the
+    /// next process has to present to the runtime to get the binding attested
+    /// again. Recording only the first is what left a live session unusable
+    /// after a restart.
+    fn hold(&self, snapshot: &RuntimeBindingSnapshot) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let document = serde_json::to_string(snapshot).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime's binding snapshot could not be recorded durably",
+            )
+        })?;
+        state
+            .with_store(|store| {
+                store.persist_binding_snapshot(
+                    snapshot.binding_id(),
+                    snapshot.agent_run_id(),
+                    &document,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.sessions().record(snapshot.clone());
+        Ok(())
+    }
+
+    /// Release a binding from this process and from the durable claim.
+    ///
+    /// A snapshot for a closed run is not evidence of anything, and leaving one
+    /// behind would give the next startup a binding to re-attest that nothing
+    /// should be operating.
+    fn release(&self, binding_id: kontor_core::id::RuntimeBindingId) -> Result<(), ApiError> {
+        let state = self.state()?;
+        state
+            .with_store(|store| store.forget_binding_snapshot(binding_id))
+            .map_err(|error| self.refuse(&error))?;
+        state.sessions().forget(binding_id);
+        Ok(())
     }
 
     /// The root a task's workspace is prepared at.
@@ -3438,7 +3480,7 @@ impl ApplicationOperations for Services {
         // The frozen snapshot is released only once the team has been certified:
         // certification reads every seat's binding, and forgetting this one first
         // would make the seat that just closed look like one that never ran.
-        state.sessions().forget(binding.id);
+        self.release(binding.id)?;
 
         Ok(RuntimeSettlementDto {
             realm_id,
@@ -4445,7 +4487,7 @@ impl Services {
             .map_err(|error| self.refuse(&error))?;
         // The frozen snapshot lives in this process: it is what lets the session
         // routes address the seat at the evidence quality it was bound at.
-        state.sessions().record(outcome.snapshot.clone());
+        self.hold(&outcome.snapshot)?;
 
         let mut filled = vec![StartedSeatDto {
             task_id: admitted.task_id,
@@ -4608,7 +4650,7 @@ impl Services {
                 store.record_run_context_policy(project_id, agent_run_id, &context_policy)
             })
             .map_err(|error| self.refuse(&error))?;
-        state.sessions().record(outcome.snapshot.clone());
+        self.hold(&outcome.snapshot)?;
         Ok(StartedSeatDto {
             task_id: admitted.task_id,
             team_run_id: team_run_id.to_string(),

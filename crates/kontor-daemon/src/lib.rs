@@ -48,6 +48,7 @@ pub mod logging;
 pub mod recovery;
 pub mod runtimes;
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
@@ -55,7 +56,8 @@ use kontor_api::state::{
     ApiParts, ApiState, BarrierState, RuntimeRegistry, SchedulingBarrier, SessionRegistry,
     StreamSignals,
 };
-use kontor_core::id::RealmId;
+use kontor_core::id::{RealmId, RuntimeBindingId};
+use kontor_runtime::capability::RuntimeBindingSnapshot;
 use kontor_store::{CommandRecovery, SqliteStore};
 use tracing::{info, warn};
 
@@ -372,6 +374,46 @@ impl Daemon {
     /// Ask each configured runtime about the bindings this Realm holds for it.
     async fn reconcile_bindings(&self, bindings: &[kontor_store::OpenBinding]) -> BarrierState {
         let mut settled = BarrierState::Open;
+        // Read once, for every family. A document that no longer matches its
+        // digest fails the read outright rather than being skipped: a claim
+        // edited underneath the daemon is not the claim this Realm made.
+        let persisted: BTreeMap<RuntimeBindingId, RuntimeBindingSnapshot> =
+            match self.state.with_store(SqliteStore::list_binding_snapshots) {
+                Ok(rows) => {
+                    let mut claims = BTreeMap::new();
+                    for row in &rows {
+                        // A row that will not parse is a *corrupt claim*, and it
+                        // fails loudly. Skipping it would make a binding
+                        // disappear from every later census — the quietest
+                        // possible way to lose a live session, and
+                        // indistinguishable from never having had one.
+                        match serde_json::from_str::<RuntimeBindingSnapshot>(&row.document) {
+                            Ok(snapshot) => {
+                                claims.insert(row.binding_id, snapshot);
+                            }
+                            Err(detail) => {
+                                warn!(
+                                    realm_id = %self.realm_id(),
+                                    binding = %row.binding_id,
+                                    detail = %detail,
+                                    "a persisted binding snapshot is unreadable; \
+                                     scheduling stays shut"
+                                );
+                                return BarrierState::Failed;
+                            }
+                        }
+                    }
+                    claims
+                }
+                Err(detail) => {
+                    warn!(
+                        realm_id = %self.realm_id(),
+                        detail = %detail,
+                        "persisted binding snapshots could not be read; scheduling stays shut"
+                    );
+                    return BarrierState::Failed;
+                }
+            };
         for family in self
             .state
             .runtimes()
@@ -382,10 +424,15 @@ impl Daemon {
             let Some(adapter) = self.state.runtimes().get(&family) else {
                 continue;
             };
-            let held: Vec<_> = bindings
+            // The claims this Realm persisted for *this* family, read from the
+            // store rather than from the in-process registry. Reading the
+            // registry here was the whole of the restart defect: a fresh process
+            // holds nothing, so the census was taken over an empty list and
+            // classified none of the realm's open bindings.
+            let claimed: Vec<_> = bindings
                 .iter()
                 .filter(|binding| binding.binding.identity.runtime_kind == family)
-                .filter_map(|binding| self.state.sessions().get(binding.binding.id))
+                .filter_map(|binding| persisted.get(&binding.binding.id).cloned())
                 .collect();
             // The plane's own container has to exist before a census can be
             // taken inside it. A runtime that holds one answers "the project has
@@ -404,7 +451,54 @@ impl Daemon {
                 settled = BarrierState::Failed;
                 continue;
             }
-            match adapter.reconcile(&held).await {
+            // Hand the claims back to the runtime that issued them. It confirms
+            // each session still exists in the same generation and re-records
+            // the snapshot *verbatim*, so the binding keeps the grade, limits,
+            // correlation and native identity it was issued under. Nothing here
+            // re-derives capabilities; a session bound at a degraded grade must
+            // not come back promoted because the runtime answers better today.
+            let held = match adapter.restore_bindings(&claimed).await {
+                Ok(restored) => restored,
+                Err(error) => {
+                    warn!(
+                        realm_id = %self.realm_id(),
+                        runtime = %family,
+                        detail = %error,
+                        "runtime could not re-attest this realm's bindings; scheduling stays shut"
+                    );
+                    settled = BarrierState::Failed;
+                    continue;
+                }
+            };
+            // Only what the runtime vouched for enters this process's registry.
+            // A claim it did not restore is a binding nothing may operate, which
+            // is the honest answer for a session that did not survive.
+            for snapshot in &held {
+                self.state.sessions().record(snapshot.clone());
+            }
+            if !held.is_empty() {
+                info!(
+                    realm_id = %self.realm_id(),
+                    runtime = %family,
+                    restored = held.len(),
+                    claimed = claimed.len(),
+                    "runtime re-attested bindings this realm held before restart"
+                );
+            }
+            // The census runs over **every** claim, not only the restored ones.
+            // A claim the runtime refused to attest is reported as `Unattested`
+            // rather than vanishing: an unreviewed binding is how a forged one
+            // survives, and this is the review.
+            if held.len() != claimed.len() {
+                warn!(
+                    realm_id = %self.realm_id(),
+                    runtime = %family,
+                    claimed = claimed.len(),
+                    restored = held.len(),
+                    "this realm holds binding claims the runtime would not attest"
+                );
+            }
+            match adapter.reconcile(&claimed).await {
                 Ok(report) => {
                     info!(
                         realm_id = %self.realm_id(),

@@ -30,10 +30,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use kontor_core::DomainError;
 use kontor_core::calendar::ExecutionAuthorization;
 use kontor_core::id::{
-    AccountProfileId, AggregateRevision, CommandReceiptId, ConnectorKey, ContentHash,
+    AccountProfileId, AgentRunId, AggregateRevision, CommandReceiptId, ConnectorKey, ContentHash,
     ExecutionAuthorizationId, ExternalId, ExternalName, MiniProjectId, ModuleKey, ProjectId,
-    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamTemplateId, TicketLinkId,
-    TicketObservationId, Timestamp,
+    RuntimeBindingId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamTemplateId,
+    TicketLinkId, TicketObservationId, Timestamp,
 };
 use kontor_core::repository::{
     MiniProject, Project, RepositoryError, RepositoryResult, Task, TicketLink,
@@ -2052,5 +2052,107 @@ impl SqliteStore {
             .optional()
             .map_err(backend)?;
         Ok(found.as_deref().map(ExternalName::parse).transpose()?)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime binding snapshots
+// ---------------------------------------------------------------------------
+
+/// One binding's frozen snapshot, as it was persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredBindingSnapshot {
+    /// The binding it belongs to.
+    pub binding_id: RuntimeBindingId,
+    /// The run that binding serves.
+    pub agent_run_id: AgentRunId,
+    /// The snapshot document, byte-for-byte as it was recorded.
+    pub document: String,
+}
+
+impl SqliteStore {
+    /// Keep the frozen snapshot a runtime issued for one binding.
+    ///
+    /// Replaceable, because a rebind for the same binding id issues a new
+    /// snapshot and the newest one is the claim the next restart must present.
+    ///
+    /// # Errors
+    /// Backend failures only. This is a claim, not authority, so nothing here
+    /// judges it — the issuing runtime does that when it is handed back.
+    pub fn persist_binding_snapshot(
+        &self,
+        binding_id: RuntimeBindingId,
+        agent_run_id: AgentRunId,
+        document: &str,
+    ) -> RepositoryResult<()> {
+        self.connection
+            .execute(
+                "INSERT INTO runtime_binding_snapshots
+                     (binding_id, agent_run_id, document, document_hash, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (binding_id) DO UPDATE SET
+                     agent_run_id = excluded.agent_run_id,
+                     document = excluded.document,
+                     document_hash = excluded.document_hash,
+                     recorded_at = excluded.recorded_at",
+                params![
+                    binding_id.to_string(),
+                    agent_run_id.to_string(),
+                    document,
+                    ContentHash::of(document.as_bytes()).as_str(),
+                    text(Timestamp::now())
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Forget one binding's snapshot, as a closed run must.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn forget_binding_snapshot(&self, binding_id: RuntimeBindingId) -> RepositoryResult<()> {
+        self.connection
+            .execute(
+                "DELETE FROM runtime_binding_snapshots WHERE binding_id = ?1",
+                params![binding_id.to_string()],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Every persisted snapshot, in binding order.
+    ///
+    /// # Errors
+    /// Refuses a document whose bytes no longer match the digest they were
+    /// recorded under: a claim edited underneath the daemon is not the claim
+    /// this Realm made, and handing it to a runtime to attest would at best
+    /// waste the round trip and at worst present something nobody wrote.
+    pub fn list_binding_snapshots(&self) -> RepositoryResult<Vec<StoredBindingSnapshot>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT binding_id, agent_run_id, document, document_hash
+                 FROM runtime_binding_snapshots
+                 ORDER BY binding_id",
+            )
+            .map_err(backend)?;
+        let mut rows = statement.query([]).map_err(backend)?;
+        let mut found = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let document: String = row.get(2).map_err(backend)?;
+            let stored: String = row.get(3).map_err(backend)?;
+            if ContentHash::of(document.as_bytes()).as_str() != stored {
+                return Err(RepositoryError::Backend {
+                    detail: "a runtime binding snapshot no longer matches its digest".to_owned(),
+                });
+            }
+            found.push(StoredBindingSnapshot {
+                binding_id: RuntimeBindingId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+                agent_run_id: AgentRunId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+                document,
+            });
+        }
+        Ok(found)
     }
 }
