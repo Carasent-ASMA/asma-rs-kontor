@@ -224,6 +224,7 @@ impl Fixture {
                     max_message_bytes: 4_096,
                     max_history_page: 64,
                     max_concurrent_sessions: 8,
+                    context_window: kontor_core::spec::ContextWindowBounds::unknown(),
                 },
             },
             required: std::collections::BTreeSet::new(),

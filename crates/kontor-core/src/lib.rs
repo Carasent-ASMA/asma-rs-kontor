@@ -91,6 +91,7 @@ macro_rules! closed_enum {
 }
 
 pub mod calendar;
+pub mod compaction;
 pub mod id;
 pub mod realm;
 pub mod receipt;

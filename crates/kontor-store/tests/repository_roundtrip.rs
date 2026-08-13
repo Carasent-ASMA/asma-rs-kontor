@@ -342,6 +342,7 @@ fn work_profile() -> WorkProfileSpec {
         budget_defaults: budget(),
         calendar_policy: None,
         external_workflow: None,
+        context_window: None,
     }
 }
 
@@ -5476,4 +5477,279 @@ fn an_account_profile_change_from_a_foreign_realm_is_refused_before_any_write() 
             .revision,
         updated.revision
     );
+}
+
+// ---------------------------------------------------------------------------
+// Context-window policy and compaction receipts
+// ---------------------------------------------------------------------------
+
+fn policy_snapshot(
+    class: kontor_core::spec::ContextWindowClass,
+    ceiling: Option<u64>,
+) -> kontor_core::spec::ContextPolicySnapshot {
+    let declared = kontor_core::spec::ContextWindowPolicy {
+        class,
+        ..kontor_core::spec::ContextWindowPolicy::standard()
+    };
+    let resolved =
+        kontor_core::spec::resolve_context_window(&kontor_core::spec::ContextPolicyInputs {
+            role_slot: Some(&declared),
+            ..kontor_core::spec::ContextPolicyInputs::default()
+        })
+        .expect("the slot declaration resolves");
+    let requested = kontor_core::spec::RequestedContextPolicy::of(&resolved, SCHEMA_VERSION);
+    let effective = kontor_core::spec::EffectiveContextPolicy::derive(
+        &requested,
+        &kontor_core::spec::ContextWindowBounds {
+            safe_ceiling_tokens: ceiling,
+            minimum_trigger_tokens: None,
+        },
+        true,
+    )
+    .expect("the effective half derives");
+    kontor_core::spec::ContextPolicySnapshot::freeze(requested, effective, now())
+        .expect("both halves freeze")
+}
+
+fn compaction_receipt(
+    run: AgentRunId,
+    status: kontor_core::compaction::CompactionStatus,
+    after: Option<NativeRuntimeIdentity>,
+) -> kontor_core::compaction::CompactionReceipt {
+    let snapshot = policy_snapshot(kontor_core::spec::ContextWindowClass::Standard, None);
+    kontor_core::compaction::CompactionReceipt {
+        schema_version: SCHEMA_VERSION,
+        id: kontor_core::id::CompactionReceiptId::generate(),
+        agent_run_id: run,
+        binding_id: kontor_core::id::RuntimeBindingId::generate(),
+        native_before: identity(1),
+        native_after: after,
+        requested: snapshot.requested,
+        effective: snapshot.effective,
+        trigger: kontor_core::compaction::CompactionTrigger::Threshold,
+        capabilities: document("capabilities"),
+        status,
+        telemetry: kontor_core::compaction::CompactionTelemetry::unknown(),
+        context_pack_hash: ContentHash::of(b"context-pack"),
+        handoff_hash: None,
+        evidence: (status == kontor_core::compaction::CompactionStatus::Confirmed)
+            .then(|| external("compaction-evidence")),
+        recorded_at: now(),
+    }
+}
+
+/// MUT-CTX-04. Dropping the effective clamp evidence on the way back makes this
+/// fail: the reopened projection stops equalling the persisted snapshot.
+#[test]
+fn a_context_policy_survives_crash_reopen_with_its_clamp_evidence() {
+    let RunFixture { fixture, run } = with_run(true);
+    // Deep asks for 512000; the runtime attests a lower ceiling, so the stored
+    // record must carry both the request and the clamp that changed it.
+    let snapshot = policy_snapshot(kontor_core::spec::ContextWindowClass::Deep, Some(200_000));
+    assert_eq!(snapshot.requested.trigger_tokens, Some(512_000));
+    assert_eq!(snapshot.effective.trigger_tokens, Some(200_000));
+    assert_eq!(
+        snapshot.effective.clamp,
+        kontor_core::spec::ContextClamp::ToSafeCeiling
+    );
+
+    fixture
+        .store
+        .record_run_context_policy(fixture.project, run, &snapshot)
+        .expect("the policy is frozen onto the run");
+
+    // Reopen the file: nothing is held in memory across this.
+    drop(fixture.store);
+    let reopened = SqliteStore::open(&fixture.path).expect("the store reopens");
+    let read = reopened
+        .get_run_context_policy(fixture.project, run)
+        .expect("the read succeeds")
+        .expect("the policy survived the reopen");
+
+    assert_eq!(read, snapshot);
+    assert_eq!(read.requested.trigger_tokens, Some(512_000));
+    assert_eq!(read.effective.trigger_tokens, Some(200_000));
+    assert_eq!(
+        read.effective.clamp,
+        kontor_core::spec::ContextClamp::ToSafeCeiling
+    );
+    assert_eq!(
+        read.effective.bounds.safe_ceiling_tokens,
+        Some(200_000),
+        "the ceiling the clamp was derived from survives with it"
+    );
+    read.verify().expect("the reopened snapshot re-verifies");
+}
+
+#[test]
+fn a_run_context_policy_is_written_once_and_cannot_be_revised() {
+    let RunFixture { fixture, run } = with_run(true);
+    let first = policy_snapshot(kontor_core::spec::ContextWindowClass::Standard, None);
+    fixture
+        .store
+        .record_run_context_policy(fixture.project, run, &first)
+        .expect("the policy is frozen");
+
+    // The identical pair again is a replay of the same act.
+    fixture
+        .store
+        .record_run_context_policy(fixture.project, run, &first)
+        .expect("an identical replay is the same act");
+
+    // A different one is a second answer to a settled question.
+    let revised = policy_snapshot(kontor_core::spec::ContextWindowClass::Lean, None);
+    assert!(matches!(
+        fixture
+            .store
+            .record_run_context_policy(fixture.project, run, &revised)
+            .expect_err("a live run cannot be re-launched under a different policy"),
+        RepositoryError::Conflict { .. }
+    ));
+
+    // The stored value is still the original.
+    let read = fixture
+        .store
+        .get_run_context_policy(fixture.project, run)
+        .expect("the read succeeds")
+        .expect("the policy is there");
+    assert_eq!(read, first);
+}
+
+#[test]
+fn another_project_can_neither_read_nor_target_a_context_policy() {
+    let RunFixture { fixture, run } = with_run(true);
+    let snapshot = policy_snapshot(kontor_core::spec::ContextWindowClass::Standard, None);
+    fixture
+        .store
+        .record_run_context_policy(fixture.project, run, &snapshot)
+        .expect("the policy is frozen");
+
+    assert_eq!(
+        fixture
+            .store
+            .get_run_context_policy(fixture.other_project, run)
+            .expect("the read succeeds"),
+        None,
+        "a stranger project reads nothing"
+    );
+    assert!(matches!(
+        fixture
+            .store
+            .record_run_context_policy(fixture.other_project, run, &snapshot)
+            .expect_err("a stranger project cannot write to this run"),
+        RepositoryError::NotFound { .. }
+    ));
+    assert_eq!(
+        fixture
+            .store
+            .latest_compaction_receipt(fixture.other_project, run)
+            .expect("the read succeeds"),
+        None
+    );
+}
+
+#[test]
+fn a_compaction_receipt_is_idempotent_by_id_and_conflicts_on_different_content() {
+    let RunFixture { fixture, run } = with_run(true);
+    let receipt = compaction_receipt(
+        run,
+        kontor_core::compaction::CompactionStatus::Confirmed,
+        Some(identity(1)),
+    );
+
+    let stored = fixture
+        .store
+        .record_compaction_receipt(fixture.project, &receipt)
+        .expect("the receipt is recorded");
+    assert_eq!(stored, receipt);
+
+    // The identical attempt replays to the stored row rather than writing twice.
+    let replay = fixture
+        .store
+        .record_compaction_receipt(fixture.project, &receipt)
+        .expect("an identical replay returns the original");
+    assert_eq!(replay, receipt);
+
+    // The same id carrying a different outcome is a contradiction, and the
+    // stored terminal receipt is not regressed by it.
+    let mut contradicting =
+        compaction_receipt(run, kontor_core::compaction::CompactionStatus::Failed, None);
+    contradicting.id = receipt.id;
+    assert!(matches!(
+        fixture
+            .store
+            .record_compaction_receipt(fixture.project, &contradicting)
+            .expect_err("a reused id with different content conflicts"),
+        RepositoryError::Conflict { .. }
+    ));
+
+    let latest = fixture
+        .store
+        .latest_compaction_receipt(fixture.project, run)
+        .expect("the read succeeds")
+        .expect("a receipt is there");
+    assert_eq!(latest, receipt);
+    assert_eq!(
+        latest.status,
+        kontor_core::compaction::CompactionStatus::Confirmed
+    );
+}
+
+#[test]
+fn a_confirmed_receipt_whose_session_moved_never_reaches_storage() {
+    let RunFixture { fixture, run } = with_run(true);
+    // A `confirmed` claim over a session in another generation is exactly the
+    // drift the contract refuses, and the store refuses it too rather than
+    // trusting the caller to have checked.
+    let drifted = compaction_receipt(
+        run,
+        kontor_core::compaction::CompactionStatus::Confirmed,
+        Some(identity(2)),
+    );
+    assert!(
+        fixture
+            .store
+            .record_compaction_receipt(fixture.project, &drifted)
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .store
+            .latest_compaction_receipt(fixture.project, run)
+            .expect("the read succeeds"),
+        None,
+        "the refusal leaves no partial state"
+    );
+}
+
+#[test]
+fn compaction_receipts_survive_crash_reopen_and_report_the_most_recent() {
+    let RunFixture { fixture, run } = with_run(true);
+    let first = compaction_receipt(
+        run,
+        kontor_core::compaction::CompactionStatus::Unsupported,
+        None,
+    );
+    let mut second = compaction_receipt(
+        run,
+        kontor_core::compaction::CompactionStatus::Confirmed,
+        Some(identity(1)),
+    );
+    second.recorded_at = at("2026-08-11T09:00:00Z");
+    for receipt in [&first, &second] {
+        fixture
+            .store
+            .record_compaction_receipt(fixture.project, receipt)
+            .expect("the receipt is recorded");
+    }
+
+    drop(fixture.store);
+    let reopened = SqliteStore::open(&fixture.path).expect("the store reopens");
+    let latest = reopened
+        .latest_compaction_receipt(fixture.project, run)
+        .expect("the read succeeds")
+        .expect("a receipt survived");
+    assert_eq!(latest, second);
+    // Unknown telemetry is still unknown after a round trip through storage.
+    assert!(latest.telemetry.is_unknown());
 }

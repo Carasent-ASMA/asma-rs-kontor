@@ -150,6 +150,13 @@ async fn live_admitted_launch(ao: &AoAdapter, config: &LiveEnv) -> LaunchRequest
              text {agent_run_id}. Do nothing else."
         ))
         .expect("bounded prompt"),
+        context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+            &kontor_core::spec::ContextWindowBounds::unknown(),
+            false,
+            kontor_core::id::SCHEMA_VERSION,
+            parse_utc_timestamp("2026-08-10T09:00:00Z").expect("canonical UTC"),
+        )
+        .expect("the standard fallback freezes"),
         requested_at: parse_utc_timestamp("2026-08-10T09:00:00Z").expect("canonical UTC"),
     };
     ao.admit_launch(&AdmissionRequest {

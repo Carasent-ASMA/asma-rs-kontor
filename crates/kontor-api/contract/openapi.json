@@ -211,6 +211,41 @@
         }
       }
     },
+    "/v1/context-policy/preview": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Resolve a context-window policy from explicit inputs, and change nothing.",
+        "description": "A pure read: it touches no store, dispatches to no runtime and persists\nnothing, so asking \"what would this seat get\" is free of consequence. The\nsame inputs always produce the same answer, which is what makes it worth\nasking before a run exists.\n\nIt returns the *same* [`ContextPolicyDto`] a run carries, so a preview and\nthe thing it previewed cannot describe a policy differently.",
+        "operationId": "context_policy_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContextPolicyPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The policy those inputs resolve to",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContextPolicyDto"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value outside the closed set, or a seed reaching an explicit-only class"
+          }
+        }
+      }
+    },
     "/v1/events": {
       "get": {
         "tags": [
@@ -2155,6 +2190,64 @@
         }
       }
     },
+    "/v1/sessions/{agent_run_id}/compact": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Ask one seat to compact its context, in place.",
+        "description": "Every guard the approved policy names runs **before** the adapter is\nreached, and each of them refuses without an effect:\n\n* realm authorization and a frozen binding, from [`resolve`];\n* the runtime's frozen [`RuntimeCapability::Compact`] capability, so a\n  `required` policy on a runtime that cannot compact refuses here rather\n  than being reported as done;\n* a *deterministic* trigger — threshold, durable scope boundary or an\n  authorized operator request. A finished role turn is not one, and there is\n  no spelling for it in [`CompactionTrigger`];\n* no active tool action and no unresolved permission, because compacting\n  mid-decision discards the decision;\n* a sealed durable handoff for a boundary or operator compaction, plus the\n  Context Pack hash the run was frozen against.\n\nThe `Idempotency-Key` *is* the compaction receipt id, for the same reason it\nis the message id on `send_message`: two tokens could disagree about whether\na retry is the same attempt, and only one of them is what the ledger keys on.",
+        "operationId": "compact",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The Kontor agent run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The stable compaction receipt id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompactRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The outcome, or the original receipt replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompactionReceiptDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The id already recorded a different attempt"
+          },
+          "422": {
+            "description": "An unsafe trigger, a missing handoff, or a runtime that cannot compact"
+          }
+        }
+      }
+    },
     "/v1/sessions/{agent_run_id}/messages": {
       "post": {
         "tags": [
@@ -3009,6 +3102,111 @@
           }
         }
       },
+      "CompactRequestBody": {
+        "type": "object",
+        "description": "What a caller states when asking a seat to compact.\n\nThe safe-point facts are stated by the caller because only the operator\ndriving the session knows them; the guard refuses on either, so stating them\nhonestly is the caller's obligation and stating them at all is mandatory.",
+        "required": [
+          "trigger",
+          "context_pack_hash",
+          "active_tool",
+          "unresolved_permission"
+        ],
+        "properties": {
+          "active_tool": {
+            "type": "boolean",
+            "description": "Whether a tool action is in flight right now."
+          },
+          "context_pack_hash": {
+            "type": "string",
+            "description": "The immutable Context Pack the run was frozen against."
+          },
+          "handoff_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The sealed durable handoff. Required for `scope_boundary` and `operator`."
+          },
+          "trigger": {
+            "type": "string",
+            "description": "`threshold` | `scope_boundary` | `operator`. A finished turn is not one."
+          },
+          "unresolved_permission": {
+            "type": "boolean",
+            "description": "Whether a permission request is still unanswered."
+          }
+        }
+      },
+      "CompactionReceiptDto": {
+        "type": "object",
+        "description": "One recorded compaction attempt, as a cross-boundary reader sees it.",
+        "required": [
+          "receipt_id",
+          "trigger",
+          "status",
+          "preserved_native_identity",
+          "recorded_at"
+        ],
+        "properties": {
+          "cache_read_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Prompt-cache tokens read, when the runtime said.",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Prompt-cache tokens written, when the runtime said.",
+            "minimum": 0
+          },
+          "preserved_native_identity": {
+            "type": "boolean",
+            "description": "Whether the native session is provably the same one afterwards."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "The attempt."
+          },
+          "recorded_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the outcome was recorded."
+          },
+          "status": {
+            "type": "string",
+            "description": "How it ended. Never `confirmed` unless the native session survived."
+          },
+          "tokens_after": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Active context tokens afterwards, when the runtime said.",
+            "minimum": 0
+          },
+          "tokens_before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Active context tokens before, when the runtime said. Unknown stays\nabsent; zero is a measurement.",
+            "minimum": 0
+          },
+          "trigger": {
+            "type": "string",
+            "description": "Why it was requested."
+          }
+        }
+      },
       "ConnectorSpecDto": {
         "type": "object",
         "description": "One connector specification revision this build can serve.\n\n`installed` distinguishes \"this deployment ships the mapping\" from \"this\nproject pinned it\": a bundled revision nothing installed is selectable, and a\ntask linked to a ticket it does not cover is exactly the unmapped link\n`ticket:reconcile-plan` already reports rather than silently converging.",
@@ -3054,6 +3252,196 @@
             "format": "int32",
             "description": "The pinned revision.",
             "minimum": 0
+          }
+        }
+      },
+      "ContextPolicyDto": {
+        "type": "object",
+        "description": "One seat's context-window policy and the latest attempt to compact it.\n\nThe single projection API, CLI and MCP all render, so the three cannot drift\ninto describing the same seat differently. Every field is provider-neutral:\nno configuration key, no daemon payload, no prompt and no credential appears\nhere, and a runtime that measures nothing reports nothing rather than zero.",
+        "required": [
+          "source",
+          "requested_class",
+          "enforcement",
+          "trigger_scope",
+          "capability",
+          "clamp",
+          "permits_reuse"
+        ],
+        "properties": {
+          "capability": {
+            "type": "string",
+            "description": "Whether the runtime could be told at all."
+          },
+          "clamp": {
+            "type": "string",
+            "description": "Why the effective trigger differs from the requested one."
+          },
+          "effective_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The trigger actually in force. Absent for `native`, and absent when the\nruntime cannot be configured at all.",
+            "minimum": 0
+          },
+          "enforcement": {
+            "type": "string",
+            "description": "How hard the runtime was required to honour it."
+          },
+          "latest_compaction": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CompactionReceiptDto",
+                "description": "The most recent compaction attempt, if there has been one."
+              }
+            ]
+          },
+          "minimum_trigger_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The smallest trigger the runtime can take, when it declared one.",
+            "minimum": 0
+          },
+          "permits_reuse": {
+            "type": "boolean",
+            "description": "Whether this seat may be reused without waiting for a confirmation."
+          },
+          "requested_class": {
+            "type": "string",
+            "description": "The class that was asked for."
+          },
+          "requested_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The trigger that class asks for. Absent for `native`.",
+            "minimum": 0
+          },
+          "safe_ceiling_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The runtime ceiling the request was measured against, when it declared\none. Absence is unknown.",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "Which declaration the policy came from."
+          },
+          "trigger_scope": {
+            "type": "string",
+            "description": "What the trigger is measured against."
+          }
+        }
+      },
+      "ContextPolicyPreviewRequest": {
+        "type": "object",
+        "description": "What a caller asks the preview to resolve.\n\nExplicit inputs only. The preview is a pure function of what is stated here,\nso two callers stating the same thing always get the same answer — which is\nwhat makes it usable for \"what would this seat get\" before anything exists.",
+        "properties": {
+          "context_policy_capable": {
+            "type": "boolean",
+            "description": "Whether the runtime being previewed declares context configuration."
+          },
+          "minimum_trigger": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The smallest trigger that runtime can take, when it attests one.",
+            "minimum": 0
+          },
+          "role_seed": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ContextWindowPolicyDto",
+                "description": "The deployment's seed for this role, if the table names it."
+              }
+            ]
+          },
+          "role_slot": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ContextWindowPolicyDto",
+                "description": "The policy the team template's role slot declares, if it declares one."
+              }
+            ]
+          },
+          "run_override": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ContextWindowPolicyDto",
+                "description": "The policy an authorized run override would carry, if there is one."
+              }
+            ]
+          },
+          "safe_ceiling": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The largest trigger that runtime attests, when it attests one.",
+            "minimum": 0
+          },
+          "work_profile": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ContextWindowPolicyDto",
+                "description": "The work profile's default, if it declares one."
+              }
+            ]
+          }
+        }
+      },
+      "ContextWindowPolicyDto": {
+        "type": "object",
+        "description": "One declared context-window policy, as a caller states it.",
+        "required": [
+          "class",
+          "enforcement",
+          "trigger_scope",
+          "boundary_compaction"
+        ],
+        "properties": {
+          "boundary_compaction": {
+            "type": "boolean",
+            "description": "Whether a coherent scope change may request compaction below threshold."
+          },
+          "class": {
+            "type": "string",
+            "description": "`lean` | `standard` | `deep` | `extended` | `native`."
+          },
+          "enforcement": {
+            "type": "string",
+            "description": "`best_effort` | `required`."
+          },
+          "trigger_scope": {
+            "type": "string",
+            "description": "`total` | `growth_after_prefix`."
           }
         }
       },
@@ -4488,6 +4876,17 @@
             "format": "date-time",
             "description": "When it closed."
           },
+          "context_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ContextPolicyDto",
+                "description": "The context window this seat was launched under, once it has been frozen."
+              }
+            ]
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -4942,6 +5341,17 @@
                 ],
                 "format": "date-time",
                 "description": "When it closed."
+              },
+              "context_policy": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ContextPolicyDto",
+                    "description": "The context window this seat was launched under, once it has been frozen."
+                  }
+                ]
               },
               "created_at": {
                 "type": "string",

@@ -1764,6 +1764,13 @@ impl Engine {
             cwd: self.workspace.root().clone(),
             account_profile_id,
             prompt: text("carry out the pilot step"),
+            context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+                &kontor_core::spec::ContextWindowBounds::unknown(),
+                true,
+                kontor_core::id::SCHEMA_VERSION,
+                at(LAUNCHED_AT),
+            )
+            .expect("the standard fallback freezes"),
             requested_at: at(LAUNCHED_AT),
         };
         let request = self
@@ -1793,6 +1800,7 @@ fn capabilities(account_env: bool) -> RuntimeCapabilities {
             max_message_bytes: 4_096,
             max_history_page: 64,
             max_concurrent_sessions: 8,
+            context_window: kontor_core::spec::ContextWindowBounds::unknown(),
         },
     }
 }

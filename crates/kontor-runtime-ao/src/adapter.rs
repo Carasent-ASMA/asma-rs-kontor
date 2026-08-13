@@ -32,6 +32,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{
     AgentRunId, CanonicalDocument, ContentHash, ExternalId, ExternalName, RuntimeBindingId,
     RuntimeKindKey, Timestamp,
@@ -54,8 +55,9 @@ use kontor_runtime::observation::{
     ReconciliationFinding, ReconciliationReport, reconcile,
 };
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
-    LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest, SendMessageRequest,
+    AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
+    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest,
+    SendMessageRequest,
 };
 use kontor_runtime::timeline::{
     Admission, HistoryPage, LiveSubscription, MessageLedger, SessionEvent, SessionEventKind,
@@ -117,6 +119,16 @@ pub const UNSUPPORTED: &[(RuntimeCapability, &str)] = &[
         "AO 0.12.1 has no structured permission request/response API, and a keystroke \
          injected into a terminal could answer a dialog other than the intended one",
     ),
+    (
+        RuntimeCapability::ContextPolicy,
+        "AO 0.12.1 exposes no per-seat context-window configuration, and the underlying \
+         harness's own default is not something AO lets Kontor set or attest",
+    ),
+    (
+        RuntimeCapability::Compact,
+        "AO 0.12.1 exposes no compaction operation; typing a compact command into a \
+         terminal would be an unverifiable guess rather than an observed lifecycle",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -172,6 +184,7 @@ impl AoLane {
                 // honored. `History` is refused before this is ever consulted.
                 max_history_page: 0,
                 max_concurrent_sessions: self.max_concurrent_sessions,
+                context_window: kontor_core::spec::ContextWindowBounds::unknown(),
             },
         }
     }
@@ -1146,6 +1159,7 @@ impl AoAdapter {
                 demand: Some(LimitDemand::ConcurrentSessions(
                     u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
                 )),
+                context_policy: Some(request.context_policy()),
             },
         )?;
 
@@ -1360,6 +1374,7 @@ impl RuntimeAdapter for AoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
 
@@ -1434,6 +1449,7 @@ impl RuntimeAdapter for AoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::MessageBytes(request.body_bytes())),
+                context_policy: None,
             },
         )?;
 
@@ -1546,6 +1562,7 @@ impl RuntimeAdapter for AoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         let native_id = binding.identity().native_id.as_str().to_owned();
@@ -1591,6 +1608,7 @@ impl RuntimeAdapter for AoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         let native_id = binding.identity().native_id.as_str().to_owned();
@@ -1616,6 +1634,7 @@ impl RuntimeAdapter for AoAdapter {
                 workspace: None,
                 current_generation: None,
                 demand: None,
+                context_policy: None,
             },
         )?;
         let generation = self.generation();
@@ -1706,5 +1725,18 @@ impl RuntimeAdapter for AoAdapter {
         _request: &PermissionResponseRequest,
     ) -> RuntimeResult<PermissionAck> {
         Err(self.refuse_unsupported(RuntimeCapability::PermissionResponse))
+    }
+
+    /// AO exposes no compaction operation, so this reports that and does
+    /// nothing.
+    ///
+    /// The receipt is the honest answer rather than a refusal, because "this
+    /// runtime cannot compact" is a fact the control plane has to record.
+    /// `required` becomes `pending` and blocks reuse; `best_effort` becomes
+    /// `unsupported` and stays visible. Neither reaches REST, SSE or the mux.
+    async fn compact(&self, request: &CompactRequest) -> RuntimeResult<CompactionReceipt> {
+        request.validate()?;
+        let declared = self.lane.capabilities();
+        Ok(request.unsupported_receipt(&declared, request.requested_at)?)
     }
 }

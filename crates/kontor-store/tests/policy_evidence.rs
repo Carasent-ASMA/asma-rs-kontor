@@ -194,6 +194,7 @@ fn work_profile() -> WorkProfileSpec {
         },
         calendar_policy: None,
         external_workflow: None,
+        context_window: None,
     }
 }
 

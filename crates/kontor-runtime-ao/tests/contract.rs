@@ -314,6 +314,15 @@ fn launch_parts(agent_run_id: AgentRunId) -> LaunchParts {
         cwd: WorkspaceRoot::parse(PROJECT_PATH).expect("absolute project path"),
         account_profile_id: None,
         prompt: text("do the work"),
+        // AO declares no per-seat context configuration, so the effective half
+        // of the policy is honestly `not_enforced`.
+        context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+            &kontor_core::spec::ContextWindowBounds::unknown(),
+            false,
+            kontor_core::id::SCHEMA_VERSION,
+            at("2026-08-10T09:00:00Z"),
+        )
+        .expect("the standard fallback freezes"),
         requested_at: at("2026-08-10T09:00:00Z"),
     }
 }

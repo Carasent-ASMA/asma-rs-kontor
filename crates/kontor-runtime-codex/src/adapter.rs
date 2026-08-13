@@ -42,6 +42,7 @@ use kontor_accounts::{
     AccountResolver, AdmittedLaunch, AvailabilityObservation, LaunchAdmissionRequest,
     LaunchRefusal, ResolvedAccountEnvironment, admit_pinned_launch,
 };
+use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, ContentHash,
     CredentialAlias, ExternalId, ExternalName, ProjectId, RealmId, RuntimeBindingId,
@@ -65,8 +66,9 @@ use kontor_runtime::observation::{
     ReconciliationFinding, ReconciliationReport,
 };
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchRequest,
+    AdoptRequest, CancelRequest, CompactRequest, HistoryRequest, InspectRequest, LaunchRequest,
     LiveSubscribeRequest, PermissionResponseRequest, ResumeRequest, SendMessageRequest,
+    capability_document,
 };
 use kontor_runtime::timeline::{
     EventSubject, HistoryPage, LiveSubscription, SessionEvent, TimelineGuard, TimelinePosition,
@@ -95,6 +97,10 @@ const SUPPORTED: &[RuntimeCapability] = &[
     RuntimeCapability::Cancel,
     RuntimeCapability::Inspect,
     RuntimeCapability::LiveEvents,
+    // Codex takes the auto-compaction trigger and its scope as startup
+    // configuration, so this is the one runtime in the fleet whose context
+    // policy is actually enforced rather than merely recorded.
+    RuntimeCapability::ContextPolicy,
 ];
 
 /// The operations it cannot, each with the reason it is refused.
@@ -204,6 +210,7 @@ impl CodexConfig {
                 // first.
                 max_history_page: 0,
                 max_concurrent_sessions: self.max_concurrent_sessions,
+                context_window: kontor_core::spec::ContextWindowBounds::unknown(),
             },
         }
     }
@@ -632,10 +639,52 @@ impl SeatFacts for CodexSeatFacts<'_> {
 }
 
 /// The narrow direct Codex adapter for one task worktree.
+/// The hermetic app-server lane that proves the `thread/compact/start` mapping.
+///
+/// **Not a production path.** [`CodexAdapter::new`] leaves it absent, so a
+/// production adapter advertises no [`RuntimeCapability::Compact`] and its
+/// `compact` reports `unsupported` having touched nothing. Only
+/// [`CodexAdapter::with_app_server`] — which no production construction calls —
+/// supplies one, and only a fake app-server ever implements it.
+///
+/// It is deliberately two methods rather than a JSON-RPC client: send the one
+/// request, and re-read the one thread. Everything else the approved mapping
+/// needs is already in the shared contract.
+#[async_trait::async_trait]
+pub trait CodexAppServer: Send + Sync {
+    /// Start compaction on one thread and return the lifecycle it emitted.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::Transport`] when the app-server cannot be
+    /// reached.
+    async fn compact_thread(
+        &self,
+        request: &crate::wire::ThreadCompactStart,
+    ) -> RuntimeResult<Vec<crate::wire::ThreadCompactEvent>>;
+
+    /// Re-read one thread's identity after the lifecycle finished.
+    ///
+    /// This is the evidence a confirmation rests on, and it is a *fresh read*
+    /// rather than an echo of the request: a lifecycle that says "completed" is
+    /// an acknowledgement, and an acknowledgement is not proof the session
+    /// survived.
+    ///
+    /// # Errors
+    /// As [`CodexAppServer::compact_thread`].
+    async fn inspect_thread(&self, thread_id: &str) -> RuntimeResult<crate::wire::ThreadIdentity>;
+}
+
+/// The Codex runtime, reduced to what Kontor is willing to depend on.
+///
+/// One account-pinned `codex exec --json` process per run, over a transport the
+/// caller supplies. The hermetic app-server lane is optional and absent in
+/// production; see [`CodexAppServer`].
 pub struct CodexAdapter<'a> {
     config: CodexConfig,
     transport: Box<dyn CodexTransport>,
     accounts: Box<dyn CodexAccountAuthority + 'a>,
+    /// Absent in production. See [`CodexAppServer`].
+    app_server: Option<std::sync::Arc<dyn CodexAppServer>>,
     state: Mutex<CodexState>,
 }
 
@@ -653,6 +702,28 @@ impl std::fmt::Debug for CodexAdapter<'_> {
 }
 
 impl<'a> CodexAdapter<'a> {
+    /// What this adapter can prove, including the hermetic app-server lane when
+    /// one was supplied.
+    ///
+    /// Production supplies none, so `Compact` is absent there — capability
+    /// discovery advertises only what the constructed transport can attest.
+    #[must_use]
+    pub fn declared_capabilities(&self) -> RuntimeCapabilities {
+        let mut declared = self.config.capabilities();
+        if self.app_server.is_some() {
+            declared.supported.insert(RuntimeCapability::Compact);
+        }
+        declared
+    }
+
+    /// Attach a hermetic app-server lane. Test and fixture use only; see
+    /// [`CodexAppServer`].
+    #[must_use]
+    pub fn with_app_server(mut self, app_server: std::sync::Arc<dyn CodexAppServer>) -> Self {
+        self.app_server = Some(app_server);
+        self
+    }
+
     /// Build an adapter for `config` over `transport`, rehydrated from
     /// `checkpoint`.
     #[must_use]
@@ -668,6 +739,8 @@ impl<'a> CodexAdapter<'a> {
             config,
             transport,
             accounts,
+            // Production has no app-server lane, so it advertises no `Compact`.
+            app_server: None,
             state: Mutex::new(CodexState {
                 generation: checkpoint.generation,
                 bindings: {
@@ -785,7 +858,7 @@ impl<'a> CodexAdapter<'a> {
     /// declared capability set and the behavior from disagreeing.
     fn refuse_unsupported(&self, capability: RuntimeCapability) -> RuntimeError {
         preflight(
-            &self.config.capabilities(),
+            &self.declared_capabilities(),
             &OperationContext::new(capability),
         )
         .expect_err("this capability is declared unsupported")
@@ -862,11 +935,15 @@ impl<'a> CodexAdapter<'a> {
         }
 
         let label = request.correlation().to_string();
-        let command = CodexCommand::exec(
+        // The frozen effective policy decides the startup configuration. It was
+        // resolved and hashed before this call, so what the child is configured
+        // with is exactly what the run's record says was asked for.
+        let command = CodexCommand::exec_with_config(
             &self.config.executable,
             request.cwd().as_str(),
             request.prompt().as_str(),
             names,
+            &crate::wire::auto_compact_config(&request.context_policy().effective),
         );
         command.ensure_dispatchable()?;
 
@@ -1164,7 +1241,7 @@ impl<'a> CodexAdapter<'a> {
                     identity: identity.clone(),
                     bound_at: request.requested_at(),
                 },
-                capabilities: self.config.capabilities(),
+                capabilities: self.declared_capabilities(),
                 correlation,
             };
             let record = CodexExecutionRecord {
@@ -1233,7 +1310,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
     /// spawning to answer "what can you do?" is how a capability question becomes
     /// a side effect. The real probe is the launch.
     async fn discover_capabilities(&self) -> RuntimeResult<RuntimeCapabilities> {
-        Ok(self.config.capabilities())
+        Ok(self.declared_capabilities())
     }
 
     async fn issued_binding(
@@ -1268,7 +1345,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
         &self,
         request: &WorkspacePrepareRequest,
     ) -> RuntimeResult<WorkspaceOutcome> {
-        let declared = self.config.capabilities();
+        let declared = self.declared_capabilities();
         preflight(
             &declared,
             &OperationContext::new(RuntimeCapability::PrepareWorkspace),
@@ -1364,7 +1441,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                  executed the work",
             )));
         };
-        let declared = self.config.capabilities();
+        let declared = self.declared_capabilities();
         let (generation, held) = {
             let state = self.lock();
             (state.generation, state.bindings.len())
@@ -1381,6 +1458,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 demand: Some(LimitDemand::ConcurrentSessions(
                     u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
                 )),
+                context_policy: Some(request.context_policy()),
             },
         )?;
 
@@ -1480,7 +1558,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
         let binding = self.attested(&request.binding)?;
         let generation = self.generation();
         preflight(
-            &self.config.capabilities(),
+            &self.declared_capabilities(),
             &OperationContext {
                 operation: RuntimeCapability::Cancel,
                 autonomous: true,
@@ -1489,6 +1567,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         let record = self.execution(binding.binding_id())?;
@@ -1534,7 +1613,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
         let binding = self.attested(&request.binding)?;
         let generation = self.generation();
         preflight(
-            &self.config.capabilities(),
+            &self.declared_capabilities(),
             &OperationContext {
                 operation: RuntimeCapability::Inspect,
                 autonomous: false,
@@ -1543,6 +1622,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         let record = self.execution(binding.binding_id())?;
@@ -1669,7 +1749,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
         let binding = self.attested(&request.binding)?;
         let generation = self.generation();
         preflight(
-            &self.config.capabilities(),
+            &self.declared_capabilities(),
             &OperationContext {
                 operation: RuntimeCapability::LiveEvents,
                 autonomous: false,
@@ -1678,6 +1758,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         let record = self.execution(binding.binding_id())?;
@@ -1710,5 +1791,115 @@ impl RuntimeAdapter for CodexAdapter<'_> {
         _request: &PermissionResponseRequest,
     ) -> RuntimeResult<PermissionAck> {
         Err(self.refuse_unsupported(RuntimeCapability::PermissionResponse))
+    }
+
+    /// Codex enforces its context window at startup, and cannot be asked to
+    /// compact a run that is already going.
+    ///
+    /// `codex exec --json` is one-shot: the process reads a prompt, works and
+    /// exits, and its own auto-compaction fires from the
+    /// `model_auto_compact_token_limit` this adapter configured at launch.
+    /// There is no live thread to address afterwards, which is why
+    /// [`RuntimeCapability::Compact`] is not advertised.
+    ///
+    /// So this reports rather than acts. Re-running `codex exec` with a
+    /// summarized prompt would be a *new process and a new session*, and calling
+    /// that a compaction would be exactly the substitution the receipt contract
+    /// forbids.
+    async fn compact(&self, request: &CompactRequest) -> RuntimeResult<CompactionReceipt> {
+        request.validate()?;
+        let declared = self.declared_capabilities();
+
+        // Production has no app-server lane, so this is the whole answer there:
+        // report, touch nothing. Re-running `codex exec` with a summarized
+        // prompt would be a new process and a new session, which is exactly the
+        // substitution the receipt contract forbids.
+        let Some(app_server) = self.app_server.clone() else {
+            return Ok(request.unsupported_receipt(&declared, request.requested_at)?);
+        };
+
+        let binding = self.attested(&request.binding)?;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Compact,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                workspace: None,
+                current_generation: Some(self.generation()),
+                demand: None,
+                context_policy: None,
+            },
+        )?;
+
+        let before = request.binding.identity().clone();
+        let thread_id = before.native_id.as_str().to_owned();
+        let lifecycle = app_server
+            .compact_thread(&crate::wire::ThreadCompactStart {
+                thread_id: thread_id.clone(),
+            })
+            .await?;
+
+        // A lifecycle about another thread is not evidence about this one.
+        if lifecycle.iter().any(|event| event.thread_id() != thread_id) {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let completed = lifecycle.iter().rev().find_map(|event| match event {
+            crate::wire::ThreadCompactEvent::Completed { tokens, .. } => Some(*tokens),
+            _ => None,
+        });
+        let failed = lifecycle
+            .iter()
+            .any(|event| matches!(event, crate::wire::ThreadCompactEvent::Failed { .. }));
+
+        // The re-read is what a confirmation rests on. An acknowledgement that
+        // compaction "completed" is still only an acknowledgement.
+        let after = app_server.inspect_thread(&thread_id).await?;
+        let same_session = after.thread_id == thread_id && after.generation == before.generation;
+
+        let observed = kontor_core::state::NativeRuntimeIdentity {
+            generation: after.generation,
+            native_id: kontor_core::id::ExternalId::parse(&after.thread_id)
+                .map_err(RuntimeError::Domain)?,
+            ..before.clone()
+        };
+        let status = if failed || completed.is_none() || !same_session {
+            CompactionStatus::Failed
+        } else {
+            CompactionStatus::Confirmed
+        };
+
+        let receipt = CompactionReceipt {
+            schema_version: request.policy.schema_version,
+            id: request.receipt_id,
+            agent_run_id: request.binding.agent_run_id(),
+            binding_id: request.binding.binding_id(),
+            native_before: before,
+            native_after: Some(observed),
+            requested: request.policy.requested,
+            effective: request.policy.effective,
+            trigger: request.trigger,
+            capabilities: capability_document(&declared).map_err(RuntimeError::Domain)?,
+            status,
+            telemetry: kontor_core::compaction::CompactionTelemetry {
+                // Only what the runtime actually reported. Codex says nothing
+                // about the pre-compaction count or the cache, and inventing a
+                // zero there would be a measurement nobody took.
+                tokens_before: None,
+                tokens_after: completed.flatten(),
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            context_pack_hash: request.context_pack_hash.clone(),
+            handoff_hash: request.handoff_hash.clone(),
+            evidence: (status == CompactionStatus::Confirmed)
+                .then(|| kontor_core::id::ExternalId::parse(crate::wire::THREAD_COMPACT_START))
+                .transpose()
+                .map_err(RuntimeError::Domain)?,
+            recorded_at: request.requested_at,
+        };
+        receipt.validate().map_err(RuntimeError::Domain)?;
+        Ok(receipt)
     }
 }

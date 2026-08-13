@@ -95,7 +95,32 @@ impl CodexCommand {
     /// `codex exec --json <prompt>`, run in `cwd`.
     #[must_use]
     pub fn exec(program: &str, cwd: &str, prompt: &str, env_names: Vec<String>) -> Self {
+        Self::exec_with_config(program, cwd, prompt, env_names, &[])
+    }
+
+    /// The same invocation, carrying startup configuration overrides.
+    ///
+    /// Each override becomes a `-c key=value` pair *before* the prompt, which is
+    /// how `codex exec` takes configuration. They are separate argv entries
+    /// rather than an interpolated string, so a value can never be read as
+    /// another option.
+    ///
+    /// The keys and values are Kontor's own — they come from the frozen context
+    /// policy, never from a prompt or an operator string — so they are not
+    /// treated as redactable values the way the prompt is.
+    #[must_use]
+    pub fn exec_with_config(
+        program: &str,
+        cwd: &str,
+        prompt: &str,
+        env_names: Vec<String>,
+        config: &[(String, String)],
+    ) -> Self {
         let mut argv: Vec<String> = EXEC_ARGV.iter().map(|part| (*part).to_owned()).collect();
+        for (key, value) in config {
+            argv.push("-c".to_owned());
+            argv.push(format!("{key}={value}"));
+        }
         argv.push(prompt.to_owned());
         Self {
             program: program.to_owned(),

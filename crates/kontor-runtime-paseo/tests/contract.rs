@@ -187,6 +187,22 @@ fn root() -> WorkspaceRoot {
     WorkspaceRoot::parse(CWD).expect("an absolute canonical path")
 }
 
+/// The standard-fallback context policy a seat launches under when the test is
+/// about something else.
+///
+/// The current Paseo daemon exposes no per-seat context configuration, so the
+/// effective half is `not_enforced` — which is exactly what this adapter must
+/// keep reporting.
+fn standard_context_policy() -> kontor_core::spec::ContextPolicySnapshot {
+    kontor_core::spec::ContextPolicySnapshot::standard(
+        &kontor_core::spec::ContextWindowBounds::unknown(),
+        false,
+        kontor_core::id::SCHEMA_VERSION,
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("the standard fallback freezes")
+}
+
 // ---------------------------------------------------------------------------
 // 0.3.1 content builders
 // ---------------------------------------------------------------------------
@@ -399,6 +415,7 @@ impl Plane {
             cwd: root(),
             account_profile_id: None,
             prompt: text("bootstrap the role"),
+            context_policy: standard_context_policy(),
             requested_at: at("2026-08-10T09:00:00Z"),
         }))
     }
@@ -1063,6 +1080,7 @@ async fn role_slot_a_same_slot_race_yields_one_permit_and_one_agent() {
             cwd: root(),
             account_profile_id: None,
             prompt: text("bootstrap"),
+            context_policy: standard_context_policy(),
             requested_at: at("2026-08-10T09:00:00Z"),
         });
     // The parts name a different binding than the reservation does, so even the
@@ -3047,4 +3065,157 @@ async fn permission_an_acknowledgement_for_another_agent_is_refused() {
             rule: "runtime acknowledged something other than this permission answer"
         }
     );
+}
+
+// ---------------------------------------------------------------------------
+// Context policy and compaction
+// ---------------------------------------------------------------------------
+
+fn compaction_policy(
+    enforcement: kontor_core::spec::ContextEnforcement,
+) -> kontor_core::spec::ContextPolicySnapshot {
+    let declared = kontor_core::spec::ContextWindowPolicy {
+        enforcement,
+        ..kontor_core::spec::ContextWindowPolicy::standard()
+    };
+    let resolved =
+        kontor_core::spec::resolve_context_window(&kontor_core::spec::ContextPolicyInputs {
+            role_slot: Some(&declared),
+            ..kontor_core::spec::ContextPolicyInputs::default()
+        })
+        .expect("the slot declaration resolves");
+    let requested =
+        kontor_core::spec::RequestedContextPolicy::of(&resolved, kontor_core::id::SCHEMA_VERSION);
+    // Paseo declares no context configuration, so the effective half is derived
+    // against an unsupported runtime — which is what `not_enforced` means.
+    let effective = kontor_core::spec::EffectiveContextPolicy::derive(
+        &requested,
+        &kontor_core::spec::ContextWindowBounds::unknown(),
+        false,
+    )
+    .expect("best effort derives against an incapable runtime");
+    kontor_core::spec::ContextPolicySnapshot::freeze(
+        requested,
+        effective,
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("both halves freeze")
+}
+
+/// The current daemon surface exposes neither capability, and says so.
+#[tokio::test]
+async fn the_current_daemon_advertises_no_context_or_compaction_capability() {
+    let (plane, _) = launched().await;
+    let declared = plane
+        .adapter
+        .discover_capabilities()
+        .await
+        .expect("capabilities are discoverable");
+
+    assert!(
+        !declared.supports(RuntimeCapability::ContextPolicy),
+        "Paseo 0.3.1 exposes no per-seat context configuration"
+    );
+    assert!(
+        !declared.supports(RuntimeCapability::Compact),
+        "Paseo 0.3.1 exposes no compaction operation"
+    );
+    // Unknown bounds stay unknown: no number is invented on the daemon's behalf.
+    assert_eq!(declared.limits.context_window.safe_ceiling_tokens, None);
+    assert_eq!(declared.limits.context_window.minimum_trigger_tokens, None);
+}
+
+/// MUT-CTX-05. Reporting an unsupported Paseo compaction as `Confirmed` makes
+/// this fail — and so does substituting any daemon mutation for it.
+#[tokio::test]
+async fn compaction_is_reported_unsupported_and_mutates_nothing() {
+    let (plane, binding) = launched().await;
+    let before = binding.identity().clone();
+    plane.daemon.take_calls();
+
+    let receipt = plane
+        .adapter
+        .compact(&kontor_runtime::request::CompactRequest {
+            binding: binding.clone(),
+            receipt_id: kontor_core::id::CompactionReceiptId::generate(),
+            trigger: kontor_core::compaction::CompactionTrigger::Threshold,
+            policy: compaction_policy(kontor_core::spec::ContextEnforcement::BestEffort),
+            context_pack_hash: kontor_core::id::ContentHash::of(b"context-pack"),
+            handoff_hash: None,
+            requested_at: at("2026-08-10T09:30:00Z"),
+        })
+        .await
+        .expect("an incapable daemon reports rather than fails");
+
+    assert_eq!(
+        receipt.status,
+        kontor_core::compaction::CompactionStatus::Unsupported
+    );
+    assert_ne!(
+        receipt.status,
+        kontor_core::compaction::CompactionStatus::Confirmed
+    );
+    // Nothing was re-read, because nothing was done.
+    assert_eq!(receipt.native_after, None);
+    assert!(receipt.telemetry.is_unknown());
+
+    // The substitutions that would look like compaction from outside, and are
+    // all a different session: none of them happened.
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "an unsupported compaction must emit no daemon mutation, got {:?}",
+        plane.daemon.mutations()
+    );
+    for forbidden in [
+        "reload", "archive", "close", "cancel", "create", "spawn", "replace",
+    ] {
+        assert!(
+            !plane
+                .daemon
+                .calls()
+                .iter()
+                .any(|call| call.contains(forbidden)),
+            "`{forbidden}` is not a compaction substitute, got {:?}",
+            plane.daemon.calls()
+        );
+    }
+    // The seat is still the same native session it was.
+    assert_eq!(binding.identity(), &before);
+}
+
+/// A `required` policy never reaches a Paseo seat at all.
+///
+/// The approved policy allows either branch — block reuse with `pending`, or
+/// reject the launch before any effect. On this daemon it is the second, and it
+/// happens at the earliest possible moment: the effective half cannot even be
+/// derived, so no launch is ever assembled, let alone dispatched.
+///
+/// That is stronger than a `pending` receipt would be, and it is why a required
+/// seat cannot silently run unenforced here.
+#[tokio::test]
+async fn a_required_policy_cannot_be_frozen_for_a_seat_this_daemon_runs() {
+    let declared = kontor_core::spec::ContextWindowPolicy {
+        enforcement: kontor_core::spec::ContextEnforcement::Required,
+        ..kontor_core::spec::ContextWindowPolicy::standard()
+    };
+    let resolved =
+        kontor_core::spec::resolve_context_window(&kontor_core::spec::ContextPolicyInputs {
+            role_slot: Some(&declared),
+            ..kontor_core::spec::ContextPolicyInputs::default()
+        })
+        .expect("the slot declaration resolves");
+    let requested =
+        kontor_core::spec::RequestedContextPolicy::of(&resolved, kontor_core::id::SCHEMA_VERSION);
+
+    let refused = kontor_core::spec::EffectiveContextPolicy::derive(
+        &requested,
+        &kontor_core::spec::ContextWindowBounds::unknown(),
+        // Paseo declares no `ContextPolicy` capability.
+        false,
+    )
+    .expect_err("a required policy cannot be honoured by this daemon");
+    assert!(matches!(
+        refused,
+        kontor_core::DomainError::MissingEvidence { .. }
+    ));
 }

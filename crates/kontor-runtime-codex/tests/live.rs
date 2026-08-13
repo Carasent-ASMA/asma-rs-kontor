@@ -294,6 +294,13 @@ async fn run_one(
             cwd: adapter.config().task_worktree.clone(),
             account_profile_id: Some(profile.id),
             prompt: BoundedText::parse(PROMPT).expect("bounded text"),
+            context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+                &kontor_core::spec::ContextWindowBounds::unknown(),
+                true,
+                kontor_core::id::SCHEMA_VERSION,
+                at("2026-08-10T09:00:00Z"),
+            )
+            .expect("the standard fallback freezes"),
             requested_at: at("2026-08-10T09:00:00Z"),
         });
     adapter

@@ -224,6 +224,7 @@ fn capabilities(account_env: bool) -> RuntimeCapabilities {
             max_message_bytes: 4_096,
             max_history_page: 50,
             max_concurrent_sessions: 4,
+            context_window: kontor_core::spec::ContextWindowBounds::unknown(),
         },
     }
 }

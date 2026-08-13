@@ -28,8 +28,8 @@ use serde::Deserialize;
 
 use crate::auth::CallerCapability;
 use crate::dto::{
-    BindingDto, EventDto, GapDto, HealthDto, ProjectionDto, RealmDto, ReceiptDto, ReceiptResponse,
-    RunDto, SnapshotDto, TaskDto, run_revisions, task_revisions,
+    BindingDto, ContextPolicyDto, EventDto, GapDto, HealthDto, ProjectionDto, RealmDto, ReceiptDto,
+    ReceiptResponse, RunDto, SnapshotDto, TaskDto, run_revisions, task_revisions,
 };
 use crate::error::{ApiError, ApiErrorCode};
 use crate::state::ApiState;
@@ -601,6 +601,72 @@ pub fn parse_id<T>(state: &ApiState, parsed: kontor_core::DomainResult<T>) -> Re
     })
 }
 
+/// Resolve a context-window policy from explicit inputs, and change nothing.
+///
+/// A pure read: it touches no store, dispatches to no runtime and persists
+/// nothing, so asking "what would this seat get" is free of consequence. The
+/// same inputs always produce the same answer, which is what makes it worth
+/// asking before a run exists.
+///
+/// It returns the *same* [`ContextPolicyDto`] a run carries, so a preview and
+/// the thing it previewed cannot describe a policy differently.
+#[utoipa::path(
+    post, path = "/v1/context-policy/preview", tag = "control",
+    request_body = crate::dto::ContextPolicyPreviewRequest,
+    responses(
+        (status = 200, body = ContextPolicyDto, description = "The policy those inputs resolve to"),
+        (status = 422, description = "A value outside the closed set, or a seed reaching an explicit-only class")
+    )
+)]
+pub async fn context_policy_preview(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Json(request): Json<crate::dto::ContextPolicyPreviewRequest>,
+) -> Result<Json<ContextPolicyDto>, ApiError> {
+    // A read, so reader authority is enough. Nothing here can change anything.
+    caller.require(&state, crate::auth::CallerCapability::Observer)?;
+    let realm_id = state.realm_id();
+    let domain = |error: &kontor_core::DomainError| ApiError::from_domain(realm_id, error);
+
+    let parse = |declared: Option<&crate::dto::ContextWindowPolicyDto>| {
+        declared
+            .map(crate::dto::ContextWindowPolicyDto::parse)
+            .transpose()
+    };
+    let run_override = parse(request.run_override.as_ref()).map_err(|e| domain(&e))?;
+    let role_slot = parse(request.role_slot.as_ref()).map_err(|e| domain(&e))?;
+    let work_profile = parse(request.work_profile.as_ref()).map_err(|e| domain(&e))?;
+    let role_seed = parse(request.role_seed.as_ref()).map_err(|e| domain(&e))?;
+
+    // The same resolver a launch uses. A preview that reimplemented precedence
+    // would be a second answer that could disagree with the real one.
+    let resolved =
+        kontor_core::spec::resolve_context_window(&kontor_core::spec::ContextPolicyInputs {
+            run_override: run_override.as_ref(),
+            role_slot: role_slot.as_ref(),
+            work_profile: work_profile.as_ref(),
+            role_seed: role_seed.as_ref(),
+        })
+        .map_err(|e| domain(&e))?;
+
+    let requested =
+        kontor_core::spec::RequestedContextPolicy::of(&resolved, kontor_core::id::SCHEMA_VERSION);
+    let effective = kontor_core::spec::EffectiveContextPolicy::derive(
+        &requested,
+        &kontor_core::spec::ContextWindowBounds {
+            safe_ceiling_tokens: request.safe_ceiling,
+            minimum_trigger_tokens: request.minimum_trigger,
+        },
+        request.context_policy_capable,
+    )
+    .map_err(|e| domain(&e))?;
+    let snapshot = kontor_core::spec::ContextPolicySnapshot::freeze(requested, effective, now())
+        .map_err(|e| domain(&e))?;
+
+    // No receipt, because nothing happened.
+    Ok(Json(ContextPolicyDto::of(&snapshot, None)))
+}
+
 /// Canonicalize one caller-supplied document.
 ///
 /// The document must carry its own `schema_version`, because that is what
@@ -625,6 +691,10 @@ fn run_dto(state: &ApiState, inspection: &RunInspection) -> RunDto {
         parent_agent_run_id: inspection.run.parent_agent_run_id,
         role: inspection.run.role.clone(),
         account_profile_id: inspection.run.account_profile_id,
+        context_policy: inspection
+            .context_policy
+            .as_ref()
+            .map(|snapshot| ContextPolicyDto::of(snapshot, inspection.latest_compaction.as_ref())),
         binding: inspection.run.binding.as_ref().map(|binding| BindingDto {
             binding_id: binding.id,
             runtime_kind: binding.identity.runtime_kind.clone(),

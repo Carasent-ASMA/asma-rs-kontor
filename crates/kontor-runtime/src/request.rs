@@ -9,17 +9,22 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use kontor_core::id::{
-    AccountProfileId, AgentRunId, BoundedText, ContentHash, ExternalId, RoleSlotId,
-    RuntimeBindingId, TaskId, TeamRunId, Timestamp,
+use kontor_core::compaction::{
+    CompactionReceipt, CompactionStatus, CompactionTelemetry, CompactionTrigger,
 };
+use kontor_core::id::{
+    AccountProfileId, AgentRunId, BoundedText, CanonicalDocument, CompactionReceiptId, ContentHash,
+    ExternalId, RoleSlotId, RuntimeBindingId, TaskId, TeamRunId, Timestamp,
+};
+use kontor_core::spec::{ContextEnforcement, ContextPolicySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::adapter::{RuntimeError, RuntimeResult};
 use crate::admission::{LaunchAuthority, RoleSlotKey};
-use crate::capability::RuntimeBindingSnapshot;
+use crate::capability::{RuntimeBindingSnapshot, RuntimeCapabilities};
 use crate::timeline::{HistoryCursor, SessionEventKind, TimelinePosition};
 use crate::workspace::{WorkspaceBindingSnapshot, WorkspaceClaim, WorkspaceRoot};
 
@@ -155,6 +160,12 @@ pub struct LaunchParts {
     pub account_profile_id: Option<AccountProfileId>,
     /// What the session starts with.
     pub prompt: BoundedText,
+    /// The immutable context-window policy this seat runs under.
+    ///
+    /// Both halves are already frozen and hashed: the launch carries the record,
+    /// it does not compute it, so a runtime cannot influence what Kontor says it
+    /// asked for.
+    pub context_policy: ContextPolicySnapshot,
     /// When the launch was requested.
     pub requested_at: Timestamp,
 }
@@ -268,6 +279,12 @@ impl LaunchRequest {
     #[must_use]
     pub const fn prompt(&self) -> &BoundedText {
         &self.parts.prompt
+    }
+
+    /// The immutable context-window policy this seat runs under.
+    #[must_use]
+    pub const fn context_policy(&self) -> &ContextPolicySnapshot {
+        &self.parts.context_policy
     }
 
     /// When the launch was requested.
@@ -390,6 +407,157 @@ pub struct LiveSubscribeRequest {
     pub kinds: BTreeSet<SessionEventKind>,
     /// The last position history validated. Delivery starts strictly after it.
     pub strict_after: TimelinePosition,
+}
+
+/// Ask a live session to compact its own context, in place.
+///
+/// The request carries no summary and no transcript. Kontor says *why* it is
+/// asking, *under which policy*, and *which durable evidence already exists*;
+/// producing the summary is the runtime's job, and the durable record of the
+/// work is the handoff this request names, never the summary.
+///
+/// The binding is the one the runtime issued, so compaction addresses an
+/// existing session and has no spelling that could create a second one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactRequest {
+    /// The session to compact, with its frozen capability snapshot.
+    pub binding: RuntimeBindingSnapshot,
+    /// This attempt's identity, which is also its idempotency key.
+    pub receipt_id: CompactionReceiptId,
+    /// Why compaction was requested.
+    pub trigger: CompactionTrigger,
+    /// The seat's immutable requested/effective policy pair.
+    pub policy: ContextPolicySnapshot,
+    /// The immutable Context Pack the run was frozen against.
+    pub context_pack_hash: ContentHash,
+    /// The sealed durable handoff this attempt proceeds on.
+    ///
+    /// Required for a boundary or operator compaction, because those happen at
+    /// a point where the work state *is* expressible and losing it would be a
+    /// choice. A threshold compaction is the runtime protecting itself and
+    /// cannot wait for a scope to close.
+    pub handoff_hash: Option<ContentHash>,
+    /// When the compaction was requested.
+    pub requested_at: Timestamp,
+}
+
+impl CompactRequest {
+    /// Prove this request may proceed at all.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::CompactionUnsafe`] when a boundary or operator
+    /// compaction presents no sealed handoff, which would discard work state
+    /// nothing else has recorded.
+    pub fn validate(&self) -> RuntimeResult<()> {
+        if self.trigger.requires_durable_handoff() && self.handoff_hash.is_none() {
+            return Err(RuntimeError::CompactionUnsafe {
+                rule: "a boundary or operator compaction requires a sealed durable handoff",
+            });
+        }
+        Ok(())
+    }
+
+    /// The receipt an adapter returns when it cannot compact at all.
+    ///
+    /// This is the capability-honest answer, and it is deliberately `Ok`: a
+    /// runtime that cannot compact has not failed, it has told the truth. The
+    /// two outcomes differ in what they permit afterwards —
+    /// [`CompactionStatus::Pending`] for a `required` policy, which blocks reuse
+    /// until somebody attests enforcement, and
+    /// [`CompactionStatus::Unsupported`] for `best_effort`, which is visible and
+    /// lets the work continue.
+    ///
+    /// Neither touches the runtime, and neither is ever success. There is no
+    /// path here that reloads, archives, restarts or replaces a session as a
+    /// substitute.
+    ///
+    /// # Errors
+    /// As [`capability_document`].
+    pub fn unsupported_receipt(
+        &self,
+        capabilities: &RuntimeCapabilities,
+        recorded_at: Timestamp,
+    ) -> DomainResult<CompactionReceipt> {
+        let status = match self.policy.requested.policy.enforcement {
+            ContextEnforcement::Required => CompactionStatus::Pending,
+            ContextEnforcement::BestEffort => CompactionStatus::Unsupported,
+        };
+        Ok(CompactionReceipt {
+            schema_version: self.policy.schema_version,
+            id: self.receipt_id,
+            agent_run_id: self.binding.agent_run_id(),
+            binding_id: self.binding.binding_id(),
+            native_before: self.binding.identity().clone(),
+            // Nothing was done, so there is nothing to have re-read. Copying the
+            // "before" identity here would fabricate an observation.
+            native_after: None,
+            requested: self.policy.requested,
+            effective: self.policy.effective,
+            trigger: self.trigger,
+            capabilities: capability_document(capabilities)?,
+            status,
+            telemetry: CompactionTelemetry::unknown(),
+            context_pack_hash: self.context_pack_hash.clone(),
+            handoff_hash: self.handoff_hash.clone(),
+            evidence: None,
+            recorded_at,
+        })
+    }
+
+    /// The digest the idempotency ledger compares retries against.
+    ///
+    /// Covers everything that decides what the runtime is being asked to do, so
+    /// the same receipt id with different content is refused rather than
+    /// silently replaying somebody else's attempt.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the request cannot be canonicalized.
+    pub fn content_hash(&self) -> DomainResult<ContentHash> {
+        #[derive(Serialize)]
+        struct Digest<'a> {
+            schema_version: kontor_core::id::SchemaVersion,
+            binding_id: String,
+            agent_run_id: String,
+            receipt_id: String,
+            trigger: CompactionTrigger,
+            requested_hash: &'a ContentHash,
+            effective_hash: &'a ContentHash,
+            context_pack_hash: &'a ContentHash,
+            handoff_hash: Option<&'a ContentHash>,
+        }
+        Ok(CanonicalDocument::from_serializable(&Digest {
+            schema_version: self.policy.schema_version,
+            binding_id: self.binding.binding_id().to_string(),
+            agent_run_id: self.binding.agent_run_id().to_string(),
+            receipt_id: self.receipt_id.to_string(),
+            trigger: self.trigger,
+            requested_hash: &self.policy.requested_hash,
+            effective_hash: &self.policy.effective_hash,
+            context_pack_hash: &self.context_pack_hash,
+            handoff_hash: self.handoff_hash.as_ref(),
+        })?
+        .hash()
+        .clone())
+    }
+}
+
+/// Freeze a runtime's capability snapshot into the receipt's canonical form.
+///
+/// [`CompactionReceipt`] lives in `kontor-core` so the store and every client
+/// can project it without linking an adapter crate, which means it cannot name
+/// [`RuntimeCapabilities`]. The adapter that acted freezes its own snapshot
+/// here instead — canonical, hashed, and subject to the same redaction rule as
+/// any other stored document.
+///
+/// # Errors
+/// Returns [`DomainError`] when the snapshot cannot be canonicalized.
+pub fn capability_document(capabilities: &RuntimeCapabilities) -> DomainResult<CanonicalDocument> {
+    let capabilities = serde_json::to_value(capabilities)
+        .map_err(|_| DomainError::invalid("RuntimeCapabilities", "is not serializable as JSON"))?;
+    CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": kontor_core::id::SCHEMA_VERSION.get(),
+        "capabilities": capabilities,
+    }))
 }
 
 /// Which way a permission request was answered.

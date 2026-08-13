@@ -438,6 +438,19 @@ fn parts(seat: &Seat, account: &str) -> Parts {
     }
 }
 
+/// The standard-fallback context policy a seat launches under when the test is
+/// about something else. Codex declares context configuration, so the effective
+/// half is `configured`.
+fn standard_context_policy() -> kontor_core::spec::ContextPolicySnapshot {
+    kontor_core::spec::ContextPolicySnapshot::standard(
+        &kontor_core::spec::ContextWindowBounds::unknown(),
+        true,
+        kontor_core::id::SCHEMA_VERSION,
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("the standard fallback freezes")
+}
+
 async fn admitted(adapter: &CodexAdapter<'_>, seat: &Seat, parts: &Parts) -> LaunchRequest {
     adapter
         .admit_launch(&AdmissionRequest {
@@ -461,6 +474,7 @@ async fn admitted(adapter: &CodexAdapter<'_>, seat: &Seat, parts: &Parts) -> Lau
             cwd: parts.cwd.clone(),
             account_profile_id: parts.account,
             prompt: BoundedText::parse(&parts.prompt).expect("bounded text"),
+            context_policy: standard_context_policy(),
             requested_at: at("2026-08-10T09:00:00Z"),
         })
 }
@@ -1633,4 +1647,211 @@ async fn no_debug_rendering_exposes_a_prompt_a_path_or_an_environment_value() {
     assert!(prepared.contains(HOME_TEXT));
     assert!(prepared.contains(PROMPT_TEXT));
     assert!(prepared.contains(CWD_TEXT));
+}
+
+// ---------------------------------------------------------------------------
+// Context policy and the hermetic app-server compaction lane (TASK-026)
+// ---------------------------------------------------------------------------
+
+fn context_policy(
+    class: kontor_core::spec::ContextWindowClass,
+    scope: kontor_core::spec::ContextTriggerScope,
+) -> kontor_core::spec::ContextPolicySnapshot {
+    let declared = kontor_core::spec::ContextWindowPolicy {
+        class,
+        trigger_scope: scope,
+        ..kontor_core::spec::ContextWindowPolicy::standard()
+    };
+    let resolved =
+        kontor_core::spec::resolve_context_window(&kontor_core::spec::ContextPolicyInputs {
+            role_slot: Some(&declared),
+            ..kontor_core::spec::ContextPolicyInputs::default()
+        })
+        .expect("the slot declaration resolves");
+    let requested =
+        kontor_core::spec::RequestedContextPolicy::of(&resolved, kontor_core::id::SCHEMA_VERSION);
+    let effective = kontor_core::spec::EffectiveContextPolicy::derive(
+        &requested,
+        &kontor_core::spec::ContextWindowBounds::unknown(),
+        true,
+    )
+    .expect("the effective half derives");
+    kontor_core::spec::ContextPolicySnapshot::freeze(
+        requested,
+        effective,
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("both halves freeze")
+}
+
+/// The exact `-c key=value` argv a seat's policy produces, asserted as bytes.
+#[tokio::test]
+async fn a_launch_configures_codex_with_the_exact_auto_compaction_values() {
+    let plane = plane_a(RecordedCodex::new());
+    let seat = open_seat(&plane.adapter, "compact-a").await;
+    let mut parts = parts(&seat, PROFILE_A);
+    parts.prompt = PROMPT.to_owned();
+    let request = admitted(&plane.adapter, &seat, &parts).await;
+
+    // The frozen policy the seat launches under.
+    let policy = context_policy(
+        kontor_core::spec::ContextWindowClass::Deep,
+        kontor_core::spec::ContextTriggerScope::GrowthAfterPrefix,
+    );
+    let config = kontor_runtime_codex::wire::auto_compact_config(&policy.effective);
+    assert_eq!(
+        config,
+        vec![
+            (
+                "model_auto_compact_token_limit".to_owned(),
+                "512000".to_owned()
+            ),
+            (
+                "model_auto_compact_token_limit_scope".to_owned(),
+                "body_after_prefix".to_owned()
+            ),
+        ]
+    );
+
+    // And the command actually carries them, as separate argv entries before the
+    // prompt, so a value can never be read as another option.
+    let command = kontor_runtime_codex::client::CodexCommand::exec_with_config(
+        "codex",
+        request.cwd().as_str(),
+        request.prompt().as_str(),
+        Vec::new(),
+        &config,
+    );
+    let argv = command.argv();
+    assert_eq!(argv[0], "exec");
+    assert_eq!(argv[1], "--json");
+    assert_eq!(argv[2], "-c");
+    assert_eq!(argv[3], "model_auto_compact_token_limit=512000");
+    assert_eq!(argv[4], "-c");
+    assert_eq!(
+        argv[5],
+        "model_auto_compact_token_limit_scope=body_after_prefix"
+    );
+    assert_eq!(argv[6], PROMPT, "the prompt stays last");
+}
+
+/// Production advertises no compaction, because production has no app-server.
+#[tokio::test]
+async fn a_production_adapter_advertises_context_policy_but_not_compact() {
+    let plane = plane_a(RecordedCodex::new());
+    let declared = plane
+        .adapter
+        .discover_capabilities()
+        .await
+        .expect("capabilities are discoverable");
+    assert!(declared.supports(RuntimeCapability::ContextPolicy));
+    assert!(
+        !declared.supports(RuntimeCapability::Compact),
+        "the production lane is `codex exec --json` and cannot compact a live thread"
+    );
+}
+
+/// MUT-CTX-06's Codex half: `Confirmed` only on an unchanged thread id and
+/// generation, proved by a fresh re-read rather than by the lifecycle's word.
+#[tokio::test]
+async fn the_hermetic_app_server_confirms_only_an_unchanged_thread() {
+    let app_server = std::sync::Arc::new(kontor_runtime_codex::fixture::FakeAppServer::new(1));
+    let plane = plane_a(one_run_script());
+    let adapter = plane
+        .adapter
+        .with_app_server(std::sync::Arc::clone(&app_server)
+            as std::sync::Arc<dyn kontor_runtime_codex::adapter::CodexAppServer>);
+
+    let declared = adapter
+        .discover_capabilities()
+        .await
+        .expect("capabilities are discoverable");
+    assert!(
+        declared.supports(RuntimeCapability::Compact),
+        "the hermetic lane is what makes compaction attestable"
+    );
+
+    let seat = open_seat(&adapter, "compact-b").await;
+    let (_, binding) = launch(&adapter, &seat, PROFILE_A).await;
+    let thread = binding.identity().native_id.as_str().to_owned();
+
+    let receipt = adapter
+        .compact(&kontor_runtime::request::CompactRequest {
+            binding: binding.clone(),
+            receipt_id: kontor_core::id::CompactionReceiptId::generate(),
+            trigger: kontor_core::compaction::CompactionTrigger::ScopeBoundary,
+            policy: context_policy(
+                kontor_core::spec::ContextWindowClass::Standard,
+                kontor_core::spec::ContextTriggerScope::GrowthAfterPrefix,
+            ),
+            context_pack_hash: kontor_core::id::ContentHash::of(b"context-pack"),
+            handoff_hash: Some(kontor_core::id::ContentHash::of(b"sealed-handoff")),
+            requested_at: at("2026-08-10T09:30:00Z"),
+        })
+        .await
+        .expect("the hermetic app-server compacts");
+
+    assert_eq!(
+        receipt.status,
+        kontor_core::compaction::CompactionStatus::Confirmed
+    );
+    assert!(receipt.preserves_native_identity());
+    receipt.validate().expect("a confirmed receipt validates");
+    // Only what the runtime reported. Nothing invented a "before" count.
+    assert_eq!(receipt.telemetry.tokens_after, Some(42_000));
+    assert_eq!(receipt.telemetry.tokens_before, None);
+    assert_eq!(receipt.telemetry.cache_read_tokens, None);
+
+    // The exact wire messages: the approved method, the exact body, and a fresh
+    // re-read afterwards.
+    let calls = app_server.calls();
+    assert_eq!(calls[0].0, "thread/compact/start");
+    assert_eq!(calls[0].1, format!("{{\"threadId\":\"{thread}\"}}"));
+    assert_eq!(calls[1].0, "thread/get");
+}
+
+/// A thread that re-reads in another generation was replaced, not compacted.
+#[tokio::test]
+async fn a_drifted_thread_is_failed_and_never_adopted_as_a_successor() {
+    let app_server = std::sync::Arc::new(kontor_runtime_codex::fixture::FakeAppServer::new(1));
+    let plane = plane_a(one_run_script());
+    let adapter = plane
+        .adapter
+        .with_app_server(std::sync::Arc::clone(&app_server)
+            as std::sync::Arc<dyn kontor_runtime_codex::adapter::CodexAppServer>);
+
+    let seat = open_seat(&adapter, "compact-c").await;
+    let (_, binding) = launch(&adapter, &seat, PROFILE_A).await;
+    let thread = binding.identity().native_id.as_str().to_owned();
+    app_server.drift_to(kontor_runtime_codex::wire::ThreadIdentity {
+        thread_id: thread,
+        // The lifecycle still says "completed"; the generation says otherwise.
+        generation: 7,
+    });
+
+    let receipt = adapter
+        .compact(&kontor_runtime::request::CompactRequest {
+            binding: binding.clone(),
+            receipt_id: kontor_core::id::CompactionReceiptId::generate(),
+            trigger: kontor_core::compaction::CompactionTrigger::Operator,
+            policy: context_policy(
+                kontor_core::spec::ContextWindowClass::Standard,
+                kontor_core::spec::ContextTriggerScope::GrowthAfterPrefix,
+            ),
+            context_pack_hash: kontor_core::id::ContentHash::of(b"context-pack"),
+            handoff_hash: Some(kontor_core::id::ContentHash::of(b"sealed-handoff")),
+            requested_at: at("2026-08-10T09:30:00Z"),
+        })
+        .await
+        .expect("the attempt still returns a receipt");
+
+    assert_eq!(
+        receipt.status,
+        kontor_core::compaction::CompactionStatus::Failed
+    );
+    assert!(!receipt.preserves_native_identity());
+    assert!(
+        receipt.evidence.is_none(),
+        "a failed attempt cites no confirmation evidence"
+    );
 }

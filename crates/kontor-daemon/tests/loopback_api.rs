@@ -4587,3 +4587,143 @@ async fn a_linked_task_claims_its_tickets_and_refuses_to_pull_without_a_connecto
     assert_eq!(pulled.status, 503, "{}", pulled.body);
     assert_eq!(pulled.code(), "unavailable");
 }
+
+/// The compact command's guards, exercised through the real route.
+///
+/// MUT-CTX-07's command-surface proof: removing
+/// `CompactRequest::validate` from the handler makes the boundary case pass
+/// through to the adapter, which this test catches by counting adapter calls.
+#[tokio::test]
+async fn a_compact_command_enforces_its_guards_before_any_runtime_effect() {
+    let world = World::open().await;
+    let (run, _) = world.launch().await;
+
+    let compact = |body: serde_json::Value| {
+        Call::post(format!("/v1/sessions/{run}/compact"), &body)
+            .signed_as(&world, "operator")
+            .with_key(kontor_core::id::CompactionReceiptId::generate().to_string())
+    };
+    let pack = kontor_core::id::ContentHash::of(b"pack")
+        .as_str()
+        .to_owned();
+    let handoff = kontor_core::id::ContentHash::of(b"handoff")
+        .as_str()
+        .to_owned();
+
+    // A finished turn is not a trigger, and there is no spelling for it.
+    let before = world.fake.calls().len();
+    let invented = compact(serde_json::json!({
+        "trigger": "turn_finished",
+        "context_pack_hash": pack,
+        "handoff_hash": handoff,
+        "active_tool": false,
+        "unresolved_permission": false,
+    }))
+    .send(&world)
+    .await;
+    assert_eq!(invented.status, 400);
+    assert_eq!(
+        world.fake.calls().len(),
+        before,
+        "an invented trigger must reach the runtime not at all"
+    );
+
+    // A boundary compaction with no sealed handoff is refused, and refused
+    // *before* the adapter is called.
+    let before = world.fake.calls().len();
+    let unsealed = compact(serde_json::json!({
+        "trigger": "scope_boundary",
+        "context_pack_hash": pack,
+        "active_tool": false,
+        "unresolved_permission": false,
+    }))
+    .send(&world)
+    .await;
+    assert_eq!(unsealed.status, 422);
+    assert_eq!(
+        world.fake.calls().len(),
+        before,
+        "a boundary compaction with no durable handoff must not reach the runtime"
+    );
+
+    // A session mid-tool-action is not at a safe point.
+    let before = world.fake.calls().len();
+    let busy = compact(serde_json::json!({
+        "trigger": "operator",
+        "context_pack_hash": pack,
+        "handoff_hash": handoff,
+        "active_tool": true,
+        "unresolved_permission": false,
+    }))
+    .send(&world)
+    .await;
+    assert_eq!(busy.status, 422);
+    assert_eq!(world.fake.calls().len(), before);
+
+    // …and neither is one with a permission nobody answered.
+    let before = world.fake.calls().len();
+    let waiting = compact(serde_json::json!({
+        "trigger": "operator",
+        "context_pack_hash": pack,
+        "handoff_hash": handoff,
+        "active_tool": false,
+        "unresolved_permission": true,
+    }))
+    .send(&world)
+    .await;
+    assert_eq!(waiting.status, 422);
+    assert_eq!(world.fake.calls().len(), before);
+}
+
+/// An observer may preview a policy; only an operator may compact.
+#[tokio::test]
+async fn the_preview_reads_and_the_compact_command_requires_an_operator() {
+    let world = World::open().await;
+    let (run, _) = world.launch().await;
+
+    let preview = Call::post(
+        "/v1/context-policy/preview".to_owned(),
+        &serde_json::json!({
+            "role_slot": {
+                "class": "deep",
+                "enforcement": "best_effort",
+                "trigger_scope": "growth_after_prefix",
+                "boundary_compaction": true
+            },
+            "context_policy_capable": true
+        }),
+    )
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200);
+    assert_eq!(preview.json()["requested_class"], "deep");
+    assert_eq!(preview.json()["requested_tokens"], 512_000);
+    assert_eq!(preview.json()["source"], "role_slot");
+    assert_eq!(preview.json()["capability"], "configured");
+
+    // The same preview from an unauthenticated caller is refused.
+    let anonymous = Call::post(
+        "/v1/context-policy/preview".to_owned(),
+        &serde_json::json!({"context_policy_capable": true}),
+    )
+    .send(&world)
+    .await;
+    assert!(anonymous.status == 401 || anonymous.status == 403);
+
+    // Compaction is an operator act.
+    let as_observer = Call::post(
+        format!("/v1/sessions/{run}/compact"),
+        &serde_json::json!({
+            "trigger": "threshold",
+            "context_pack_hash": kontor_core::id::ContentHash::of(b"pack").as_str(),
+            "active_tool": false,
+            "unresolved_permission": false,
+        }),
+    )
+    .signed_as(&world, "observer")
+    .with_key(kontor_core::id::CompactionReceiptId::generate().to_string())
+    .send(&world)
+    .await;
+    assert_eq!(as_observer.status, 403);
+}

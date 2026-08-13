@@ -1409,3 +1409,85 @@ fn the_multi_discipline_closure_rule_survives_renaming_the_profile() {
     )
     .expect("and satisfying it still closes");
 }
+
+// ---------------------------------------------------------------------------
+// Context-window seeds
+// ---------------------------------------------------------------------------
+
+/// The seed table is data the bundle freezes, and the bundle digest covers it.
+///
+/// Nothing here names a role: the assertion is that whatever the pack seeds is
+/// what the bundle carries, so a deployment with entirely different roles takes
+/// the identical path.
+#[test]
+fn a_bundle_freezes_the_seeds_for_exactly_the_roles_it_selected() {
+    let pack = seeds();
+    let category = pack.runnable_categories()[0].clone();
+    let bundle = resolve_profile(&pack, &category, now()).expect("the category resolves");
+
+    let selected: BTreeSet<&kontor_core::id::RoleKey> =
+        bundle.roles.iter().map(|role| &role.role).collect();
+    for seed in &bundle.context_policy.role_seeds {
+        assert!(
+            selected.contains(&seed.role),
+            "a bundle only seeds roles it actually selected"
+        );
+    }
+    // Every seeded role the pack declares for this bundle is carried across.
+    let expected = pack
+        .role_context_seeds
+        .iter()
+        .filter(|seed| selected.contains(&seed.role))
+        .count();
+    assert_eq!(bundle.context_policy.role_seeds.len(), expected);
+
+    bundle.verify().expect("the bundle matches its own digest");
+}
+
+/// Changing a seed changes the bundle digest, so a run pinned to a bundle hash
+/// cannot silently inherit a re-tuned context policy.
+#[test]
+fn editing_a_seed_changes_the_bundle_digest() {
+    let pack = seeds();
+    let category = pack.runnable_categories()[0].clone();
+    let before = resolve_profile(&pack, &category, now()).expect("it resolves");
+    assert!(
+        !before.context_policy.role_seeds.is_empty(),
+        "the bundled pack seeds at least one selected role"
+    );
+
+    let mut retuned = pack.clone();
+    for seed in &mut retuned.role_context_seeds {
+        seed.context_window.class = match seed.context_window.class {
+            kontor_core::spec::ContextWindowClass::Lean => {
+                kontor_core::spec::ContextWindowClass::Deep
+            }
+            _ => kontor_core::spec::ContextWindowClass::Lean,
+        };
+    }
+    let after = resolve_profile(&retuned, &category, now()).expect("it still resolves");
+    assert_ne!(before.bundle_hash, after.bundle_hash);
+}
+
+/// A pack that seeds an explicit-only class is refused at resolution, so the
+/// rule cannot be evaded by writing it into deployment data.
+#[test]
+fn a_pack_cannot_seed_an_explicit_only_class() {
+    let mut pack = seeds();
+    let category = pack.runnable_categories()[0].clone();
+    let selected = resolve_profile(&pack, &category, now())
+        .expect("it resolves")
+        .roles[0]
+        .role
+        .clone();
+
+    for seed in &mut pack.role_context_seeds {
+        if seed.role == selected {
+            seed.context_window.class = kontor_core::spec::ContextWindowClass::Extended;
+        }
+    }
+    assert!(
+        resolve_profile(&pack, &category, now()).is_err(),
+        "a seeded explicit-only class is refused"
+    );
+}

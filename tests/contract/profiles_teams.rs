@@ -89,6 +89,7 @@ fn capabilities() -> RuntimeCapabilities {
             max_message_bytes: 4096,
             max_history_page: 64,
             max_concurrent_sessions: 16,
+            context_window: kontor_core::spec::ContextWindowBounds::unknown(),
         },
     }
 }
@@ -253,6 +254,13 @@ impl World {
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),
+            context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+                &kontor_core::spec::ContextWindowBounds::unknown(),
+                true,
+                kontor_core::id::SCHEMA_VERSION,
+                now(),
+            )
+            .expect("the standard fallback freezes"),
             requested_at: now(),
         }
     }

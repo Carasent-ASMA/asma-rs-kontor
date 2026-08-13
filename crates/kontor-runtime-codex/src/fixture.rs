@@ -479,3 +479,112 @@ impl CodexTransport for RecordedCodex {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// The hermetic app-server (TASK-026)
+// ---------------------------------------------------------------------------
+
+/// A fake Codex app-server that records the exact wire messages it was sent.
+///
+/// No process, no socket, no installed Codex. It exists so the approved
+/// `thread/compact/start` mapping can be proved as *bytes* — the method name and
+/// the request body — rather than as a paraphrase, and so a confirmation can be
+/// shown to rest on a fresh re-read rather than on the lifecycle's own word.
+#[derive(Debug, Default)]
+pub struct FakeAppServer {
+    calls: std::sync::Mutex<Vec<(String, String)>>,
+    lifecycle: std::sync::Mutex<Vec<crate::wire::ThreadCompactEvent>>,
+    /// What the thread re-reads as. `None` means "the same thread, unchanged",
+    /// which is the case a confirmation requires.
+    drift: std::sync::Mutex<Option<crate::wire::ThreadIdentity>>,
+    generation: u64,
+}
+
+impl FakeAppServer {
+    /// An app-server that compacts one thread successfully.
+    #[must_use]
+    pub fn new(generation: u64) -> Self {
+        Self {
+            calls: std::sync::Mutex::new(Vec::new()),
+            lifecycle: std::sync::Mutex::new(Vec::new()),
+            drift: std::sync::Mutex::new(None),
+            generation,
+        }
+    }
+
+    /// Script the lifecycle the next compaction emits.
+    pub fn script(&self, events: Vec<crate::wire::ThreadCompactEvent>) {
+        *self.lifecycle.lock().expect("the fixture lock is intact") = events;
+    }
+
+    /// Make the thread re-read as a *different* session — the drift a
+    /// confirmation must refuse.
+    pub fn drift_to(&self, identity: crate::wire::ThreadIdentity) {
+        *self.drift.lock().expect("the fixture lock is intact") = Some(identity);
+    }
+
+    /// Every `(method, canonical request body)` this app-server was sent.
+    #[must_use]
+    pub fn calls(&self) -> Vec<(String, String)> {
+        self.calls
+            .lock()
+            .expect("the fixture lock is intact")
+            .clone()
+    }
+
+    fn record(&self, method: &str, body: &str) {
+        self.calls
+            .lock()
+            .expect("the fixture lock is intact")
+            .push((method.to_owned(), body.to_owned()));
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::adapter::CodexAppServer for FakeAppServer {
+    async fn compact_thread(
+        &self,
+        request: &crate::wire::ThreadCompactStart,
+    ) -> kontor_runtime::adapter::RuntimeResult<Vec<crate::wire::ThreadCompactEvent>> {
+        self.record(
+            crate::wire::THREAD_COMPACT_START,
+            &serde_json::to_string(request).expect("the request serializes"),
+        );
+        let scripted = self
+            .lifecycle
+            .lock()
+            .expect("the fixture lock is intact")
+            .clone();
+        if scripted.is_empty() {
+            return Ok(vec![
+                crate::wire::ThreadCompactEvent::Started {
+                    thread_id: request.thread_id.clone(),
+                },
+                crate::wire::ThreadCompactEvent::Completed {
+                    thread_id: request.thread_id.clone(),
+                    tokens: Some(42_000),
+                },
+            ]);
+        }
+        Ok(scripted)
+    }
+
+    async fn inspect_thread(
+        &self,
+        thread_id: &str,
+    ) -> kontor_runtime::adapter::RuntimeResult<crate::wire::ThreadIdentity> {
+        self.record("thread/get", &format!("{{\"threadId\":\"{thread_id}\"}}"));
+        if let Some(drifted) = self
+            .drift
+            .lock()
+            .expect("the fixture lock is intact")
+            .clone()
+        {
+            return Ok(drifted);
+        }
+        Ok(crate::wire::ThreadIdentity {
+            thread_id: thread_id.to_owned(),
+            generation: self.generation,
+        })
+    }
+}

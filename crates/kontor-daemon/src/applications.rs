@@ -69,8 +69,9 @@ use kontor_core::repository::{
     TicketRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
-    AutoArmPolicy, CanonicalSourceEvent, IntakeReceipt, IntakeResult, SourceIdentity,
-    SourceProcessingState, TeamRunSnapshot, TriggerSpec,
+    AutoArmPolicy, CanonicalSourceEvent, ContextPolicySnapshot, EffectiveContextPolicy,
+    IntakeReceipt, IntakeResult, RequestedContextPolicy, SourceIdentity, SourceProcessingState,
+    TeamRunSnapshot, TriggerSpec,
 };
 use kontor_core::state::{GateVerdict, TaskState, TaskTeamClosure};
 use kontor_core::ticket::OwnershipAction;
@@ -1037,6 +1038,7 @@ fn unreachable_runtime(
                 max_message_bytes: 0,
                 max_history_page: 0,
                 max_concurrent_sessions: 0,
+                context_window: kontor_core::spec::ContextWindowBounds::unknown(),
             },
         },
         required,
@@ -1195,6 +1197,39 @@ fn slot_prompt(
              handed the artifacts your role requires.",
         )
     }
+}
+
+/// Freeze the context-window policy one seat launches under, before its session
+/// exists.
+///
+/// Resolution reads the team run's *own frozen* inputs, so a later edit to a
+/// profile pack, a seed table or a template cannot change what this run asked
+/// for. The effective half comes from what the runtime attests right now: a
+/// runtime that cannot configure a context window records `not_enforced` rather
+/// than a claim of success, and a `required` policy on such a runtime is refused
+/// here — before admission is spent and before any native effect.
+async fn freeze_seat_context_policy(
+    adapter: &std::sync::Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+    snapshot: &TeamRunSnapshot,
+    slot: &RoleSlotId,
+    now: Timestamp,
+) -> kontor_runtime::adapter::RuntimeResult<ContextPolicySnapshot> {
+    let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?;
+    let declared = template
+        .slot(slot)
+        .and_then(|seat| seat.context_window.as_ref());
+    // No authorized run override at this door: the scheduler starts a seat from
+    // the frozen team definition, and an override is an operator act that
+    // arrives through the explicit control-plane command instead.
+    let resolved = snapshot.resolve_context_window(slot.as_role_key(), declared, None)?;
+    let capabilities = adapter.discover_capabilities().await?;
+    let requested = RequestedContextPolicy::of(&resolved, SCHEMA_VERSION);
+    let effective = EffectiveContextPolicy::derive(
+        &requested,
+        &capabilities.limits.context_window,
+        capabilities.supports(RuntimeCapability::ContextPolicy),
+    )?;
+    Ok(ContextPolicySnapshot::freeze(requested, effective, now)?)
 }
 
 /// The stable spelling of one context layer.
@@ -3989,6 +4024,20 @@ impl Services {
         let launch_key = IdempotencyKey::parse(&format!("{}-{}", key.as_str(), admitted.task_id))
             .map_err(|error| self.refuse_domain(&error))?;
 
+        // Frozen once, here: every seat of this team run resolves its context
+        // window against this copy, so the answer cannot drift as packs change.
+        let seeded_roles: BTreeSet<kontor_core::id::RoleKey> = team
+            .roles
+            .iter()
+            .map(|requirement| requirement.role.role.clone())
+            .collect();
+        let team_snapshot = TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION)
+            .with_context_policy(
+                self.pack
+                    .context_policy_for(&workflow.snapshot.definition, &seeded_roles),
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
+
         let commit = state.with_store(|store| {
             store.admit_candidate(&AdmissionCommit {
                 admitted,
@@ -3998,7 +4047,7 @@ impl Services {
                     id: team_run_id,
                     project_id,
                     task_id: admitted.task_id,
-                    snapshot: TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION),
+                    snapshot: team_snapshot.clone(),
                     created_at: now,
                 },
                 agent_run: NewAgentRun {
@@ -4065,19 +4114,33 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
             .into_authority()
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let outcome = adapter
-            .launch(&authority.into_request(LaunchParts {
-                agent_run_id,
-                team_run_id,
-                role_slot_id: slot.clone(),
-                task_id: admitted.task_id,
-                binding_id,
-                workspace: Some(workspace.clone()),
-                cwd: workspace.root().clone(),
-                account_profile_id: admitted.account_profile_id,
-                prompt: slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
-                requested_at: now,
-            }))
+            .launch(
+                &authority.into_request(LaunchParts {
+                    agent_run_id,
+                    team_run_id,
+                    role_slot_id: slot.clone(),
+                    task_id: admitted.task_id,
+                    binding_id,
+                    workspace: Some(workspace.clone()),
+                    cwd: workspace.root().clone(),
+                    account_profile_id: admitted.account_profile_id,
+                    prompt: slot_prompt(&slot, &roots)
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    context_policy: freeze_seat_context_policy(
+                        &adapter,
+                        &team_snapshot,
+                        &slot,
+                        now,
+                    )
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?,
+                    requested_at: now,
+                }),
+            )
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
 
@@ -4089,6 +4152,14 @@ impl Services {
         };
         state
             .with_store(|store| store.bind_agent_run(project_id, agent_run_id, &binding))
+            .map_err(|error| self.refuse(&error))?;
+        // Freeze the requested/effective pair onto the run, beside the binding.
+        // The record of what a seat was launched under has to outlive this
+        // process, or an audit after a restart has only the session to go on.
+        state
+            .with_store(|store| {
+                store.record_run_context_policy(project_id, agent_run_id, &context_policy)
+            })
             .map_err(|error| self.refuse(&error))?;
         // The frozen snapshot lives in this process: it is what lets the session
         // routes address the seat at the evidence quality it was bound at.
@@ -4173,6 +4244,20 @@ impl Services {
             })
             .map_err(|error| self.refuse(&error))?;
 
+        // The seat resolves its context window against the team run's own frozen
+        // inputs, read back from storage rather than recomposed from whatever
+        // the profile pack says now.
+        let team_snapshot = state
+            .with_store(|store| store.get_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.refuse_domain(&kontor_core::DomainError::invalid(
+                    "StartSeat",
+                    "the team run this seat joins does not exist",
+                ))
+            })?
+            .snapshot;
+
         // The workspace is idempotent per team run, so every seat of the team
         // lands in the one verified root rather than each preparing its own.
         let workspace = adapter
@@ -4199,19 +4284,27 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?
             .into_authority()
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
+            .await
+            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let outcome = adapter
-            .launch(&authority.into_request(LaunchParts {
-                agent_run_id,
-                team_run_id,
-                role_slot_id: slot.clone(),
-                task_id: admitted.task_id,
-                binding_id,
-                workspace: Some(workspace.clone()),
-                cwd: workspace.root().clone(),
-                account_profile_id: admitted.account_profile_id,
-                prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
-                requested_at: now,
-            }))
+            .launch(
+                &authority.into_request(LaunchParts {
+                    agent_run_id,
+                    team_run_id,
+                    role_slot_id: slot.clone(),
+                    task_id: admitted.task_id,
+                    binding_id,
+                    workspace: Some(workspace.clone()),
+                    cwd: workspace.root().clone(),
+                    account_profile_id: admitted.account_profile_id,
+                    prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
+                    context_policy: freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
+                        .await
+                        .map_err(|error| ApiError::from_runtime(realm_id, &error))?,
+                    requested_at: now,
+                }),
+            )
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let binding = RuntimeBinding {
@@ -4222,6 +4315,11 @@ impl Services {
         };
         state
             .with_store(|store| store.bind_agent_run(project_id, agent_run_id, &binding))
+            .map_err(|error| self.refuse(&error))?;
+        state
+            .with_store(|store| {
+                store.record_run_context_policy(project_id, agent_run_id, &context_policy)
+            })
             .map_err(|error| self.refuse(&error))?;
         state.sessions().record(outcome.snapshot.clone());
         Ok(StartedSeatDto {

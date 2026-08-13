@@ -892,6 +892,13 @@ mod tests {
             cwd: WorkspaceRoot::parse("/w/task-1").expect("an absolute path"),
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),
+            context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+                &kontor_core::spec::ContextWindowBounds::unknown(),
+                true,
+                kontor_core::id::SCHEMA_VERSION,
+                parse_utc_timestamp("2026-08-10T09:00:00Z").expect("a canonical time"),
+            )
+            .expect("the standard fallback freezes"),
             requested_at: parse_utc_timestamp("2026-08-10T09:00:00Z").expect("a canonical time"),
         })
     }

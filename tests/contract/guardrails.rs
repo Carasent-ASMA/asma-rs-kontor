@@ -98,6 +98,7 @@ fn capabilities() -> RuntimeCapabilities {
             max_message_bytes: 4096,
             max_history_page: 64,
             max_concurrent_sessions: 16,
+            context_window: kontor_core::spec::ContextWindowBounds::unknown(),
         },
     }
 }
@@ -192,6 +193,7 @@ fn work_profile() -> WorkProfileSpec {
         },
         calendar_policy: None,
         external_workflow: None,
+        context_window: None,
     }
 }
 

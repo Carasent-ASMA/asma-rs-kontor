@@ -89,6 +89,7 @@ fn capabilities(trust_grade: TrustGrade, sessions: u32) -> RuntimeCapabilities {
             max_message_bytes: 4_096,
             max_history_page: 64,
             max_concurrent_sessions: sessions,
+            context_window: kontor_core::spec::ContextWindowBounds::unknown(),
         },
     }
 }

@@ -27,8 +27,8 @@ use kontor_core::id::{
     validate_open_key,
 };
 use kontor_core::spec::{
-    PersonaScenarioSnapshot, PersonaScenarioSpec, ResolvedWorkProfileSnapshot,
-    TeamTemplateRevision, WorkProfileSpec,
+    PersonaScenarioSnapshot, PersonaScenarioSpec, ResolvedWorkProfileSnapshot, RoleContextSeed,
+    TeamContextPolicySeed, TeamTemplateRevision, WorkProfileSpec,
 };
 use kontor_core::state::{GateState, TaskClosureCertificate};
 use kontor_core::{DomainError, DomainResult};
@@ -203,6 +203,14 @@ pub struct ProfilePackSpec {
     /// Persona scenarios, each bound to the profile it exercises.
     #[serde(default)]
     pub personas: Vec<PackPersona>,
+    /// The deployment's context-window seed for each logical role.
+    ///
+    /// This is the only place a role name meets a context class, and it is data:
+    /// nothing in this crate compares a role id to a literal to decide how much
+    /// context a seat gets. A pack that seeds nothing leaves every seat on the
+    /// standard fallback.
+    #[serde(default)]
+    pub role_context_seeds: Vec<RoleContextSeed>,
 }
 
 impl ProfilePackSpec {
@@ -228,6 +236,28 @@ impl ProfilePackSpec {
         self.manifest
             .iter()
             .find(|entry| &entry.category == category)
+    }
+
+    /// The context-window resolution inputs a run freezes for one profile.
+    ///
+    /// The profile's own default plus the seeds for exactly the roles named,
+    /// so the frozen inputs describe that run rather than the whole deployment
+    /// catalogue. Seeds for roles the run does not use are left out.
+    #[must_use]
+    pub fn context_policy_for(
+        &self,
+        profile: &WorkProfileSpec,
+        roles: &BTreeSet<RoleKey>,
+    ) -> TeamContextPolicySeed {
+        TeamContextPolicySeed {
+            work_profile: profile.context_window,
+            role_seeds: self
+                .role_context_seeds
+                .iter()
+                .filter(|seed| roles.contains(&seed.role))
+                .cloned()
+                .collect(),
+        }
     }
 
     /// Every category that actually resolves to a profile.
@@ -775,6 +805,9 @@ pub struct ResolvedProfileBundle {
     pub skills: Vec<SkillDefinition>,
     /// The context templates this run selected.
     pub contexts: Vec<ContextDefinition>,
+    /// The context-window resolution inputs this run freezes: the profile's own
+    /// default and the seeds for the roles it actually selected.
+    pub context_policy: TeamContextPolicySeed,
     /// Digest of everything above.
     pub bundle_hash: ContentHash,
 }
@@ -791,6 +824,7 @@ struct BundleDigestInput<'a> {
     roles: &'a [RoleDefinition],
     skills: &'a [SkillDefinition],
     contexts: &'a [ContextDefinition],
+    context_policy: &'a TeamContextPolicySeed,
 }
 
 impl ResolvedProfileBundle {
@@ -825,6 +859,7 @@ impl ResolvedProfileBundle {
             roles: &self.roles,
             skills: &self.skills,
             contexts: &self.contexts,
+            context_policy: &self.context_policy,
         })?
         .hash()
         .clone())
@@ -936,6 +971,10 @@ pub fn resolve_profile(
         (definition.template.clone(), definition.version)
     })?;
 
+    let selected_roles: BTreeSet<RoleKey> = roles.iter().map(|role| role.role.clone()).collect();
+    let context_policy = pack.context_policy_for(definition, &selected_roles);
+    context_policy.validate()?;
+
     let mut bundle = ResolvedProfileBundle {
         schema_version: definition.schema_version,
         category: category.clone(),
@@ -946,6 +985,7 @@ pub fn resolve_profile(
         roles,
         skills,
         contexts,
+        context_policy,
         bundle_hash: ContentHash::of(b""),
     };
     bundle.bundle_hash = bundle.digest()?;

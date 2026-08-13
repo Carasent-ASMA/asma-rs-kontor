@@ -46,6 +46,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{
     AgentRunId, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
     RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId, Timestamp,
@@ -69,9 +70,9 @@ use kontor_runtime::observation::{
     ReconciliationFinding, ReconciliationReport, reconcile,
 };
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
-    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
-    SendMessageRequest,
+    AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
+    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
+    ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::timeline::{
     Admission, EventSubject, HistoryCursor, HistoryPage, LiveSubscription, MessageLedger,
@@ -266,6 +267,7 @@ impl PaseoConfig {
                 max_message_bytes: MAX_MESSAGE_BYTES,
                 max_history_page: MAX_HISTORY_PAGE,
                 max_concurrent_sessions: self.max_concurrent_sessions,
+                context_window: kontor_core::spec::ContextWindowBounds::unknown(),
             },
         }
     }
@@ -2033,6 +2035,7 @@ impl PaseoAdapter {
                 demand: Some(LimitDemand::ConcurrentSessions(
                     u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
                 )),
+                context_policy: Some(request.context_policy()),
             },
         )?;
 
@@ -2386,6 +2389,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
 
@@ -2454,6 +2458,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::MessageBytes(request.body_bytes())),
+                context_policy: None,
             },
         )?;
 
@@ -2566,6 +2571,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         let native_id = binding.identity().native_id.as_str().to_owned();
@@ -2608,6 +2614,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         let native_id = binding.identity().native_id.as_str().to_owned();
@@ -2801,6 +2808,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 workspace: None,
                 current_generation: None,
                 demand: None,
+                context_policy: None,
             },
         )?;
         let project = self.require_project()?;
@@ -2877,6 +2885,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::HistoryPage(request.page_size)),
+                context_policy: None,
             },
         )?;
 
@@ -2947,6 +2956,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
 
@@ -3066,6 +3076,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
 
@@ -3137,6 +3148,45 @@ impl RuntimeAdapter for PaseoAdapter {
                 rule: "runtime accepted the answer but its resolution has not appeared yet",
             }),
         }
+    }
+
+    /// Report, honestly, that this daemon cannot compact a seat's context.
+    ///
+    /// The Paseo 0.3.1 protocol exposes no per-seat context configuration and no
+    /// compaction operation, so [`PaseoAdapter::capabilities`] advertises
+    /// neither [`RuntimeCapability::ContextPolicy`] nor
+    /// [`RuntimeCapability::Compact`], and this method emits **no RPC at all**.
+    ///
+    /// What it deliberately does not do is the whole point. Paseo *can* reload,
+    /// archive, cancel and create agents, and any of those could be dressed up
+    /// as "compaction" — a fresh agent with a summarized prompt looks like a
+    /// compacted seat from the outside. It would be a different session, the
+    /// native id would change, and the receipt would be a lie. So the answer is
+    /// a receipt that says `pending` for a `required` policy — which blocks
+    /// reuse — or `unsupported` for `best_effort`, which is visible and lets the
+    /// work continue. Neither is ever `confirmed`, and no message is sent to the
+    /// model in the hope that it compacts itself.
+    async fn compact(&self, request: &CompactRequest) -> RuntimeResult<CompactionReceipt> {
+        request.validate()?;
+        // The binding is still attested, so a stale or forged one is refused
+        // rather than answered — reporting a limitation is not a reason to stop
+        // checking who is asking.
+        let binding = self.attested(&request.binding)?;
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Inspect,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                workspace: None,
+                current_generation: Some(self.generation()),
+                demand: None,
+                context_policy: None,
+            },
+        )?;
+        Ok(request.unsupported_receipt(&declared, request.requested_at)?)
     }
 }
 

@@ -30,6 +30,48 @@ use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::timeline::SessionEventKind;
 use serde::{Deserialize, Serialize};
 
+/// The Codex configuration key that sets the auto-compaction token trigger.
+///
+/// Spelled once, here, because the exact key is the contract: a typo would be a
+/// silently ignored override, which is indistinguishable from an enforced one
+/// unless somebody reads the child's argv.
+pub const AUTO_COMPACT_LIMIT_KEY: &str = "model_auto_compact_token_limit";
+
+/// The Codex configuration key that says what the trigger is measured against.
+pub const AUTO_COMPACT_SCOPE_KEY: &str = "model_auto_compact_token_limit_scope";
+
+/// Codex's spelling for "count only what grew after the carried prefix".
+pub const AUTO_COMPACT_SCOPE_AFTER_PREFIX: &str = "body_after_prefix";
+
+/// Codex's spelling for "count the whole active context".
+pub const AUTO_COMPACT_SCOPE_TOTAL: &str = "total";
+
+/// The startup configuration one context policy maps to.
+///
+/// `native` yields an empty slice: Kontor has no number for it and must not
+/// invent one, so the child keeps whatever default Codex ships. A policy the
+/// runtime could not be configured for yields nothing either — there is no
+/// trigger in force, and writing one would claim an enforcement that is not
+/// happening.
+#[must_use]
+pub fn auto_compact_config(
+    effective: &kontor_core::spec::EffectiveContextPolicy,
+) -> Vec<(String, String)> {
+    let Some(tokens) = effective.trigger_tokens else {
+        return Vec::new();
+    };
+    let scope = match effective.policy.trigger_scope {
+        kontor_core::spec::ContextTriggerScope::GrowthAfterPrefix => {
+            AUTO_COMPACT_SCOPE_AFTER_PREFIX
+        }
+        kontor_core::spec::ContextTriggerScope::Total => AUTO_COMPACT_SCOPE_TOTAL,
+    };
+    vec![
+        (AUTO_COMPACT_LIMIT_KEY.to_owned(), tokens.to_string()),
+        (AUTO_COMPACT_SCOPE_KEY.to_owned(), scope.to_owned()),
+    ]
+}
+
 /// The Codex stdout protocol this adapter's types, fixtures and tests are
 /// pinned to.
 ///
@@ -428,4 +470,185 @@ mod tests {
         );
         assert!(CodexHomeMarker::parse("{}").is_err());
     }
+}
+
+#[cfg(test)]
+mod auto_compact_tests {
+    use super::*;
+    use kontor_core::spec::{
+        ContextEnforcement, ContextPolicyInputs, ContextTriggerScope, ContextWindowBounds,
+        ContextWindowClass, ContextWindowPolicy, EffectiveContextPolicy, RequestedContextPolicy,
+        resolve_context_window,
+    };
+
+    fn effective(class: ContextWindowClass, scope: ContextTriggerScope) -> EffectiveContextPolicy {
+        let declared = ContextWindowPolicy {
+            class,
+            enforcement: ContextEnforcement::BestEffort,
+            trigger_scope: scope,
+            ..ContextWindowPolicy::standard()
+        };
+        let resolved = resolve_context_window(&ContextPolicyInputs {
+            role_slot: Some(&declared),
+            ..ContextPolicyInputs::default()
+        })
+        .expect("resolves");
+        let requested = RequestedContextPolicy::of(&resolved, kontor_core::id::SCHEMA_VERSION);
+        EffectiveContextPolicy::derive(&requested, &ContextWindowBounds::unknown(), true)
+            .expect("derives")
+    }
+
+    /// The exact numbers the approved policy names. A drift here is a seat
+    /// running with a window nobody agreed to.
+    #[test]
+    fn each_class_maps_to_its_exact_codex_token_limit() {
+        for (class, expected) in [
+            (ContextWindowClass::Lean, "128000"),
+            (ContextWindowClass::Standard, "256000"),
+            (ContextWindowClass::Deep, "512000"),
+            (ContextWindowClass::Extended, "720000"),
+        ] {
+            let config = auto_compact_config(&effective(class, ContextTriggerScope::Total));
+            assert_eq!(
+                config,
+                vec![
+                    (AUTO_COMPACT_LIMIT_KEY.to_owned(), expected.to_owned()),
+                    (
+                        AUTO_COMPACT_SCOPE_KEY.to_owned(),
+                        AUTO_COMPACT_SCOPE_TOTAL.to_owned()
+                    ),
+                ],
+                "{class} must configure exactly {expected}"
+            );
+        }
+    }
+
+    /// MUT-CTX-09. Emitting Codex's total scope for `growth_after_prefix` makes
+    /// this fail.
+    #[test]
+    fn growth_after_prefix_maps_to_body_after_prefix() {
+        let config = auto_compact_config(&effective(
+            ContextWindowClass::Standard,
+            ContextTriggerScope::GrowthAfterPrefix,
+        ));
+        assert_eq!(
+            config[1],
+            (
+                AUTO_COMPACT_SCOPE_KEY.to_owned(),
+                AUTO_COMPACT_SCOPE_AFTER_PREFIX.to_owned()
+            )
+        );
+        assert_eq!(AUTO_COMPACT_SCOPE_AFTER_PREFIX, "body_after_prefix");
+    }
+
+    /// `native` keeps whatever default Codex ships, so Kontor sends nothing.
+    #[test]
+    fn native_emits_no_context_override_at_all() {
+        let config = auto_compact_config(&effective(
+            ContextWindowClass::Native,
+            ContextTriggerScope::GrowthAfterPrefix,
+        ));
+        assert!(config.is_empty());
+    }
+
+    /// A policy the runtime could not be configured for writes no override
+    /// either: there is no trigger in force, and emitting one would claim an
+    /// enforcement that is not happening.
+    #[test]
+    fn an_unenforced_policy_emits_no_override() {
+        let declared = ContextWindowPolicy::standard();
+        let resolved = resolve_context_window(&ContextPolicyInputs {
+            role_slot: Some(&declared),
+            ..ContextPolicyInputs::default()
+        })
+        .expect("resolves");
+        let requested = RequestedContextPolicy::of(&resolved, kontor_core::id::SCHEMA_VERSION);
+        let unenforced =
+            EffectiveContextPolicy::derive(&requested, &ContextWindowBounds::unknown(), false)
+                .expect("derives");
+        assert!(auto_compact_config(&unenforced).is_empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The hermetic app-server compaction lane (TASK-026)
+// ---------------------------------------------------------------------------
+//
+// This is the *smallest* seam that can prove the approved
+// `thread/compact/start` mapping: one request shape, one lifecycle, one
+// re-read of the same thread. It is deliberately not a JSON-RPC framework, and
+// it is not reachable from `CodexAdapter::new` — production keeps the
+// `codex exec --json` lane and, having no app-server transport, advertises no
+// `Compact` capability at all.
+
+/// The app-server method an authorized boundary or operator compaction calls.
+pub const THREAD_COMPACT_START: &str = "thread/compact/start";
+
+/// The exact request body that method takes.
+///
+/// Serialized shape is the contract, so the hermetic fixture asserts these
+/// bytes rather than a paraphrase of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadCompactStart {
+    /// The thread being compacted. Codex's own identifier, and evidence only —
+    /// it never stands in for a Kontor id.
+    #[serde(rename = "threadId")]
+    pub thread_id: String,
+}
+
+/// One step of the compaction lifecycle the app-server emits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ThreadCompactEvent {
+    /// The runtime accepted the request and began compacting.
+    #[serde(rename = "thread.compact.started")]
+    Started {
+        /// The thread it started on.
+        #[serde(rename = "threadId")]
+        thread_id: String,
+    },
+    /// The runtime finished compacting.
+    #[serde(rename = "thread.compact.completed")]
+    Completed {
+        /// The thread it finished on.
+        #[serde(rename = "threadId")]
+        thread_id: String,
+        /// Tokens in the active context afterwards, when the runtime says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens: Option<u64>,
+    },
+    /// The runtime gave up.
+    #[serde(rename = "thread.compact.failed")]
+    Failed {
+        /// The thread it gave up on.
+        #[serde(rename = "threadId")]
+        thread_id: String,
+    },
+}
+
+impl ThreadCompactEvent {
+    /// The thread this event is about.
+    #[must_use]
+    pub fn thread_id(&self) -> &str {
+        match self {
+            Self::Started { thread_id }
+            | Self::Completed { thread_id, .. }
+            | Self::Failed { thread_id } => thread_id,
+        }
+    }
+}
+
+/// What re-reading a thread after compaction reports.
+///
+/// This is the evidence a confirmation rests on: the same thread, in the same
+/// generation. Anything else means the session was replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadIdentity {
+    /// The thread's own identifier.
+    #[serde(rename = "threadId")]
+    pub thread_id: String,
+    /// The runtime generation it belongs to.
+    pub generation: u64,
 }

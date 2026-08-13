@@ -16,6 +16,7 @@ use std::fmt;
 
 use kontor_core::id::{AgentRunId, RuntimeBindingId};
 use kontor_core::repository::RuntimeBinding;
+use kontor_core::spec::{ContextEnforcement, ContextPolicySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +53,10 @@ pub enum RuntimeCapability {
     LiveEvents,
     /// Answer a permission request raised inside a session.
     PermissionResponse,
+    /// Configure a session's context-window trigger at startup.
+    ContextPolicy,
+    /// Compact a live session's context in place, keeping its identity.
+    Compact,
 }
 
 impl RuntimeCapability {
@@ -68,6 +73,8 @@ impl RuntimeCapability {
         Self::History,
         Self::LiveEvents,
         Self::PermissionResponse,
+        Self::ContextPolicy,
+        Self::Compact,
     ];
 
     /// The stable spelling used in JSON, errors and logs.
@@ -85,6 +92,8 @@ impl RuntimeCapability {
             Self::History => "history",
             Self::LiveEvents => "live_events",
             Self::PermissionResponse => "permission_response",
+            Self::ContextPolicy => "context_policy",
+            Self::Compact => "compact",
         }
     }
 
@@ -104,6 +113,7 @@ impl RuntimeCapability {
                 | Self::Cancel
                 | Self::Adopt
                 | Self::PermissionResponse
+                | Self::Compact
         )
     }
 }
@@ -183,6 +193,14 @@ pub struct RuntimeLimits {
     pub max_history_page: u32,
     /// Largest number of simultaneous native sessions.
     pub max_concurrent_sessions: u32,
+    /// What this runtime attests about the context-window triggers it can be
+    /// configured with.
+    ///
+    /// Both bounds are optional and absence means unknown. A runtime that
+    /// declares nothing imposes nothing, and no number is invented on its
+    /// behalf.
+    #[serde(default)]
+    pub context_window: kontor_core::spec::ContextWindowBounds,
 }
 
 /// One request's demand against [`RuntimeLimits`].
@@ -470,6 +488,10 @@ pub struct OperationContext<'a> {
     pub current_generation: Option<u64>,
     /// The bound this request consumes, if any.
     pub demand: Option<LimitDemand>,
+    /// The immutable context-window policy a launch carries, when it carries
+    /// one. Judged here so a policy the runtime cannot honour is refused before
+    /// admission is spent and before any session exists.
+    pub context_policy: Option<&'a ContextPolicySnapshot>,
 }
 
 impl<'a> OperationContext<'a> {
@@ -484,6 +506,7 @@ impl<'a> OperationContext<'a> {
             workspace: None,
             current_generation: None,
             demand: None,
+            context_policy: None,
         }
     }
 
@@ -549,6 +572,21 @@ pub fn preflight(
         return Err(RuntimeError::AccountEnvironmentUnavailable);
     }
 
+    // A seat whose policy *requires* a context window it cannot get must not
+    // start. This runs before the workspace and the binding checks — and long
+    // before any adapter effect — because a session launched under a policy the
+    // runtime silently ignored is exactly the "we enforced it" claim the whole
+    // feature exists to refuse. `best_effort` continues; its snapshot already
+    // records `not_enforced`, which is visible rather than quiet.
+    if let Some(policy) = context.context_policy
+        && policy.requested.policy.enforcement == ContextEnforcement::Required
+        && !capabilities.supports(RuntimeCapability::ContextPolicy)
+    {
+        return Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::ContextPolicy,
+        });
+    }
+
     // A runtime that prepares task workspaces only ever works inside one. This
     // runs before any effect precisely because a wrong-tree edit cannot be
     // taken back once it has happened.
@@ -588,6 +626,7 @@ mod tests {
                 max_message_bytes: 64,
                 max_history_page: 10,
                 max_concurrent_sessions: 2,
+                context_window: kontor_core::spec::ContextWindowBounds::unknown(),
             },
         }
     }

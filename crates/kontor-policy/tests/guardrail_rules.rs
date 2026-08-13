@@ -207,6 +207,7 @@ fn custom_profile(prefix: &str) -> WorkProfileSpec {
         },
         calendar_policy: None,
         external_workflow: None,
+        context_window: None,
     }
 }
 

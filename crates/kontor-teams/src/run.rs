@@ -61,7 +61,10 @@ use kontor_core::id::{
     TeamTemplateId, Timestamp,
 };
 use kontor_core::repository::{AgentRun, NewAgentRun};
-use kontor_core::spec::TeamRunSnapshot;
+use kontor_core::spec::{
+    ContextPolicySnapshot, ContextWindowPolicy, ResolvedContextPolicy, TeamContextPolicySeed,
+    TeamRunSnapshot,
+};
 use kontor_core::state::{
     RunLifecycle, TaskTeamClosure, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence,
     TerminalOutcome, reduce_team_outcome, team_child_evidence_digest,
@@ -364,6 +367,7 @@ impl LaunchPermit {
             cwd: launch.cwd,
             account_profile_id: launch.account_profile_id,
             prompt: launch.prompt,
+            context_policy: launch.context_policy,
             requested_at: launch.requested_at,
         });
         PreparedLaunch {
@@ -445,6 +449,12 @@ pub struct SlotLaunch {
     pub account_profile_id: Option<AccountProfileId>,
     /// What the session starts with.
     pub prompt: BoundedText,
+    /// The frozen requested/effective context-window policy for this seat.
+    ///
+    /// Resolved from [`TeamRunSlots::requested_context_window`] and the
+    /// runtime's declared bounds *before* the session exists, so the record of
+    /// what was asked for cannot be written after the fact.
+    pub context_policy: ContextPolicySnapshot,
     /// When the launch was requested.
     pub requested_at: Timestamp,
 }
@@ -704,6 +714,9 @@ pub struct TeamRunSlots {
     lease: TeamRunLease,
     template: TeamTemplateSpec,
     template_hash: ContentHash,
+    /// The run's frozen context-window resolution inputs, copied from the team
+    /// run snapshot so every seat resolves against the same data.
+    context_policy: TeamContextPolicySeed,
     slots: BTreeMap<RoleSlotId, SlotState>,
 }
 
@@ -771,8 +784,44 @@ impl TeamRunSlots {
             lease,
             template,
             template_hash,
+            context_policy: snapshot.context_policy.clone(),
             slots,
         })
+    }
+
+    /// Resolve one seat's requested context-window policy.
+    ///
+    /// The role slot's own declaration and the run's frozen work-profile default
+    /// and seed table come from this roster; only an explicit authorized
+    /// override is supplied by the caller, because nothing in the team document
+    /// can carry one.
+    ///
+    /// Resolution is a pure function of frozen inputs, so calling it again for
+    /// the same seat always produces the same source and policy.
+    ///
+    /// # Errors
+    /// * [`DomainError::Invalid`] for a slot the template does not declare.
+    /// * As [`kontor_core::spec::resolve_context_window`].
+    pub fn requested_context_window(
+        &self,
+        slot: &RoleSlotId,
+        run_override: Option<&ContextWindowPolicy>,
+    ) -> DomainResult<ResolvedContextPolicy> {
+        let declared = self.template.slot(slot).ok_or(DomainError::Invalid {
+            subject: "TeamRunSlots",
+            rule: "the template does not declare this role slot",
+        })?;
+        self.context_policy_seed().resolve(
+            &declared.role.role,
+            declared.context_window.as_ref(),
+            run_override,
+        )
+    }
+
+    /// The run's frozen context-window resolution inputs.
+    #[must_use]
+    pub const fn context_policy_seed(&self) -> &TeamContextPolicySeed {
+        &self.context_policy
     }
 
     fn hydrate_slot(

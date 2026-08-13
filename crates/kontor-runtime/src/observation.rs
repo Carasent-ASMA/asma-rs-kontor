@@ -473,6 +473,7 @@ mod tests {
                     max_message_bytes: 64,
                     max_history_page: 10,
                     max_concurrent_sessions: 2,
+                    context_window: kontor_core::spec::ContextWindowBounds::unknown(),
                 },
             },
             correlation: CorrelationEvidence {

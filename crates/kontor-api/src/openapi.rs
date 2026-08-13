@@ -49,6 +49,8 @@ impl Modify for RealmBearer {
         crate::control::events,
         crate::sessions::timeline,
         crate::sessions::stream,
+        crate::control::context_policy_preview,
+        crate::sessions::compact,
         crate::sessions::send_message,
         crate::sessions::respond_permission,
         crate::applications::ensure_project,

@@ -823,5 +823,97 @@
         "evaluator_roles": ["therapist-verifier"]
       }
     }
+  ],
+  "role_context_seeds": [
+    {
+      "role": "architect",
+      "context_window": {
+        "class": "deep",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1"
+      }
+    },
+    {
+      "role": "builder",
+      "context_window": {
+        "class": "standard",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1"
+      }
+    },
+    {
+      "role": "tester",
+      "context_window": {
+        "class": "standard",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1"
+      }
+    },
+    {
+      "role": "inspector",
+      "context_window": {
+        "class": "standard",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1"
+      }
+    },
+    {
+      "role": "reviewer",
+      "context_window": {
+        "class": "standard",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1"
+      }
+    },
+    {
+      "role": "therapist-verifier",
+      "context_window": {
+        "class": "standard",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1"
+      }
+    },
+    {
+      "role": "judge",
+      "context_window": {
+        "class": "standard",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1"
+      }
+    },
+    {
+      "role": "synthesizer",
+      "context_window": {
+        "class": "standard",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1"
+      }
+    },
+    {
+      "role": "researcher",
+      "context_window": {
+        "class": "deep",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1"
+      }
+    }
   ]
 }

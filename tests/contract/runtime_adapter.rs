@@ -95,6 +95,7 @@ fn capabilities(trust_grade: TrustGrade) -> RuntimeCapabilities {
             max_message_bytes: 4096,
             max_history_page: 64,
             max_concurrent_sessions: 8,
+            context_window: kontor_core::spec::ContextWindowBounds::unknown(),
         },
     }
 }
@@ -200,6 +201,13 @@ impl Team {
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: text("do the work"),
+            context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+                &kontor_core::spec::ContextWindowBounds::unknown(),
+                true,
+                kontor_core::id::SCHEMA_VERSION,
+                at("2026-08-10T09:00:00Z"),
+            )
+            .expect("the standard fallback freezes"),
             requested_at: at("2026-08-10T09:00:00Z"),
         }
     }
@@ -331,6 +339,13 @@ async fn grade_c_cannot_autonomously_dispatch() {
             cwd: root("/w/task-1"),
             account_profile_id: None,
             prompt: text("do the work"),
+            context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+                &kontor_core::spec::ContextWindowBounds::unknown(),
+                true,
+                kontor_core::id::SCHEMA_VERSION,
+                at("2026-08-10T09:00:00Z"),
+            )
+            .expect("the standard fallback freezes"),
             requested_at: at("2026-08-10T09:00:00Z"),
         },
     )
@@ -659,6 +674,13 @@ async fn team_run_roles_share_one_verified_workspace_binding() {
             cwd: team.workspace.root().clone(),
             account_profile_id: None,
             prompt: text("do the work"),
+            context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+                &kontor_core::spec::ContextWindowBounds::unknown(),
+                true,
+                kontor_core::id::SCHEMA_VERSION,
+                at("2026-08-10T09:00:00Z"),
+            )
+            .expect("the standard fallback freezes"),
             requested_at: at("2026-08-10T09:00:00Z"),
         },
     )
@@ -2518,4 +2540,375 @@ async fn scripted_fake_passes_reconciliation_contract() {
     reconciliation_contract(&team.fake, std::slice::from_ref(&binding))
         .await
         .expect("the scripted fake satisfies the reconciliation contract");
+}
+
+// ---------------------------------------------------------------------------
+// Context policy and compaction
+// ---------------------------------------------------------------------------
+
+fn policy_snapshot(
+    class: kontor_core::spec::ContextWindowClass,
+    enforcement: kontor_core::spec::ContextEnforcement,
+    supported: bool,
+) -> kontor_core::spec::ContextPolicySnapshot {
+    let declared = kontor_core::spec::ContextWindowPolicy {
+        class,
+        enforcement,
+        ..kontor_core::spec::ContextWindowPolicy::standard()
+    };
+    let resolved =
+        kontor_core::spec::resolve_context_window(&kontor_core::spec::ContextPolicyInputs {
+            role_slot: Some(&declared),
+            ..kontor_core::spec::ContextPolicyInputs::default()
+        })
+        .expect("the slot declaration resolves");
+    let requested =
+        kontor_core::spec::RequestedContextPolicy::of(&resolved, kontor_core::id::SCHEMA_VERSION);
+    let effective = kontor_core::spec::EffectiveContextPolicy::derive(
+        &requested,
+        &kontor_core::spec::ContextWindowBounds::unknown(),
+        supported,
+    )
+    .expect("the effective half derives");
+    kontor_core::spec::ContextPolicySnapshot::freeze(
+        requested,
+        effective,
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("both halves freeze")
+}
+
+fn compact_request(
+    binding: &RuntimeBindingSnapshot,
+    trigger: kontor_core::compaction::CompactionTrigger,
+    policy: kontor_core::spec::ContextPolicySnapshot,
+    handoff: Option<kontor_core::id::ContentHash>,
+) -> kontor_runtime::request::CompactRequest {
+    kontor_runtime::request::CompactRequest {
+        binding: binding.clone(),
+        receipt_id: kontor_core::id::CompactionReceiptId::generate(),
+        trigger,
+        policy,
+        context_pack_hash: kontor_core::id::ContentHash::of(b"context-pack"),
+        handoff_hash: handoff,
+        requested_at: at("2026-08-10T09:05:00Z"),
+    }
+}
+
+fn sealed_handoff() -> Option<kontor_core::id::ContentHash> {
+    Some(kontor_core::id::ContentHash::of(b"sealed-handoff"))
+}
+
+/// MUT-CTX-03. Dispatching before the unsupported-`required` refusal makes this
+/// fail, because the fake records every call the moment it is made.
+#[tokio::test]
+async fn a_required_policy_a_runtime_cannot_enforce_fails_before_any_call() {
+    let mut declared = capabilities(TrustGrade::A);
+    declared.supported.remove(&RuntimeCapability::ContextPolicy);
+    let fixture = Team::with_capabilities(declared).await;
+    fixture.fake.take_calls();
+
+    let run = AgentRunId::generate();
+    let mut parts = fixture.launch_parts(run);
+    parts.context_policy = policy_snapshot(
+        kontor_core::spec::ContextWindowClass::Standard,
+        kontor_core::spec::ContextEnforcement::Required,
+        true,
+    );
+    let request = admitted(&fixture.fake, parts).await;
+    fixture.fake.take_calls();
+
+    let error = fixture
+        .fake
+        .launch(&request)
+        .await
+        .expect_err("a required policy this runtime cannot honour must not launch");
+    assert_eq!(
+        error,
+        RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::ContextPolicy
+        }
+    );
+    assert!(
+        fixture.fake.take_calls().is_empty(),
+        "the refusal must happen before any adapter call"
+    );
+}
+
+/// The companion: `best_effort` is not blocked, and does not pretend either.
+#[tokio::test]
+async fn a_best_effort_policy_launches_and_stays_visibly_not_enforced() {
+    let mut declared = capabilities(TrustGrade::A);
+    declared.supported.remove(&RuntimeCapability::ContextPolicy);
+    let fixture = Team::with_capabilities(declared).await;
+
+    let run = AgentRunId::generate();
+    let mut parts = fixture.launch_parts(run);
+    parts.context_policy = policy_snapshot(
+        kontor_core::spec::ContextWindowClass::Standard,
+        kontor_core::spec::ContextEnforcement::BestEffort,
+        false,
+    );
+    let recorded = parts.context_policy.clone();
+    let request = admitted(&fixture.fake, parts).await;
+    fixture
+        .fake
+        .launch(&request)
+        .await
+        .expect("best effort continues on a runtime that cannot enforce it");
+
+    assert_eq!(
+        recorded.effective.capability,
+        kontor_core::spec::ContextCapabilityResult::NotEnforced
+    );
+    assert_eq!(recorded.effective.trigger_tokens, None);
+    assert!(recorded.permits_reuse());
+}
+
+/// MUT-CTX-06. Accepting a changed native generation as a confirmation makes
+/// this fail.
+#[tokio::test]
+async fn a_confirmed_compaction_requires_the_same_native_session() {
+    let fixture = Team::new(TrustGrade::A).await;
+    let run = AgentRunId::generate();
+    let binding = fixture.role(run).await;
+    let policy = policy_snapshot(
+        kontor_core::spec::ContextWindowClass::Standard,
+        kontor_core::spec::ContextEnforcement::BestEffort,
+        true,
+    );
+
+    // The happy path: same session before and after, and evidence for it.
+    let confirmed = fixture
+        .fake
+        .compact(&compact_request(
+            &binding,
+            kontor_core::compaction::CompactionTrigger::ScopeBoundary,
+            policy.clone(),
+            sealed_handoff(),
+        ))
+        .await
+        .expect("a supported compaction returns a receipt");
+    assert_eq!(
+        confirmed.status,
+        kontor_core::compaction::CompactionStatus::Confirmed
+    );
+    assert!(confirmed.preserves_native_identity());
+    assert_eq!(
+        confirmed.native_after.as_ref(),
+        Some(&confirmed.native_before)
+    );
+    confirmed.validate().expect("a confirmed receipt validates");
+
+    // Identity drift is a failure, and never a successor or an adoption.
+    fixture.fake.push_step_for(
+        kontor_runtime::fake::ScriptStep::CompactIdentityDrift { generation: 99 },
+        kontor_runtime::fake::RequestKey::Binding(binding.binding_id()),
+    );
+    let drifted = fixture
+        .fake
+        .compact(&compact_request(
+            &binding,
+            kontor_core::compaction::CompactionTrigger::ScopeBoundary,
+            policy,
+            sealed_handoff(),
+        ))
+        .await
+        .expect("the attempt returns a receipt rather than vanishing");
+    assert_eq!(
+        drifted.status,
+        kontor_core::compaction::CompactionStatus::Failed
+    );
+    assert!(!drifted.preserves_native_identity());
+}
+
+/// MUT-CTX-07. Allowing a boundary compaction with no sealed handoff makes this
+/// fail, and it fails before the runtime is touched.
+#[tokio::test]
+async fn a_boundary_compaction_without_a_sealed_handoff_is_refused_before_any_call() {
+    let fixture = Team::new(TrustGrade::A).await;
+    let run = AgentRunId::generate();
+    let binding = fixture.role(run).await;
+    let policy = policy_snapshot(
+        kontor_core::spec::ContextWindowClass::Standard,
+        kontor_core::spec::ContextEnforcement::BestEffort,
+        true,
+    );
+    fixture.fake.take_calls();
+
+    for trigger in [
+        kontor_core::compaction::CompactionTrigger::ScopeBoundary,
+        kontor_core::compaction::CompactionTrigger::Operator,
+    ] {
+        let error = fixture
+            .fake
+            .compact(&compact_request(&binding, trigger, policy.clone(), None))
+            .await
+            .expect_err("a deliberate compaction owes a durable handoff");
+        assert!(matches!(error, RuntimeError::CompactionUnsafe { .. }));
+        assert!(
+            fixture.fake.take_calls().is_empty(),
+            "the guard must run before any adapter call"
+        );
+    }
+
+    // A threshold compaction is the runtime protecting itself and is allowed
+    // without one.
+    fixture
+        .fake
+        .compact(&compact_request(
+            &binding,
+            kontor_core::compaction::CompactionTrigger::Threshold,
+            policy,
+            None,
+        ))
+        .await
+        .expect("a threshold compaction needs no handoff");
+}
+
+/// MUT-CTX-08. Serializing unavailable counters as zero makes this fail.
+#[tokio::test]
+async fn unknown_compaction_telemetry_is_absent_and_never_zero() {
+    let fixture = Team::new(TrustGrade::A).await;
+    let run = AgentRunId::generate();
+    let binding = fixture.role(run).await;
+    let policy = policy_snapshot(
+        kontor_core::spec::ContextWindowClass::Standard,
+        kontor_core::spec::ContextEnforcement::BestEffort,
+        true,
+    );
+
+    let receipt = fixture
+        .fake
+        .compact(&compact_request(
+            &binding,
+            kontor_core::compaction::CompactionTrigger::Threshold,
+            policy,
+            None,
+        ))
+        .await
+        .expect("the compaction returns a receipt");
+
+    assert!(receipt.telemetry.is_unknown());
+    let json = serde_json::to_value(receipt.telemetry).expect("telemetry serializes");
+    assert_eq!(
+        json,
+        serde_json::json!({}),
+        "unknown counters are absent, not zero"
+    );
+    let document = receipt.canonicalize().expect("the receipt canonicalizes");
+    assert!(
+        !document.json().contains("tokens_before"),
+        "a counter nobody measured must not appear at all"
+    );
+}
+
+/// A runtime that cannot compact says so, and touches nothing to say it.
+#[tokio::test]
+async fn an_unsupported_compaction_emits_no_call_and_never_confirms() {
+    let mut declared = capabilities(TrustGrade::A);
+    declared.supported.remove(&RuntimeCapability::Compact);
+    let fixture = Team::with_capabilities(declared).await;
+    let run = AgentRunId::generate();
+    let binding = fixture.role(run).await;
+    fixture.fake.take_calls();
+
+    // `best_effort` is visible and lets the work continue.
+    let reported = fixture
+        .fake
+        .compact(&compact_request(
+            &binding,
+            kontor_core::compaction::CompactionTrigger::Threshold,
+            policy_snapshot(
+                kontor_core::spec::ContextWindowClass::Standard,
+                kontor_core::spec::ContextEnforcement::BestEffort,
+                true,
+            ),
+            None,
+        ))
+        .await
+        .expect("an incapable runtime reports rather than fails");
+    assert_eq!(
+        reported.status,
+        kontor_core::compaction::CompactionStatus::Unsupported
+    );
+    assert_eq!(reported.native_after, None);
+    assert!(reported.telemetry.is_unknown());
+
+    // `required` becomes pending, which blocks reuse rather than proceeding.
+    let pending = fixture
+        .fake
+        .compact(&compact_request(
+            &binding,
+            kontor_core::compaction::CompactionTrigger::Threshold,
+            policy_snapshot(
+                kontor_core::spec::ContextWindowClass::Standard,
+                kontor_core::spec::ContextEnforcement::Required,
+                true,
+            ),
+            None,
+        ))
+        .await
+        .expect("an incapable runtime reports rather than fails");
+    assert_eq!(
+        pending.status,
+        kontor_core::compaction::CompactionStatus::Pending
+    );
+    assert!(!pending.status.permits_reuse());
+
+    assert!(
+        fixture.fake.take_calls().is_empty(),
+        "reporting a limitation must reach the runtime not at all"
+    );
+}
+
+/// Replaying one attempt returns the original receipt; reusing its id for a
+/// different attempt is refused.
+#[tokio::test]
+async fn a_replayed_compaction_returns_the_original_receipt() {
+    let fixture = Team::new(TrustGrade::A).await;
+    let run = AgentRunId::generate();
+    let binding = fixture.role(run).await;
+    let policy = policy_snapshot(
+        kontor_core::spec::ContextWindowClass::Standard,
+        kontor_core::spec::ContextEnforcement::BestEffort,
+        true,
+    );
+    let request = compact_request(
+        &binding,
+        kontor_core::compaction::CompactionTrigger::ScopeBoundary,
+        policy.clone(),
+        sealed_handoff(),
+    );
+
+    // Drop the launch's own calls so what is counted is the compaction alone.
+    fixture.fake.take_calls();
+    let first = fixture.fake.compact(&request).await.expect("compacts once");
+    assert_eq!(
+        fixture.fake.take_calls().len(),
+        1,
+        "the first attempt reaches the runtime exactly once"
+    );
+
+    let replay = fixture.fake.compact(&request).await.expect("replays");
+    assert_eq!(first, replay);
+    assert!(
+        fixture.fake.take_calls().is_empty(),
+        "a replay must not compact a second time"
+    );
+
+    // The same id, different content: a different attempt wearing a used key.
+    let mut conflicting = compact_request(
+        &binding,
+        kontor_core::compaction::CompactionTrigger::Operator,
+        policy,
+        sealed_handoff(),
+    );
+    conflicting.receipt_id = request.receipt_id;
+    let error = fixture
+        .fake
+        .compact(&conflicting)
+        .await
+        .expect_err("a reused receipt id with different content conflicts");
+    assert!(matches!(error, RuntimeError::DuplicateCompaction { .. }));
 }

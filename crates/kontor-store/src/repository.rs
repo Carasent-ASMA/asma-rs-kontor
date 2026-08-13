@@ -2330,6 +2330,177 @@ impl RunRepository for SqliteStore {
         read_agent_run(&transaction, project_id, id)
     }
 
+    fn record_run_context_policy(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        snapshot: &kontor_core::spec::ContextPolicySnapshot,
+    ) -> RepositoryResult<()> {
+        // Both halves are re-verified against their own digests before anything
+        // is written: a snapshot whose bytes and hash disagree is not a record
+        // of anything, and storing it would launder the disagreement.
+        snapshot.verify()?;
+        let requested = CanonicalDocument::from_serializable(&snapshot.requested)?;
+        let effective = CanonicalDocument::from_serializable(&snapshot.effective)?;
+
+        let transaction = self.begin()?;
+        // Realm isolation is the file; *project* isolation is this lookup. A run
+        // another project owns is not found rather than written to.
+        if read_agent_run(&transaction, project_id, agent_run_id)?.is_none() {
+            return Err(RepositoryError::NotFound {
+                subject: "agent run",
+            });
+        }
+
+        if let Some(existing) = read_run_context_policy(&transaction, agent_run_id)? {
+            // A replay of the identical pair is the same act. Anything else is a
+            // second answer to a question already answered.
+            if existing.requested_hash == snapshot.requested_hash
+                && existing.effective_hash == snapshot.effective_hash
+            {
+                return Ok(());
+            }
+            return Err(conflict(
+                "run context policy",
+                "this run was already launched under a different context policy",
+            ));
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO run_context_policies
+                     (agent_run_id, source, requested_class, requested_tokens, effective_tokens,
+                      enforcement, capability, clamp, requested, requested_hash, effective,
+                      effective_hash, resolved_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    agent_run_id.to_string(),
+                    snapshot.requested.source.as_str(),
+                    snapshot.requested.policy.class.as_str(),
+                    snapshot
+                        .requested
+                        .trigger_tokens
+                        .map(i64::try_from)
+                        .transpose()
+                        .ok()
+                        .flatten(),
+                    snapshot
+                        .effective
+                        .trigger_tokens
+                        .map(i64::try_from)
+                        .transpose()
+                        .ok()
+                        .flatten(),
+                    snapshot.requested.policy.enforcement.as_str(),
+                    snapshot.effective.capability.as_str(),
+                    snapshot.effective.clamp.as_str(),
+                    requested.json(),
+                    requested.hash().as_str(),
+                    effective.json(),
+                    effective.hash().as_str(),
+                    text(snapshot.resolved_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn get_run_context_policy(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> RepositoryResult<Option<kontor_core::spec::ContextPolicySnapshot>> {
+        let transaction = self.begin()?;
+        if read_agent_run(&transaction, project_id, agent_run_id)?.is_none() {
+            return Ok(None);
+        }
+        read_run_context_policy(&transaction, agent_run_id)
+    }
+
+    fn record_compaction_receipt(
+        &self,
+        project_id: ProjectId,
+        receipt: &kontor_core::compaction::CompactionReceipt,
+    ) -> RepositoryResult<kontor_core::compaction::CompactionReceipt> {
+        // `canonicalize` validates first, so a receipt claiming `confirmed`
+        // without unchanged identity or without evidence never reaches storage.
+        let document = receipt.canonicalize()?;
+
+        let transaction = self.begin()?;
+        if read_agent_run(&transaction, project_id, receipt.agent_run_id)?.is_none() {
+            return Err(RepositoryError::NotFound {
+                subject: "agent run",
+            });
+        }
+
+        if let Some((stored, hash)) = read_compaction_receipt(&transaction, receipt.id)? {
+            if &hash == document.hash() {
+                return Ok(stored);
+            }
+            return Err(conflict(
+                "compaction receipt",
+                "this receipt id already records a different attempt",
+            ));
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO compaction_receipts
+                     (id, agent_run_id, binding_id, trigger_kind, status, native_before,
+                      native_after, generation_before, generation_after, receipt, receipt_hash,
+                      recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    receipt.id.to_string(),
+                    receipt.agent_run_id.to_string(),
+                    receipt.binding_id.to_string(),
+                    receipt.trigger.as_str(),
+                    receipt.status.as_str(),
+                    receipt.native_before.native_id.as_str(),
+                    receipt
+                        .native_after
+                        .as_ref()
+                        .map(|after| after.native_id.as_str().to_owned()),
+                    i64::try_from(receipt.native_before.generation).unwrap_or(i64::MAX),
+                    receipt
+                        .native_after
+                        .as_ref()
+                        .map(|after| i64::try_from(after.generation).unwrap_or(i64::MAX)),
+                    document.json(),
+                    document.hash().as_str(),
+                    text(receipt.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(receipt.clone())
+    }
+
+    fn latest_compaction_receipt(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> RepositoryResult<Option<kontor_core::compaction::CompactionReceipt>> {
+        let transaction = self.begin()?;
+        if read_agent_run(&transaction, project_id, agent_run_id)?.is_none() {
+            return Ok(None);
+        }
+        let row: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT receipt, receipt_hash FROM compaction_receipts
+                 WHERE agent_run_id = ?1
+                 ORDER BY recorded_at DESC, id DESC
+                 LIMIT 1",
+                params![agent_run_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|(json, hash)| decode_compaction_receipt(&json, &hash))
+            .transpose()
+    }
+
     fn append_runtime_event(&self, request: &NewRuntimeEvent) -> RepositoryResult<EventCursor> {
         crate::events::append::append_runtime_event(self, request)
     }
@@ -4084,6 +4255,105 @@ pub(crate) fn team_run_snapshot(json: &str, hash: &str) -> RepositoryResult<Team
     stored_document(json, hash)
 }
 
+/// Re-admit one stored compaction receipt, bytes and digest both re-checked.
+pub(crate) fn decode_compaction_receipt(
+    json: &str,
+    hash: &str,
+) -> RepositoryResult<kontor_core::compaction::CompactionReceipt> {
+    let receipt: kontor_core::compaction::CompactionReceipt = stored_document(json, hash)?;
+    // The document round-tripped; its *claims* are checked separately, so a row
+    // written before a rule existed cannot be read back as if it satisfied it.
+    receipt.validate()?;
+    Ok(receipt)
+}
+
+/// Read one run's frozen context-window pair, re-verified end to end.
+///
+/// The two halves are stored as separate canonical documents, so this rebuilds
+/// the snapshot and then asks it to verify itself — which re-derives both hashes
+/// from the bytes rather than trusting the columns beside them.
+fn read_run_context_policy(
+    transaction: &rusqlite::Transaction<'_>,
+    agent_run_id: AgentRunId,
+) -> RepositoryResult<Option<kontor_core::spec::ContextPolicySnapshot>> {
+    let row: Option<(String, String, String, String, String)> = transaction
+        .query_row(
+            "SELECT requested, requested_hash, effective, effective_hash, resolved_at
+             FROM run_context_policies WHERE agent_run_id = ?1",
+            params![agent_run_id.to_string()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((requested_json, requested_hash, effective_json, effective_hash, resolved_at)) = row
+    else {
+        return Ok(None);
+    };
+
+    let requested: kontor_core::spec::RequestedContextPolicy =
+        stored_document(&requested_json, &requested_hash)?;
+    let effective: kontor_core::spec::EffectiveContextPolicy =
+        stored_document(&effective_json, &effective_hash)?;
+    let snapshot = kontor_core::spec::ContextPolicySnapshot {
+        schema_version: requested.schema_version,
+        requested,
+        requested_hash: ContentHash::parse(&requested_hash)?,
+        effective,
+        effective_hash: ContentHash::parse(&effective_hash)?,
+        resolved_at: parse_utc_timestamp(&resolved_at)?,
+    };
+    snapshot.verify()?;
+    Ok(Some(snapshot))
+}
+
+/// The most recent recorded compaction attempt for one run.
+fn read_latest_compaction_receipt(
+    transaction: &rusqlite::Transaction<'_>,
+    agent_run_id: AgentRunId,
+) -> RepositoryResult<Option<kontor_core::compaction::CompactionReceipt>> {
+    let row: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT receipt, receipt_hash FROM compaction_receipts
+             WHERE agent_run_id = ?1
+             ORDER BY recorded_at DESC, id DESC
+             LIMIT 1",
+            params![agent_run_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    row.map(|(json, hash)| decode_compaction_receipt(&json, &hash))
+        .transpose()
+}
+
+/// Read one stored compaction receipt by id, with the digest it was stored under.
+fn read_compaction_receipt(
+    transaction: &rusqlite::Transaction<'_>,
+    id: kontor_core::id::CompactionReceiptId,
+) -> RepositoryResult<Option<(kontor_core::compaction::CompactionReceipt, ContentHash)>> {
+    let row: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT receipt, receipt_hash FROM compaction_receipts WHERE id = ?1",
+            params![id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    row.map(|(json, hash)| {
+        let receipt = decode_compaction_receipt(&json, &hash)?;
+        Ok((receipt, ContentHash::parse(&hash)?))
+    })
+    .transpose()
+}
+
 /// Prove a terminal task has accounted for the team that did its work.
 ///
 /// The caller's [`TaskTeamClosure`] is a *citation*, not evidence: it names
@@ -4584,6 +4854,10 @@ impl RealmRepository for SqliteStore {
             .transpose()?
             .map(|snapshot| (snapshot.template_id, snapshot.template_version));
         let gaps = read_gaps(&transaction, project_id, agent_run_id)?;
+        // Read inside the same transaction as everything else, so the snapshot
+        // is one consistent view rather than three reads that could interleave.
+        let context_policy = read_run_context_policy(&transaction, agent_run_id)?;
+        let latest_compaction = read_latest_compaction_receipt(&transaction, agent_run_id)?;
         Ok(SnapshotEnvelope::new(
             realm,
             newest,
@@ -4592,6 +4866,8 @@ impl RealmRepository for SqliteStore {
                 run,
                 team_template,
                 gaps,
+                context_policy,
+                latest_compaction,
             }),
         ))
     }

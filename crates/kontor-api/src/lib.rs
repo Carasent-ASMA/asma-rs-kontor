@@ -353,6 +353,14 @@ pub fn router(state: ApiState) -> Router {
             "/v1/sessions/{agent_run_id}/permissions/{request_id}",
             post(sessions::respond_permission),
         )
+        .route(
+            "/v1/sessions/{agent_run_id}/compact",
+            post(sessions::compact),
+        )
+        .route(
+            "/v1/context-policy/preview",
+            post(control::context_policy_preview),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             authenticate,

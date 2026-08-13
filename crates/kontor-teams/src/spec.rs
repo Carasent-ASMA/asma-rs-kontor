@@ -24,7 +24,8 @@ use kontor_core::id::{
     SpecVersion, TeamTemplateId,
 };
 use kontor_core::spec::{
-    ContextTemplateRef, RoleAuthority, RoleRef, SkillRef, TeamRunSnapshot, TeamTemplateRevision,
+    ContextTemplateRef, ContextWindowPolicy, RoleAuthority, RoleRef, SkillRef, TeamRunSnapshot,
+    TeamTemplateRevision,
 };
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
@@ -93,6 +94,13 @@ pub struct RoleSlotSpec {
     pub may_waive: Vec<GateKey>,
     /// How this seat may be excused at closure, if it may be at all.
     pub waiver_policy: Option<RoleSlotWaiverPolicy>,
+    /// The context-window policy this seat declares, if it declares one.
+    ///
+    /// Highest precedence after an authorized run override. Defaulted so a
+    /// template revision written before the policy existed still parses;
+    /// omission hands the decision to the work profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<ContextWindowPolicy>,
 }
 
 /// One declared handoff between two slots of the same team.

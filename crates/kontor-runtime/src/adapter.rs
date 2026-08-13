@@ -15,6 +15,7 @@
 
 use async_trait::async_trait;
 use kontor_core::DomainError;
+use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{RuntimeBindingId, Timestamp};
 
 use crate::admission::AdmissionRequest;
@@ -23,7 +24,7 @@ use crate::capability::{
 };
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
 use crate::request::{
-    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchRequest,
+    AdoptRequest, CancelRequest, CompactRequest, HistoryRequest, InspectRequest, LaunchRequest,
     LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
     SendMessageRequest,
 };
@@ -148,6 +149,20 @@ pub enum RuntimeError {
     #[error("permission request {rule}")]
     PermissionConflict {
         /// Why the answer was refused.
+        rule: &'static str,
+    },
+    /// The compaction would discard work state nothing durable has recorded, or
+    /// would happen at a point the runtime cannot prove is safe.
+    #[error("compaction is unsafe: {rule}")]
+    CompactionUnsafe {
+        /// Why the compaction was refused.
+        rule: &'static str,
+    },
+    /// The compaction receipt identifier contradicts an attempt it already
+    /// recorded.
+    #[error("compaction receipt {rule}")]
+    DuplicateCompaction {
+        /// Why the identifier was refused.
         rule: &'static str,
     },
     /// The runtime could not be talked to. This is a fact about the channel and
@@ -427,4 +442,34 @@ pub trait RuntimeAdapter: Send + Sync {
         &self,
         request: &PermissionResponseRequest,
     ) -> RuntimeResult<PermissionAck>;
+
+    /// Compact one live session's context **in place**.
+    ///
+    /// Three obligations, and the contract suite proves each of them:
+    ///
+    /// * **The session survives.** A receipt may only be
+    ///   [`kontor_core::compaction::CompactionStatus::Confirmed`] when the runtime can be re-read and
+    ///   names the same runtime kind, host, native id *and* generation
+    ///   afterwards. Identity that moved is
+    ///   [`kontor_core::compaction::CompactionStatus::Failed`] — never an adoption, never a successor,
+    ///   and never a replacement dressed up as a compaction.
+    /// * **Unsupported is said out loud.** A runtime without
+    ///   [`RuntimeCapability::Compact`] returns a
+    ///   [`kontor_core::compaction::CompactionStatus::Unsupported`] receipt having touched nothing, or
+    ///   refuses outright when the policy required enforcement. It never
+    ///   substitutes a reload, an archive, a restart or a prompt that asks the
+    ///   model nicely, and it never reports success it cannot attest.
+    /// * **Idempotency is by receipt id.** Replaying the same
+    ///   [`crate::request::CompactRequest`] returns the original receipt rather
+    ///   than compacting twice; the same id with different content is refused.
+    ///
+    /// Unknown token and cache counters stay unknown. Zero is a measurement.
+    ///
+    /// # Errors
+    /// * [`RuntimeError::CompactionUnsafe`] for a boundary or operator
+    ///   compaction with no sealed durable handoff.
+    /// * [`RuntimeError::DuplicateCompaction`] for a receipt id reused with
+    ///   different content.
+    /// * Every preflight failure, refused before any native effect.
+    async fn compact(&self, request: &CompactRequest) -> RuntimeResult<CompactionReceipt>;
 }

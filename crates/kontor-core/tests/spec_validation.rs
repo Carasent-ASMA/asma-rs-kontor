@@ -28,9 +28,13 @@ use kontor_core::id::{
 };
 use kontor_core::id::{CalendarProfileId, SCHEMA_VERSION, WorkCalendarId};
 use kontor_core::spec::{
-    ApprovalReceipt, AutoArmPolicy, DedupExpression, EnvironmentKind, IntakeReceipt, IntakeResult,
-    JsonPointer, PersonaScenarioSnapshot, PersonaScenarioSpec, PhaseEdge, ProposedWorkGraph,
-    ResolvedWorkProfileSnapshot, TriggerSpec, WorkProfileSpec,
+    ApprovalReceipt, AutoArmPolicy, ContextCapabilityResult, ContextClamp, ContextEnforcement,
+    ContextPolicyInputs, ContextPolicySnapshot, ContextPolicySource, ContextWindowBounds,
+    ContextWindowClass, ContextWindowPolicy, DedupExpression, EffectiveContextPolicy,
+    EnvironmentKind, IntakeReceipt, IntakeResult, JsonPointer, PersonaScenarioSnapshot,
+    PersonaScenarioSpec, PhaseEdge, ProposedWorkGraph, RequestedContextPolicy,
+    ResolvedWorkProfileSnapshot, RoleContextSeed, TeamContextPolicySeed, TriggerSpec,
+    WorkProfileSpec, resolve_context_window,
 };
 use proptest::prelude::*;
 
@@ -1229,4 +1233,296 @@ fn an_overnight_shift_must_be_declared_as_two_windows_and_then_resolves() {
         EffectiveCalendarState::Closed,
         "21:30 Monday local is before the shift starts"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Context-window policy
+// ---------------------------------------------------------------------------
+
+fn policy(class: ContextWindowClass) -> ContextWindowPolicy {
+    ContextWindowPolicy {
+        class,
+        ..ContextWindowPolicy::standard()
+    }
+}
+
+#[test]
+fn the_five_classes_map_to_exactly_the_approved_trigger_targets() {
+    assert_eq!(ContextWindowClass::ALL.len(), 5);
+    assert_eq!(ContextWindowClass::Lean.trigger_tokens(), Some(128_000));
+    assert_eq!(ContextWindowClass::Standard.trigger_tokens(), Some(256_000));
+    assert_eq!(ContextWindowClass::Deep.trigger_tokens(), Some(512_000));
+    assert_eq!(ContextWindowClass::Extended.trigger_tokens(), Some(720_000));
+    // `native` keeps the runtime's own default, so Kontor has no number to send.
+    assert_eq!(ContextWindowClass::Native.trigger_tokens(), None);
+}
+
+/// MUT-CTX-01. Swapping the role-slot and work-profile arms of the resolver
+/// makes this fail: the recorded source becomes `work_profile`, and the
+/// resolved class with it.
+#[test]
+fn precedence_is_override_then_role_slot_then_work_profile_then_seed_then_standard() {
+    let over = policy(ContextWindowClass::Extended);
+    let slot = policy(ContextWindowClass::Deep);
+    let profile = policy(ContextWindowClass::Lean);
+    let seed = policy(ContextWindowClass::Standard);
+
+    // Every prefix of the precedence chain, one candidate removed at a time.
+    let cases = [
+        (
+            ContextPolicyInputs {
+                run_override: Some(&over),
+                role_slot: Some(&slot),
+                work_profile: Some(&profile),
+                role_seed: Some(&seed),
+            },
+            ContextPolicySource::AuthorizedRunOverride,
+            ContextWindowClass::Extended,
+        ),
+        (
+            ContextPolicyInputs {
+                run_override: None,
+                role_slot: Some(&slot),
+                work_profile: Some(&profile),
+                role_seed: Some(&seed),
+            },
+            ContextPolicySource::RoleSlot,
+            ContextWindowClass::Deep,
+        ),
+        (
+            ContextPolicyInputs {
+                run_override: None,
+                role_slot: None,
+                work_profile: Some(&profile),
+                role_seed: Some(&seed),
+            },
+            ContextPolicySource::WorkProfile,
+            ContextWindowClass::Lean,
+        ),
+        (
+            ContextPolicyInputs {
+                run_override: None,
+                role_slot: None,
+                work_profile: None,
+                role_seed: Some(&seed),
+            },
+            ContextPolicySource::RoleSeed,
+            ContextWindowClass::Standard,
+        ),
+        (
+            ContextPolicyInputs::default(),
+            ContextPolicySource::StandardFallback,
+            ContextWindowClass::Standard,
+        ),
+    ];
+
+    for (inputs, expected_source, expected_class) in cases {
+        let resolved = resolve_context_window(&inputs).expect("the chain resolves");
+        assert_eq!(resolved.source, expected_source);
+        assert_eq!(resolved.policy.class, expected_class);
+    }
+}
+
+/// MUT-CTX-02. Letting a seed or the fallback reach an explicit-only class
+/// makes this fail.
+#[test]
+fn extended_and_native_are_unreachable_from_a_seed() {
+    for class in [ContextWindowClass::Extended, ContextWindowClass::Native] {
+        let ambitious = policy(class);
+        assert!(class.requires_explicit_selection());
+
+        let seeded = resolve_context_window(&ContextPolicyInputs {
+            role_seed: Some(&ambitious),
+            ..ContextPolicyInputs::default()
+        })
+        .expect_err("a seed may not select an explicit-only class");
+        assert!(matches!(seeded, DomainError::MissingAuthority { .. }));
+
+        // The same policy is perfectly legal from a deliberate declaration.
+        for explicit in [
+            ContextPolicySource::AuthorizedRunOverride,
+            ContextPolicySource::RoleSlot,
+            ContextPolicySource::WorkProfile,
+        ] {
+            ambitious
+                .ensure_selectable_by(explicit)
+                .expect("an explicit declaration may select it");
+        }
+    }
+}
+
+#[test]
+fn a_policy_document_refuses_an_arbitrary_token_target() {
+    // There is no spelling for a custom threshold: the class owns the number.
+    let with_tokens = serde_json::json!({
+        "class": "standard",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1",
+        "trigger_tokens": 300_000,
+    });
+    assert!(serde_json::from_value::<ContextWindowPolicy>(with_tokens).is_err());
+
+    let unknown_class = serde_json::json!({
+        "class": "enormous",
+        "enforcement": "best_effort",
+        "trigger_scope": "growth_after_prefix",
+        "boundary_compaction": true,
+        "summary_profile": "portable_handoff_v1",
+    });
+    assert!(serde_json::from_value::<ContextWindowPolicy>(unknown_class).is_err());
+}
+
+#[test]
+fn resolution_is_byte_identical_across_repeated_freezes() {
+    let resolved = resolve_context_window(&ContextPolicyInputs::default()).expect("resolves");
+    let requested = RequestedContextPolicy::of(&resolved, SCHEMA_VERSION);
+    let bounds = ContextWindowBounds::unknown();
+
+    let first = ContextPolicySnapshot::freeze(
+        requested,
+        EffectiveContextPolicy::derive(&requested, &bounds, true).expect("derives"),
+        at("2026-08-13T09:43:00Z"),
+    )
+    .expect("freezes");
+    let second = ContextPolicySnapshot::freeze(
+        requested,
+        EffectiveContextPolicy::derive(&requested, &bounds, true).expect("derives"),
+        at("2026-08-13T09:43:00Z"),
+    )
+    .expect("freezes");
+
+    assert_eq!(first.requested_hash, second.requested_hash);
+    assert_eq!(first.effective_hash, second.effective_hash);
+    first.verify().expect("a fresh snapshot verifies");
+}
+
+#[test]
+fn an_unknown_ceiling_leaves_the_requested_trigger_standing() {
+    let resolved = resolve_context_window(&ContextPolicyInputs::default()).expect("resolves");
+    let requested = RequestedContextPolicy::of(&resolved, SCHEMA_VERSION);
+    let effective =
+        EffectiveContextPolicy::derive(&requested, &ContextWindowBounds::unknown(), true)
+            .expect("derives");
+
+    assert_eq!(effective.trigger_tokens, Some(256_000));
+    assert_eq!(effective.clamp, ContextClamp::None);
+    // Unknown stays unknown. Zero is never substituted for an undeclared bound.
+    assert_eq!(effective.bounds.safe_ceiling_tokens, None);
+    assert_eq!(effective.bounds.minimum_trigger_tokens, None);
+}
+
+#[test]
+fn a_declared_ceiling_clamps_the_trigger_and_records_why() {
+    let deep = policy(ContextWindowClass::Deep);
+    let resolved = resolve_context_window(&ContextPolicyInputs {
+        role_slot: Some(&deep),
+        ..ContextPolicyInputs::default()
+    })
+    .expect("resolves");
+    let requested = RequestedContextPolicy::of(&resolved, SCHEMA_VERSION);
+    let effective = EffectiveContextPolicy::derive(
+        &requested,
+        &ContextWindowBounds {
+            safe_ceiling_tokens: Some(200_000),
+            minimum_trigger_tokens: None,
+        },
+        true,
+    )
+    .expect("derives");
+
+    assert_eq!(requested.trigger_tokens, Some(512_000));
+    assert_eq!(effective.trigger_tokens, Some(200_000));
+    assert_eq!(effective.clamp, ContextClamp::ToSafeCeiling);
+    // The class is what was asked for and stays auditable as such.
+    assert_eq!(effective.policy.class, ContextWindowClass::Deep);
+}
+
+#[test]
+fn required_enforcement_refuses_a_runtime_that_cannot_configure_it() {
+    let strict = ContextWindowPolicy {
+        enforcement: ContextEnforcement::Required,
+        ..ContextWindowPolicy::standard()
+    };
+    let resolved = resolve_context_window(&ContextPolicyInputs {
+        role_slot: Some(&strict),
+        ..ContextPolicyInputs::default()
+    })
+    .expect("resolves");
+    let requested = RequestedContextPolicy::of(&resolved, SCHEMA_VERSION);
+
+    let refused =
+        EffectiveContextPolicy::derive(&requested, &ContextWindowBounds::unknown(), false)
+            .expect_err("required enforcement needs a capable runtime");
+    assert!(matches!(refused, DomainError::MissingEvidence { .. }));
+
+    // A required target below the runtime's smallest configurable trigger
+    // cannot be honoured without silently widening the seat's window.
+    let raised = EffectiveContextPolicy::derive(
+        &requested,
+        &ContextWindowBounds {
+            safe_ceiling_tokens: None,
+            minimum_trigger_tokens: Some(400_000),
+        },
+        true,
+    )
+    .expect_err("a required target under the runtime minimum is refused");
+    assert!(matches!(raised, DomainError::Invalid { .. }));
+}
+
+#[test]
+fn best_effort_on_an_incapable_runtime_is_visibly_not_enforced() {
+    let resolved = resolve_context_window(&ContextPolicyInputs::default()).expect("resolves");
+    let requested = RequestedContextPolicy::of(&resolved, SCHEMA_VERSION);
+    let effective =
+        EffectiveContextPolicy::derive(&requested, &ContextWindowBounds::unknown(), false)
+            .expect("best effort continues");
+
+    assert_eq!(effective.capability, ContextCapabilityResult::NotEnforced);
+    // No trigger is in force, and nothing claims one is.
+    assert_eq!(effective.trigger_tokens, None);
+
+    let snapshot = ContextPolicySnapshot::freeze(requested, effective, at("2026-08-13T09:43:00Z"))
+        .expect("freezes");
+    assert!(snapshot.permits_reuse(), "not_enforced still permits reuse");
+
+    // Pending is the one state that blocks reuse.
+    let pending =
+        ContextPolicySnapshot::freeze(requested, effective.pending(), at("2026-08-13T09:43:00Z"))
+            .expect("freezes");
+    assert!(!pending.permits_reuse());
+}
+
+#[test]
+fn a_seed_table_refuses_a_duplicate_role_and_an_explicit_only_class() {
+    let role = RoleKey::parse("architect").expect("a valid role key");
+    let duplicated = TeamContextPolicySeed {
+        work_profile: None,
+        role_seeds: vec![
+            RoleContextSeed {
+                role: role.clone(),
+                context_window: policy(ContextWindowClass::Deep),
+            },
+            RoleContextSeed {
+                role: role.clone(),
+                context_window: policy(ContextWindowClass::Lean),
+            },
+        ],
+    };
+    assert!(duplicated.validate().is_err());
+
+    let ambitious = TeamContextPolicySeed {
+        work_profile: None,
+        role_seeds: vec![RoleContextSeed {
+            role,
+            context_window: policy(ContextWindowClass::Extended),
+        }],
+    };
+    assert!(matches!(
+        ambitious
+            .validate()
+            .expect_err("a seed may not select extended"),
+        DomainError::MissingAuthority { .. }
+    ));
 }

@@ -23,7 +23,10 @@ use kontor_core::id::{
     parse_utc_timestamp,
 };
 use kontor_core::repository::AgentRun;
-use kontor_core::spec::{TeamRunSnapshot, TeamTemplateRevision};
+use kontor_core::spec::{
+    ContextPolicySource, ContextWindowClass, ContextWindowPolicy, RoleContextSeed,
+    TeamContextPolicySeed, TeamRunSnapshot, TeamTemplateRevision,
+};
 use kontor_core::state::{
     DerivedRunState, DesiredRunState, ObservedRunState, RunLifecycle, RunProjection,
     TerminalEvidence, TerminalEvidenceSource, TerminalOutcome,
@@ -55,6 +58,18 @@ fn at(text: &str) -> Timestamp {
 
 fn now() -> Timestamp {
     at("2026-08-10T09:00:00Z")
+}
+
+/// The standard-fallback context policy a seat launches under when the test is
+/// about something else.
+fn standard_context_policy() -> kontor_core::spec::ContextPolicySnapshot {
+    kontor_core::spec::ContextPolicySnapshot::standard(
+        &kontor_core::spec::ContextWindowBounds::unknown(),
+        true,
+        kontor_core::id::SCHEMA_VERSION,
+        now(),
+    )
+    .expect("the standard fallback freezes")
 }
 
 fn slot(text: &str) -> RoleSlotId {
@@ -114,6 +129,7 @@ fn capabilities() -> RuntimeCapabilities {
             max_message_bytes: 4096,
             max_history_page: 64,
             max_concurrent_sessions: 16,
+            context_window: kontor_core::spec::ContextWindowBounds::unknown(),
         },
     }
 }
@@ -161,6 +177,7 @@ impl Runtime {
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),
+            context_policy: standard_context_policy(),
             requested_at: now(),
         }
     }
@@ -192,6 +209,7 @@ impl Runtime {
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),
+            context_policy: standard_context_policy(),
             requested_at: now(),
         }
     }
@@ -2300,4 +2318,93 @@ fn a_failed_attempt_still_counts_as_child_evidence() {
         TerminalOutcome::Failed,
         "the core reducer stays authoritative"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Context-window resolution through the roster
+// ---------------------------------------------------------------------------
+
+fn context_policy(class: ContextWindowClass) -> ContextWindowPolicy {
+    ContextWindowPolicy {
+        class,
+        ..ContextWindowPolicy::standard()
+    }
+}
+
+/// The roster resolves a seat against the slot's own declaration first and the
+/// run's frozen seed table second — and records which one it used.
+///
+/// MUT-CTX-01 also lands here: swapping the resolver's role-slot and
+/// work-profile arms changes the recorded source for the declaring slot.
+#[test]
+fn a_seat_resolves_its_own_declaration_over_the_frozen_seed() {
+    let mut template = seed(0);
+    let declaring = template.slots[0].id.clone();
+    let seeded = template.slots[1].id.clone();
+    let seeded_role = template.slots[1].role.role.clone();
+    template.slots[0].context_window = Some(context_policy(ContextWindowClass::Extended));
+
+    let snapshot = snapshot_of(&template)
+        .with_context_policy(TeamContextPolicySeed {
+            work_profile: Some(context_policy(ContextWindowClass::Standard)),
+            role_seeds: vec![RoleContextSeed {
+                role: seeded_role,
+                context_window: context_policy(ContextWindowClass::Lean),
+            }],
+        })
+        .expect("the seed table validates");
+
+    let team_run_id = TeamRunId::generate();
+    let slots = TeamRunSlots::open(lease(team_run_id), &snapshot).expect("the roster opens");
+
+    // The slot declared `extended` explicitly, which is the only way to reach it.
+    let declared = slots
+        .requested_context_window(&declaring, None)
+        .expect("the declaring seat resolves");
+    assert_eq!(declared.source, ContextPolicySource::RoleSlot);
+    assert_eq!(declared.policy.class, ContextWindowClass::Extended);
+
+    // The other seat declared nothing, so the work-profile default outranks its
+    // seed — precedence, not "the most specific thing that exists".
+    let inherited = slots
+        .requested_context_window(&seeded, None)
+        .expect("the seeded seat resolves");
+    assert_eq!(inherited.source, ContextPolicySource::WorkProfile);
+    assert_eq!(inherited.policy.class, ContextWindowClass::Standard);
+
+    // An authorized override outranks even an explicit slot declaration.
+    let override_policy = context_policy(ContextWindowClass::Lean);
+    let overridden = slots
+        .requested_context_window(&declaring, Some(&override_policy))
+        .expect("the override resolves");
+    assert_eq!(
+        overridden.source,
+        ContextPolicySource::AuthorizedRunOverride
+    );
+    assert_eq!(overridden.policy.class, ContextWindowClass::Lean);
+}
+
+/// Editing the template after the run was created cannot reach backwards into
+/// what the run resolves: the roster reads the frozen copy, not the source.
+#[test]
+fn a_later_template_edit_does_not_change_a_live_runs_policy() {
+    let mut template = seed(0);
+    let seat = template.slots[0].id.clone();
+    template.slots[0].context_window = Some(context_policy(ContextWindowClass::Deep));
+    let snapshot = snapshot_of(&template);
+
+    let team_run_id = TeamRunId::generate();
+    let slots = TeamRunSlots::open(lease(team_run_id), &snapshot).expect("the roster opens");
+    let before = slots
+        .requested_context_window(&seat, None)
+        .expect("the seat resolves");
+    assert_eq!(before.policy.class, ContextWindowClass::Deep);
+
+    // The deployment changes its mind. The live run does not.
+    template.slots[0].context_window = Some(context_policy(ContextWindowClass::Lean));
+    let after = slots
+        .requested_context_window(&seat, None)
+        .expect("the seat still resolves");
+    assert_eq!(after.policy.class, ContextWindowClass::Deep);
+    assert_eq!(before, after);
 }

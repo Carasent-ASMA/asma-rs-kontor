@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        41,
+        43,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        43,
+        45,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -520,6 +520,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_ticket_comments_pull", CallerTier::Operator),
         ("kontor_ticket_comments_list", CallerTier::Observer),
         ("kontor_ticket_claim", CallerTier::Operator),
+        // KON-24: the context-window preview reads and changes nothing; the
+        // explicit compaction drives a session and is an operator act.
+        ("kontor_context_policy_preview", CallerTier::Observer),
+        ("kontor_session_compact", CallerTier::Operator),
     ]);
     for tool in REGISTRY {
         assert_eq!(

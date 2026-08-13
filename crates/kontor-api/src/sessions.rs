@@ -24,18 +24,23 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::dto::{CompactRequestBody, CompactionReceiptDto};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::Stream;
+use kontor_core::compaction::CompactionTrigger;
+use kontor_core::id::ContentHash;
 use kontor_core::id::{AgentRunId, BoundedText, ExternalId, RealmId};
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::repository::RealmRepository;
+use kontor_core::repository::RunRepository as _;
 use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::capability::{
     LimitDemand, OperationContext, RuntimeBindingSnapshot, RuntimeCapability, preflight,
 };
+use kontor_runtime::request::CompactRequest;
 use kontor_runtime::request::{
     HistoryRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, SendMessageRequest,
 };
@@ -72,8 +77,14 @@ const REFUSAL_EVENT: &str = "error";
 /// One resolved, vouched-for session this process may address.
 struct Session {
     agent_run_id: AgentRunId,
+    /// The project the run resolved into, so a later write is scoped to the
+    /// same place the read came from rather than to a caller-supplied id.
+    project_id: kontor_core::id::ProjectId,
     snapshot: RuntimeBindingSnapshot,
     adapter: Arc<dyn RuntimeAdapter>,
+    /// The immutable context window this seat was launched under, when one was
+    /// frozen. Read here so a compaction need not re-query for it.
+    context_policy: Option<kontor_core::spec::ContextPolicySnapshot>,
 }
 
 impl Session {
@@ -162,8 +173,10 @@ async fn resolve(
         .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
     Ok(Session {
         agent_run_id,
+        project_id: inspection.project_id,
         snapshot: issued.snapshot().clone(),
         adapter,
+        context_policy: inspection.context_policy.clone(),
     })
 }
 
@@ -514,4 +527,147 @@ fn message_identifier(state: &ApiState, headers: &HeaderMap) -> Result<MessageId
             "a session Idempotency-Key is the client's stable message id: a canonical UUID v7",
         )
     })
+}
+
+/// The `Idempotency-Key` a compaction is keyed on, which *is* the receipt id.
+fn compaction_identifier(
+    state: &ApiState,
+    headers: &HeaderMap,
+) -> Result<kontor_core::id::CompactionReceiptId, ApiError> {
+    let key = idempotency_key(state, headers)?;
+    kontor_core::id::CompactionReceiptId::parse(key.as_str()).map_err(|_| {
+        state.refuse(
+            ApiErrorCode::InvalidRequest,
+            "a compaction Idempotency-Key is the receipt id: a canonical UUID v7",
+        )
+    })
+}
+
+/// Ask one seat to compact its context, in place.
+///
+/// Every guard the approved policy names runs **before** the adapter is
+/// reached, and each of them refuses without an effect:
+///
+/// * realm authorization and a frozen binding, from [`resolve`];
+/// * the runtime's frozen [`RuntimeCapability::Compact`] capability, so a
+///   `required` policy on a runtime that cannot compact refuses here rather
+///   than being reported as done;
+/// * a *deterministic* trigger — threshold, durable scope boundary or an
+///   authorized operator request. A finished role turn is not one, and there is
+///   no spelling for it in [`CompactionTrigger`];
+/// * no active tool action and no unresolved permission, because compacting
+///   mid-decision discards the decision;
+/// * a sealed durable handoff for a boundary or operator compaction, plus the
+///   Context Pack hash the run was frozen against.
+///
+/// The `Idempotency-Key` *is* the compaction receipt id, for the same reason it
+/// is the message id on `send_message`: two tokens could disagree about whether
+/// a retry is the same attempt, and only one of them is what the ledger keys on.
+#[utoipa::path(
+    post, path = "/v1/sessions/{agent_run_id}/compact", tag = "sessions",
+    params(
+        ("agent_run_id" = String, Path, description = "The Kontor agent run"),
+        ("Idempotency-Key" = String, Header, description = "The stable compaction receipt id")
+    ),
+    request_body = CompactRequestBody,
+    responses(
+        (status = 200, body = CompactionReceiptDto, description = "The outcome, or the original receipt replayed"),
+        (status = 409, description = "The id already recorded a different attempt"),
+        (status = 422, description = "An unsafe trigger, a missing handoff, or a runtime that cannot compact")
+    )
+)]
+pub async fn compact(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(agent_run_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<CompactRequestBody>,
+) -> Result<Json<ReceiptEnvelope<CompactionReceiptDto>>, ApiError> {
+    let session = resolve(&state, &agent_run_id, CallerCapability::Operator, caller).await?;
+    let realm_id = state.realm_id();
+    let domain = |error: &kontor_core::DomainError| ApiError::from_domain(realm_id, error);
+
+    // Capability first: a runtime that cannot compact is refused before any of
+    // the request is interpreted, and certainly before it is dispatched.
+    session.preflight(realm_id, RuntimeCapability::Compact, None)?;
+
+    let trigger: CompactionTrigger = serde_json::from_value(serde_json::Value::String(
+        request.trigger.clone(),
+    ))
+    .map_err(|_| {
+        state.refuse(
+            ApiErrorCode::InvalidRequest,
+            "a compaction names threshold, scope_boundary or operator; a finished turn is not a trigger",
+        )
+    })?;
+
+    // A tool action or a permission nobody answered is work in flight. Throwing
+    // away the context around it is how a seat forgets what it was doing.
+    if request.active_tool || request.unresolved_permission {
+        return Err(state.refuse(
+            ApiErrorCode::UnsupportedCapability,
+            "a session with an active tool action or an unresolved permission is not at a safe point",
+        ));
+    }
+
+    // The sealed-handoff guard, at the command surface and before anything is
+    // looked up. It needs only the trigger and the hash, so it refuses the
+    // cheapest and most fundamental case first — and long before the adapter.
+    if trigger.requires_durable_handoff() && request.handoff_hash.is_none() {
+        return Err(state.refuse(
+            ApiErrorCode::UnsupportedCapability,
+            "a boundary or operator compaction requires a sealed durable handoff",
+        ));
+    }
+
+    let receipt_id = compaction_identifier(&state, &headers)?;
+    let context_pack_hash =
+        ContentHash::parse(&request.context_pack_hash).map_err(|e| domain(&e))?;
+    let handoff_hash = request
+        .handoff_hash
+        .as_deref()
+        .map(ContentHash::parse)
+        .transpose()
+        .map_err(|e| domain(&e))?;
+
+    let policy = session.context_policy.clone().ok_or_else(|| {
+        state.refuse(
+            ApiErrorCode::NotFound,
+            "this run has no frozen context policy to compact under",
+        )
+    })?;
+
+    let compaction = CompactRequest {
+        binding: session.snapshot.clone(),
+        receipt_id,
+        trigger,
+        policy,
+        context_pack_hash,
+        handoff_hash,
+        requested_at: now(),
+    };
+    // The sealed-handoff guard, at the command surface. It refuses before the
+    // adapter is called at all, so a boundary compaction that would drop
+    // unrecorded work state never reaches a runtime.
+    compaction
+        .validate()
+        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+
+    let receipt = session
+        .adapter
+        .compact(&compaction)
+        .await
+        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+
+    // Persisted through the same immutable, id-keyed path everything else uses:
+    // an identical replay returns the original, and a reused id carrying a
+    // different attempt is a conflict rather than an overwrite.
+    let stored = state
+        .with_store(|store| store.record_compaction_receipt(session.project_id, &receipt))
+        .map_err(|error| ApiError::from_repository(realm_id, &error))?;
+
+    Ok(Json(ReceiptEnvelope::new(
+        realm_id,
+        CompactionReceiptDto::of(&stored),
+    )))
 }

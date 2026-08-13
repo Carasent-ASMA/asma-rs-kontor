@@ -179,6 +179,8 @@ entity_ids! {
     ResourceLeaseId,
     /// Identifies one command intent and its receipt.
     CommandReceiptId,
+    /// Identifies one recorded attempt to compact a seat's context.
+    CompactionReceiptId,
     /// Identifies one canonical inbound source event.
     SourceEventId,
     /// Identifies one intake decision for a source event.

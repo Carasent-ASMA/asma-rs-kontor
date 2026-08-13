@@ -1195,6 +1195,10 @@ pub struct RunInspection {
     pub team_template: Option<(TeamTemplateId, SpecVersion)>,
     /// Every recorded discontinuity for this run, oldest first.
     pub gaps: Vec<HistoryGapMarker>,
+    /// The immutable context window this seat was launched under, once frozen.
+    pub context_policy: Option<crate::spec::ContextPolicySnapshot>,
+    /// The most recent recorded attempt to compact this seat.
+    pub latest_compaction: Option<crate::compaction::CompactionReceipt>,
 }
 
 /// Everything a cross-boundary reader is told about one task.
@@ -1644,6 +1648,60 @@ pub trait RunRepository {
         project_id: ProjectId,
         id: AgentRunId,
     ) -> RepositoryResult<Option<AgentRun>>;
+
+    /// Freeze one run's requested/effective context-window pair.
+    ///
+    /// Written once, before the native session exists. Writing the *same* pair
+    /// again is a replay and returns quietly; writing a different one under the
+    /// same run is a contradiction, because the record of what a run was
+    /// launched under cannot be revised after the fact.
+    ///
+    /// # Errors
+    /// * [`RepositoryError::NotFound`] for a run this project does not own.
+    /// * [`RepositoryError::Conflict`] when a different pair is already frozen
+    ///   for this run.
+    fn record_run_context_policy(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        snapshot: &crate::spec::ContextPolicySnapshot,
+    ) -> RepositoryResult<()>;
+
+    /// Read back the frozen pair, re-verified against its own digests.
+    ///
+    /// # Errors
+    /// Refuses stored bytes that no longer match their recorded hashes.
+    fn get_run_context_policy(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> RepositoryResult<Option<crate::spec::ContextPolicySnapshot>>;
+
+    /// Record one compaction attempt.
+    ///
+    /// Idempotent by receipt id: replaying the identical receipt returns the
+    /// stored one, and the same id carrying different content is a conflict.
+    /// Because rows are immutable, a late or out-of-order write cannot regress
+    /// a receipt that already recorded a terminal outcome.
+    ///
+    /// # Errors
+    /// * [`RepositoryError::NotFound`] for a run this project does not own.
+    /// * [`RepositoryError::Conflict`] for a reused id with different content.
+    fn record_compaction_receipt(
+        &self,
+        project_id: ProjectId,
+        receipt: &crate::compaction::CompactionReceipt,
+    ) -> RepositoryResult<crate::compaction::CompactionReceipt>;
+
+    /// The most recent compaction attempt for one run, if there is one.
+    ///
+    /// # Errors
+    /// Refuses stored bytes that no longer match their recorded digest.
+    fn latest_compaction_receipt(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> RepositoryResult<Option<crate::compaction::CompactionReceipt>>;
 
     /// Append a raw runtime event, deduplicating replays.
     ///

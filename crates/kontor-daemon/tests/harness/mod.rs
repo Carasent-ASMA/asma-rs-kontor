@@ -76,6 +76,7 @@ pub(crate) fn every_capability() -> RuntimeCapabilities {
             max_message_bytes: 4096,
             max_history_page: 64,
             max_concurrent_sessions: 8,
+            context_window: kontor_core::spec::ContextWindowBounds::unknown(),
         },
     }
 }
@@ -308,6 +309,13 @@ impl World {
             cwd: workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse("do the loopback work").expect("bounded text"),
+            context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+                &kontor_core::spec::ContextWindowBounds::unknown(),
+                true,
+                kontor_core::id::SCHEMA_VERSION,
+                at("2026-08-10T09:00:00Z"),
+            )
+            .expect("the standard fallback freezes"),
             requested_at: at("2026-08-10T09:00:00Z"),
         };
         let authority = self

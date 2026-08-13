@@ -1657,6 +1657,13 @@ impl Realm {
             cwd: workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse(PROMPT_CANARY).expect("bounded text"),
+            context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
+                &kontor_core::spec::ContextWindowBounds::unknown(),
+                true,
+                kontor_core::id::SCHEMA_VERSION,
+                at("2026-08-12T09:00:00Z"),
+            )
+            .expect("the standard fallback freezes"),
             requested_at: at("2026-08-12T09:00:00Z"),
         };
         let authority = self
@@ -2061,6 +2068,7 @@ fn capabilities() -> RuntimeCapabilities {
             max_message_bytes: 4_096,
             max_history_page: 64,
             max_concurrent_sessions: 8,
+            context_window: kontor_core::spec::ContextWindowBounds::unknown(),
         },
     }
 }

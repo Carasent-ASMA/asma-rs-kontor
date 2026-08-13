@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -98,6 +98,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0011_task_account_selection.sql"),
     // Schema v12. The command kinds used by the corrective public surface.
     include_str!("../migrations/0012_surface_command_kinds.sql"),
+    // Schema v13. The immutable requested/effective context-window pair one run
+    // was launched under, and every recorded attempt to compact its seat.
+    include_str!("../migrations/0013_context_policy_and_compaction.sql"),
 ];
 
 const _: () = assert!(

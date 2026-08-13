@@ -17,9 +17,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use kontor_core::compaction::{CompactionReceipt, CompactionStatus, CompactionTelemetry};
 use kontor_core::id::{
-    AgentRunId, CanonicalDocument, ExternalId, ExternalName, RuntimeBindingId, RuntimeKindKey,
-    TeamRunId, Timestamp, parse_utc_timestamp,
+    AgentRunId, CanonicalDocument, CompactionReceiptId, ContentHash, ExternalId, ExternalName,
+    RuntimeBindingId, RuntimeKindKey, TeamRunId, Timestamp, parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
@@ -40,8 +41,9 @@ use crate::observation::{
     ReconciliationReport, reconcile,
 };
 use crate::request::{
-    AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
-    LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest, SendMessageRequest,
+    AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
+    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest,
+    SendMessageRequest, capability_document,
 };
 use crate::timeline::{
     Admission, EventSubject, HistoryCursor, HistoryPage, LiveSubscription, MessageLedger,
@@ -79,6 +81,26 @@ pub enum ScriptStep {
         /// The operation that must be called next.
         operation: RuntimeCapability,
     },
+    /// The next compaction is accepted but not attested. Reuse stays blocked.
+    CompactPending,
+    /// The next compaction fails outright.
+    CompactFailed,
+    /// The next compaction comes back naming a *different* native session.
+    ///
+    /// This is the drift a confirmation must never paper over: the runtime
+    /// replaced the session instead of compacting it.
+    CompactIdentityDrift {
+        /// The generation the runtime reports afterwards.
+        generation: u64,
+    },
+    /// The next compaction reports these counters. Fields left `None` stay
+    /// unknown, which is how a runtime that measures nothing is recorded.
+    CompactTelemetry {
+        /// Active context tokens before.
+        tokens_before: Option<u64>,
+        /// Active context tokens after.
+        tokens_after: Option<u64>,
+    },
 }
 
 impl ScriptStep {
@@ -89,6 +111,10 @@ impl ScriptStep {
             Self::LoseSendAck => RuntimeCapability::SendMessage,
             Self::CancelObservedTerminal => RuntimeCapability::Cancel,
             Self::CloseStreamWithoutTerminal => RuntimeCapability::LiveEvents,
+            Self::CompactPending
+            | Self::CompactFailed
+            | Self::CompactIdentityDrift { .. }
+            | Self::CompactTelemetry { .. } => RuntimeCapability::Compact,
             Self::TransportFailure { operation } => *operation,
         }
     }
@@ -255,6 +281,8 @@ pub enum AdapterCall {
     SubscribeLive(RuntimeBindingId),
     /// A permission request was answered.
     RespondPermission(RuntimeBindingId),
+    /// A session was asked to compact its context in place.
+    Compact(RuntimeBindingId),
 }
 
 /// One native session the fake owns.
@@ -362,6 +390,11 @@ struct FakeState {
     /// answering another session's request is refused as exactly that rather
     /// than looking like an unknown request.
     permissions: PermissionLedger,
+    /// One entry per compaction attempt, keyed by receipt id and holding the
+    /// request digest beside the receipt. The digest is what makes a replay of
+    /// the same attempt return the original rather than compact a second time,
+    /// and a reused id with different content a conflict.
+    compactions: BTreeMap<CompactionReceiptId, (ContentHash, CompactionReceipt)>,
     /// One entry per seat, and the reason AC-4 holds. Every read and write of
     /// it happens under the single state lock, so "check the seat, then claim
     /// it" has no interleaving for a second caller to slip into.
@@ -576,6 +609,7 @@ impl FakeState {
                 demand: Some(LimitDemand::ConcurrentSessions(
                     self.sessions.len() as u32 + 1,
                 )),
+                context_policy: Some(request.context_policy()),
             },
         )?;
         // The preflight proves the claim is consistent and in scope; this
@@ -680,6 +714,7 @@ impl ScriptedFakeRuntime {
                 workspaces: BTreeMap::new(),
                 bindings: BTreeMap::new(),
                 permissions: PermissionLedger::new(),
+                compactions: BTreeMap::new(),
                 admissions: AdmissionLedger::new(),
             }),
         }
@@ -1063,6 +1098,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 workspace: None,
                 current_generation: None,
                 demand: None,
+                context_policy: None,
             },
         )?;
         state.take_step(
@@ -1179,6 +1215,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         state.take_step(
@@ -1214,6 +1251,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::MessageBytes(request.body_bytes())),
+                context_policy: None,
             },
         )?;
         let step = state.take_step(
@@ -1273,6 +1311,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         let step = state.take_step(
@@ -1315,6 +1354,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         state.take_step(
@@ -1361,6 +1401,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 workspace: None,
                 current_generation: None,
                 demand: None,
+                context_policy: None,
             },
         )?;
         state.take_step(
@@ -1453,6 +1494,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 workspace: None,
                 current_generation: None,
                 demand: None,
+                context_policy: None,
             },
         )?;
         state.take_step(RuntimeCapability::Discovery, RequestKey::Sessions)?;
@@ -1515,6 +1557,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::HistoryPage(request.page_size)),
+                context_policy: None,
             },
         )?;
         state.take_step(
@@ -1573,6 +1616,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         let step = state.take_step(
@@ -1615,6 +1659,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 workspace: None,
                 current_generation: Some(generation),
                 demand: None,
+                context_policy: None,
             },
         )?;
         state.take_step(
@@ -1652,5 +1697,115 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .permissions
             .record(request.permission_id.clone(), acknowledgement.clone());
         Ok(acknowledgement)
+    }
+
+    async fn compact(&self, request: &CompactRequest) -> RuntimeResult<CompactionReceipt> {
+        // The handoff guard runs first and touches nothing: a compaction that
+        // would drop unrecorded work state must not reach the runtime, and must
+        // not leave a receipt claiming it was considered.
+        request.validate()?;
+
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+
+        // Capability is answered *before* the shared preflight, because "this
+        // runtime cannot compact" is a fact to report rather than an error to
+        // raise — and reporting it must still cost zero native effect.
+        if !declared.supports(RuntimeCapability::Compact) {
+            return Ok(request.unsupported_receipt(&declared, request.requested_at)?);
+        }
+
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Compact,
+                autonomous: true,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                workspace: None,
+                current_generation: Some(generation),
+                demand: None,
+                context_policy: None,
+            },
+        )?;
+
+        // Idempotency by receipt id, before the effect: a replayed request
+        // returns the original receipt rather than compacting a second time.
+        if let Some(original) = state.compactions.get(&request.receipt_id) {
+            if original.0 != request.content_hash()? {
+                return Err(RuntimeError::DuplicateCompaction {
+                    rule: "was reused for a different attempt",
+                });
+            }
+            return Ok(original.1.clone());
+        }
+
+        let step = state.take_step(
+            RuntimeCapability::Compact,
+            RequestKey::Binding(request.binding.binding_id()),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::Compact(request.binding.binding_id()));
+
+        let before = request.binding.identity().clone();
+        let telemetry = match step {
+            Some(ScriptStep::CompactTelemetry {
+                tokens_before,
+                tokens_after,
+            }) => CompactionTelemetry {
+                tokens_before,
+                tokens_after,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            // A runtime that reports nothing stays unknown. Zero would be a
+            // measurement nobody took.
+            _ => CompactionTelemetry::unknown(),
+        };
+        let (status, after, evidence) = match step {
+            Some(ScriptStep::CompactPending) => (CompactionStatus::Pending, None, None),
+            Some(ScriptStep::CompactFailed) => (CompactionStatus::Failed, None, None),
+            Some(ScriptStep::CompactIdentityDrift { generation }) => {
+                let drifted = NativeRuntimeIdentity {
+                    generation,
+                    ..before.clone()
+                };
+                // Re-read, identity moved: the session was replaced rather than
+                // compacted, and that is a failure however the runtime words it.
+                (CompactionStatus::Failed, Some(drifted), None)
+            }
+            _ => (
+                CompactionStatus::Confirmed,
+                Some(before.clone()),
+                Some(ExternalId::parse("fake-compaction-evidence").map_err(RuntimeError::Domain)?),
+            ),
+        };
+
+        let receipt = CompactionReceipt {
+            schema_version: request.policy.schema_version,
+            id: request.receipt_id,
+            agent_run_id: request.binding.agent_run_id(),
+            binding_id: request.binding.binding_id(),
+            native_before: before,
+            native_after: after,
+            requested: request.policy.requested,
+            effective: request.policy.effective,
+            trigger: request.trigger,
+            capabilities: capability_document(&declared).map_err(RuntimeError::Domain)?,
+            status,
+            telemetry,
+            context_pack_hash: request.context_pack_hash.clone(),
+            handoff_hash: request.handoff_hash.clone(),
+            evidence,
+            recorded_at: request.requested_at,
+        };
+        receipt.validate().map_err(RuntimeError::Domain)?;
+        state.compactions.insert(
+            request.receipt_id,
+            (request.content_hash()?, receipt.clone()),
+        );
+        Ok(receipt)
     }
 }
