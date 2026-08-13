@@ -11,43 +11,35 @@ description = "Stdio MCP server exposing capability-gated Kontor tools."
 [lints]
 workspace = true
 
+[[bin]]
+name = "kontor-mcp"
+path = "src/main.rs"
+
 [dependencies]
 rmcp = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
-uuid = { workspace = true }
 thiserror = { workspace = true }
-# KON-MVP-16: the domain vocabulary a request is stated in — identifiers, command
-# kinds and the compatibility matrix. `kontor-core` is pure (serde, uuid, jiff,
-# sha2, hex): depending on it gives this crate the real types instead of
-# hand-rolled copies, and gives it no store, no runtime adapter and no SQLite.
+clap = { workspace = true }
+# KON-MVP-16: the domain vocabulary a request is stated in — identifiers, open
+# keys, names and revisions. `kontor-core` is pure (serde, uuid, jiff, sha2,
+# hex): depending on it gives this crate the real parsers instead of hand-rolled
+# copies, and gives it no store, no scheduler and no runtime adapter. It is the
+# only Kontor crate this one links, which is what the dependency audit asserts.
 kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 # The loopback transport. `default-features = false` upstream, so there is no
-# native-tls and no proxy discovery; `stream` is what makes an SSE body readable
-# as it arrives rather than only when it ends.
+# native-tls; redirects and proxies are disabled at the builder. `stream` is what
+# makes an SSE body readable as it arrives rather than only when it ends.
 reqwest = { workspace = true }
 url = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
-# The tier secret is held as a `SecretString`: it is absent from `Debug` and
-# zeroized on drop, so a panic backtrace through the client cannot print it.
+# The tier secret is held as a `SecretString`: absent from `Debug` and zeroized
+# on drop, so a panic backtrace through the client cannot print it.
 secrecy = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-
-[[test]]
-name = "protocol"
-path = "tests/protocol.rs"
-
-[[test]]
-name = "capability_matrix"
-path = "tests/capability_matrix.rs"
-
-[[test]]
-name = "schemas"
-path = "tests/schemas.rs"

@@ -40,7 +40,6 @@ hex = { workspace = true }
 kontor-tests-contract = { path = "../contract", version = "=0.1.0" }
 kontor-accounts = { path = "../../crates/kontor-accounts", version = "=0.1.0" }
 kontor-api = { path = "../../crates/kontor-api", version = "=0.1.0" }
-kontor-cli = { path = "../../crates/kontor-cli", version = "=0.1.0" }
 kontor-context = { path = "../../crates/kontor-context", version = "=0.1.0" }
 kontor-daemon = { path = "../../crates/kontor-daemon", version = "=0.1.0" }
 kontor-integrations-asma = { path = "../../crates/kontor-integrations-asma", version = "=0.1.0" }

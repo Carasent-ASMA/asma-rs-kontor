@@ -23,6 +23,7 @@ kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
 # crate only assembles its input and reports its answer.
 kontor-scheduler = { path = "../kontor-scheduler", version = "=0.1.0" }
 kontor-store = { path = "../kontor-store", version = "=0.1.0" }
+async-trait = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

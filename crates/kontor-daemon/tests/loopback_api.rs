@@ -31,20 +31,16 @@
 
 mod harness;
 
-use harness::{Call, World, at, capabilities_without, fake_family, name, secret};
+use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{
-    AgentRunId, CanonicalDocument, ConnectorKey, ExternalId, ProjectId, RoleSlotId, TaskId,
-    TaskWorkflowId, TicketLinkId,
-};
+use kontor_core::id::{AgentRunId, CanonicalDocument, ProjectId, TaskId};
 use kontor_core::repository::{
-    NewAgentRun, NewObservation, NewProject, NewRuntimeEvent, NewTask, NewTaskWorkflow,
-    ProjectRepository, RealmRepository, RunRepository, TicketRepository, WorkflowRepository,
+    NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunRepository,
 };
-use kontor_core::spec::ResolvedWorkProfileSnapshot;
-use kontor_core::state::{Freshness, ObservedRunState, RuntimeContact, TaskState};
+use kontor_core::state::{Freshness, ObservedRunState, RuntimeContact};
 use kontor_daemon::{Daemon, DaemonConfig};
+use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep};
 
@@ -1249,15 +1245,19 @@ fn fleet_settings() -> serde_json::Value {
                 "runtime_kind": "paseo.agent",
                 "host_key": "paseo-host",
                 "mini_project_id": "mini-1",
+                "provider": "codex",
                 "jira_epic_key": "ASMA-7759",
                 "mini_project_short_title": "Kontor MVP",
                 "plan_item_key": "KON-MVP-15",
                 "task_short_title": "Loopback seat",
+                "project_root_cwd": "/w/kontor",
                 "canonical_worktree_cwd": "/w/kontor-task",
                 "orchestrator_agent_id": "orchestrator-1",
                 "max_concurrent_sessions": 4,
                 "executable": "paseo",
                 "host_target": "https://operator:hunter2@paseo.example",
+                "endpoint": "ws://127.0.0.1:6767/ws",
+                "client_id": "kontor-mini-1",
                 "timeout_seconds": 30
             },
             {
@@ -1809,823 +1809,2781 @@ async fn shutdown_shuts_scheduling_and_releases_the_state_root() {
 }
 
 // ---------------------------------------------------------------------------
-// The KON-MVP-16 second amendment: lists, the scheduling explanation, external
-// ticket evidence and live session discovery
+// The empty-realm bootstrap journey
+//
+// Everything below starts from a `kontord` that has been installed and
+// configured and has never been used: no project, no goal, no task, no team run,
+// no seed script and no direct SQL. One admin credential drives the whole
+// sequence through public application operations, which is the only way to prove
+// the sequence is actually possible rather than merely plausible against a
+// fixture something else wrote.
 // ---------------------------------------------------------------------------
-//
-// Each of these routes was staged in the first round of KON-MVP-16 and is wired in
-// this one, so what follows is the evidence that each answers from persisted rows or
-// from the adapter rather than from a default. The extra mutants they exist to kill:
-//
-// * a list that answers for the wrong project, or answers an unknown project with an
-//   empty list instead of a refusal;
-// * a scheduling plan that admits a task with no execution authorization — the one
-//   default that would make the whole route a lie;
-// * a plan that reports only the first blocker after all;
-// * a plan that commits anything, which would be the worst defect available here;
-// * a ticket history that answers for an unknown link with an empty page, which
-//   reads as "never touched" rather than "no such link";
-// * an authority tier slipping on any of the new routes.
 
-/// Give the harness task an active workflow, so it becomes a scheduling candidate.
-///
-/// The profile comes from the bundled pack the harness already stored, because a run
-/// through the real store needs a revision its foreign keys can see.
-async fn with_workflow(world: &World) -> TaskWorkflowId {
-    let workflow_id = TaskWorkflowId::generate();
-    world.daemon.state().with_store(|store| {
-        let pack = kontor_profiles::seeds::bundled_pack().expect("the bundled pack loads");
-        let entry = pack
-            .manifest
-            .iter()
-            .find(|entry| entry.availability == kontor_profiles::pack::PackAvailability::Seeded)
-            .expect("the bundled pack seeds at least one category");
-        let bundle = kontor_profiles::pack::resolve_profile(
-            &pack,
-            &entry.category,
-            at("2026-08-10T09:00:00Z"),
+/// Ensure the one project an empty Realm needs, returning `(id, revision)`.
+async fn ensure_project(world: &World, key: &str, name: &str, root: &str) -> Answer {
+    Call::post(
+        "/v1/projects:ensure",
+        &serde_json::json!({"name": name, "root_path": root}),
+    )
+    .signed_as(world, "admin")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// The first runnable work-profile category the bundled pack advertises.
+async fn first_category(world: &World) -> String {
+    let catalog = Call::get("/v1/catalog/work-profiles")
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    catalog.json().as_array().expect("a catalog array")[0]
+        .get("category")
+        .and_then(serde_json::Value::as_str)
+        .expect("a category")
+        .to_owned()
+}
+
+/// A two-task epic whose second task waits on the first.
+fn epic_body(
+    revision: u64,
+    name: &str,
+    category: &str,
+    tasks: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "expected_revision": revision,
+        "name": name,
+        "work_profile_category": category,
+        "runtime_family": "fake.runtime",
+        "tasks": tasks,
+    })
+}
+
+#[tokio::test]
+async fn an_empty_realm_is_bootstrapped_through_public_operations_alone() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+
+    // Nothing has been seeded, and the realm says so by having no project to
+    // resolve rather than by an empty list nobody could have written.
+    let realm = Call::get("/v1/realm")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(realm.status, 200);
+
+    let created = ensure_project(&world, "bootstrap-1", "Kontor", "/tmp/kontor-empty").await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    assert_eq!(created.json()["applied"], "created");
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("a revision");
+
+    // The same ensure is the same project, and nothing was written twice.
+    let replayed = ensure_project(&world, "bootstrap-2", "Kontor", "/tmp/kontor-empty").await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+    assert_eq!(replayed.json()["project_id"], created.json()["project_id"]);
+
+    // A different name at the same root is drift, not an update.
+    let drift = ensure_project(&world, "bootstrap-3", "Something else", "/tmp/kontor-empty").await;
+    assert_eq!(drift.status, 409, "{}", drift.body);
+
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Bootstrap epic",
+            &category,
+            serde_json::json!([
+                {"title": "Design the thing", "ticket_links": [
+                    {"connector": "jira", "external_issue_key": "ASMA-1"}
+                ]},
+                {"title": "Build the thing", "depends_on": ["Design the thing"]}
+            ]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("epic-1")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let tasks = applied.json()["tasks"].as_array().expect("tasks").clone();
+    assert_eq!(tasks.len(), 2, "the whole graph was applied at once");
+    assert_eq!(tasks[0]["applied"], "created");
+    assert_eq!(
+        tasks[1]["depends_on"].as_array().expect("edges").len(),
+        1,
+        "the dependency edge was resolved from a sibling title"
+    );
+    assert_eq!(
+        tasks[0]["links"].as_array().expect("links").len(),
+        1,
+        "the ticket link was attached in the same operation"
+    );
+
+    // The projection reads back the graph, the selections and the links.
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    assert_eq!(projection.realm(), world.realm_id());
+    assert_eq!(
+        projection.json()["tasks"].as_array().expect("tasks").len(),
+        2
+    );
+    assert!(
+        projection.json()["work_profile"]["id"].is_string(),
+        "every task pinned the profile the epic selected"
+    );
+    assert!(
+        projection.json()["tasks"][0]["workflow_revision"].is_u64(),
+        "a task with an active workflow reports the revision a gate recording \
+         must present: {}",
+        projection.body
+    );
+}
+
+#[tokio::test]
+async fn reapplying_the_identical_epic_writes_nothing_and_drift_is_refused() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "reapply-1", "Kontor", "/tmp/kontor-reapply").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let body = epic_body(
+        revision,
+        "Idempotent epic",
+        &category,
+        serde_json::json!([{"title": "Only task"}]),
+    );
+
+    let first = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("reapply-epic-1")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let epic = first.json()["epic_id"].as_str().expect("id").to_owned();
+
+    let again = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("reapply-epic-2")
+        .send(&world)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(
+        again.json()["epic_id"],
+        epic,
+        "the same epic, not a second one"
+    );
+    assert_eq!(again.json()["applied"], "unchanged");
+    assert_eq!(again.json()["tasks"][0]["applied"], "unchanged");
+
+    // Same key, different bytes: a conflict, and no second epic.
+    let reused = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "A different epic",
+            &category,
+            serde_json::json!([{"title": "Only task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("reapply-epic-1")
+    .send(&world)
+    .await;
+    assert_eq!(reused.status, 409, "{}", reused.body);
+}
+
+#[tokio::test]
+async fn a_cyclic_or_dangling_epic_rolls_the_whole_application_back() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "cycle-1", "Kontor", "/tmp/kontor-cycle").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    for tasks in [
+        // A two-node cycle.
+        serde_json::json!([
+            {"title": "A", "depends_on": ["B"]},
+            {"title": "B", "depends_on": ["A"]}
+        ]),
+        // An edge naming a task the epic never states.
+        serde_json::json!([{"title": "A", "depends_on": ["Nowhere"]}]),
+        // A task depending on itself.
+        serde_json::json!([{"title": "A", "depends_on": ["A"]}]),
+        // The same external issue linked twice to one task.
+        serde_json::json!([{"title": "A", "ticket_links": [
+            {"connector": "jira", "external_issue_key": "ASMA-9"},
+            {"connector": "jira", "external_issue_key": "ASMA-9"}
+        ]}]),
+    ] {
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics:apply"),
+            &epic_body(revision, "Refused epic", &category, tasks.clone()),
         )
-        .expect("the seeded category resolves");
-        let snapshot: ResolvedWorkProfileSnapshot = bundle.profile.clone();
-        let entry_phase = snapshot.definition.entry_phase.clone();
-        store
-            .create_task_workflow(&NewTaskWorkflow {
-                id: workflow_id,
-                project_id: world.project,
-                task_id: world.task,
-                snapshot,
-                current_phase: entry_phase,
-                created_at: at("2026-08-10T09:05:00Z"),
-            })
-            .expect("the task workflow is created");
-    });
-    workflow_id
-}
-
-/// Link the harness task to an external ticket.
-fn with_ticket(world: &World) -> TicketLinkId {
-    let link_id = TicketLinkId::generate();
-    world.daemon.state().with_store(|store| {
-        store
-            .create_ticket_link(&kontor_core::repository::NewTicketLink {
-                id: link_id,
-                project_id: world.project,
-                task_id: world.task,
-                connector: ConnectorKey::parse("test.connector").expect("a valid connector key"),
-                external_issue_key: ExternalId::parse("ASMA-7760").expect("a valid issue key"),
-                created_at: at("2026-08-10T09:10:00Z"),
-            })
-            .expect("the ticket link is created");
-    });
-    link_id
-}
-
-/// Persist one extra task in the harness project.
-fn another_task(world: &World, title: &str) -> TaskId {
-    let task_id = TaskId::generate();
-    world.daemon.state().with_store(|store| {
-        store
-            .create_task(&NewTask {
-                id: task_id,
-                project_id: world.project,
-                mini_project_id: None,
-                title: name(title),
-                module: None,
-                state: TaskState::Ready,
-                created_at: at("2026-08-10T09:20:00Z"),
-            })
-            .expect("a task is created");
-    });
-    task_id
-}
-
-// ---------------------------------------------------------------------------
-// Lists
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn the_project_list_names_the_realm_and_the_project_the_harness_seeded() {
-    let world = World::open().await;
-    let answer = Call::get("/v1/projects")
-        .signed_as(&world, "observer")
+        .signed_as(&world, "admin")
+        .with_key(format!("cycle-{}", tasks))
         .send(&world)
         .await;
-    assert_eq!(answer.status, 200, "{}", answer.body);
-    assert_eq!(
-        answer.realm(),
-        world.realm_id(),
-        "every answer names its realm"
-    );
-    let listed = answer.json()["value"]
-        .as_array()
-        .expect("a list is an array")
-        .clone();
-    assert_eq!(listed.len(), 1, "the harness seeds exactly one project");
-    assert_eq!(
-        listed[0]["project_id"],
-        serde_json::json!(world.project.to_string())
-    );
+        assert!(
+            refused.status.is_client_error(),
+            "{tasks} must be refused: {}",
+            refused.body
+        );
+    }
+
+    // Nothing survived any of them: the goal itself was never created.
+    let epics = world.daemon.state().with_store(|store| {
+        store
+            .list_tasks(kontor_core::id::ProjectId::parse(&project).expect("a project id"))
+            .expect("the tasks read back")
+    });
     assert!(
-        listed[0]["revision"]
-            .as_u64()
-            .is_some_and(|value| value >= 1),
-        "a list entry carries the revision a later write must present: {}",
-        answer.body
+        epics.is_empty(),
+        "a refused apply must leave no task behind, found {}",
+        epics.len()
     );
 }
 
 #[tokio::test]
-async fn the_mission_and_run_lists_answer_for_the_project_they_were_asked_about() {
-    let world = World::open().await;
-    let (agent_run_id, _snapshot) = world.launch().await;
+async fn arming_disarming_and_planning_are_scoped_authority_decisions() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "arm-1", "Kontor", "/tmp/kontor-arm").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
 
-    let missions = Call::get(format!("/v1/projects/{}/team-runs", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(missions.status, 200, "{}", missions.body);
-    let listed = missions.json()["value"]
-        .as_array()
-        .expect("a list is an array")
-        .clone();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(
-        listed[0]["team_run_id"],
-        serde_json::json!(world.team_run.to_string())
-    );
-    assert_eq!(
-        listed[0]["task_id"],
-        serde_json::json!(world.task.to_string()),
-        "a mission names the task it serves"
-    );
-
-    let runs = Call::get(format!("/v1/projects/{}/runs", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(runs.status, 200, "{}", runs.body);
-    let listed = runs.json()["value"]
-        .as_array()
-        .expect("a list is an array")
-        .clone();
-    assert!(
-        listed
-            .iter()
-            .any(|run| run["agent_run_id"] == serde_json::json!(agent_run_id.to_string())),
-        "the launched run appears in its project's run list: {}",
-        runs.body
-    );
-}
-
-#[tokio::test]
-async fn a_run_list_filtered_by_mission_answers_only_that_missions_runs() {
-    let world = World::open().await;
-    let (agent_run_id, _snapshot) = world.launch().await;
-
-    let matching = Call::get(format!(
-        "/v1/projects/{}/runs?team_run={}",
-        world.project, world.team_run
-    ))
-    .signed_as(&world, "observer")
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead architect",
+            "harness": "fake.runtime",
+            "credential_alias": "lead-architect",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("account-1")
     .send(&world)
     .await;
-    assert_eq!(matching.status, 200, "{}", matching.body);
-    assert!(
-        matching.json()["value"]
-            .as_array()
-            .expect("a list is an array")
-            .iter()
-            .any(|run| run["agent_run_id"] == serde_json::json!(agent_run_id.to_string()))
-    );
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+    // The catalog says nothing a caller could authenticate with.
+    let listed = Call::get(format!("/v1/projects/{project}/provider-account-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(listed.status, 200);
+    for forbidden in ["credential", "token", "secret", "keychain", "config_home"] {
+        assert!(
+            !listed.body.contains(forbidden),
+            "the account catalog must not carry `{forbidden}`: {}",
+            listed.body
+        );
+    }
 
-    // A filter naming another mission must answer empty rather than ignoring the
-    // filter, which is the failure a caller would never notice.
-    let other = kontor_core::id::TeamRunId::generate();
-    let empty = Call::get(format!(
-        "/v1/projects/{}/runs?team_run={other}",
-        world.project
-    ))
-    .signed_as(&world, "observer")
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Armed epic",
+            &category,
+            serde_json::json!([{"title": "First"}, {"title": "Second"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("arm-epic-1")
     .send(&world)
     .await;
-    assert_eq!(empty.status, 200, "{}", empty.body);
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    let first_task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+
+    let arm_body = serde_json::json!({
+        "expected_revision": epic_revision,
+        "tasks": [first_task],
+        "allowed_start": "2020-01-01T00:00:00Z",
+        "allowed_end": "2099-01-01T00:00:00Z",
+        "max_concurrency": 2,
+        "budget": {
+            "max_tokens": 100000,
+            "max_commands": 500,
+            "max_duration_seconds": 3600,
+            "max_cost_minor_units": 5000,
+            "cost_currency": "NOK"
+        },
+        "granted_by": account_id,
+        "reason": "Bootstrap the epic"
+    });
+
+    // Arming is admin authority: an operator credential does not reach it.
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &arm_body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("arm-operator")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert_eq!(refused.code(), "forbidden");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &arm_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("arm-admin")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+    let authorization = armed.json()["authorization_id"]
+        .as_str()
+        .expect("an authorization id")
+        .to_owned();
     assert_eq!(
-        empty.json()["value"]
+        armed.json()["selected_tasks"]
             .as_array()
-            .expect("a list is an array")
+            .expect("tasks")
             .len(),
-        0,
-        "a filter that matches nothing answers nothing, not everything"
+        1,
+        "arming names exactly the scope it was asked for"
     );
-}
 
-#[tokio::test]
-async fn an_unknown_project_is_refused_rather_than_answered_with_an_empty_list() {
-    let world = World::open().await;
-    let unknown = kontor_core::id::ProjectId::generate();
-    let answer = Call::get(format!("/v1/projects/{unknown}/tasks"))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(answer.status, 404, "{}", answer.body);
-    assert_eq!(answer.code(), "not_found");
-}
-
-// ---------------------------------------------------------------------------
-// The scheduling explanation
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn a_task_with_no_execution_authorization_is_refused_and_never_admitted() {
-    // The most important assertion in this file. The snapshot is assembled with no
-    // authorization evidence when none is recorded, and the scheduler's answer to
-    // that is a refusal. If a default ever made this admit, the whole route would be
-    // telling an operator that unarmed work is runnable.
-    let world = World::open().await;
-    with_workflow(&world).await;
-
-    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(answer.status, 200, "{}", answer.body);
-    assert_eq!(answer.realm(), world.realm_id());
-    let plan = answer.json()["value"].clone();
-    assert_eq!(
-        plan["admitted"],
-        serde_json::json!(0),
-        "nothing is armed, so nothing is admitted: {}",
-        answer.body
-    );
-    let decisions = plan["decisions"]
+    // The planner explains itself, and writes nothing while doing it.
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert!(plan.json()["plan_hash"].is_string());
+    let ready: Vec<_> = plan.json()["ready"]
         .as_array()
-        .expect("a plan carries decisions")
-        .clone();
-    let decision = decisions
+        .expect("a ready set")
         .iter()
-        .find(|decision| decision["task_id"] == serde_json::json!(world.task.to_string()))
-        .expect("the seeded task is a candidate");
-    assert_eq!(decision["admitted"], serde_json::json!(false));
+        .map(|task| task["task_id"].as_str().expect("an id").to_owned())
+        .collect();
     assert_eq!(
-        decision["code"],
-        serde_json::json!("authorization_missing"),
-        "the refusal is the real one and not a placeholder: {}",
-        answer.body
+        ready,
+        vec![first_task.clone()],
+        "only the armed task is ready; its sibling is not armed: {}",
+        plan.body
     );
-}
-
-#[tokio::test]
-async fn a_plan_reports_every_blocker_and_not_only_the_first() {
-    let world = World::open().await;
-    with_workflow(&world).await;
-    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(answer.status, 200, "{}", answer.body);
-    let decisions = answer.json()["value"]["decisions"]
-        .as_array()
-        .expect("a plan carries decisions")
-        .clone();
-    let decision = decisions
-        .iter()
-        .find(|decision| decision["task_id"] == serde_json::json!(world.task.to_string()))
-        .expect("the seeded task is a candidate")
-        .clone();
-    let blockers = decision["blockers"]
-        .as_array()
-        .expect("a refused candidate carries its blockers")
-        .clone();
     assert!(
-        !blockers.is_empty(),
-        "a refused candidate must say what refused it: {}",
-        answer.body
+        plan.json()["blocked"]
+            .as_array()
+            .expect("blocked")
+            .iter()
+            .any(|task| task["code"] == "authorization_missing"),
+        "an unarmed sibling blocks with a named reason: {}",
+        plan.body
     );
-    // The list is in evaluation order and its first entry is the decision's own
-    // code, which is what makes the two impossible to contradict.
-    assert_eq!(
-        blockers[0]["code"], decision["code"],
-        "the first blocker is the code the decision reports: {}",
-        answer.body
+
+    // Disarming revokes future admission; the planner then admits nothing.
+    let disarmed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:disarm"),
+        &serde_json::json!({
+            "authorization_id": authorization,
+            "revoked_by": account_id,
+            "reason": "Stand the epic down"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("disarm-1")
+    .send(&world)
+    .await;
+    assert_eq!(disarmed.status, 200, "{}", disarmed.body);
+    assert!(disarmed.json()["revoked_at"].is_string());
+
+    let after = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert!(
+        after.json()["ready"].as_array().expect("ready").is_empty(),
+        "a revoked authorization arms nothing: {}",
+        after.body
     );
-    for blocker in &blockers {
-        assert!(
-            blocker["blocker"]
-                .as_str()
-                .is_some_and(|name| !name.is_empty()),
-            "every blocker names itself: {blocker}"
-        );
+}
+
+/// A body that parses for whichever operation `uri` names.
+///
+/// The authority tests need the extractor to succeed so that the refusal they
+/// observe is the capability check and not `Json`'s.
+fn well_formed_body(uri: &str) -> serde_json::Value {
+    if uri.ends_with("epics:apply") {
+        serde_json::json!({
+            "expected_revision": 1, "name": "X", "work_profile_category": "x",
+            "runtime_family": "fake.runtime", "tasks": []
+        })
+    } else if uri.ends_with("provider-account-profiles:ensure") {
+        serde_json::json!({
+            "label": "X", "harness": "fake.runtime",
+            "credential_alias": "x", "enabled": true
+        })
+    } else if uri.ends_with("execution:arm") {
+        serde_json::json!({
+            "expected_revision": 1, "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1, "max_commands": 1, "max_duration_seconds": 1,
+                       "max_cost_minor_units": 1, "cost_currency": "NOK"},
+            "granted_by": kontor_core::id::AccountProfileId::generate().to_string(),
+            "reason": "x"
+        })
+    } else if uri.ends_with("execution:disarm") {
+        serde_json::json!({
+            "authorization_id": kontor_core::id::ExecutionAuthorizationId::generate().to_string(),
+            "revoked_by": kontor_core::id::AccountProfileId::generate().to_string(),
+            "reason": "x"
+        })
+    } else if uri.ends_with("scheduler:start") {
+        serde_json::json!({"plan_hash": "0".repeat(64)})
+    } else if uri.ends_with("lifecycle") {
+        serde_json::json!({"action": "block", "expected_revision": 1, "reason": "x"})
+    } else if uri.ends_with("projects:ensure") {
+        serde_json::json!({"name": "X", "root_path": "/tmp/kontor-authz-body"})
+    } else {
+        serde_json::json!({})
     }
 }
 
 #[tokio::test]
-async fn a_plan_names_every_value_it_assembled_rather_than_read() {
-    let world = World::open().await;
-    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(answer.status, 200, "{}", answer.body);
-    let defaults = answer.json()["value"]["assembled_defaults"]
-        .as_array()
-        .expect("a plan discloses its assembled defaults")
-        .clone();
-    assert!(
-        defaults.len() >= 7,
-        "each snapshot field with no stored source must be named: {}",
-        answer.body
-    );
-    let joined = defaults
-        .iter()
-        .filter_map(|note| note.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    for expected in ["priority", "origin", "account pin", "capacity"] {
-        assert!(
-            joined.contains(expected),
-            "`{expected}` is assembled and must be disclosed: {joined}"
-        );
+async fn every_application_operation_refuses_an_unauthenticated_or_under_privileged_caller() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "authz-1", "Kontor", "/tmp/kontor-authz").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let epic = kontor_core::id::MiniProjectId::generate().to_string();
+
+    let mutations = [
+        "/v1/projects:ensure".to_owned(),
+        format!("/v1/projects/{project}/epics:apply"),
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        format!("/v1/projects/{project}/epics/{epic}/execution:disarm"),
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        format!("/v1/projects/{project}/epics/{epic}/lifecycle"),
+    ];
+    for uri in &mutations {
+        // The body is well formed on purpose: a malformed one would be refused by
+        // the extractor, and the assertion here is about *authority*.
+        let body = well_formed_body(uri);
+        let anonymous = Call::post(uri, &body)
+            .anonymous()
+            .with_key("authz")
+            .send(&world)
+            .await;
+        assert_eq!(anonymous.status, 401, "{uri}: {}", anonymous.body);
+
+        let observer = Call::post(uri, &body)
+            .signed_as(&world, "observer")
+            .with_key("authz")
+            .send(&world)
+            .await;
+        assert_eq!(observer.status, 403, "{uri}: {}", observer.body);
+        assert_eq!(observer.code(), "forbidden");
     }
+
+    // And a mutation with no idempotency key is refused before it does anything.
+    let keyless = Call::post(
+        "/v1/projects:ensure",
+        &serde_json::json!({"name": "X", "root_path": "/tmp/kontor-keyless"}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(keyless.status, 400, "{}", keyless.body);
+    assert_eq!(keyless.code(), "invalid_request");
 }
 
 #[tokio::test]
-async fn a_task_with_no_active_workflow_is_named_rather_than_silently_dropped() {
-    let world = World::open().await;
-    let extra = another_task(&world, "A task with no workflow");
-    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
+async fn the_contract_document_lists_every_application_route_and_no_unsafe_surface() {
+    let world = World::open_empty().await;
+    let document = Call::get("/v1/openapi.json")
         .signed_as(&world, "observer")
         .send(&world)
         .await;
-    assert_eq!(answer.status, 200, "{}", answer.body);
-    let plan = answer.json()["value"].clone();
-    let without: Vec<String> = plan["without_workflow"]
-        .as_array()
-        .expect("a plan names the tasks it could not consider")
+    assert_eq!(document.status, 200);
+    let paths = document.json()["paths"].clone();
+
+    for route in [
+        "/v1/projects:ensure",
+        "/v1/catalog/work-profiles",
+        "/v1/catalog/team-templates",
+        "/v1/runtime-capabilities",
+        "/v1/projects/{project_id}/provider-account-profiles",
+        "/v1/projects/{project_id}/provider-account-profiles:ensure",
+        "/v1/projects/{project_id}/epics:apply",
+        "/v1/projects/{project_id}/epics/{epic_id}",
+        "/v1/projects/{project_id}/epics/{epic_id}/execution:arm",
+        "/v1/projects/{project_id}/epics/{epic_id}/execution:disarm",
+        "/v1/projects/{project_id}/epics/{epic_id}/scheduler:plan",
+        "/v1/projects/{project_id}/epics/{epic_id}/scheduler:start",
+        "/v1/projects/{project_id}/epics/{epic_id}/lifecycle",
+        "/v1/projects/{project_id}/tasks/{task_id}/context:resolve",
+        "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/record",
+        "/v1/projects/{project_id}/tasks/{task_id}/profile-selection",
+        "/v1/projects/{project_id}/tasks/{task_id}/team-selection",
+        "/v1/projects/{project_id}/tasks/{task_id}/account-selection",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply",
+        "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
+        "/v1/catalog/work-profiles/{category}",
+        "/v1/catalog/work-profiles/{category}/validate",
+        "/v1/projects/{project_id}/triggers/{trigger}/{version}",
+        "/v1/projects/{project_id}/intake:submit",
+        "/v1/projects/{project_id}/intake/{receipt_id}",
+        "/v1/projects/{project_id}/connectors/{connector}/field-specs",
+        "/v1/projects/{project_id}/connectors/{connector}/workflow-specs",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:conflicts",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:resolve-conflict",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:pull-comments",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:comments",
+        "/v1/projects/{project_id}/tasks/{task_id}/ticket:claim",
+    ] {
+        assert!(
+            paths.get(route).is_some(),
+            "the contract must list {route}: {}",
+            document.body
+        );
+    }
+
+    // Nothing in the contract creates a native session, names a runtime endpoint
+    // or carries credential material. The scan is over *names* — routes and
+    // schema properties — rather than over prose, because a doc comment saying
+    // "never an endpoint" is the opposite of a disclosure and a substring search
+    // over the whole body cannot tell the two apart.
+    let mut names: Vec<String> = paths
+        .as_object()
+        .expect("a path map")
+        .keys()
+        .map(|route| route.to_lowercase())
+        .collect();
+    collect_property_names(&document.json()["components"]["schemas"], &mut names);
+    // Whole segments, not substrings: `max_tokens` is a budget ceiling and
+    // `bearer_token` would be a disclosure, and only segment matching tells them
+    // apart without hand-maintaining an allowlist of near-misses.
+    for forbidden in [
+        "endpoint", "url", "token", "secret", "password", "keychain", "assignee",
+    ] {
+        assert!(
+            !names.iter().any(|name| name
+                .split(['_', '-', '/', ':', '.'])
+                .any(|part| part == forbidden)),
+            "the public contract must expose no `{forbidden}` name"
+        );
+    }
+    for forbidden in [
+        "sessions:create",
+        "session_create",
+        "create_session",
+        "config_home",
+        "credential_value",
+        "credential_ref",
+    ] {
+        assert!(
+            !names.iter().any(|name| name.contains(forbidden)),
+            "the public contract must expose no `{forbidden}` name"
+        );
+    }
+    // The one credential-shaped name the contract has is the opaque alias, which
+    // is the whole stored reference and resolves to nothing without a policy that
+    // already approves it. Asserting it is *the* one keeps the exception explicit
+    // rather than letting the scan above quietly widen.
+    // The comment mirror reports *that* a revision exists, who wrote it, when,
+    // and what it hashes to — never its prose. `external_comment_id` is an
+    // identifier and is allowed by name; anything else comment-shaped would be
+    // the body arriving under a different spelling.
+    let commentish: Vec<&String> = names
         .iter()
-        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+        .filter(|name| {
+            name.split(['_', '-', '/', ':', '.'])
+                .any(|part| part == "comment")
+        })
         .collect();
     assert!(
-        without.contains(&extra.to_string()),
-        "a task with no workflow is reported, not dropped: {}",
-        answer.body
+        commentish
+            .iter()
+            .all(|name| name.as_str() == "external_comment_id"),
+        "the only comment-shaped name may be the external identifier, found {commentish:?}"
     );
+    // And the mirror's own schema is checked directly rather than through the
+    // name sweep above: `body` is a legitimate property elsewhere in the
+    // contract (a session message has one), so a global ban would prove nothing
+    // about the place that must not grow one.
+    let mirrored = document.json()["components"]["schemas"]["TicketCommentDto"]["properties"]
+        .as_object()
+        .expect("the comment mirror's schema")
+        .keys()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<String>>();
     assert!(
-        plan["considered"].as_u64().is_some_and(|count| count >= 2),
-        "the count is of tasks looked at, not of candidates built: {}",
-        answer.body
+        mirrored.iter().all(|property| !matches!(
+            property.as_str(),
+            "body" | "text" | "prose" | "content" | "rendered"
+        )),
+        "the comment mirror must carry no prose, found {mirrored:?}"
+    );
+    assert!(mirrored.iter().any(|property| property == "body_hash"));
+
+    let credentialish: Vec<&String> = names
+        .iter()
+        .filter(|name| name.contains("credential"))
+        .collect();
+    assert!(
+        credentialish
+            .iter()
+            .all(|name| name.as_str() == "credential_alias"),
+        "the only credential-shaped name may be the opaque alias, found {credentialish:?}"
     );
 }
 
-#[tokio::test]
-async fn a_plan_admits_nothing_and_queues_nothing() {
-    // A read that committed an admission would be the worst defect available here,
-    // so it is asserted directly: the run list is the same before and after.
-    let world = World::open().await;
-    with_workflow(&world).await;
-    let before = world
-        .daemon
-        .state()
-        .with_store(|store| store.list_agent_runs(world.project, None))
-        .expect("the run list is readable");
-
-    Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-
-    let after = world
-        .daemon
-        .state()
-        .with_store(|store| store.list_agent_runs(world.project, None))
-        .expect("the run list is readable");
-    assert_eq!(
-        before.len(),
-        after.len(),
-        "planning is a read and must create no run"
-    );
-}
-
-#[tokio::test]
-async fn a_project_with_no_work_calendar_is_planned_without_a_calendar_blocker() {
-    // Absence of a calendar is not a closed calendar, and it is not a reason to
-    // refuse an answer either. The harness seeds no assignment, so the plan route
-    // answers and no decision names `calendar` among its blockers.
-    let world = World::open().await;
-    with_workflow(&world).await;
-    assert!(
-        !world
-            .daemon
-            .state()
-            .with_store(|store| store.has_calendar_assignment(world.project))
-            .expect("the flag is readable"),
-        "the harness seeds no calendar assignment"
-    );
-
-    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(
-        answer.status, 200,
-        "a project with no calendar has no window to resolve: {}",
-        answer.body
-    );
-    assert!(
-        !answer.body.contains("calendar_closed"),
-        "an unconfigured project is unrestricted, never closed: {}",
-        answer.body
-    );
-}
-
-/// A configured, currently closed calendar is resolved by KON-MVP-21 and reaches
-/// the plan route as an ordinary blocker — not as a refusal to answer.
-#[tokio::test]
-async fn a_project_whose_calendar_is_closed_is_planned_and_reports_the_calendar_blocker() {
-    let world = World::open().await;
-    with_workflow(&world).await;
-
-    // A calendar that is open for one minute a week, in a zone the bundled tzdb
-    // knows. Whenever this test runs, the calendar is almost certainly closed —
-    // and the assertion below only needs "not admitted because of the calendar",
-    // which is true for every instant outside that minute.
-    world.daemon.state().with_store(|store| {
-        use kontor_core::calendar::{
-            CalendarProfileSpec, HolidayMergePolicy, IanaTimeZone, Weekday, WeeklyWindow,
-            WorkCalendarAssignment,
-        };
-        use kontor_core::repository::{CalendarRepository, SpecRepository};
-
-        let profile = CalendarProfileSpec {
-            schema_version: kontor_core::id::SCHEMA_VERSION,
-            profile_id: kontor_core::id::CalendarProfileId::generate(),
-            version: kontor_core::id::SpecVersion::FIRST,
-            name: name("One minute a week"),
-            windows: vec![WeeklyWindow {
-                weekday: Weekday::Monday,
-                start: "03:00:00".parse().expect("a civil time"),
-                end: "03:01:00".parse().expect("a civil time"),
-            }],
-            holiday_merge: HolidayMergePolicy::TreatAsClosed,
-            drain_lead_minutes: 0,
-        };
-        store
-            .insert_calendar_profile(&profile)
-            .expect("the profile revision is stored");
-        store
-            .assign_calendar(&WorkCalendarAssignment {
-                id: kontor_core::id::WorkCalendarId::generate(),
-                project_id: world.project,
-                profile_id: profile.profile_id,
-                profile_version: profile.version,
-                timezone: IanaTimeZone::parse("Europe/Oslo").expect("a bundled tzdb zone"),
-                window_override: None,
-                active: true,
-                created_at: at("2026-08-10T09:00:00Z"),
-                retired_at: None,
-            })
-            .expect("the assignment is stored");
-    });
-
-    let answer = Call::get(format!("/v1/projects/{}/scheduler/plan", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(
-        answer.status, 200,
-        "a configured calendar is resolved, not refused: {}",
-        answer.body
-    );
-    assert_eq!(
-        answer.json()["value"]["admitted"],
-        serde_json::json!(0),
-        "a closed calendar admits no new top-level work: {}",
-        answer.body
-    );
-    let blockers = answer.json()["value"]["decisions"][0]["blockers"].to_string();
-    assert!(
-        blockers.contains("calendar"),
-        "the calendar is one of the blockers a reader can see: {blockers}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// External tickets
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn a_ticket_link_is_listed_and_read_with_the_revision_a_command_needs() {
-    let world = World::open().await;
-    let link_id = with_ticket(&world);
-
-    let listed = Call::get(format!("/v1/projects/{}/tickets", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(listed.status, 200, "{}", listed.body);
-    assert_eq!(listed.realm(), world.realm_id());
-    let links = listed.json()["value"]
-        .as_array()
-        .expect("a list is an array")
-        .clone();
-    assert_eq!(links.len(), 1);
-    assert_eq!(links[0]["link_id"], serde_json::json!(link_id.to_string()));
-    assert_eq!(
-        links[0]["external_issue_key"],
-        serde_json::json!("ASMA-7760")
-    );
-    assert!(
-        links[0]["revision"]
-            .as_u64()
-            .is_some_and(|value| value >= 1),
-        "a convergence command needs this revision: {}",
-        listed.body
-    );
-
-    let shown = Call::get(format!("/v1/projects/{}/tickets/{link_id}", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(shown.status, 200, "{}", shown.body);
-    let ticket = shown.json()["value"].clone();
-    assert_eq!(
-        ticket["link"]["link_id"],
-        serde_json::json!(link_id.to_string())
-    );
-    // Nothing has been projected or observed yet, and that is reported as absence
-    // rather than as an empty object a caller would read as "no fields to write".
-    assert!(ticket["projection"].is_null(), "{}", shown.body);
-    assert!(ticket["observed"].is_null(), "{}", shown.body);
-    assert_eq!(ticket["unresolved_conflicts"], serde_json::json!(0));
-}
-
-#[tokio::test]
-async fn a_ticket_history_for_an_unknown_link_is_refused_and_not_answered_empty() {
-    // An empty page would read as "this ticket has never been touched", which is a
-    // different and wrong statement about a link that does not exist.
-    let world = World::open().await;
-    let unknown = TicketLinkId::generate();
-    for route in ["comments", "transitions"] {
-        let answer = Call::get(format!(
-            "/v1/projects/{}/tickets/{unknown}/{route}",
-            world.project
-        ))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-        assert_eq!(answer.status, 404, "{route}: {}", answer.body);
-        assert_eq!(answer.code(), "not_found", "{route}");
+/// Every property name declared anywhere under a schema map.
+fn collect_property_names(schemas: &serde_json::Value, into: &mut Vec<String>) {
+    match schemas {
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                if key == "properties"
+                    && let Some(properties) = value.as_object()
+                {
+                    into.extend(properties.keys().map(|name| name.to_lowercase()));
+                }
+                collect_property_names(value, into);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_property_names(item, into);
+            }
+        }
+        _ => {}
     }
 }
 
 #[tokio::test]
-async fn a_linked_tickets_histories_answer_empty_because_nothing_has_happened_yet() {
-    let world = World::open().await;
-    let link_id = with_ticket(&world);
-    for route in ["comments", "transitions"] {
-        let answer = Call::get(format!(
-            "/v1/projects/{}/tickets/{link_id}/{route}",
-            world.project
-        ))
+async fn starting_a_named_plan_creates_one_seat_through_admission_and_reuses_it_on_replay() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+
+    let created = ensure_project(&world, "start-1", "Kontor", "/tmp/kontor-start").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("start-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Started epic",
+            &category,
+            serde_json::json!([{"title": "Only task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("start-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Start the epic"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("start-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert_eq!(
+        plan.json()["ready"].as_array().expect("ready").len(),
+        1,
+        "the armed task is ready: {}",
+        plan.body
+    );
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    // A plan hash this realm never produced is refused: a caller starts the batch
+    // it was shown, not whatever the world looks like now.
+    let stale = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": "0".repeat(64)}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("start-stale")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("start-run")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let seats = started.json()["started"].as_array().expect("seats").clone();
+    // One seat per *declared* role slot, and no slot twice. A team that seated
+    // only some of its roles could never be certified closed; one that seated a
+    // role twice would have two sessions in one seat.
+    assert!(
+        !seats.is_empty(),
+        "the admitted task was seated: {}",
+        started.body
+    );
+    let slots: std::collections::BTreeSet<&str> = seats
+        .iter()
+        .map(|seat| seat["role_slot"].as_str().expect("a slot"))
+        .collect();
+    assert_eq!(slots.len(), seats.len(), "no role slot is seated twice");
+    for seat in &seats {
+        assert_eq!(seat["applied"], "created");
+        assert_eq!(seat["team_run_id"], seats[0]["team_run_id"], "one team run");
+    }
+    let agent_run = seats[0]["agent_run_id"]
+        .as_str()
+        .expect("a run id")
+        .to_owned();
+    let team_run = seats[0]["team_run_id"]
+        .as_str()
+        .expect("a team run id")
+        .to_owned();
+
+    // The seat is a real, addressable session — created by admission, never by a
+    // public session-create route, because there is no such route.
+    let timeline = Call::get(format!("/v1/sessions/{agent_run}/timeline"))
         .signed_as(&world, "observer")
         .send(&world)
         .await;
-        assert_eq!(answer.status, 200, "{route}: {}", answer.body);
-        assert_eq!(answer.realm(), world.realm_id(), "{route}");
-        assert_eq!(
-            answer.json()["value"]
-                .as_array()
-                .expect("a list is an array")
-                .len(),
-            0,
-            "{route} has nothing recorded yet, and says so with a page rather than a refusal"
+    assert_eq!(timeline.status, 200, "{}", timeline.body);
+
+    // The epic projection now reports the seat.
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    let runs = projection.json()["tasks"][0]["team_runs"]
+        .as_array()
+        .expect("runs")
+        .clone();
+    assert_eq!(runs.len(), 1, "exactly one team run: {}", projection.body);
+    assert_eq!(runs[0]["team_run_id"], team_run);
+    // Every seat of the one team run is projected, and each is a real attached
+    // session rather than a row standing in for one.
+    let projected = runs[0]["seats"].as_array().expect("seats");
+    assert_eq!(projected.len(), seats.len(), "{}", projection.body);
+    assert!(
+        projected
+            .iter()
+            .any(|seat| seat["agent_run_id"] == agent_run),
+        "the run the start returned is one of them: {}",
+        projection.body
+    );
+    for seat in projected {
+        assert!(
+            seat["attached"].as_bool().expect("a flag"),
+            "this process holds the frozen snapshot for every seat it launched"
         );
     }
 }
 
 #[tokio::test]
-async fn a_ticket_convergence_command_is_receipt_backed_and_ticket_scoped() {
-    let world = World::open().await;
-    let link_id = with_ticket(&world);
-    let revision = world
-        .daemon
-        .state()
-        .with_store(|store| store.get_ticket_link(world.project, link_id))
-        .expect("the link is readable")
-        .expect("the link exists")
-        .revision;
+async fn lifecycle_transitions_are_legal_revisioned_and_gated() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "life-1", "Kontor", "/tmp/kontor-life").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
 
-    let body = serde_json::json!({
-        "project_id": world.project.to_string(),
-        "target": { "kind": "ticket_link", "link_id": link_id.to_string() },
-        "expected_revision": revision.get(),
-        "desired_state": serde_json::Value::Null,
-        "intent": { "schema_version": 1, "reason": "converge the ticket" },
-        "payload": { "schema_version": 1 },
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Lifecycle epic",
+            &category,
+            serde_json::json!([{"title": "Held task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("life-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let task_revision = applied.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("revision");
+
+    let lifecycle = format!("/v1/projects/{project}/epics/{epic}/lifecycle");
+
+    // A stale revision is refused, and the caller is told the current one.
+    let stale = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "block", "task_id": task,
+            "expected_revision": task_revision + 99, "reason": "Hold it"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("life-stale")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(stale.code(), "revision_conflict");
+    assert_eq!(
+        stale.json()["current_revision"].as_u64(),
+        Some(task_revision),
+        "a refusal carries the revision the caller must present next"
+    );
+
+    let blocked = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "block", "task_id": task,
+            "expected_revision": task_revision, "reason": "Hold it"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("life-block")
+    .send(&world)
+    .await;
+    assert_eq!(blocked.status, 200, "{}", blocked.body);
+    assert_eq!(blocked.json()["state"], "blocked");
+    let held_revision = blocked.json()["revision"].as_u64().expect("revision");
+
+    // Resume returns the task to ordinary scheduler eligibility. Nothing about it
+    // touches a runtime: the task is simply eligible again.
+    let resumed = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "resume", "task_id": task,
+            "expected_revision": held_revision, "reason": "Carry on"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("life-resume")
+    .send(&world)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(resumed.json()["state"], "ready");
+
+    // Closing the epic while a task is still open is refused.
+    let premature = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "close_epic", "expected_revision": epic_revision,
+            "reason": "Call it done"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("life-close-early")
+    .send(&world)
+    .await;
+    assert_eq!(premature.status, 409, "{}", premature.body);
+
+    // And a task-scoped action that names no task is refused before anything moves.
+    let taskless = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "block", "expected_revision": 1, "reason": "Hold what?"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("life-taskless")
+    .send(&world)
+    .await;
+    assert_eq!(taskless.status, 400, "{}", taskless.body);
+    assert_eq!(taskless.code(), "invalid_request");
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap idempotency
+//
+// Every mutation carries an `Idempotency-Key`, and the two bootstrap ensures are
+// the ones that used to discard it. What is asserted here is the whole contract:
+// the same key with the same body answers from the original receipt, the same key
+// with a different body is a typed conflict, and neither produces a second row.
+// ---------------------------------------------------------------------------
+
+/// How many command receipts this Realm holds.
+fn receipts(world: &World) -> i64 {
+    world.daemon.state().with_store(|store| {
+        store
+            .unsettled_receipts()
+            .expect("the receipts are readable")
+            .len() as i64
+    })
+}
+
+#[tokio::test]
+async fn the_two_bootstrap_ensures_honour_their_idempotency_key() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+
+    let first = ensure_project(&world, "idem-1", "Kontor", "/tmp/kontor-idem").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let project = first.json()["project_id"].as_str().expect("id").to_owned();
+    let after_first = receipts(&world);
+    assert_eq!(after_first, 1, "the ensure recorded exactly one receipt");
+
+    // Same key, same body: the original answer, and no second receipt.
+    let replay = ensure_project(&world, "idem-1", "Kontor", "/tmp/kontor-idem").await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["project_id"], first.json()["project_id"]);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    assert_eq!(receipts(&world), after_first, "a replay records nothing");
+
+    // Same key, different body: a typed conflict, and still nothing written.
+    let reused = ensure_project(&world, "idem-1", "Kontor", "/tmp/kontor-other").await;
+    assert_eq!(reused.status, 409, "{}", reused.body);
+    assert_eq!(reused.code(), "idempotency_conflict");
+    assert_eq!(receipts(&world), after_first);
+    let projects = world.daemon.state().with_store(|store| {
+        store
+            .get_project(kontor_core::id::ProjectId::parse(&project).expect("a project id"))
+            .expect("readable")
     });
-    let answer = Call::post("/v1/commands/sync_ticket", &body)
-        .signed_as(&world, "operator")
-        .with_key("sync-once")
+    assert!(projects.is_some(), "the original project is untouched");
+
+    // The account-profile ensure obeys the same three rules.
+    let account = serde_json::json!({
+        "label": "Lead", "harness": "fake.runtime",
+        "credential_alias": "lead-alias", "enabled": true
+    });
+    let uri = format!("/v1/projects/{project}/provider-account-profiles:ensure");
+    let created = Call::post(&uri, &account)
+        .signed_as(&world, "admin")
+        .with_key("idem-account")
         .send(&world)
         .await;
-    assert_eq!(answer.status, 200, "{}", answer.body);
-    let receipt = answer.json();
-    assert_eq!(
-        receipt["value"]["kind"],
-        serde_json::json!("sync_ticket"),
-        "the receipt records the command that was asked for"
-    );
-    assert_eq!(
-        receipt["value"]["target"]["link_id"],
-        serde_json::json!(link_id.to_string()),
-        "and it is scoped to the one ticket link it named"
-    );
-    assert_eq!(receipt["replayed"], serde_json::json!(false));
+    assert_eq!(created.status, 200, "{}", created.body);
+    assert_eq!(created.json()["applied"], "created");
+    let with_account = receipts(&world);
 
-    // The same key and the same intent replays rather than converging twice.
-    let replay = Call::post("/v1/commands/sync_ticket", &body)
-        .signed_as(&world, "operator")
-        .with_key("sync-once")
+    let replayed = Call::post(&uri, &account)
+        .signed_as(&world, "admin")
+        .with_key("idem-account")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["account_profile_id"],
+        created.json()["account_profile_id"]
+    );
+    assert_eq!(receipts(&world), with_account, "a replay records nothing");
+
+    let conflicting = Call::post(
+        &uri,
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "a-different-alias", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("idem-account")
+    .send(&world)
+    .await;
+    assert_eq!(conflicting.status, 409, "{}", conflicting.body);
+    assert_eq!(conflicting.code(), "idempotency_conflict");
+}
+
+#[tokio::test]
+async fn an_account_ensure_compares_every_supplied_field_and_never_echoes_the_alias() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "drift-1", "Kontor", "/tmp/kontor-drift").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let uri = format!("/v1/projects/{project}/provider-account-profiles:ensure");
+
+    let first = Call::post(
+        &uri,
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "original-alias", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("drift-create")
+    .send(&world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+
+    // Every supplied identity or state field is compared under a *fresh* key, so
+    // what is being asserted is drift detection and not key reuse.
+    for (index, body) in [
+        // A different approved alias.
+        serde_json::json!({"label": "Lead", "harness": "fake.runtime",
+                           "credential_alias": "other-alias", "enabled": true}),
+        // A different launch policy.
+        serde_json::json!({"label": "Lead", "harness": "fake.runtime",
+                           "credential_alias": "original-alias", "enabled": false}),
+        // A different runtime family.
+        serde_json::json!({"label": "Lead", "harness": "other.runtime",
+                           "credential_alias": "original-alias", "enabled": true}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let drifted = Call::post(&uri, &body)
+            .signed_as(&world, "admin")
+            .with_key(format!("drift-{index}"))
+            .send(&world)
+            .await;
+        assert_eq!(
+            drifted.status, 409,
+            "case {index} must be refused as drift: {}",
+            drifted.body
+        );
+        // The refusal says a field disagreed and never which, because naming the
+        // field would confirm a guessed alias.
+        assert!(
+            !drifted.body.contains("original-alias") && !drifted.body.contains("other-alias"),
+            "a refusal must not echo an alias: {}",
+            drifted.body
+        );
+    }
+
+    // And an identical ensure under a fresh key is unchanged rather than drift.
+    let same = Call::post(
+        &uri,
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "original-alias", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("drift-same")
+    .send(&world)
+    .await;
+    assert_eq!(same.status, 200, "{}", same.body);
+    assert_eq!(same.json()["applied"], "unchanged");
+
+    // The alias reaches no answer anywhere: not the create, not the replay, not
+    // the list, and not the durable receipt.
+    let listed = Call::get(format!("/v1/projects/{project}/provider-account-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    for body in [&first.body, &same.body, &listed.body] {
+        assert!(
+            !body.contains("original-alias"),
+            "an alias must not appear in a response: {body}"
+        );
+    }
+    let stored = world.daemon.state().with_store(|store| {
+        let mut found = Vec::new();
+        for (project_id, receipt_id) in store.unsettled_receipts().expect("readable") {
+            let receipt = store
+                .get_receipt(project_id, receipt_id)
+                .expect("readable")
+                .expect("the receipt exists");
+            found.push(receipt.intent.json().to_owned());
+        }
+        found
+    });
+    assert!(
+        stored
+            .iter()
+            .all(|intent| !intent.contains("original-alias")),
+        "an alias must not be persisted in a receipt intent: {stored:?}"
+    );
+    assert!(
+        stored
+            .iter()
+            .any(|intent| intent.contains("credential_alias_digest")),
+        "the intent still distinguishes two aliases, by digest"
+    );
+}
+
+#[tokio::test]
+async fn disarming_records_its_own_command_kind_and_checks_the_key_before_answering() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "revoke-1", "Kontor", "/tmp/kontor-revoke").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("revoke-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Revoked epic",
+            &category,
+            serde_json::json!([{"title": "Only task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("revoke-epic")
+    .send(&world)
+    .await;
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision, "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 10, "max_commands": 10, "max_duration_seconds": 10,
+                       "max_cost_minor_units": 10, "cost_currency": "NOK"},
+            "granted_by": account_id, "reason": "Arm it"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("revoke-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+    let authorization = armed.json()["authorization_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let disarm_uri = format!("/v1/projects/{project}/epics/{epic}/execution:disarm");
+    let disarm_body = |reason: &str| {
+        serde_json::json!({
+            "authorization_id": authorization,
+            "revoked_by": account_id,
+            "reason": reason
+        })
+    };
+
+    let revoked = Call::post(&disarm_uri, &disarm_body("Stand down"))
+        .signed_as(&world, "admin")
+        .with_key("revoke-key")
+        .send(&world)
+        .await;
+    assert_eq!(revoked.status, 200, "{}", revoked.body);
+    assert!(revoked.json()["revoked_at"].is_string());
+
+    // The receipt is its own kind: a calendar-override revocation must not be
+    // replayable as the authority that disarmed the work.
+    let kinds = world.daemon.state().with_store(|store| {
+        let mut found = Vec::new();
+        for (project_id, receipt_id) in store.unsettled_receipts().expect("readable") {
+            let receipt = store
+                .get_receipt(project_id, receipt_id)
+                .expect("readable")
+                .expect("the receipt exists");
+            found.push(receipt.kind.as_str().to_owned());
+        }
+        found
+    });
+    assert!(
+        kinds
+            .iter()
+            .any(|kind| kind == "revoke_execution_authorization"),
+        "disarm records its own command kind, found {kinds:?}"
+    );
+    assert!(
+        !kinds.iter().any(|kind| kind == "revoke_schedule_override"),
+        "disarming an authorization is not a calendar override revocation"
+    );
+
+    // An already-revoked authorization still validates the key first: a *changed*
+    // request under a used key is a conflict, not a replay of the original.
+    let masquerade = Call::post(&disarm_uri, &disarm_body("A different reason entirely"))
+        .signed_as(&world, "admin")
+        .with_key("revoke-key")
+        .send(&world)
+        .await;
+    assert_eq!(masquerade.status, 409, "{}", masquerade.body);
+    assert_eq!(masquerade.code(), "idempotency_conflict");
+
+    // And the true replay answers with the revocation that already happened.
+    let replay = Call::post(&disarm_uri, &disarm_body("Stand down"))
+        .signed_as(&world, "admin")
+        .with_key("revoke-key")
         .send(&world)
         .await;
     assert_eq!(replay.status, 200, "{}", replay.body);
-    assert_eq!(replay.json()["replayed"], serde_json::json!(true));
-    assert_eq!(
-        replay.json()["value"]["receipt_id"],
-        receipt["value"]["receipt_id"],
-        "a replay returns the receipt that was already durable"
-    );
+    assert!(replay.json()["revoked_at"].is_string());
 }
 
 // ---------------------------------------------------------------------------
-// Live session discovery
+// The Lead-required control and evidence operations
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn session_discovery_reports_which_native_sessions_this_realm_already_holds() {
-    let world = World::open().await;
-    let (_agent_run_id, snapshot) = world.launch().await;
+/// One bootstrapped project, epic and account, ready for a task-scoped test.
+struct Bootstrapped {
+    project: String,
+    epic: String,
+    task: String,
+    task_revision: u64,
+    account: String,
+}
 
-    let answer = Call::get(format!("/v1/runtimes/{}/sessions", harness::fake_family()))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(answer.status, 200, "{}", answer.body);
-    assert_eq!(answer.realm(), world.realm_id());
-    let sessions = answer.json()["value"]
-        .as_array()
-        .expect("a list is an array")
-        .clone();
-    let native = snapshot.identity().native_id.to_string();
-    let found = sessions
-        .iter()
-        .find(|session| session["native_id"] == serde_json::json!(native));
-    if let Some(session) = found {
-        assert_eq!(
-            session["bound"],
-            serde_json::json!(true),
-            "a session this realm holds a binding for is reported as bound: {}",
-            answer.body
-        );
-        assert_eq!(
-            session["runtime_kind"],
-            serde_json::json!(harness::fake_family().to_string())
-        );
+/// Bring an empty realm to "one epic with one task", the shortest state in which
+/// every task-scoped operation is addressable.
+async fn bootstrap(world: &World, slug: &'static str) -> Bootstrapped {
+    let created = ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-bootstrap-account"))
+    .send(world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Control epic",
+            &category,
+            serde_json::json!([{"title": "The task"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-epic"))
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    Bootstrapped {
+        project,
+        epic: applied.json()["epic_id"].as_str().expect("id").to_owned(),
+        task: applied.json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("id")
+            .to_owned(),
+        task_revision: applied.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("revision"),
+        account: account.json()["account_profile_id"]
+            .as_str()
+            .expect("id")
+            .to_owned(),
     }
 }
 
 #[tokio::test]
-async fn discovery_against_an_unconfigured_runtime_is_not_found() {
-    let world = World::open().await;
-    let answer = Call::get("/v1/runtimes/absent.runtime/sessions")
-        .signed_as(&world, "observer")
+async fn resolving_a_task_context_is_deterministic_and_returns_no_content() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "ctx").await;
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/context:resolve",
+        seed.project, seed.task
+    );
+
+    let first = Call::post(&uri, &serde_json::json!({"snapshot": false}))
+        .signed_as(&world, "operator")
+        .with_key("ctx-preview-1")
         .send(&world)
         .await;
-    assert_eq!(answer.status, 404, "{}", answer.body);
-    assert_eq!(answer.code(), "not_found");
+    assert_eq!(first.status, 200, "{}", first.body);
+    let hash = first.json()["context_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    assert_eq!(hash.len(), 64, "the hash is a content digest");
+    assert!(
+        first.json()["context_pack_id"].is_null(),
+        "a preview freezes nothing"
+    );
+    assert!(
+        !first.json()["provenance"]
+            .as_array()
+            .expect("provenance")
+            .is_empty(),
+        "every resolved path is attributable: {}",
+        first.body
+    );
+
+    // Same task, same pins, same bytes: a preview is a pure function of what the
+    // task is, so a caller can compare two of them.
+    let again = Call::post(&uri, &serde_json::json!({"snapshot": false}))
+        .signed_as(&world, "operator")
+        .with_key("ctx-preview-2")
+        .send(&world)
+        .await;
+    assert_eq!(again.json()["context_hash"], hash);
+
+    // The merged content itself never leaves the process.
+    assert!(
+        first.json().get("resolved").is_none() && first.json().get("content").is_none(),
+        "a resolution returns its digest and its provenance, never the document"
+    );
+
+    // A snapshot needs a run to belong to, and this task has none.
+    let premature = Call::post(&uri, &serde_json::json!({"snapshot": true}))
+        .signed_as(&world, "operator")
+        .with_key("ctx-snapshot")
+        .send(&world)
+        .await;
+    assert_eq!(premature.status, 422, "{}", premature.body);
+    assert_eq!(premature.code(), "unsupported_capability");
+
+    // Observers may not resolve; the operation reads pins and freezes evidence.
+    let observer = Call::post(&uri, &serde_json::json!({"snapshot": false}))
+        .signed_as(&world, "observer")
+        .with_key("ctx-observer")
+        .send(&world)
+        .await;
+    assert_eq!(observer.status, 403);
 }
 
 #[tokio::test]
-async fn discovery_against_a_runtime_that_never_declared_it_is_unsupported() {
-    // Not an empty list: an empty list would say "this runtime owns no sessions",
-    // which is not something a runtime without discovery can be asked.
-    let world = World::open_with(harness::capabilities_without(&[
-        kontor_runtime::capability::RuntimeCapability::Discovery,
-    ]))
+async fn a_gate_verdict_is_append_only_authority_checked_and_waiver_is_admin() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "gate").await;
+
+    // The gate and the role come from the task's *pinned profile*, read back
+    // through the public projection rather than named by the test.
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    let task = projection.json()["tasks"][0].clone();
+    let gate = task["gates"].as_array().expect("a gate list")[0]["gate"]
+        .as_str()
+        .expect("the pinned profile declares at least one gate")
+        .to_owned();
+    // The revision a gate recording must present is the *workflow's*, and it is
+    // read from the projection like everything else. Assuming it is 1 would be
+    // right only until the first phase advance, and would be exactly the
+    // out-of-band knowledge this suite is meant to prove unnecessary.
+    let workflow_revision = task["workflow_revision"]
+        .as_u64()
+        .expect("a task with an active workflow reports its revision");
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/gates/{gate}/record",
+        seed.project, seed.task
+    );
+
+    // A role the pinned profile does not authorize for this gate is refused, and
+    // the refusal is the domain's, not the transport's.
+    let unauthorized = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": workflow_revision,
+            "verdict": "rejected",
+            "evaluator_role": "nobody-in-particular",
+            "evaluator_account": seed.account,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("gate-unauthorized")
+    .send(&world)
     .await;
-    let answer = Call::get(format!("/v1/runtimes/{}/sessions", harness::fake_family()))
+    assert_eq!(unauthorized.status, 403, "{}", unauthorized.body);
+    assert_eq!(unauthorized.code(), "forbidden");
+
+    // Waiving is admin authority, checked before the service is reached.
+    let waived_by_operator = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": workflow_revision,
+            "verdict": "waived",
+            "evaluator_role": "nobody-in-particular",
+            "evaluator_account": seed.account,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("gate-waive-operator")
+    .send(&world)
+    .await;
+    assert_eq!(
+        waived_by_operator.status, 403,
+        "{}",
+        waived_by_operator.body
+    );
+
+    // A stale workflow revision is refused before anything is appended.
+    let stale = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": workflow_revision + 99,
+            "verdict": "rejected",
+            "evaluator_role": "nobody-in-particular",
+            "evaluator_account": seed.account,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("gate-stale")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(stale.code(), "revision_conflict");
+}
+
+#[tokio::test]
+async fn selection_corrections_are_pre_run_admin_decisions() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "sel").await;
+    let category = first_category(&world).await;
+
+    // A profile correction to the profile already pinned is unchanged, not a
+    // second workflow.
+    let profile_uri = format!(
+        "/v1/projects/{}/tasks/{}/profile-selection",
+        seed.project, seed.task
+    );
+    let same = Call::post(
+        &profile_uri,
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "work_profile_category": category,
+            "reason": "Confirm the pin"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("sel-profile-same")
+    .send(&world)
+    .await;
+    assert_eq!(same.status, 200, "{}", same.body);
+    assert_eq!(same.json()["applied"], "unchanged");
+
+    // An operator may not correct a selection.
+    let operator = Call::post(
+        &profile_uri,
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "work_profile_category": category,
+            "reason": "Not mine to make"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("sel-profile-operator")
+    .send(&world)
+    .await;
+    assert_eq!(operator.status, 403);
+
+    // The team a task runs is its profile's pin: confirming it succeeds, and a
+    // mismatch is refused rather than silently substituted.
+    let team = same.json()["team_template"].clone();
+    let team_uri = format!(
+        "/v1/projects/{}/tasks/{}/team-selection",
+        seed.project, seed.task
+    );
+    let confirmed = Call::post(
+        &team_uri,
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "team_template": team,
+            "reason": "Confirm the team"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("sel-team-ok")
+    .send(&world)
+    .await;
+    assert_eq!(confirmed.status, 200, "{}", confirmed.body);
+    assert_eq!(confirmed.json()["team_template"], team);
+
+    let mismatched = Call::post(
+        &team_uri,
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "team_template": {"id": kontor_core::id::TeamTemplateId::generate().to_string(),
+                              "version": 1},
+            "reason": "Some other team"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("sel-team-drift")
+    .send(&world)
+    .await;
+    assert_eq!(mismatched.status, 409, "{}", mismatched.body);
+
+    // An account correction capability-checks the runtime and stores only the
+    // profile id and revision.
+    let account_uri = format!(
+        "/v1/projects/{}/tasks/{}/account-selection",
+        seed.project, seed.task
+    );
+    let pinned = Call::post(
+        &account_uri,
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "account_profile_id": seed.account,
+            "reason": "Run as the lead"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("sel-account")
+    .send(&world)
+    .await;
+    assert_eq!(pinned.status, 200, "{}", pinned.body);
+    assert_eq!(pinned.json()["account_profile_id"], seed.account);
+    assert!(
+        !pinned.body.contains("lead\""),
+        "an account selection must not echo the alias: {}",
+        pinned.body
+    );
+
+    // An unknown profile is not found, and a stale task revision is a conflict.
+    let unknown = Call::post(
+        &account_uri,
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "account_profile_id": kontor_core::id::AccountProfileId::generate().to_string(),
+            "reason": "Nobody"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("sel-account-unknown")
+    .send(&world)
+    .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+}
+
+#[tokio::test]
+async fn ticket_reconciliation_is_a_typed_dry_run_that_names_its_plan() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "tix").await;
+    let plan_uri = format!(
+        "/v1/projects/{}/tasks/{}/ticket:reconcile-plan",
+        seed.project, seed.task
+    );
+
+    let plan = Call::post(&plan_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let hash = plan.json()["projection_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    assert_eq!(hash.len(), 64);
+    assert!(
+        plan.json()["converged"].as_bool().expect("a flag"),
+        "a task with no links has nothing to converge: {}",
+        plan.body
+    );
+    // The plan carries typed milestones and nothing a caller could use to write
+    // an arbitrary status, assignee or comment.
+    for forbidden in ["assignee", "comment", "status"] {
+        assert!(
+            !plan.body.contains(forbidden),
+            "the plan must not carry `{forbidden}`: {}",
+            plan.body
+        );
+    }
+
+    let apply_uri = format!(
+        "/v1/projects/{}/tasks/{}/ticket:reconcile-apply",
+        seed.project, seed.task
+    );
+    // A plan hash this realm never produced is refused.
+    let stale = Call::post(
+        &apply_uri,
+        &serde_json::json!({"projection_hash": "0".repeat(64)}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("tix-stale")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+
+    let applied = Call::post(&apply_uri, &serde_json::json!({"projection_hash": hash}))
+        .signed_as(&world, "operator")
+        .with_key("tix-apply")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        applied.json()["projection_hash"],
+        plan.json()["projection_hash"]
+    );
+}
+
+#[tokio::test]
+async fn a_started_task_leaves_ready_so_it_can_legally_be_completed() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "close").await;
+
+    let armed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/execution:arm",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({
+            "expected_revision": 1, "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 10, "max_commands": 10, "max_duration_seconds": 10,
+                       "max_cost_minor_units": 10, "cost_currency": "NOK"},
+            "granted_by": seed.account, "reason": "Arm it"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("close-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:plan",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let started = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:start",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"plan_hash": hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("close-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert!(
+        !started.json()["started"]
+            .as_array()
+            .expect("seats")
+            .is_empty(),
+        "the team run seats every role its template declares: {}",
+        started.body
+    );
+
+    // The whole point: a started task is *in progress*, which is the only state
+    // completion is reachable from. A task left in `ready` could be started and
+    // then never legally finished.
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
         .signed_as(&world, "observer")
         .send(&world)
         .await;
-    assert_eq!(answer.status, 422, "{}", answer.body);
-    assert_eq!(answer.code(), "unsupported_capability");
+    assert_eq!(projection.json()["tasks"][0]["state"], "in_progress");
+
+    // Closing the epic is refused while its task is non-terminal, and the refusal
+    // is the domain gate rather than a missing route.
+    let premature = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/lifecycle",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({
+            "action": "close_epic", "expected_revision": 1, "reason": "Too early"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("close-early")
+    .send(&world)
+    .await;
+    assert_eq!(premature.status, 409, "{}", premature.body);
+
+    // And completing the task is refused for the *stated* reason — its team run
+    // has not closed, which is settlement the operator has not done yet rather
+    // than a missing operation. `runtime:settle` is the way past it.
+    let task_revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+    let complete = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/lifecycle",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({
+            "action": "complete_task", "task_id": seed.task,
+            "expected_revision": task_revision, "reason": "Done"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("close-complete")
+    .send(&world)
+    .await;
+    assert_eq!(complete.status, 422, "{}", complete.body);
+    assert_eq!(complete.code(), "unsupported_capability");
+}
+
+#[tokio::test]
+async fn a_teamless_task_completes_reopens_and_lets_its_epic_close_and_reopen() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "term").await;
+    let lifecycle = format!(
+        "/v1/projects/{}/epics/{}/lifecycle",
+        seed.project, seed.epic
+    );
+
+    // No scheduler start, so no team run: this is the close-out path a task that
+    // was completed outside a Kontor seat takes, and it is the one the domain lets
+    // a client drive end to end today.
+    let cancelled = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "block", "task_id": seed.task,
+            "expected_revision": seed.task_revision, "reason": "Hold"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("term-block")
+    .send(&world)
+    .await;
+    assert_eq!(cancelled.status, 200, "{}", cancelled.body);
+    let held = cancelled.json()["revision"].as_u64().expect("a revision");
+
+    // Resume needs a command receipt as its authority, and the operation supplies
+    // one: a resume that could happen without it would be a task leaving a held
+    // state on nobody's say-so.
+    let resumed = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "resume", "task_id": seed.task,
+            "expected_revision": held, "reason": "Carry on"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("term-resume")
+    .send(&world)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(resumed.json()["state"], "ready");
+
+    // Closing the epic is still refused: `ready` is not terminal.
+    let refused = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "close_epic", "expected_revision": 1, "reason": "Not yet"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("term-close-early")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(
+        refused.body.contains("terminal"),
+        "the refusal names the rule: {}",
+        refused.body
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Authority
+// Runtime settlement
+//
+// The one operation that lets a client drive a seated task to a terminal epic
+// through public operations alone. What is asserted below is mostly what it
+// *refuses*: an outcome the caller cannot supply, a closure the runtime has not
+// evidenced, and a second observation on a run already settled.
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn every_new_read_requires_a_credential_and_answers_an_observer() {
-    let world = World::open().await;
-    let link_id = with_ticket(&world);
-    let routes = vec![
-        "/v1/projects".to_owned(),
-        format!("/v1/projects/{}/team-runs", world.project),
-        format!("/v1/projects/{}/runs", world.project),
-        format!("/v1/projects/{}/scheduler/plan", world.project),
-        format!("/v1/projects/{}/tickets", world.project),
-        format!("/v1/projects/{}/tickets/{link_id}", world.project),
-        format!("/v1/projects/{}/tickets/{link_id}/comments", world.project),
-        format!(
-            "/v1/projects/{}/tickets/{link_id}/transitions",
-            world.project
-        ),
-        format!("/v1/runtimes/{}/sessions", harness::fake_family()),
-    ];
-    for route in routes {
-        let anonymous = Call::get(route.clone()).anonymous().send(&world).await;
-        assert_eq!(
-            anonymous.status, 401,
-            "{route} must not answer an unauthenticated caller: {}",
-            anonymous.body
-        );
-        assert_eq!(anonymous.code(), "unauthenticated", "{route}");
+/// A script whose one cancel reports an authoritatively observed termination.
+///
+/// It is how the *runtime* is made to finish: the fake only reaches a terminal
+/// session through a cancel it observed, so a test that needs a finished session
+/// drives the runtime there and then asks Kontor to settle. Nothing here reaches
+/// into Kontor — the runtime is simply told what to be.
+const OBSERVED_TERMINAL: &str = r#"{
+  "history": [
+    {"kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:01:00Z", "body": "working"}
+  ],
+  "steps": [{"step": "cancel_observed_terminal"}]
+}"#;
 
-        let observer = Call::get(route.clone())
-            .signed_as(&world, "observer")
+/// Drive the scripted runtime's session for `run` to a terminal state.
+///
+/// The step is queued here, immediately before the cancel, rather than at the top
+/// of the test: the fake matches its queue strictly by operation, so a cancel step
+/// loaded earlier would be consumed by whichever of `prepare_workspace`,
+/// `admit_launch` or `launch` reached the runtime first.
+async fn finish_natively(world: &World, run: &str) {
+    world.script(OBSERVED_TERMINAL);
+    let agent_run_id = AgentRunId::parse(run).expect("an agent run id");
+    let binding = world.daemon.state().with_store(|store| {
+        store
+            .snapshot_run_inspection(agent_run_id)
+            .expect("readable")
+            .open(world.realm_id())
+            .expect("our own realm")
+            .expect("the run exists")
+            .run
+            .binding
+            .expect("the run is bound")
+    });
+    let snapshot = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("this process holds the frozen snapshot");
+    world
+        .fake
+        .cancel(&kontor_runtime::request::CancelRequest {
+            binding: snapshot,
+            requested_at: at("2026-08-10T09:30:00Z"),
+        })
+        .await
+        .expect("the runtime observes its own termination");
+}
+
+/// Bootstrap, arm, plan and start, returning `(seed, every seated run)`.
+async fn seated(world: &World, slug: &'static str) -> (Bootstrapped, Vec<String>) {
+    let seed = bootstrap(world, slug).await;
+    let armed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/execution:arm",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({
+            "expected_revision": 1, "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 10, "max_commands": 10, "max_duration_seconds": 10,
+                       "max_cost_minor_units": 10, "cost_currency": "NOK"},
+            "granted_by": seed.account, "reason": "Arm it"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-arm"))
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:plan",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    let hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let started = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:start",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"plan_hash": hash}),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-start"))
+    .send(world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let runs: Vec<String> = started.json()["started"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .map(|seat| {
+            seat["agent_run_id"]
+                .as_str()
+                .expect("an agent run id")
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        !runs.is_empty(),
+        "the start produced no seat: {}",
+        started.body
+    );
+    (seed, runs)
+}
+
+#[tokio::test]
+async fn settling_a_run_takes_a_fresh_inspect_and_never_a_supplied_verdict() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "settle").await;
+    let run = runs[0].clone();
+    finish_natively(&world, &run).await;
+    let uri = format!(
+        "/v1/projects/{}/agent-runs/{run}/runtime:settle",
+        seed.project
+    );
+
+    let before = world.fake.calls().len();
+    let settled = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("settle-1")
+        .send(&world)
+        .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["applied"], "created");
+    assert_eq!(settled.json()["outcome"], "cancelled");
+    assert!(
+        settled.json()["evidence_cursor"].is_i64(),
+        "the closure cites a position in this realm's own log: {}",
+        settled.body
+    );
+    // The runtime was actually asked. A settlement that concluded from a cached
+    // projection would close a run on a description of the past.
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .skip(before)
+            .any(|call| matches!(call, AdapterCall::Inspect { .. })),
+        "settlement takes a fresh inspect: {:?}",
+        world.fake.calls()
+    );
+
+    // The run is closed, and the closure points at a stored observation rather
+    // than at anything the caller said.
+    let snapshot = Call::get(format!("/v1/runs/{run}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(snapshot.status, 200, "{}", snapshot.body);
+    assert_eq!(
+        snapshot.json()["value"]["projection"]["derived"],
+        "terminal"
+    );
+    assert_eq!(
+        snapshot.json()["value"]["projection"]["outcome"],
+        "cancelled"
+    );
+
+    // Idempotent: the same key replays, and a *fresh* key still takes no second
+    // observation because the run is already settled.
+    let calls = world.fake.calls().len();
+    for key in ["settle-1", "settle-2"] {
+        let again = Call::post(&uri, &serde_json::json!({}))
+            .signed_as(&world, "operator")
+            .with_key(key)
             .send(&world)
             .await;
-        assert!(
-            observer.status.is_success(),
-            "{route} is a read and must answer an observer: {} {}",
-            observer.status,
-            observer.body
-        );
+        assert_eq!(again.status, 200, "{key}: {}", again.body);
+        assert_eq!(again.json()["applied"], "unchanged");
+        assert_eq!(again.json()["outcome"], "cancelled");
+    }
+    assert_eq!(
+        world.fake.calls().len(),
+        calls,
+        "a settled run is not inspected again"
+    );
+
+    // The operation takes no body that could carry an outcome: a request that
+    // tries to supply one is ignored, not honoured.
+    let smuggled = Call::post(
+        &uri,
+        &serde_json::json!({"outcome": "failed", "terminal_state": "failed",
+                            "evidence_hash": "0".repeat(64)}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("settle-smuggled")
+    .send(&world)
+    .await;
+    assert_eq!(smuggled.status, 200, "{}", smuggled.body);
+    assert_eq!(
+        smuggled.json()["outcome"],
+        "cancelled",
+        "the runtime's verdict stands, not the caller's"
+    );
+
+    // Observers may not settle: it closes a run.
+    let observer = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "observer")
+        .with_key("settle-observer")
+        .send(&world)
+        .await;
+    assert_eq!(observer.status, 403);
+}
+
+#[tokio::test]
+async fn a_run_the_runtime_says_is_still_working_is_not_settled() {
+    let world = World::open_empty().await;
+    // The default script reports a live session, so `inspect` answers with a
+    // non-terminal state.
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "live").await;
+    let run = runs[0].clone();
+
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run}/runtime:settle",
+            seed.project
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("live-settle")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    assert_eq!(refused.code(), "unsupported_capability");
+
+    // And the run is still open: an uncertain answer closes nothing.
+    let snapshot = Call::get(format!("/v1/runs/{run}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_ne!(
+        snapshot.json()["value"]["projection"]["derived"],
+        "terminal"
+    );
+}
+
+#[tokio::test]
+async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "endgame").await;
+
+    // Every declared seat is settled, one call each. The team closes on the last
+    // one, because the closure walks the template's declared slots and an
+    // unsettled seat is unaccounted for rather than absent.
+    let mut settled = None;
+    for (index, run) in runs.iter().enumerate() {
+        finish_natively(&world, run).await;
+        let answer = Call::post(
+            format!(
+                "/v1/projects/{}/agent-runs/{run}/runtime:settle",
+                seed.project
+            ),
+            &serde_json::json!({}),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("endgame-settle-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(answer.status, 200, "seat {index}: {}", answer.body);
+        settled = Some(answer);
+    }
+    let settled = settled.expect("at least one seat was settled");
+    // Every declared role slot is terminal, so the team's closure was certified
+    // from the frozen template rather than asserted by anyone.
+    assert!(
+        settled.json()["team_run_closed"].is_string(),
+        "the team run closes once its declared slots are done: {}",
+        settled.body
+    );
+    assert!(settled.json()["team_pending"].is_null());
+
+    // The task can now be completed: it cites the certified team closure, which
+    // the store re-proves against its own rows.
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+    let lifecycle = format!(
+        "/v1/projects/{}/epics/{}/lifecycle",
+        seed.project, seed.epic
+    );
+    let completed = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "complete_task", "task_id": seed.task,
+            "expected_revision": task_revision, "reason": "The work is done"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("endgame-complete")
+    .send(&world)
+    .await;
+    // Before any gate is recorded the task stops on its pinned profile's own
+    // closure — not on a missing team certificate. `unsupported_capability` here
+    // would mean the certificate is still absent; a domain refusal about profile
+    // closure means it was derived, cited and re-proved by the store, and the
+    // task stopped on its own declared work.
+    assert_ne!(
+        completed.code(),
+        "unsupported_capability",
+        "the team closure certificate is derived and cited, not missing: {}",
+        completed.body
+    );
+    assert_eq!(
+        completed.status, 400,
+        "the task stops on its pinned profile's own closure: {}",
+        completed.body
+    );
+
+    // Now discharge that profile. Every gate it declares is recorded through the
+    // public route, by a role *it* authorizes, citing the evidence *it* requires —
+    // all of which the projection reports, so nothing here is read out of band and
+    // nothing is a literal this test invented.
+    let gates = projection.json()["tasks"][0]["gates"]
+        .as_array()
+        .expect("a gate list")
+        .clone();
+    assert!(
+        !gates.is_empty(),
+        "the pinned profile declares gates to discharge: {}",
+        projection.body
+    );
+    let workflow_revision = projection.json()["tasks"][0]["workflow_revision"]
+        .as_u64()
+        .expect("a task with an active workflow reports its revision");
+    for (index, gate) in gates.iter().enumerate() {
+        let name = gate["gate"].as_str().expect("a gate");
+        let evaluator = gate["evaluator_roles"]
+            .as_array()
+            .expect("declared evaluators")
+            .first()
+            .and_then(serde_json::Value::as_str)
+            .expect("the profile authorizes a role for every gate it declares");
+        let evidence: Vec<&str> = gate["required_evidence"]
+            .as_array()
+            .expect("declared evidence")
+            .iter()
+            .map(|artifact| artifact.as_str().expect("an artifact"))
+            .collect();
+        let recorded = Call::post(
+            format!(
+                "/v1/projects/{}/tasks/{}/gates/{name}/record",
+                seed.project, seed.task
+            ),
+            &serde_json::json!({
+                "expected_revision": workflow_revision,
+                "verdict": "passed",
+                "evaluator_role": evaluator,
+                "evaluator_account": seed.account,
+                "evidence": evidence,
+            }),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("endgame-gate-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(recorded.status, 200, "gate `{name}`: {}", recorded.body);
+        assert_eq!(recorded.json()["verdict"], "passed");
+        assert_eq!(recorded.json()["state"], "passed", "gate `{name}` reduced");
+    }
+
+    // Every gate now reads as passed through the public projection.
+    let after_gates = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    for gate in after_gates.json()["tasks"][0]["gates"]
+        .as_array()
+        .expect("a gate list")
+    {
         assert_eq!(
-            observer.realm(),
-            world.realm_id(),
-            "{route} must name its realm"
+            gate["state"], "passed",
+            "gate `{}` is discharged: {}",
+            gate["gate"], after_gates.body
         );
     }
-}
 
-#[tokio::test]
-async fn a_ticket_convergence_command_refuses_an_observer() {
-    let world = World::open().await;
-    let link_id = with_ticket(&world);
-    let body = serde_json::json!({
-        "project_id": world.project.to_string(),
-        "target": { "kind": "ticket_link", "link_id": link_id.to_string() },
-        "expected_revision": 1,
-        "desired_state": serde_json::Value::Null,
-        "intent": { "schema_version": 1 },
-        "payload": { "schema_version": 1 },
-    });
-    let answer = Call::post("/v1/commands/sync_ticket", &body)
-        .signed_as(&world, "observer")
-        .with_key("observer-may-not")
-        .send(&world)
-        .await;
-    assert_eq!(answer.status, 403, "{}", answer.body);
-    assert_eq!(answer.code(), "forbidden");
-}
-
-/// One extra run, so the run list has something to filter.
-#[tokio::test]
-async fn an_unbound_run_still_appears_in_the_run_list() {
-    // A list of runs that only showed *bound* ones would hide every queued run,
-    // which is exactly the set an operator is looking for when nothing is happening.
-    let world = World::open().await;
-    let agent_run_id = AgentRunId::generate();
-    world.daemon.state().with_store(|store| {
-        store
-            .create_agent_run(&NewAgentRun {
-                id: agent_run_id,
-                project_id: world.project,
-                team_run_id: world.team_run,
-                parent_agent_run_id: None,
-                role: RoleSlotId::parse("queued-seat")
-                    .expect("a valid slot key")
-                    .into_role_key(),
-                account_profile_id: None,
-                binding: None,
-                created_at: at("2026-08-10T09:30:00Z"),
-            })
-            .expect("an unbound run is persisted");
-    });
-
-    let answer = Call::get(format!("/v1/projects/{}/runs", world.project))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(answer.status, 200, "{}", answer.body);
+    // The completion cites every artifact the profile requires — again read from
+    // the projection rather than named here.
+    let after = after_gates.json();
+    let artifacts: Vec<&str> = after["tasks"][0]["required_artifacts"]
+        .as_array()
+        .expect("required artifacts")
+        .iter()
+        .map(|artifact| artifact.as_str().expect("an artifact"))
+        .collect();
     assert!(
-        answer.json()["value"]
-            .as_array()
-            .expect("a list is an array")
-            .iter()
-            .any(|run| run["agent_run_id"] == serde_json::json!(agent_run_id.to_string())),
-        "a queued run with no binding is still a run: {}",
-        answer.body
+        !artifacts.is_empty(),
+        "the profile requires artifacts: {}",
+        after_gates.body
     );
+    let task_revision = after["tasks"][0]["revision"].as_u64().expect("a revision");
+    let done = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "complete_task", "task_id": seed.task,
+            "expected_revision": task_revision, "reason": "The work is done",
+            "evidence": artifacts,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("endgame-complete-final")
+    .send(&world)
+    .await;
+    assert_eq!(done.status, 200, "{}", done.body);
+    assert_eq!(done.json()["state"], "done");
+
+    // And with every task terminal and every team run closed, the epic closes.
+    let closed = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "close_epic", "expected_revision": 1, "reason": "Epic complete"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("endgame-close")
+    .send(&world)
+    .await;
+    assert_eq!(closed.status, 200, "{}", closed.body);
+    assert_eq!(closed.json()["state"], "closed");
+}
+
+#[tokio::test]
+async fn a_profile_category_reports_its_whole_shape_and_validates_itself() {
+    let world = World::open_empty().await;
+    let category = first_category(&world).await;
+
+    let detail = Call::get(format!("/v1/catalog/work-profiles/{category}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(detail.status, 200, "{}", detail.body);
+    let body = detail.json();
+
+    // The catalog entry and the detail must agree about the revision and the
+    // digest: two reads of the same category that disagreed would mean a caller
+    // pinning from one and freezing from the other.
+    let catalog = Call::get("/v1/catalog/work-profiles")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let entry = catalog
+        .json()
+        .as_array()
+        .expect("a catalog")
+        .iter()
+        .find(|entry| entry["category"] == serde_json::json!(category))
+        .cloned()
+        .expect("the category the catalog advertised");
+    assert_eq!(body["profile"], entry["profile"]);
+    assert_eq!(body["team"], entry["team"]);
+    // The *definition* digest is the stable one and is asserted as such. The
+    // bundle digest deliberately is not: it covers the resolution, which records
+    // when it happened, so two reads of an unchanged category answer with two
+    // different bundle digests. Asserting equality there would be asserting that
+    // the two reads happened in the same instant.
+    assert_ne!(
+        body["bundle_hash"], entry["bundle_hash"],
+        "a bundle digest covers its own resolution time"
+    );
+    assert_eq!(
+        body["definition_hash"].as_str().expect("a digest").len(),
+        64
+    );
+
+    // Everything the closure sequence needs is here, which is the point of the
+    // route: a Lead learns the gate authority and the artifact contracts without
+    // reading the pack out of band.
+    let phases = body["phases"].as_array().expect("phases");
+    assert!(!phases.is_empty(), "{}", detail.body);
+    assert!(
+        phases
+            .iter()
+            .any(|phase| phase["phase"] == body["entry_phase"]),
+        "the entry phase must be one of the declared phases: {}",
+        detail.body
+    );
+    let gates = body["gates"].as_array().expect("gates");
+    assert!(!gates.is_empty(), "{}", detail.body);
+    for gate in gates {
+        assert_eq!(gate["state"], "not_ready", "a profile has run nothing");
+        assert!(
+            !gate["evaluator_roles"]
+                .as_array()
+                .expect("roles")
+                .is_empty(),
+            "every gate names who may judge it: {}",
+            detail.body
+        );
+    }
+    assert!(!body["artifacts"].as_array().expect("artifacts").is_empty());
+
+    // The eligible roots are exactly the slots no handoff feeds — the same rule
+    // the seating uses — so what the API reports and what a start actually does
+    // cannot drift apart.
+    let downstream: Vec<&serde_json::Value> = body["handoffs"]
+        .as_array()
+        .expect("handoffs")
+        .iter()
+        .map(|handoff| &handoff["to_slot"])
+        .collect();
+    for root in body["eligible_roots"].as_array().expect("roots") {
+        assert!(
+            !downstream.contains(&root),
+            "a root is fed by no handoff: {}",
+            detail.body
+        );
+    }
+
+    let validated = Call::post(
+        format!("/v1/catalog/work-profiles/{category}/validate"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(validated.status, 200, "{}", validated.body);
+    assert_eq!(validated.json()["availability"], "seeded");
+    assert_eq!(validated.json()["pack_valid"], true);
+    assert_eq!(validated.json()["bundle_verified"], true);
+    assert!(
+        validated.json()["bundle_hash"].is_string(),
+        "{}",
+        validated.body
+    );
+    assert!(validated.json()["refused"].is_null(), "{}", validated.body);
+
+    // A category this build does not advertise is absent, not empty: an empty
+    // answer would say "this profile declares no gates".
+    let unknown = Call::get("/v1/catalog/work-profiles/no-such-category")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+}
+
+#[tokio::test]
+async fn intake_decides_under_a_pinned_trigger_or_reports_it_is_not_installed() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "intake").await;
+
+    // An empty realm has no trigger revisions, and says so. This is the honest
+    // shape of the gap: submitting under a trigger nothing installed cannot
+    // decide anything, and answering `ignored` would be a decision.
+    let missing = Call::get(format!(
+        "/v1/projects/{}/triggers/nightly-sweep/1",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.code(), "not_found");
+
+    let submitted = Call::post(
+        format!("/v1/projects/{}/intake:submit", seed.project),
+        &serde_json::json!({
+            "trigger": "nightly-sweep",
+            "trigger_version": 1,
+            "external_event_id": "EVT-1",
+            "external_observed_at": "2026-08-13T09:00:00Z",
+            "envelope": {"schema_version": 1, "kind": "push"}
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("intake-submit-1")
+    .send(&world)
+    .await;
+    assert_eq!(submitted.status, 404, "{}", submitted.body);
+
+    // An unknown decision id is absent rather than fabricated.
+    let unknown = Call::get(format!(
+        "/v1/projects/{}/intake/0199a0a0-0000-7000-8000-000000000000",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+
+    // Submitting is an operator decision, and an observer may not make it.
+    let refused = Call::post(
+        format!("/v1/projects/{}/intake:submit", seed.project),
+        &serde_json::json!({
+            "trigger": "nightly-sweep",
+            "trigger_version": 1,
+            "external_event_id": "EVT-2",
+            "external_observed_at": "2026-08-13T09:00:00Z",
+            "envelope": {"schema_version": 1}
+        }),
+    )
+    .signed_as(&world, "observer")
+    .with_key("intake-submit-2")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+}
+
+#[tokio::test]
+async fn a_connector_reports_the_specifications_this_build_ships() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "specs").await;
+
+    let fields = Call::get(format!(
+        "/v1/projects/{}/connectors/connector.jira/field-specs",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(fields.status, 200, "{}", fields.body);
+    let fields = fields.json();
+    let fields = fields.as_array().expect("a spec list");
+    assert!(
+        !fields.is_empty(),
+        "this build ships a bundled field mapping"
+    );
+    for spec in fields {
+        assert_eq!(spec["connector"], "connector.jira");
+        assert!(!spec["covers"].as_array().expect("covers").is_empty());
+        assert!(!spec["definition_hash"].as_str().expect("hash").is_empty());
+        // Nothing was installed into this project, and the read says so rather
+        // than implying the mapping is already pinned here.
+        assert_eq!(spec["installed"], false, "{spec}");
+    }
+
+    let workflows = Call::get(format!(
+        "/v1/projects/{}/connectors/connector.jira/workflow-specs",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(workflows.status, 200, "{}", workflows.body);
+    let workflows = workflows.json();
+    let workflows = workflows.as_array().expect("a spec list");
+    assert!(!workflows.is_empty());
+    for spec in workflows {
+        assert!(
+            !spec["covers"].as_array().expect("covers").is_empty(),
+            "a workflow mapping declares the milestones it converges: {spec}"
+        );
+    }
+
+    // A connector this build has no mapping for is an empty list, not a 404:
+    // the connector key is open vocabulary, and "we ship nothing for it" is a
+    // complete answer.
+    let other = Call::get(format!(
+        "/v1/projects/{}/connectors/connector.unknown/field-specs",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(other.status, 200, "{}", other.body);
+    assert_eq!(other.json().as_array().expect("a list").len(), 0);
+}
+
+#[tokio::test]
+async fn conflicts_comments_and_claims_are_task_scoped_and_disclose_no_content() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "tickets").await;
+
+    // A task nothing has reconciled holds no conflicts and no comments, and both
+    // reads say that with an empty list rather than a refusal.
+    let conflicts = Call::get(format!(
+        "/v1/projects/{}/tasks/{}/ticket:conflicts",
+        seed.project, seed.task
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(conflicts.status, 200, "{}", conflicts.body);
+    assert_eq!(conflicts.json().as_array().expect("a list").len(), 0);
+
+    let comments = Call::get(format!(
+        "/v1/projects/{}/tasks/{}/ticket:comments",
+        seed.project, seed.task
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(comments.status, 200, "{}", comments.body);
+    assert_eq!(comments.json().as_array().expect("a list").len(), 0);
+
+    // Resolving a conflict that was never raised is absent, not a silent no-op
+    // that would hand back a receipt for a decision nobody could have made.
+    let phantom = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/ticket:resolve-conflict",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({"conflict_id": "0199a0a0-0000-7000-8000-000000000001"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("tickets-resolve-1")
+    .send(&world)
+    .await;
+    assert_eq!(phantom.status, 404, "{}", phantom.body);
+
+    // A task with no links has nothing to pull, and that is a legitimate zero
+    // rather than a claim about an external system nothing contacted.
+    let pulled = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/ticket:pull-comments",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("tickets-pull-1")
+    .send(&world)
+    .await;
+    assert_eq!(pulled.status, 200, "{}", pulled.body);
+    assert_eq!(pulled.json()["mirrored"], 0);
+    assert_eq!(pulled.json()["held"], 0);
+    assert!(
+        !pulled.json()["receipt_id"]
+            .as_str()
+            .expect("a receipt")
+            .is_empty()
+    );
+
+    // Replaying the key answers from the receipt already recorded rather than
+    // recording a second one.
+    let replayed = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/ticket:pull-comments",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("tickets-pull-1")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt_id"], pulled.json()["receipt_id"]);
+
+    // Claiming a task that is linked to nothing has nothing to claim.
+    let unclaimable = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/ticket:claim",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("tickets-claim-1")
+    .send(&world)
+    .await;
+    assert_eq!(unclaimable.status, 404, "{}", unclaimable.body);
+
+    // Every one of these is an operator decision or an observer read, and the
+    // tiers are checked rather than assumed.
+    let forbidden = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/ticket:claim",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "observer")
+    .with_key("tickets-claim-2")
+    .send(&world)
+    .await;
+    assert_eq!(forbidden.status, 403, "{}", forbidden.body);
+}
+
+#[tokio::test]
+async fn a_linked_task_claims_its_tickets_and_refuses_to_pull_without_a_connector() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+
+    let created = ensure_project(&world, "linked", "Kontor", "/tmp/kontor-linked").await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Linked epic",
+            &category,
+            serde_json::json!([{
+                "title": "The linked task",
+                "ticket_links": [{"connector": "connector.jira", "external_issue_key": "ASMA-1"}]
+            }]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("linked-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // A claim records Kontor's own decision to hold the ticket. It names the
+    // domain's action and the links it covers, and nothing on the way in could
+    // have named an assignee.
+    let claimed = Call::post(
+        format!("/v1/projects/{project}/tasks/{task}/ticket:claim"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("linked-claim-1")
+    .send(&world)
+    .await;
+    assert_eq!(claimed.status, 200, "{}", claimed.body);
+    assert_eq!(claimed.json()["action"], "reassign_to_principal");
+    assert_eq!(claimed.json()["links"].as_array().expect("links").len(), 1);
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/tasks/{task}/ticket:claim"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("linked-claim-1")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt_id"], claimed.json()["receipt_id"]);
+
+    // Pulling comments for a task that *is* linked needs the connector this
+    // realm does not have, and refuses rather than reporting a zero that would
+    // be indistinguishable from "there were no new comments".
+    let pulled = Call::post(
+        format!("/v1/projects/{project}/tasks/{task}/ticket:pull-comments"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("linked-pull-1")
+    .send(&world)
+    .await;
+    assert_eq!(pulled.status, 503, "{}", pulled.body);
+    assert_eq!(pulled.code(), "unavailable");
 }

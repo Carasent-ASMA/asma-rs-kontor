@@ -17,6 +17,7 @@ use kontor_runtime::capability::RuntimeBindingSnapshot;
 use kontor_store::SqliteStore;
 use tokio::sync::watch;
 
+use crate::applications::Applications;
 use crate::auth::{IngressPolicy, RealmCredentials};
 use crate::error::{ApiError, ApiErrorCode};
 
@@ -283,6 +284,8 @@ pub struct ApiParts {
     pub signals: StreamSignals,
     /// How old a confirmation may be and still count as fresh, in seconds.
     pub evidence_window_seconds: i64,
+    /// The composed application services the public operations run through.
+    pub applications: Applications,
 }
 
 struct Inner {
@@ -301,6 +304,7 @@ struct Inner {
     barrier: SchedulingBarrier,
     signals: StreamSignals,
     evidence_window_seconds: i64,
+    applications: Applications,
 }
 
 /// The handler state. Cheap to clone; one Realm for its whole lifetime.
@@ -334,7 +338,18 @@ impl ApiState {
             barrier: parts.barrier,
             signals: parts.signals,
             evidence_window_seconds: parts.evidence_window_seconds,
+            applications: parts.applications,
         }))
+    }
+
+    /// The composed application services.
+    ///
+    /// Handlers reach the work graph, the scheduler and the lifecycle only
+    /// through this port, so a handler cannot open a transaction, resolve a
+    /// profile or address a runtime on its own.
+    #[must_use]
+    pub fn applications(&self) -> &Applications {
+        &self.0.applications
     }
 
     /// This Realm's immutable identity.

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kontor-reviewer": {
+      "command": "kontor-mcp",
+      "args": [
+        "--state-root", "/REPLACE/WITH/REALM/STATE/ROOT",
+        "--credential-tier", "observer"
+      ]
+    }
+  }
+}

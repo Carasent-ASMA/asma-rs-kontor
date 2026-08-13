@@ -27,6 +27,24 @@ path = "guardrails.rs"
 name = "scheduling"
 path = "scheduling.rs"
 
+# KON-MVP-16: the API-to-MCP parity oracle and the thin-wrapper mutant suite.
+# They live here rather than in `kontor-mcp` for a reason the dependency audit
+# depends on: the oracle needs the generated contract from `kontor-api`, and
+# `kontor-api` reaches SQLite. Keeping them out of that crate is what lets
+# `cargo tree -p kontor-mcp` stay free of the store in every edge kind, dev
+# dependencies included.
+[[test]]
+name = "mcp_parity"
+path = "mcp_parity.rs"
+
+[[test]]
+name = "mcp_cardinality"
+path = "mcp_cardinality.rs"
+
+[[test]]
+name = "mcp_mutants"
+path = "mcp_mutants.rs"
+
 [dependencies]
 # KON-MVP-05/KON-MVP-12: the reusable, capability-aware contract harness lives in
 # `src/lib.rs` so a real adapter crate can run the *same* assertions as the
@@ -47,6 +65,12 @@ kontor-policy = { path = "../../crates/kontor-policy", version = "=0.1.0" }
 kontor-scheduler = { path = "../../crates/kontor-scheduler", version = "=0.1.0" }
 kontor-store = { path = "../../crates/kontor-store", version = "=0.1.0" }
 kontor-teams = { path = "../../crates/kontor-teams", version = "=0.1.0" }
+# KON-MVP-16: the two sides the parity oracle compares — the generated contract
+# and the tool registry — plus the daemon, for the constants `kontor-mcp` must
+# restate because it may not link it.
+kontor-api = { path = "../../crates/kontor-api", version = "=0.1.0" }
+kontor-mcp = { path = "../../crates/kontor-mcp", version = "=0.1.0" }
+kontor-daemon = { path = "../../crates/kontor-daemon", version = "=0.1.0" }
 jiff = { workspace = true }
 rusqlite = { workspace = true }
 tokio = { workspace = true }

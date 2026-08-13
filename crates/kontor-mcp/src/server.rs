@@ -4,12 +4,12 @@
 //!
 //! A [`KontorMcp`] is built with exactly one [`CallerTier`] and holds exactly one
 //! credential for it. There is no per-call authority, no escalation operand and no
-//! way for a tool to ask for a different secret — a tool is handed a client that
-//! already is what it is. Running two authorities means running two servers, which
-//! is the honest way to say it: the credential a process holds is a fact about the
-//! process.
+//! way for a tool to ask for a different secret — a tool is handed a dispatcher
+//! that already is what it is. Running two authorities means running two servers,
+//! which is the honest way to say it: the credential a process holds is a fact
+//! about the process.
 //!
-//! [`KontorMcp::list_tools`] therefore lists only what this server can actually
+//! [`KontorMcp::served`] therefore lists only what this server can actually
 //! perform. A caller that names a higher-tier tool anyway is still refused by the
 //! gate — the two are not redundant. Listing everything and refusing later would
 //! invite a language model to keep trying a tool that will never work; refusing
@@ -26,8 +26,8 @@
 //! framing and the handshake are all still `rmcp`'s; only the two pipes are ours.
 //!
 //! The bridge is also what makes the protocol testable without a socket or a child
-//! process (TST-001): a test drives [`serve`] over the *other* half of a duplex
-//! pair, which is the same code path the binary takes minus the two pumps.
+//! process: a test drives [`serve`] over the *other* half of a duplex pair, which
+//! is the same code path the binary takes minus the two pumps.
 
 use std::borrow::Cow;
 use std::future::Future;
@@ -39,13 +39,12 @@ use rmcp::model::{
     Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::{ServerHandler, ServiceExt};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use rmcp::{ServerHandler, ServiceExt as _};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 
-use crate::capability::Gate;
-use crate::client::{CallerTier, RealmClient};
-use crate::tools::ToolSpec;
-use crate::{Failure, execute};
+use crate::client::CallerTier;
+use crate::dispatch::{Dispatcher, Envelope, Failure};
+use crate::registry::ToolSpec;
 
 /// How many bytes the stdio bridge buffers in each direction.
 ///
@@ -56,59 +55,55 @@ const BRIDGE_BUFFER: usize = 256 * 1024;
 
 /// The capability-gated tool server for one Realm.
 pub struct KontorMcp {
-    client: Arc<RealmClient>,
-    gate: Gate,
+    dispatcher: Arc<Dispatcher>,
 }
 
 impl std::fmt::Debug for KontorMcp {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("KontorMcp")
-            .field("authority", &self.gate.configured())
+            .field("authority", &self.dispatcher.tier())
             .finish_non_exhaustive()
     }
 }
 
 impl KontorMcp {
-    /// A server that acts at exactly `tier` and no higher.
-    ///
-    /// The tier comes from the client, not from a separate argument: they cannot
-    /// disagree, because there is only one of them.
+    /// A server that acts at exactly the dispatcher's tier and no higher.
     #[must_use]
-    pub fn new(client: RealmClient) -> Self {
-        let gate = Gate::new(client.tier());
+    pub fn new(dispatcher: Dispatcher) -> Self {
         Self {
-            client: Arc::new(client),
-            gate,
+            dispatcher: Arc::new(dispatcher),
         }
     }
 
     /// The authority this server was configured with.
     #[must_use]
-    pub const fn authority(&self) -> CallerTier {
-        self.gate.configured()
+    pub fn authority(&self) -> CallerTier {
+        self.dispatcher.tier()
     }
 
-    /// Every operation this server can perform, in name order.
+    /// Every operation this server can perform.
     #[must_use]
-    pub fn served(&self) -> Vec<ToolSpec> {
-        crate::tools::catalogue()
-            .into_iter()
-            .filter(|tool| self.gate.configured().at_least(tool.tier))
-            .collect()
+    pub fn served(&self) -> Vec<&'static ToolSpec> {
+        self.dispatcher.tools().collect()
     }
 
     /// The MCP declaration of one operation.
     ///
     /// Built through `Tool::new` rather than as a struct literal: the model types
-    /// are `#[non_exhaustive]`, and going through the constructor means a later rmcp
+    /// are `#[non_exhaustive]`, so going through the constructor means a later rmcp
     /// generation that adds a field does not silently leave it at whatever this
     /// build assumed.
-    fn declare(tool: &ToolSpec) -> Tool {
+    fn declare(tool: &&'static ToolSpec) -> Tool {
         Tool::new(
             Cow::Borrowed(tool.name),
-            Cow::Borrowed(tool.description),
-            Arc::new(tool.input_schema()),
+            Cow::Borrowed(tool.about),
+            Arc::new(match tool.input_schema() {
+                serde_json::Value::Object(schema) => schema,
+                // `input_schema` builds an object literal; this arm cannot be taken
+                // and an empty schema is the harmless reading if it ever were.
+                _ => serde_json::Map::new(),
+            }),
         )
     }
 }
@@ -120,11 +115,11 @@ impl ServerHandler for KontorMcp {
         implementation.title = Some("Kontor control plane".to_owned());
         implementation.description = Some(format!(
             "The loopback tool surface of one Kontor realm, served at {} authority.",
-            self.gate.configured()
+            self.dispatcher.tier()
         ));
         let mut info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build());
         info.server_info = implementation;
-        info.instructions = Some(instructions(self.gate.configured()));
+        info.instructions = Some(instructions(self.dispatcher.tier()));
         info
     }
 
@@ -150,33 +145,47 @@ impl ServerHandler for KontorMcp {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + Send + '_ {
-        let client = Arc::clone(&self.client);
-        let gate = self.gate;
+        let dispatcher = Arc::clone(&self.dispatcher);
         async move {
-            let arguments = request.arguments.unwrap_or_default();
-            match execute(&client, gate, &request.name, &arguments).await {
-                // A tool result rather than a protocol error: a refusal is an
-                // *answer* about this realm, and a caller that can read the code
-                // and the rule can decide what to do. A JSON-RPC error would strip
+            let arguments = serde_json::Value::Object(request.arguments.unwrap_or_default());
+            match dispatcher.call(&request.name, &arguments).await {
+                // A refusal is a tool *result* rather than a protocol error: it is
+                // an answer about this realm, and a caller that can read the code
+                // and the body can decide what to do. A JSON-RPC error would strip
                 // both down to a message.
-                Err(failure) => Ok(refusal(&failure, client.expected_realm().as_deref()).into()),
+                Err(failure) => Ok(refused(&request.name, &failure).into()),
                 Ok(envelope) => Ok(answer(&envelope).into()),
             }
         }
     }
 }
 
-/// Render one successful answer as a tool result.
-fn answer(envelope: &crate::Envelope) -> CallToolResult {
+/// Render one answer as a tool result, carrying the daemon's document unchanged.
+///
+/// A non-2xx status is marked as an error so a client sees it as one, and the body
+/// underneath is still exactly what the daemon sent — the receipt, the revision or
+/// the refusal code a caller is owed is not summarized away.
+fn answer(envelope: &Envelope) -> CallToolResult {
     let document = serde_json::to_string_pretty(envelope).unwrap_or_else(|_| "{}".to_owned());
-    CallToolResult::success(vec![ContentBlock::text(document)])
+    let block = vec![ContentBlock::text(document)];
+    if envelope.is_success() {
+        CallToolResult::success(block)
+    } else {
+        CallToolResult::error(block)
+    }
 }
 
-/// Render one refusal as a tool result, carrying the document unchanged.
-fn refusal(failure: &Failure, realm_id: Option<&str>) -> CallToolResult {
-    let document =
-        serde_json::to_string_pretty(&failure.body(realm_id)).unwrap_or_else(|_| "{}".to_owned());
-    CallToolResult::error(vec![ContentBlock::text(document)])
+/// Render one local refusal — nothing was dispatched — as a tool result.
+fn refused(tool: &str, failure: &Failure) -> CallToolResult {
+    let document = serde_json::json!({
+        "tool": tool,
+        "code": failure.code(),
+        "rule": failure.to_string(),
+        "dispatched": false,
+    });
+    CallToolResult::error(vec![ContentBlock::text(
+        serde_json::to_string_pretty(&document).unwrap_or_else(|_| "{}".to_owned()),
+    )])
 }
 
 /// What a caller is told about this server before it calls anything.
@@ -188,13 +197,14 @@ fn refusal(failure: &Failure, realm_id: Option<&str>) -> CallToolResult {
 fn instructions(tier: CallerTier) -> String {
     format!(
         "This server acts on one Kontor realm at {tier} authority; tools above that authority are \
-         not served here. Two rules govern every call. First, a write names the revision a read \
+         not served here. Three rules govern every call. First, a write names the revision a read \
          returned: read the aggregate, then write with its revision, and a `revision_conflict` \
          means read it again. Second, recording a command is not the command having happened — the \
          answer is a durable receipt, and the run or task must be read again to see what the \
-         runtime reported. Pass `dry_run` to any write to see the request it would make without \
-         making it, and repeat an `idempotency_key` to replay a receipt instead of recording a \
-         second command."
+         runtime reported. Third, every write takes an `idempotency_key` you choose; repeating one \
+         returns the original receipt rather than recording a second command, so a retry is safe \
+         and is never performed for you. Streamed reads return a bounded batch from one response: \
+         to continue, call again with the cursor the last frame carried."
     )
 }
 
@@ -220,10 +230,6 @@ where
 ///
 /// # Errors
 /// As [`serve`].
-///
-/// # Panics
-/// Never. The pumps end when their stream ends, and a send on a closed channel is
-/// the ordinary way a client disconnects.
 pub async fn serve_stdio(server: KontorMcp) -> Result<(), Box<dyn std::error::Error>> {
     let (mine, theirs) = tokio::io::duplex(BRIDGE_BUFFER);
     let (mut from_protocol, mut to_protocol) = tokio::io::split(mine);
@@ -234,7 +240,7 @@ pub async fn serve_stdio(server: KontorMcp) -> Result<(), Box<dyn std::error::Er
     // the `io-std` feature this workspace does not enable, and a blocking read on a
     // dedicated thread is what that feature does underneath anyway.
     tokio::task::spawn_blocking(move || {
-        use std::io::Read;
+        use std::io::Read as _;
         let mut stdin = std::io::stdin().lock();
         let mut buffer = [0u8; 8192];
         loop {
@@ -252,7 +258,7 @@ pub async fn serve_stdio(server: KontorMcp) -> Result<(), Box<dyn std::error::Er
         }
     });
     tokio::task::spawn_blocking(move || {
-        use std::io::Write;
+        use std::io::Write as _;
         let mut stdout = std::io::stdout().lock();
         while let Some(chunk) = outbound.blocking_recv() {
             if stdout.write_all(&chunk).is_err() || stdout.flush().is_err() {
@@ -273,7 +279,7 @@ pub async fn serve_stdio(server: KontorMcp) -> Result<(), Box<dyn std::error::Er
         drop(to_protocol);
     });
     tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
+        use tokio::io::AsyncReadExt as _;
         let mut buffer = [0u8; 8192];
         loop {
             match from_protocol.read(&mut buffer).await {
@@ -293,12 +299,11 @@ pub async fn serve_stdio(server: KontorMcp) -> Result<(), Box<dyn std::error::Er
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake::RecordingTransport;
+    use crate::registry::REGISTRY;
 
-    /// A server over a recording fake, for the checks that only read declarations.
     fn server(tier: CallerTier) -> KontorMcp {
-        KontorMcp::new(RealmClient::new(Box::new(crate::fake::FakeTransport::new(
-            tier,
-        ))))
+        KontorMcp::new(Dispatcher::new(Box::new(RecordingTransport::new(tier))))
     }
 
     #[test]
@@ -312,35 +317,48 @@ mod tests {
             "an observer server must not advertise a tool it would refuse"
         );
         assert!(
-            observer.get_tool("run_launch").is_none(),
+            observer.get_tool("kontor_epic_apply").is_none(),
             "a tool above this authority is not declared"
         );
+        assert!(observer.get_tool("kontor_realm_get").is_some());
 
         let admin = server(CallerTier::Admin);
         assert_eq!(
             admin.served().len(),
-            crate::tools::catalogue().len(),
-            "an admin server serves the whole catalogue"
+            REGISTRY.len(),
+            "an admin server serves the whole vocabulary"
         );
-        assert!(admin.get_tool("account_list").is_some());
     }
 
     #[test]
-    fn a_declaration_carries_the_schema_the_validator_uses() {
+    fn a_declaration_carries_the_same_schema_the_dispatch_path_enforces() {
         let admin = server(CallerTier::Admin);
         let declared = admin
-            .get_tool("gate_verdict")
-            .expect("the gate_verdict tool is declared");
-        let spec = crate::tools::find("gate_verdict").expect("the gate_verdict spec");
+            .get_tool("kontor_gate_record")
+            .expect("the gate tool is declared");
+        let spec = ToolSpec::find("kontor_gate_record").expect("the gate spec");
         assert_eq!(
-            *declared.input_schema,
+            serde_json::Value::Object((*declared.input_schema).clone()),
             spec.input_schema(),
             "the advertised schema and the enforced one are the same object"
         );
     }
 
     #[test]
-    fn the_instructions_name_the_authority_and_the_two_rules_callers_get_wrong() {
+    fn every_declared_schema_is_closed() {
+        let admin = server(CallerTier::Admin);
+        for tool in admin.served() {
+            assert_eq!(
+                tool.input_schema().get("additionalProperties"),
+                Some(&serde_json::Value::Bool(false)),
+                "{} advertises a schema a caller could smuggle a property past",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_instructions_name_the_authority_and_the_rules_callers_get_wrong() {
         let text = instructions(CallerTier::Operator);
         assert!(text.contains("operator"), "the authority is stated");
         assert!(
@@ -350,6 +368,27 @@ mod tests {
         assert!(
             text.contains("receipt"),
             "an acknowledgement is not a completion"
+        );
+        assert!(
+            text.contains("idempotency_key"),
+            "the caller chooses the key, and this server never invents one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_says_that_nothing_was_dispatched() {
+        let transport = Box::new(RecordingTransport::new(CallerTier::Observer));
+        let dispatcher = Dispatcher::new(transport);
+        let failure = dispatcher
+            .call("kontor_epic_apply", &serde_json::json!({}))
+            .await
+            .expect_err("an observer may not apply an epic");
+        let rendered = refused("kontor_epic_apply", &failure);
+        let text = format!("{rendered:?}");
+        assert!(text.contains("forbidden"), "the code is the daemon's own");
+        assert!(
+            text.contains("\\\"dispatched\\\": false") || text.contains("dispatched"),
+            "a caller is told the write was never attempted"
         );
     }
 }

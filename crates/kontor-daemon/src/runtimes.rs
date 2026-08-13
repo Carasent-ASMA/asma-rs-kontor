@@ -145,6 +145,8 @@ pub struct PaseoSetting {
     pub host_key: String,
     /// The Kontor mini-project this plane serves.
     pub mini_project_id: String,
+    /// The Paseo provider every seat on this plane runs under.
+    pub provider: String,
     /// The Jira epic the mini-project is tracked as.
     pub jira_epic_key: String,
     /// The compact epic title.
@@ -153,6 +155,8 @@ pub struct PaseoSetting {
     pub plan_item_key: String,
     /// The compact task title.
     pub task_short_title: String,
+    /// The repository root registered as the epic's Paseo project.
+    pub project_root_cwd: String,
     /// The filesystem-canonical task worktree.
     pub canonical_worktree_cwd: String,
     /// The persisted Orchestrator agent every role launches under.
@@ -167,6 +171,10 @@ pub struct PaseoSetting {
     /// the moment it is deserialized and is redacted in `Debug`; it reaches the
     /// transport and nothing else.
     pub host_target: String,
+    /// The Paseo 0.3.1 session WebSocket endpoint.
+    pub endpoint: String,
+    /// The stable client id used to resume this plane's socket session.
+    pub client_id: String,
     /// The per-command wall-clock budget, in seconds.
     pub timeout_seconds: u64,
 }
@@ -297,6 +305,7 @@ fn compose_paseo(
         host_key: host_key.clone(),
         mini_project_id: ExternalId::parse(&setting.mini_project_id)
             .map_err(|_| refuse("mini_project_id"))?,
+        provider: ExternalName::parse(&setting.provider).map_err(|_| refuse("provider"))?,
         scope: PaseoExecutionScope {
             jira_epic_key: ExternalId::parse(&setting.jira_epic_key)
                 .map_err(|_| refuse("jira_epic_key"))?,
@@ -306,6 +315,8 @@ fn compose_paseo(
                 .map_err(|_| refuse("plan_item_key"))?,
             task_short_title: ExternalName::parse(&setting.task_short_title)
                 .map_err(|_| refuse("task_short_title"))?,
+            project_root_cwd: WorkspaceRoot::parse(&setting.project_root_cwd)
+                .map_err(|_| refuse("project_root_cwd"))?,
             canonical_worktree_cwd: WorkspaceRoot::parse(&setting.canonical_worktree_cwd)
                 .map_err(|_| refuse("canonical_worktree_cwd"))?,
             orchestrator_agent_id: ExternalId::parse(&setting.orchestrator_agent_id)
@@ -318,6 +329,8 @@ fn compose_paseo(
     let transport = PaseoLiveTransport::new(
         &setting.executable,
         SecretString::from(setting.host_target.clone()),
+        &setting.endpoint,
+        &setting.client_id,
         setting.timeout_seconds,
     )
     .map_err(|_| refuse("executable or host target"))?;
@@ -456,15 +469,19 @@ mod tests {
             runtime_kind: "paseo.agent".to_owned(),
             host_key: "paseo-host".to_owned(),
             mini_project_id: "mini-1".to_owned(),
+            provider: "codex".to_owned(),
             jira_epic_key: "ASMA-1".to_owned(),
             mini_project_short_title: "Epic".to_owned(),
             plan_item_key: "KON-MVP-15".to_owned(),
             task_short_title: "Seat".to_owned(),
+            project_root_cwd: "/w/epic".to_owned(),
             canonical_worktree_cwd: "/w/task".to_owned(),
             orchestrator_agent_id: "agent-1".to_owned(),
             max_concurrent_sessions: 2,
             executable: "paseo".to_owned(),
             host_target: "https://user:hunter2@paseo.example".to_owned(),
+            endpoint: "ws://127.0.0.1:6767/ws".to_owned(),
+            client_id: "kontor-mini-1".to_owned(),
             timeout_seconds: 30,
         };
         let rendered = format!("{setting:?}");
@@ -473,6 +490,17 @@ mod tests {
             "a settings dump must not print the paseo host target"
         );
         assert!(rendered.contains("paseo.agent"), "the family is not secret");
+
+        let settings = RuntimeSettings {
+            schema_version: RUNTIMES_SCHEMA,
+            runtimes: vec![RuntimeSetting::Paseo(setting)],
+        };
+        let registry = build_registry(&settings).expect("the complete Paseo plane composes");
+        assert!(
+            registry
+                .get(&RuntimeKindKey::parse("paseo.agent").expect("a valid key"))
+                .is_some()
+        );
     }
 
     #[test]

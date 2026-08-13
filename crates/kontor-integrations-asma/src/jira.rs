@@ -191,6 +191,25 @@ impl SpecCatalog {
         Ok(catalog)
     }
 
+    /// Every field specification this catalogue holds, in load order.
+    ///
+    /// A read, for a caller that needs to *see* what a deployment can map rather
+    /// than select one revision of it. Selection stays with
+    /// [`SpecCatalog::select_field_spec`], which is the only path that decides
+    /// which revision applies.
+    #[must_use]
+    pub fn field_specs(&self) -> &[CompiledFieldSpec] {
+        &self.field_specs
+    }
+
+    /// Every workflow specification this catalogue holds, in load order.
+    ///
+    /// As [`SpecCatalog::field_specs`].
+    #[must_use]
+    pub fn workflow_specs(&self) -> &[CompiledWorkflowSpec] {
+        &self.workflow_specs
+    }
+
     /// Parse, validate, canonicalize and retain one field specification.
     ///
     /// # Errors

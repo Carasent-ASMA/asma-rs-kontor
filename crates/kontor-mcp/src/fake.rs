@@ -1,255 +1,156 @@
-//! A scripted, recording transport: the mock daemon this crate's own claims are
-//! proved against.
+//! A recording transport, so a test can assert what was *not* sent.
 //!
-//! It is public and not `#[cfg(test)]`, for the same reason
-//! `kontor_runtime::fake::ScriptedFakeRuntime` is: the CLI has to run the same
-//! assertions against the same fake, and a fake behind a `cfg` is a fake each
-//! crate rewrites.
+//! The cardinality claim this crate makes — one tool invocation makes exactly one
+//! `/v1` request — is only checkable against something that counts. A refusal that
+//! happens before dispatch and a refusal that happens at the daemon look identical
+//! from the outside; they differ in whether a request exists, and this is what
+//! knows.
 //!
-//! # What it exists to prove
-//!
-//! One thing above all: that a refusal happened **before dispatch**. Every request
-//! that reaches this transport is recorded, so a test can assert an observer's
-//! mutation attempt left *no* record — which is a claim a real server could not
-//! support, because a real server only sees the requests that were sent. Binding a
-//! socket to find out would also break TST-001; nothing in this workspace does.
-//!
-//! It answers `/v1/realm` on its own so a test does not have to script the identity
-//! read every call path performs, and it answers anything unscripted with an empty
-//! realm-qualified document — enough to satisfy the envelope rules without
-//! pretending to be a store.
+//! It is compiled into the library rather than a test module because the contract
+//! crate drives the same dispatch path from outside, and a fake that lived in
+//! `#[cfg(test)]` would have to be written twice.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use crate::client::{
-    CallerTier, Frame, FrameBudget, Method, Reply, Request, Transport, TransportFailure,
-};
+use async_trait::async_trait;
 
-/// A fixed Realm identity for fixtures, so two fakes are two Realms only when a
-/// test says so.
-pub const FIXTURE_REALM: &str = "0192f0c0-0000-7000-8000-00000000fa11";
+use crate::client::{CallerTier, FrameBudget, Reply, Request, Transport, TransportFailure};
 
-/// One answer a fake was told to give.
-#[derive(Debug, Clone)]
-pub struct Scripted {
-    /// The status to answer with.
-    pub status: u16,
-    /// The body to answer with.
-    pub body: serde_json::Value,
-}
-
-/// A transport that records what it was asked and answers from a script.
-pub struct FakeTransport {
+/// A transport that answers from a script and remembers every request.
+#[derive(Debug)]
+pub struct RecordingTransport {
     tier: CallerTier,
-    realm_id: String,
-    scripted: Mutex<VecDeque<Scripted>>,
-    recorded: Mutex<Vec<Request>>,
-    unreachable: Mutex<bool>,
+    seen: Mutex<Vec<Request>>,
+    scripted: Mutex<VecDeque<Reply>>,
+    /// What to answer once the script is exhausted.
+    fallback: Reply,
 }
 
-impl std::fmt::Debug for FakeTransport {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("FakeTransport")
-            .field("tier", &self.tier)
-            .field("dispatched", &self.dispatched())
-            .finish_non_exhaustive()
-    }
-}
-
-impl FakeTransport {
-    /// A fake that answers for [`FIXTURE_REALM`] at `tier`.
+impl RecordingTransport {
+    /// A transport at one tier that answers `200 {}` until it is scripted.
     #[must_use]
     pub fn new(tier: CallerTier) -> Self {
-        Self::in_realm(tier, FIXTURE_REALM)
-    }
-
-    /// A fake that answers for a named Realm.
-    #[must_use]
-    pub fn in_realm(tier: CallerTier, realm_id: &str) -> Self {
         Self {
             tier,
-            realm_id: realm_id.to_owned(),
+            seen: Mutex::new(Vec::new()),
             scripted: Mutex::new(VecDeque::new()),
-            recorded: Mutex::new(Vec::new()),
-            unreachable: Mutex::new(false),
+            fallback: Reply {
+                status: 200,
+                body: serde_json::json!({}),
+            },
         }
     }
 
-    /// Queue one answer. Answers are given in the order they were queued.
-    pub fn push(&self, status: u16, body: serde_json::Value) {
-        self.locked(&self.scripted)
-            .push_back(Scripted { status, body });
-    }
-
-    /// Queue one successful answer, stamped with this fake's Realm.
-    ///
-    /// The stamp is what most tests want: every answer of this contract names its
-    /// Realm, and a fixture that forgot to would be testing a body the daemon
-    /// cannot produce.
-    pub fn push_ok(&self, body: serde_json::Value) {
-        let mut stamped = body;
-        if let Some(object) = stamped.as_object_mut() {
-            object
-                .entry("realm_id")
-                .or_insert_with(|| serde_json::Value::String(self.realm_id.clone()));
-        }
-        self.push(200, stamped);
-    }
-
-    /// Queue one refusal in the daemon's own envelope shape.
-    pub fn push_refusal(&self, status: u16, code: &str, rule: &str) {
-        self.push(
-            status,
-            serde_json::json!({
-                "realm_id": self.realm_id,
-                "code": code,
-                "rule": rule,
-                "current_revision": serde_json::Value::Null,
-                "oldest_retained_cursor": serde_json::Value::Null,
-                "newest_cursor": serde_json::Value::Null,
-            }),
-        );
-    }
-
-    /// Make every later call fail as if nothing were listening.
-    pub fn go_unreachable(&self) {
-        *self.locked(&self.unreachable) = true;
+    /// Queue one answer. They are returned in the order they were queued.
+    #[must_use]
+    pub fn answering(self, status: u16, body: serde_json::Value) -> Self {
+        self.scripted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(Reply { status, body });
+        self
     }
 
     /// Every request this transport was asked to make, in order.
     #[must_use]
-    pub fn recorded(&self) -> Vec<Request> {
-        self.locked(&self.recorded).clone()
-    }
-
-    /// How many requests reached this transport.
-    #[must_use]
-    pub fn dispatched(&self) -> usize {
-        self.locked(&self.recorded).len()
-    }
-
-    /// How many *writes* reached this transport.
-    ///
-    /// The number a mutation test asserts is zero.
-    #[must_use]
-    pub fn writes(&self) -> usize {
-        self.locked(&self.recorded)
-            .iter()
-            .filter(|request| request.method == Method::Post)
-            .count()
-    }
-
-    /// The Realm this fake answers for.
-    #[must_use]
-    pub fn realm_id(&self) -> &str {
-        &self.realm_id
-    }
-
-    /// Lock one field, recovering a poisoned lock rather than propagating it.
-    fn locked<'a, T>(&self, field: &'a Mutex<T>) -> std::sync::MutexGuard<'a, T> {
-        field
+    pub fn requests(&self) -> Vec<Request> {
+        self.seen
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
-    /// Record one request and produce the answer it is owed.
-    fn answer(&self, request: &Request, streaming: bool) -> Result<Reply, TransportFailure> {
-        self.locked(&self.recorded).push(request.clone());
-        if *self.locked(&self.unreachable) {
-            return Err(TransportFailure::Unreachable {
-                base_url: self.base_url(),
-            });
-        }
-        if let Some(scripted) = self.locked(&self.scripted).pop_front() {
-            return Ok(Reply {
-                status: scripted.status,
-                body: scripted.body,
-            });
-        }
-        // Unscripted: a realm-qualified, empty answer. Enough for the envelope
-        // rules, and obviously not a store.
-        let mut body = serde_json::json!({ "realm_id": self.realm_id });
-        if streaming {
-            body["frames"] = serde_json::Value::Array(Vec::new());
-        }
-        Ok(Reply { status: 200, body })
+    /// How many requests reached the wire.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// The one request this transport was asked to make.
+    ///
+    /// # Panics
+    /// Panics unless exactly one request was made, which is the assertion nearly
+    /// every cardinality test wants to state anyway.
+    #[must_use]
+    pub fn only_request(&self) -> Request {
+        let seen = self.requests();
+        assert_eq!(
+            seen.len(),
+            1,
+            "expected exactly one request, and {} were made",
+            seen.len()
+        );
+        seen.into_iter().next().expect("one request")
+    }
+
+    /// Record one request and answer it from the script.
+    fn respond(&self, request: &Request) -> Reply {
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(request.clone());
+        self.scripted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front()
+            .unwrap_or_else(|| self.fallback.clone())
     }
 }
 
-#[async_trait::async_trait]
-impl Transport for FakeTransport {
+#[async_trait]
+impl Transport for RecordingTransport {
     fn tier(&self) -> CallerTier {
         self.tier
     }
 
     fn base_url(&self) -> String {
-        "http://127.0.0.1:7717".to_owned()
+        "http://127.0.0.1:0".to_owned()
     }
 
     async fn call(&self, request: &Request) -> Result<Reply, TransportFailure> {
-        self.answer(request, false)
+        Ok(self.respond(request))
     }
 
     async fn frames(
         &self,
         request: &Request,
-        budget: FrameBudget,
+        _budget: FrameBudget,
     ) -> Result<Reply, TransportFailure> {
-        let reply = self.answer(request, true)?;
-        // A scripted stream may name more frames than the caller's budget allows.
-        // Truncating here is what the real transport does when it stops reading, so
-        // a budget test exercises the same rule against either one.
-        let Some(frames) = reply.body.get("frames").and_then(|value| value.as_array()) else {
-            return Ok(reply);
-        };
-        let kept: Vec<serde_json::Value> = frames.iter().take(budget.max_frames).cloned().collect();
-        let mut body = reply.body.clone();
-        body["frames"] = serde_json::Value::Array(kept);
-        Ok(Reply {
-            status: reply.status,
-            body,
-        })
+        Ok(self.respond(request))
     }
 }
 
-/// A shared fake is itself a transport.
-///
-/// `RealmClient` takes ownership of its transport, and a test needs to inspect the
-/// fake *afterwards* — what it was asked, and how much. Implementing the trait for
-/// the `Arc` is what lets a test hold one half and hand the other over, without
-/// every test writing the same forwarding wrapper.
-#[async_trait::async_trait]
-impl Transport for std::sync::Arc<FakeTransport> {
+/// A transport that never answers, for the "there was nobody there" path.
+#[derive(Debug)]
+pub struct UnreachableTransport(pub CallerTier);
+
+#[async_trait]
+impl Transport for UnreachableTransport {
     fn tier(&self) -> CallerTier {
-        FakeTransport::tier(self)
+        self.0
     }
 
     fn base_url(&self) -> String {
-        FakeTransport::base_url(self)
+        "http://127.0.0.1:0".to_owned()
     }
 
-    async fn call(&self, request: &Request) -> Result<Reply, TransportFailure> {
-        FakeTransport::call(self, request).await
+    async fn call(&self, _request: &Request) -> Result<Reply, TransportFailure> {
+        Err(TransportFailure::Unreachable {
+            base_url: self.base_url(),
+        })
     }
 
     async fn frames(
         &self,
-        request: &Request,
-        budget: FrameBudget,
+        _request: &Request,
+        _budget: FrameBudget,
     ) -> Result<Reply, TransportFailure> {
-        FakeTransport::frames(self, request, budget).await
+        Err(TransportFailure::Unreachable {
+            base_url: self.base_url(),
+        })
     }
-}
-
-/// One scripted event frame, in the shape the real transport produces.
-#[must_use]
-pub fn frame(event: &str, id: &str, data: serde_json::Value) -> serde_json::Value {
-    serde_json::to_value(Frame {
-        event: event.to_owned(),
-        id: id.to_owned(),
-        data,
-    })
-    .unwrap_or(serde_json::Value::Null)
 }

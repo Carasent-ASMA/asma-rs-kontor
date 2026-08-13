@@ -40,6 +40,7 @@
 //! and not this crate's; the daemon's job is to make sure the barrier stays shut
 //! until that inventory has been taken.
 
+pub mod applications;
 pub mod credentials;
 pub mod endpoint;
 pub mod lock;
@@ -110,6 +111,17 @@ pub enum StartupError {
     /// The configured runtime fleet could not be composed.
     #[error(transparent)]
     Fleet(#[from] FleetError),
+    /// The bundled profile pack this build ships does not validate.
+    ///
+    /// It is a build-time defect in the shipped data rather than a runtime
+    /// condition, and it refuses the start rather than serving a Realm whose
+    /// catalogs are empty.
+    #[error("the bundled profile pack could not be composed: {source}")]
+    Applications {
+        /// The underlying refusal.
+        #[source]
+        source: kontor_core::DomainError,
+    },
 }
 
 /// Everything a daemon is configured with.
@@ -218,6 +230,13 @@ impl Daemon {
             .map_err(|source| StartupError::Store { source })?;
         let credentials = credentials::open_or_create(&config.state_root)?;
         let realm_id = store.realm_id();
+        // The services and the state are mutually dependent — the state serves
+        // the routes the services back, and the services read the store the state
+        // holds — so the services are built first, handed in, and given the state
+        // immediately afterwards. Nothing can serve a request in between: the
+        // router does not exist yet.
+        let applications = applications::Services::new(realm_id)
+            .map_err(|source| StartupError::Applications { source })?;
 
         let state = ApiState::new(ApiParts {
             store,
@@ -230,7 +249,9 @@ impl Daemon {
             barrier: SchedulingBarrier::new(),
             signals: StreamSignals::new(),
             evidence_window_seconds: config.evidence_window_seconds,
+            applications: applications.clone(),
         });
+        applications.attach(state.clone());
         info!(
             realm_id = %realm_id,
             state_root = %config.state_root.display(),

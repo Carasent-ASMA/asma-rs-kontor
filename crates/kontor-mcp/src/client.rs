@@ -1,80 +1,70 @@
-//! How a CLI or an MCP tool reaches its Realm, and the only things it is allowed
-//! to reach.
+//! The one loopback client: where a Realm is, which secret this caller holds, and
+//! how exactly one `/v1` request is made.
 //!
-//! This module is the whole outward surface of both callers, and it is
-//! deliberately narrow in four ways:
+//! # What this module deliberately does not do
 //!
-//! 1. **One base URL, and it must be loopback.** There is no flag, environment
-//!    variable or config field that widens it. A Realm holds the credentials and
-//!    transcripts of every run on the machine; the daemon refuses to *bind*
-//!    anything but loopback, and a client that would happily talk to a remote
-//!    address is the other half of the same mistake.
-//! 2. **One tier, chosen once.** A [`HttpTransport`] is built with exactly one
-//!    tier secret and cannot be asked for another. That is what makes "the MCP
-//!    server runs at one authority" structural rather than a convention a tool
-//!    could forget: a tool has no token to reach for.
-//! 3. **`/v1` only.** Every path a caller can name is a `/v1/…` route of the
-//!    daemon. There is no runtime endpoint here, no `asma` executable, no SQLite
-//!    file and no adapter — those live behind the daemon, which is the process
-//!    that owns them.
-//! 4. **Refusals are relayed, never translated.** A daemon refusal arrives as
-//!    [`Refusal`] carrying the `ApiErrorBody` it sent, byte for byte. This crate
-//!    reads exactly one field out of it — `code` — to decide an exit class, and
-//!    passes the document itself through unchanged.
+//! It does not interpret an answer. [`Transport::call`] returns the daemon's
+//! status and body as they arrived, and a non-2xx is a [`Reply`] like any other
+//! rather than an error this crate invented. A client that renamed
+//! `revision_conflict`, wrapped a receipt or synthesized a refusal the Realm never
+//! issued would be a second contract with its own drift — and the receipt a caller
+//! is owed lives in that body.
 //!
-//! # Two failure kinds that must not be confused
-//!
-//! A [`Refusal`] is the daemon saying no, and it is *an answer*: it names the
-//! Realm, it carries a code from the closed vocabulary, and relaying it is the
-//! caller's whole job. A [`TransportFailure`] is the absence of an answer. They
-//! map to different exit classes because a caller that retries on the first and
-//! gives up on the second has them backwards.
+//! It also does not choose a base URL, a credential or a tier per call. All three
+//! are fixed when the transport is built, which is what stops a tool argument from
+//! selecting any of them.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
 
-use futures::StreamExt;
-use secrecy::{ExposeSecret, SecretString};
+use futures::StreamExt as _;
+use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 
 /// The file a Realm's credential set lives in, inside its state root.
 ///
 /// The daemon writes it; this crate only ever reads it. The name is repeated here
 /// rather than imported because importing it would mean depending on
-/// `kontor-daemon`, and `kontor-daemon` depends on every runtime adapter — which
-/// is exactly what a CLI must not link. `the_credential_file_matches_the_daemons`
-/// in `tests/protocol.rs` is what keeps the two spellings honest.
+/// `kontor-daemon`, which links every runtime adapter and the store — exactly what
+/// this crate must not reach. `the_local_document_names_match_the_daemons` in the
+/// contract crate is what keeps the two spellings honest.
 pub const CREDENTIAL_FILE: &str = "credentials.json";
 
 /// The file a Realm's loopback endpoint is recorded in, inside its state root.
+///
+/// Optional: a Realm serving [`DEFAULT_PORT`] does not need one. It is read when
+/// present so a Realm on another port can be reached without every caller being
+/// told the port by hand.
 pub const ENDPOINT_FILE: &str = "endpoint.json";
 
-/// The document generation this build writes and is willing to read.
+/// The document generation this build is willing to read.
 pub const LOCAL_SCHEMA: u32 = 1;
 
 /// The loopback port a Kontor daemon binds when it is not told otherwise.
+///
+/// It mirrors `kontor_daemon::DEFAULT_PORT`, which this crate may not link, and
+/// `the_default_port_matches_the_daemons` in the contract crate compares them.
 pub const DEFAULT_PORT: u16 = 7717;
 
 /// How much of the control plane one caller may reach.
 ///
 /// The three names are the three keys of the credential file and the three tiers
 /// of `kontor_api::auth::CallerCapability`. The enum is declared here rather than
-/// imported for the reason [`CREDENTIAL_FILE`] is: `kontor-api` reaches SQLite,
-/// and a CLI that linked it would be one careless line away from opening a store
-/// it has no business opening.
+/// imported for the reason [`CREDENTIAL_FILE`] is: `kontor-api` reaches SQLite.
 ///
 /// The ordering is [`CallerTier::rank`] and nothing else, so reordering the
 /// variants cannot silently promote a caller.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CallerTier {
     /// Read liveness, identity, snapshots, persisted events and session content.
     Observer,
     /// Everything an observer may do, plus control-plane writes, session messages
     /// and permission responses.
     Operator,
-    /// Everything an operator may do, plus account and policy-authority routes.
+    /// Everything an operator may do, plus credential, account and
+    /// policy-authority routes.
     Admin,
 }
 
@@ -179,28 +169,9 @@ pub enum LocalError {
     /// A tier was named that does not exist.
     #[error("a realm authority is one of observer, operator or admin")]
     UnknownTier,
-    /// A caller-supplied value is not what the domain accepts.
-    #[error("{subject} is not valid: {rule}")]
-    Invalid {
-        /// What was being parsed.
-        subject: &'static str,
-        /// The rule that refused.
-        rule: String,
-    },
     /// The HTTP client itself could not be built.
     #[error("the loopback http client could not be built")]
     Client,
-}
-
-impl LocalError {
-    /// Refuse a caller-supplied value the domain rejected.
-    #[must_use]
-    pub fn invalid(subject: &'static str, error: &kontor_core::DomainError) -> Self {
-        Self::Invalid {
-            subject,
-            rule: error.to_string(),
-        }
-    }
 }
 
 /// The on-disk credential set, as this crate reads it.
@@ -212,7 +183,7 @@ struct StoredCredentials {
     observer: String,
     /// The control-plane-write tier's secret.
     operator: String,
-    /// The account- and policy-authority tier's secret.
+    /// The credential- and policy-authority tier's secret.
     admin: String,
 }
 
@@ -225,10 +196,11 @@ pub struct StoredEndpoint {
     pub base_url: String,
 }
 
-/// Where a Realm is, and which of its secrets this caller holds.
+/// Which of a Realm's secrets this caller holds.
 ///
 /// Building one is the only place a secret is read off disk, and the secret does
-/// not leave this struct except as an `Authorization` header value.
+/// not leave this struct except as an `Authorization` header value. It is never an
+/// argument, never a tool input and never part of an answer.
 pub struct Credential {
     tier: CallerTier,
     secret: SecretString,
@@ -248,6 +220,9 @@ impl fmt::Debug for Credential {
 
 impl Credential {
     /// Read one tier's secret out of a Realm's `0600` credential file.
+    ///
+    /// Exactly the configured tier is selected: a server told `observer` cannot
+    /// reach the operator secret sitting in the same file.
     ///
     /// # Errors
     /// Returns [`LocalError::NoCredentials`] when the state root holds no
@@ -287,6 +262,12 @@ impl Credential {
         })
     }
 
+    /// Build one from an already-held secret, for a test harness.
+    #[must_use]
+    pub const fn from_secret(tier: CallerTier, secret: SecretString) -> Self {
+        Self { tier, secret }
+    }
+
     /// The tier this credential carries.
     #[must_use]
     pub const fn tier(&self) -> CallerTier {
@@ -296,9 +277,11 @@ impl Credential {
 
 /// Where this caller's Realm is listening.
 ///
-/// Resolution order is explicit flag, then the Realm's own `endpoint.json`, then
-/// the default loopback port — and the answer is validated as loopback whichever
-/// of the three produced it.
+/// Resolution order is the explicit flag, then the Realm's own [`ENDPOINT_FILE`],
+/// then [`DEFAULT_PORT`] — and the answer is validated as loopback whichever of the
+/// three produced it. There is no way to reach a non-loopback address: not through
+/// configuration, and not through a tool argument, because a tool has no argument
+/// that reaches here.
 #[derive(Debug, Clone)]
 pub struct Endpoint {
     base_url: url::Url,
@@ -332,10 +315,9 @@ impl Endpoint {
                 Self::parse(&stored.base_url)
             }
             // No endpoint file is the ordinary case for a realm serving the
-            // default port, so it is a default rather than a failure. A realm on
-            // another port writes the file at startup, and a caller pointed at a
-            // realm that is not running gets a transport failure — which is the
-            // honest report, because nothing local is wrong.
+            // default port, so it is a default rather than a failure. A caller
+            // pointed at a realm that is not running gets a transport failure —
+            // the honest report, because nothing local is wrong.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Self::parse(&format!("http://127.0.0.1:{DEFAULT_PORT}"))
             }
@@ -368,9 +350,9 @@ impl Endpoint {
                 base_url: base_url.to_owned(),
             });
         }
-        // The authority is what goes in the `Host` header, and it is rebuilt from
-        // the parts the URL parser actually understood rather than sliced out of
-        // the input — the same reason the daemon's ingress check rebuilds it.
+        // The authority is what goes in the `Host` header, rebuilt from the parts
+        // the URL parser actually understood rather than sliced out of the input —
+        // the same reason the daemon's ingress check rebuilds it.
         let authority = match parsed.port() {
             Some(port) => format!("{host}:{port}"),
             None => host.to_owned(),
@@ -396,12 +378,11 @@ impl Endpoint {
 
 /// Whether a host names this machine.
 ///
-/// Only the loopback spellings are accepted. A hostname that happens to resolve
-/// to `127.0.0.1` today is the DNS-rebinding case, so it is refused however it
-/// resolves — and the daemon would refuse it too, because it checks the `Host` it
-/// receives. Checking here as well means a misconfigured client fails on this
-/// machine with a message about configuration, rather than on the wire with a
-/// forbidden it would have to interpret.
+/// Only the loopback spellings are accepted. A hostname that happens to resolve to
+/// `127.0.0.1` today is the DNS-rebinding case, so it is refused however it
+/// resolves. Checking here as well as in the daemon means a misconfigured client
+/// fails on this machine with a message about configuration, rather than on the
+/// wire with a refusal it would have to interpret.
 #[must_use]
 pub fn is_loopback_host(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
@@ -417,11 +398,11 @@ pub fn is_loopback_host(host: &str) -> bool {
 }
 
 /// The two methods this client can use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum Method {
     /// A read.
     Get,
-    /// A write, or a command intent.
+    /// A write, a command intent, or a computed plan.
     Post,
 }
 
@@ -440,7 +421,7 @@ impl Method {
 ///
 /// There is no field for a base URL, a token or a tier: the transport holds all
 /// three, which is what stops a tool from choosing any of them.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     /// The method.
     pub method: Method,
@@ -449,79 +430,39 @@ pub struct Request {
     /// Query parameters, in the order they should appear.
     pub query: Vec<(String, String)>,
     /// The `Idempotency-Key` this mutation is committed under.
+    ///
+    /// Supplied by the caller and mapped only to the header. This crate never
+    /// generates one: a key it invented would make a retry look like a new
+    /// intent to the one component that decides what a retry means.
     pub idempotency_key: Option<String>,
     /// The JSON body, for a `POST`.
     pub body: Option<serde_json::Value>,
 }
 
-impl Request {
-    /// A `GET` of one route.
-    #[must_use]
-    pub fn get(path: impl Into<String>) -> Self {
-        Self {
-            method: Method::Get,
-            path: path.into(),
-            query: Vec::new(),
-            idempotency_key: None,
-            body: None,
-        }
-    }
-
-    /// A `POST` of one document.
-    #[must_use]
-    pub fn post(path: impl Into<String>, body: serde_json::Value) -> Self {
-        Self {
-            method: Method::Post,
-            path: path.into(),
-            query: Vec::new(),
-            idempotency_key: None,
-            body: Some(body),
-        }
-    }
-
-    /// Add one query parameter.
-    #[must_use]
-    pub fn with_query(mut self, name: &str, value: impl fmt::Display) -> Self {
-        self.query.push((name.to_owned(), value.to_string()));
-        self
-    }
-
-    /// Add one query parameter when it is present.
-    #[must_use]
-    pub fn with_optional_query(self, name: &str, value: Option<impl fmt::Display>) -> Self {
-        match value {
-            None => self,
-            Some(value) => self.with_query(name, value),
-        }
-    }
-
-    /// Commit this mutation under a stable key.
-    #[must_use]
-    pub fn with_key(mut self, key: impl Into<String>) -> Self {
-        self.idempotency_key = Some(key.into());
-        self
-    }
-}
-
-/// One whole answer from the daemon.
-#[derive(Debug, Clone)]
+/// One whole answer from the daemon, relayed unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reply {
-    /// The HTTP status.
+    /// The HTTP status, exactly as it arrived.
     pub status: u16,
-    /// The JSON body.
+    /// The JSON body, exactly as it arrived.
     pub body: serde_json::Value,
 }
 
-/// The daemon's own refusal, relayed rather than interpreted.
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("{code}")]
-pub struct Refusal {
-    /// The status it was reported with.
-    pub status: u16,
-    /// The stable machine code, read out of the body and not rewritten.
-    pub code: String,
-    /// The `ApiErrorBody` exactly as the daemon sent it.
-    pub body: serde_json::Value,
+impl Reply {
+    /// Whether the daemon answered with a success status.
+    #[must_use]
+    pub const fn is_success(&self) -> bool {
+        self.status >= 200 && self.status < 300
+    }
+
+    /// The daemon's own stable machine code, when it sent one.
+    ///
+    /// Read, never rewritten: the CLI picks an exit class from it and this crate
+    /// relays the body whole either way.
+    #[must_use]
+    pub fn code(&self) -> Option<&str> {
+        self.body.get("code").and_then(serde_json::Value::as_str)
+    }
 }
 
 /// The absence of an answer.
@@ -536,10 +477,9 @@ pub enum TransportFailure {
     },
     /// Something answered, but not with the contract.
     ///
-    /// A body that is not JSON, a refusal with no `code`, or an event stream whose
-    /// frames are not JSON. Every one of them means the thing on the other end is
-    /// not a Kontor Realm of this generation, which is a different problem from
-    /// being refused by one.
+    /// A body that is not JSON, or an event stream whose frames are not JSON.
+    /// Either means the thing on the other end is not a Kontor Realm of this
+    /// generation, which is a different problem from being refused by one.
     #[error("the answer from {path} was not this contract: {detail}")]
     Protocol {
         /// The route that answered.
@@ -549,26 +489,13 @@ pub enum TransportFailure {
     },
 }
 
-/// Everything one call can end as.
-#[derive(Debug, thiserror::Error)]
-pub enum CallFailure {
-    /// Nothing was sent, because this machine is misconfigured.
-    #[error(transparent)]
-    Local(#[from] LocalError),
-    /// The Realm said no.
-    #[error(transparent)]
-    Refused(#[from] Refusal),
-    /// There was no answer.
-    #[error(transparent)]
-    Transport(#[from] TransportFailure),
-}
-
 /// How much of an event stream one read is willing to take.
 ///
-/// Both bounds exist because an event stream has no end: `/v1/events` waits when
-/// it is caught up, so a reader with no budget would never return. Naming a
-/// budget is what lets a command emit one JSON value and exit.
-#[derive(Debug, Clone, Copy)]
+/// Both bounds exist because an event stream has no end: `/v1/events` waits when it
+/// is caught up, so a reader with no budget would never return. Naming a budget is
+/// what lets one tool call answer with one value and stop — a continuation is
+/// another explicit call, never a reconnect this crate performed on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameBudget {
     /// Stop after this many frames.
     pub max_frames: usize,
@@ -586,12 +513,12 @@ impl Default for FrameBudget {
 }
 
 /// One frame of an event stream.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Frame {
     /// The SSE event name — `control`, `content` or `error`.
     pub event: String,
-    /// The SSE id: a control-plane cursor, or an `epoch:sequence` content
-    /// position. Relayed as text, so the two spaces cannot be added together.
+    /// The SSE id: a control-plane cursor, or an `epoch:sequence` content position.
+    /// Relayed as text, so the two spaces cannot be added together.
     pub id: String,
     /// The frame's JSON payload.
     pub data: serde_json::Value,
@@ -599,11 +526,11 @@ pub struct Frame {
 
 /// The narrow thing a caller is allowed to do to a Realm.
 ///
-/// It is a trait so a test can drive the real command and tool layers against a
-/// recording fake and then assert what was *not* dispatched. Proving that an
-/// observer's mutation attempt never reached the daemon needs a transport that
-/// can be asked "what did you receive"; a mock HTTP server could answer that too,
-/// but it would have to bind a socket, and no test in this workspace does that.
+/// It is a trait so a test can drive the real dispatch path against a recording
+/// fake and then assert what was *not* sent. Proving that an observer's mutation
+/// never reached the daemon needs a transport that can be asked "what did you
+/// receive"; counting requests is only meaningful because the refusal happens
+/// before this trait is called at all.
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync + fmt::Debug {
     /// Which tier this transport carries. Fixed when it was built.
@@ -612,18 +539,15 @@ pub trait Transport: Send + Sync + fmt::Debug {
     /// Where it calls. For error messages only.
     fn base_url(&self) -> String;
 
-    /// Make one request and read the whole answer.
+    /// Make exactly one request and read the whole answer.
     ///
     /// # Errors
     /// Returns [`TransportFailure`] when there is no answer or the answer is not
-    /// this contract. A refusal is *not* an error here: it comes back as a
-    /// [`Reply`] with its status, and the caller decides what a non-2xx means.
+    /// this contract. A refusal is *not* an error: it comes back as a [`Reply`]
+    /// carrying the daemon's own status and body.
     async fn call(&self, request: &Request) -> Result<Reply, TransportFailure>;
 
-    /// Read a bounded prefix of one event stream.
-    ///
-    /// On success the reply's body is `{"frames": [...]}`, so a stream and a
-    /// document travel the same path and are refused the same way.
+    /// Read a bounded prefix of one event stream, from one response.
     ///
     /// # Errors
     /// As [`Transport::call`].
@@ -632,6 +556,35 @@ pub trait Transport: Send + Sync + fmt::Debug {
         request: &Request,
         budget: FrameBudget,
     ) -> Result<Reply, TransportFailure>;
+}
+
+/// A shared transport is still a transport.
+///
+/// This exists for the capability tests: they hand the dispatcher a transport and
+/// then need to ask that same transport what it received. Without this, proving
+/// "zero requests were made" would need the dispatcher to expose its transport,
+/// which is a hole in the wrong wall.
+#[async_trait::async_trait]
+impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
+    fn tier(&self) -> CallerTier {
+        (**self).tier()
+    }
+
+    fn base_url(&self) -> String {
+        (**self).base_url()
+    }
+
+    async fn call(&self, request: &Request) -> Result<Reply, TransportFailure> {
+        (**self).call(request).await
+    }
+
+    async fn frames(
+        &self,
+        request: &Request,
+        budget: FrameBudget,
+    ) -> Result<Reply, TransportFailure> {
+        (**self).frames(request, budget).await
+    }
 }
 
 /// The real loopback transport.
@@ -660,8 +613,11 @@ impl HttpTransport {
         let client = reqwest::Client::builder()
             // A loopback control plane has no business following a redirect: the
             // only place a redirect could send this client is somewhere that is
-            // not the realm it authenticated to.
+            // not the realm it authenticated to — with the bearer attached.
             .redirect(reqwest::redirect::Policy::none())
+            // Environment proxies are ignored for the same reason: a loopback call
+            // that went through a proxy would carry the credential off-machine.
+            .no_proxy()
             .build()
             .map_err(|_| LocalError::Client)?;
         Ok(Self {
@@ -679,6 +635,16 @@ impl HttpTransport {
                 detail: "the route is not a path this client can address",
             }
         })?;
+        // A joined path that left loopback is not addressable by this client. It
+        // cannot happen through a tool argument — paths are built from the
+        // registry's own templates — and it is checked anyway, because the check
+        // costs nothing and the failure it prevents is a credential leaving.
+        if !url.host_str().is_some_and(is_loopback_host) {
+            return Err(TransportFailure::Protocol {
+                path: request.path.clone(),
+                detail: "the route resolved off loopback",
+            });
+        }
         if !request.query.is_empty() {
             let mut pairs = url.query_pairs_mut();
             for (name, value) in &request.query {
@@ -733,9 +699,9 @@ impl Transport for HttpTransport {
             .map_err(|_| TransportFailure::Unreachable {
                 base_url: self.base_url(),
             })?;
-        // An empty body with a success status is a document-free answer, which
-        // this contract does not have; reporting it as a protocol failure is
-        // honest, where inventing `null` would let a caller print "success".
+        // An empty body with a success status is a document-free answer, which this
+        // contract does not have; reporting it as a protocol failure is honest,
+        // where inventing `null` would let a caller print "success".
         let body: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| TransportFailure::Protocol {
                 path: request.path.clone(),
@@ -759,8 +725,8 @@ impl Transport for HttpTransport {
             })?;
         let status = response.status().as_u16();
         if status != 200 {
-            // A refused stream answers with the same `ApiErrorBody` every other
-            // route does, so it is read as a document and relayed unchanged.
+            // A refused stream answers with the same error body every other route
+            // does, so it is read as a document and relayed unchanged.
             let bytes = response
                 .bytes()
                 .await
@@ -775,6 +741,10 @@ impl Transport for HttpTransport {
             return Ok(Reply { status, body });
         }
 
+        // Every frame below comes out of this one response. There is no reconnect
+        // and no second request: when the budget is spent the read stops, and a
+        // continuation is another explicit tool call with the cursor the caller
+        // read off these frames.
         let mut stream = response.bytes_stream();
         let mut pending = String::new();
         let mut frames = Vec::new();
@@ -783,8 +753,7 @@ impl Transport for HttpTransport {
             let chunk = match next {
                 // The idle bound elapsed: the realm is caught up and this read is
                 // done. Not a failure — a stream that waits is the stream working.
-                Err(_) => break,
-                Ok(None) => break,
+                Err(_) | Ok(None) => break,
                 Ok(Some(Err(_))) => {
                     return Err(TransportFailure::Unreachable {
                         base_url: self.base_url(),
@@ -793,8 +762,8 @@ impl Transport for HttpTransport {
                 Ok(Some(Ok(chunk))) => chunk,
             };
             pending.push_str(&String::from_utf8_lossy(&chunk));
-            // A block is complete only at a blank line, so a frame split across
-            // two chunks is assembled rather than delivered in halves.
+            // A block is complete only at a blank line, so a frame split across two
+            // chunks is assembled rather than delivered in halves.
             while let Some(split) = pending.find("\n\n") {
                 let block: String = pending.drain(..split + 2).collect();
                 if let Some(frame) = parse_frame(&block, &request.path)? {
@@ -843,168 +812,6 @@ fn parse_frame(block: &str, path: &str) -> Result<Option<Frame>, TransportFailur
     }))
 }
 
-/// A transport, plus the Realm it is expected to be talking to.
-///
-/// The expectation is established once, from `GET /v1/realm`, and then checked
-/// against every later answer. That check is the reason this type exists: a
-/// caller holding a cached identifier from one Realm and pointing at another must
-/// be told so, and it must be told in the vocabulary the contract already has —
-/// `realm_mismatch` — rather than by quietly showing it another Realm's rows.
-pub struct RealmClient {
-    transport: Box<dyn Transport>,
-    expected: Mutex<Option<String>>,
-}
-
-impl fmt::Debug for RealmClient {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RealmClient")
-            .field("transport", &self.transport)
-            .finish_non_exhaustive()
-    }
-}
-
-impl RealmClient {
-    /// Wrap a transport with no expectation yet.
-    #[must_use]
-    pub fn new(transport: Box<dyn Transport>) -> Self {
-        Self {
-            transport,
-            expected: Mutex::new(None),
-        }
-    }
-
-    /// Wrap a transport that is already expected to answer for `realm_id`.
-    #[must_use]
-    pub fn expecting(transport: Box<dyn Transport>, realm_id: String) -> Self {
-        Self {
-            transport,
-            expected: Mutex::new(Some(realm_id)),
-        }
-    }
-
-    /// The tier every call is made at.
-    #[must_use]
-    pub fn tier(&self) -> CallerTier {
-        self.transport.tier()
-    }
-
-    /// Where this client calls.
-    #[must_use]
-    pub fn base_url(&self) -> String {
-        self.transport.base_url()
-    }
-
-    /// The Realm this client expects, once it has been established.
-    #[must_use]
-    pub fn expected_realm(&self) -> Option<String> {
-        self.expected
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    /// Establish which Realm this endpoint is, by asking it.
-    ///
-    /// # Errors
-    /// As [`RealmClient::send`]. A realm that will not identify itself to this
-    /// credential is refused rather than assumed.
-    pub async fn establish_realm(&self) -> Result<String, CallFailure> {
-        if let Some(known) = self.expected_realm() {
-            return Ok(known);
-        }
-        // The send records the expectation on the way through, so an absent
-        // expectation afterwards means the body named no realm at all.
-        self.send(&Request::get("/v1/realm")).await?;
-        self.expected_realm()
-            .ok_or(CallFailure::Transport(TransportFailure::Protocol {
-                path: "/v1/realm".to_owned(),
-                detail: "the realm route did not name a realm",
-            }))
-    }
-
-    /// Make one call, and hold the answer to the Realm expectation.
-    ///
-    /// # Errors
-    /// Returns [`CallFailure::Refused`] for any non-2xx answer, relaying the
-    /// daemon's own body; [`CallFailure::Transport`] when there was no answer;
-    /// and a synthesized `realm_mismatch` refusal when the answer names a Realm
-    /// this client is not talking to.
-    pub async fn send(&self, request: &Request) -> Result<Reply, CallFailure> {
-        let reply = self.transport.call(request).await?;
-        self.admit(request, reply)
-    }
-
-    /// Read a bounded prefix of one event stream, under the same rules.
-    ///
-    /// # Errors
-    /// As [`RealmClient::send`].
-    pub async fn stream(
-        &self,
-        request: &Request,
-        budget: FrameBudget,
-    ) -> Result<Reply, CallFailure> {
-        let reply = self.transport.frames(request, budget).await?;
-        self.admit(request, reply)
-    }
-
-    /// Turn one answer into a reply or a refusal, checking the Realm either way.
-    fn admit(&self, request: &Request, reply: Reply) -> Result<Reply, CallFailure> {
-        let named = reply
-            .body
-            .get("realm_id")
-            .and_then(serde_json::Value::as_str)
-            .map(ToOwned::to_owned);
-        if let Some(named) = named {
-            let mut expected = self
-                .expected
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match expected.as_ref() {
-                None => *expected = Some(named),
-                Some(known) if *known == named => {}
-                Some(known) => {
-                    // A local mismatch, reported in the contract's own vocabulary
-                    // and shaped exactly like the daemon's own refusal — so a
-                    // caller branching on `code` does not have to know which side
-                    // noticed. The realm named is the one this client belongs to.
-                    return Err(CallFailure::Refused(Refusal {
-                        status: 409,
-                        code: "realm_mismatch".to_owned(),
-                        body: serde_json::json!({
-                            "realm_id": known,
-                            "code": "realm_mismatch",
-                            "rule": "the endpoint answered for a different realm than this client established",
-                            "current_revision": serde_json::Value::Null,
-                            "oldest_retained_cursor": serde_json::Value::Null,
-                            "newest_cursor": serde_json::Value::Null,
-                        }),
-                    }));
-                }
-            }
-        }
-        if (200..300).contains(&reply.status) {
-            return Ok(reply);
-        }
-        let code = reply
-            .body
-            .get("code")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                CallFailure::Transport(TransportFailure::Protocol {
-                    path: request.path.clone(),
-                    detail: "a refusal carried no stable code",
-                })
-            })?
-            .to_owned();
-        Err(CallFailure::Refused(Refusal {
-            status: reply.status,
-            code,
-            body: reply.body,
-        }))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1045,123 +852,168 @@ mod tests {
             "http://127.0.0.2:9000",
             // A trailing slash is a spelling, not a different address.
             "http://127.0.0.1:7717/",
+            // The URL parser normalizes a decimal or hexadecimal IPv4 literal to
+            // its canonical form *before* this check sees it, so what reaches the
+            // wire as `Host` is `127.0.0.1` and the daemon admits it on that
+            // spelling. Accepted because the address really is loopback, not
+            // because the grammar was not looked at.
+            "http://2130706433",
+            "http://0x7f.0.0.1",
         ] {
-            Endpoint::parse(base).unwrap_or_else(|_| panic!("{base} is a loopback endpoint"));
+            let parsed =
+                Endpoint::parse(base).unwrap_or_else(|_| panic!("{base} is a loopback endpoint"));
+            assert!(
+                is_loopback_host(parsed.base_url().host_str().expect("a host")),
+                "{base} must present a loopback authority on the wire"
+            );
         }
         for base in [
             "http://kontor.example.com:7717",
             "http://10.0.0.4:7717",
-            // Not loopback: the wildcards are *every* interface.
             "http://0.0.0.0:7717",
             "http://[::]:7717",
-            // A name that resolves wherever its owner likes.
+            // The rebinding shapes.
             "http://127.0.0.1.evil.com",
             "http://localhost.evil.com",
+            // Not a URL, or not a scheme this client speaks.
+            "file:///etc/passwd",
+            "ftp://127.0.0.1",
+            "not a url",
+            "",
         ] {
             assert!(
-                matches!(Endpoint::parse(base), Err(LocalError::NotLoopback { .. })),
-                "{base} must be refused as non-loopback"
-            );
-        }
-        for base in ["not a url", "ftp://127.0.0.1", "file:///tmp/kontor", ""] {
-            assert!(
-                matches!(Endpoint::parse(base), Err(LocalError::NotAUrl { .. })),
-                "{base} must be refused as unaddressable"
+                Endpoint::parse(base).is_err(),
+                "{base} must not be reachable"
             );
         }
     }
 
     #[test]
-    fn the_host_header_carries_the_authority_the_url_named() {
-        let endpoint = Endpoint::parse("http://127.0.0.1:7717").expect("a loopback endpoint");
-        assert_eq!(endpoint.authority(), "127.0.0.1:7717");
-        let bracketed = Endpoint::parse("http://[::1]:7717").expect("a loopback endpoint");
-        assert_eq!(
-            bracketed.authority(),
-            "[::1]:7717",
-            "an IPv6 authority keeps its brackets, which is what a Host header wants"
-        );
-    }
-
-    #[test]
-    fn a_credential_file_this_build_did_not_write_is_refused() {
-        let directory = tempfile::TempDir::new().expect("a temporary directory");
-        assert!(
-            matches!(
-                Credential::read(directory.path(), CallerTier::Observer),
-                Err(LocalError::NoCredentials { .. })
-            ),
-            "a state root with no credential file is named as such"
-        );
-
-        let path = directory.path().join(CREDENTIAL_FILE);
-        std::fs::write(&path, b"{\"schema_version\":99}").expect("the fixture is written");
-        assert!(
-            matches!(
-                Credential::read(directory.path(), CallerTier::Observer),
-                Err(LocalError::Malformed { .. })
-            ),
-            "a later generation is refused rather than misread"
-        );
-
-        std::fs::write(
-            &path,
-            br#"{"schema_version":1,"observer":"o","operator":"p","admin":"a"}"#,
-        )
-        .expect("the fixture is written");
+    fn the_credential_is_absent_from_debug_output() {
         let credential =
-            Credential::read(directory.path(), CallerTier::Admin).expect("the admin secret");
-        assert_eq!(credential.tier(), CallerTier::Admin);
-        let printed = format!("{credential:?}");
+            Credential::from_secret(CallerTier::Admin, SecretString::from("super-secret-value"));
+        let rendered = format!("{credential:?}");
         assert!(
-            !printed.contains('a') || !printed.contains("secret"),
-            "a debug rendering names the tier and never the value"
+            !rendered.contains("super-secret-value"),
+            "a secret must never be printable: {rendered}"
+        );
+        assert!(
+            rendered.to_lowercase().contains("admin"),
+            "the tier is safe to name: {rendered}"
         );
     }
 
     #[test]
-    fn a_missing_endpoint_file_is_the_default_port_and_not_a_failure() {
-        let directory = tempfile::TempDir::new().expect("a temporary directory");
-        let endpoint = Endpoint::resolve(directory.path(), None).expect("the default endpoint");
-        assert_eq!(endpoint.authority(), format!("127.0.0.1:{DEFAULT_PORT}"));
+    fn a_reply_reports_the_daemons_own_status_and_code_without_rewriting_them() {
+        let refusal = Reply {
+            status: 409,
+            body: serde_json::json!({ "code": "revision_conflict", "current_revision": 7 }),
+        };
+        assert!(!refusal.is_success());
+        assert_eq!(refusal.code(), Some("revision_conflict"));
+        assert_eq!(
+            refusal.body,
+            serde_json::json!({ "code": "revision_conflict", "current_revision": 7 }),
+            "the body is relayed whole, so the revision the caller is owed survives"
+        );
+    }
+
+    #[test]
+    fn an_endpoint_file_is_read_when_present_and_defaulted_when_absent() {
+        let root = tempfile::tempdir().expect("a temporary state root");
+        let resolved = Endpoint::resolve(root.path(), None).expect("the default endpoint");
+        assert_eq!(
+            resolved.base_url().as_str(),
+            format!("http://127.0.0.1:{DEFAULT_PORT}/"),
+            "a realm on the default port needs no endpoint file"
+        );
 
         std::fs::write(
-            directory.path().join(ENDPOINT_FILE),
-            br#"{"schema_version":1,"base_url":"http://127.0.0.1:9312"}"#,
+            root.path().join(ENDPOINT_FILE),
+            serde_json::to_vec(&StoredEndpoint {
+                schema_version: LOCAL_SCHEMA,
+                base_url: "http://127.0.0.1:9931".to_owned(),
+            })
+            .expect("a document"),
         )
-        .expect("the fixture is written");
-        let recorded = Endpoint::resolve(directory.path(), None).expect("the recorded endpoint");
-        assert_eq!(
-            recorded.authority(),
-            "127.0.0.1:9312",
-            "a realm on another port is discovered rather than guessed"
-        );
+        .expect("the endpoint file is written");
+        let resolved = Endpoint::resolve(root.path(), None).expect("the recorded endpoint");
+        assert_eq!(resolved.authority(), "127.0.0.1:9931");
 
-        let explicit = Endpoint::resolve(directory.path(), Some("http://localhost:1234"))
+        // An explicit flag wins over the file, and is validated the same way.
+        let resolved = Endpoint::resolve(root.path(), Some("http://localhost:8080"))
             .expect("the explicit endpoint");
-        assert_eq!(
-            explicit.authority(),
-            "localhost:1234",
-            "an explicit base url wins over the recorded one"
+        assert_eq!(resolved.authority(), "localhost:8080");
+        assert!(
+            Endpoint::resolve(root.path(), Some("http://evil.example")).is_err(),
+            "an explicit non-loopback address is refused like any other"
         );
     }
 
     #[test]
-    fn a_data_free_sse_block_is_not_an_event() {
+    fn a_credential_file_yields_exactly_the_tier_that_was_asked_for() {
+        let root = tempfile::tempdir().expect("a temporary state root");
+        std::fs::write(
+            root.path().join(CREDENTIAL_FILE),
+            serde_json::json!({
+                "schema_version": LOCAL_SCHEMA,
+                "observer": "observer-secret",
+                "operator": "operator-secret",
+                "admin": "admin-secret",
+            })
+            .to_string(),
+        )
+        .expect("the credential file is written");
+
+        for tier in CallerTier::ALL {
+            let credential = Credential::read(root.path(), *tier).expect("the tier's secret");
+            assert_eq!(credential.tier(), *tier);
+            assert_eq!(
+                credential.secret.expose_secret(),
+                format!("{tier}-secret"),
+                "a server configured for one tier reads that tier and no other"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_credential_file_is_a_local_failure_naming_the_path() {
+        let root = tempfile::tempdir().expect("a temporary state root");
+        let failure = Credential::read(root.path(), CallerTier::Admin)
+            .expect_err("there is no credential file");
+        assert!(matches!(failure, LocalError::NoCredentials { .. }));
+
+        std::fs::write(root.path().join(CREDENTIAL_FILE), b"not json").expect("written");
+        let failure =
+            Credential::read(root.path(), CallerTier::Admin).expect_err("the file is not a set");
+        assert!(matches!(failure, LocalError::Malformed { .. }));
+        assert!(
+            !format!("{failure}").contains("not json"),
+            "a parse failure must not quote a file of secrets"
+        );
+    }
+
+    #[test]
+    fn a_frame_is_assembled_only_at_a_block_boundary_and_data_free_blocks_are_dropped() {
+        let frame = parse_frame("event: control\nid: 12\ndata: {\"a\":1}\n\n", "/v1/events")
+            .expect("a well-formed block")
+            .expect("it carries data");
+        assert_eq!(frame.event, "control");
+        assert_eq!(frame.id, "12");
+        assert_eq!(frame.data, serde_json::json!({ "a": 1 }));
+
+        // A keep-alive comment carries no data and is not an event.
         assert!(
             parse_frame(": keep-alive\n\n", "/v1/events")
-                .expect("a comment parses")
-                .is_none(),
-            "a keep-alive comment is framing and not an event"
+                .expect("a comment block")
+                .is_none()
         );
-        let frame = parse_frame("event: control\nid: 7\ndata: {\"a\":1}\n\n", "/v1/events")
-            .expect("a frame parses")
-            .expect("the block carries data");
-        assert_eq!(frame.event, "control");
-        assert_eq!(
-            frame.id, "7",
-            "the id is relayed as text, never as a number"
+        assert!(
+            parse_frame("event: content\n\n", "/v1/events")
+                .expect("a data-free block")
+                .is_none()
         );
-        assert_eq!(frame.data, serde_json::json!({"a": 1}));
+        // A frame whose data is not JSON means the other end is not this contract.
+        assert!(parse_frame("data: not json\n\n", "/v1/events").is_err());
     }
 }

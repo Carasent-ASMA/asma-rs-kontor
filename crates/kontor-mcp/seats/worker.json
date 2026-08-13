@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kontor-worker": {
+      "command": "kontor-mcp",
+      "args": [
+        "--state-root", "/REPLACE/WITH/REALM/STATE/ROOT",
+        "--credential-tier", "operator"
+      ]
+    }
+  }
+}

@@ -30,6 +30,7 @@
 pub mod backup;
 mod commands;
 mod events;
+mod graph;
 mod intake;
 mod migrations;
 mod policy;
@@ -53,6 +54,11 @@ pub use commands::receipts::{
 pub use events::types::{
     ConsumerPage, ContentDiscontinuity, ContentGapOutcome, ControlGap, ControlObservation,
     ControlObservationOutcome,
+};
+pub use graph::{
+    Applied, AppliedEpic, AppliedLink, AppliedTask, AuthorizationRevocation, EpicApplication,
+    EpicTask, EpicTicketLink, ProjectEnsure, SeatRow, StoredAuthorization, StoredComment,
+    StoredConflict,
 };
 pub use migrations::SCHEMA_VERSION;
 pub use policy::{

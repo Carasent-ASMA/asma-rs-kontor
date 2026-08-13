@@ -51,10 +51,10 @@ use kontor_core::repository::{
 use kontor_core::spec::TeamRunSnapshot;
 use kontor_core::state::TaskState;
 use kontor_daemon::{Daemon, DaemonConfig};
-use kontor_mcp::capability::Gate;
+use kontor_mcp::Dispatcher;
 use kontor_mcp::client::{
-    CallerTier, Frame, FrameBudget, Method as ClientMethod, RealmClient, Reply,
-    Request as ClientRequest, Transport, TransportFailure,
+    CallerTier, Frame, FrameBudget, Method as ClientMethod, Reply, Request as ClientRequest,
+    Transport, TransportFailure,
 };
 use kontor_profiles::pack::{PackAvailability, resolve_profile};
 use kontor_profiles::seeds::bundled_pack;
@@ -1343,10 +1343,10 @@ fn privacy(bundle: &mut Bundle, realm: &Realm) {
 // 8 — surface parity
 // ---------------------------------------------------------------------------
 
-/// The HTTP API, the CLI and the MCP tool surface answer the same thing.
+/// The HTTP API and the thin MCP tool surface answer the same thing.
 async fn surface_parity(bundle: &mut Bundle, realm: &Realm, run: AgentRunId) {
     let tier = CallerTier::Observer;
-    let client = RealmClient::new(Box::new(RouterTransport::new(realm, tier)));
+    let dispatcher = Dispatcher::new(Box::new(RouterTransport::new(realm, tier)));
 
     // --- HTTP, straight at the router the binary serves.
     let http_timeline = realm
@@ -1366,9 +1366,8 @@ async fn surface_parity(bundle: &mut Bundle, realm: &Realm, run: AgentRunId) {
 
     // --- MCP, through the real tool catalogue and the real gate.
     let mcp_timeline = call_tool(
-        &client,
-        tier,
-        "session_timeline",
+        &dispatcher,
+        "kontor_session_timeline_get",
         &[
             ("agent_run_id", json!(run.to_string())),
             ("limit", json!(PHONE_PAGE)),
@@ -1376,16 +1375,14 @@ async fn surface_parity(bundle: &mut Bundle, realm: &Realm, run: AgentRunId) {
     )
     .await;
     let mcp_run = call_tool(
-        &client,
-        tier,
-        "run_show",
+        &dispatcher,
+        "kontor_run_get",
         &[("agent_run_id", json!(run.to_string()))],
     )
     .await;
     let mcp_stream = call_tool(
-        &client,
-        tier,
-        "session_stream",
+        &dispatcher,
+        "kontor_session_stream_read",
         &[
             ("agent_run_id", json!(run.to_string())),
             ("after", json!(anchor.clone())),
@@ -1393,60 +1390,10 @@ async fn surface_parity(bundle: &mut Bundle, realm: &Realm, run: AgentRunId) {
     )
     .await;
 
-    // --- CLI. `clap` is not a dependency of this test crate, so the parsed value
-    //     is constructed directly; `invocation()` — the CLI's actual contribution,
-    //     the mapping onto the shared catalogue — and `perform_with` are both the
-    //     real ones, and `perform_with` is a thin wrapper over the same
-    //     `kontor_mcp::execute` (crates/kontor-cli/src/commands.rs:82). clap's own
-    //     parsing is covered by the unit tests in crates/kontor-cli/src/args.rs.
-    let cli = kontor_cli::args::Cli {
-        state_root: None,
-        base_url: None,
-        authority: None,
-        command: kontor_cli::args::Command::Session(kontor_cli::args::SessionCommand::Timeline {
-            agent_run_id: run.to_string(),
-            after: None,
-            limit: Some(PHONE_PAGE),
-        }),
-    };
-    let invocation = cli
-        .invocation()
-        .expect("`session timeline` is a catalogue operation");
-    let exit = kontor_cli::commands::perform_with(&client, tier, &invocation).await;
-    let cli_timeline = kontor_mcp::execute(
-        &client,
-        Gate::new(tier),
-        invocation.operation,
-        &invocation.operands,
-    )
-    .await
-    .map(|envelope| envelope.data)
-    .unwrap_or(Value::Null);
-
-    let cli_run = kontor_cli::args::Cli {
-        state_root: None,
-        base_url: None,
-        authority: None,
-        command: kontor_cli::args::Command::Run(kontor_cli::args::RunCommand::Show {
-            agent_run_id: run.to_string(),
-        }),
-    }
-    .invocation()
-    .expect("`run show` is a catalogue operation");
-    let cli_run_document = kontor_mcp::execute(
-        &client,
-        Gate::new(tier),
-        cli_run.operation,
-        &cli_run.operands,
-    )
-    .await
-    .map(|envelope| envelope.data)
-    .unwrap_or(Value::Null);
-
     // --- Compare. The timeline is a pure function of stored content, so it is
     //     compared whole. The run snapshot carries a `freshness` judgement about
     //     *now*, so it is compared on the fields the criterion names.
-    let timelines_agree = http_timeline.json() == mcp_timeline && mcp_timeline == cli_timeline;
+    let timelines_agree = http_timeline.json() == mcp_timeline;
     let run_facts = |document: &Value| {
         json!({
             "agent_run_id": document["value"]["agent_run_id"],
@@ -1457,8 +1404,7 @@ async fn surface_parity(bundle: &mut Bundle, realm: &Realm, run: AgentRunId) {
         })
     };
     let http_facts = run_facts(&http_run.json());
-    let runs_agree =
-        http_facts == run_facts(&mcp_run) && http_facts == run_facts(&cli_run_document);
+    let runs_agree = http_facts == run_facts(&mcp_run);
 
     let http_frames: Vec<Value> = sse_frames(&http_stream.body)
         .into_iter()
@@ -1497,14 +1443,12 @@ async fn surface_parity(bundle: &mut Bundle, realm: &Realm, run: AgentRunId) {
                     "next": http_timeline.json()["next"],
                     "http_sha256": document_digest(&http_timeline.json()),
                     "mcp_sha256": document_digest(&mcp_timeline),
-                    "cli_sha256": document_digest(&cli_timeline),
                     "agree": timelines_agree,
                 },
                 "run": {
                     "facts": http_facts,
                     "http_sha256": document_digest(&http_facts),
                     "mcp_sha256": document_digest(&run_facts(&mcp_run)),
-                    "cli_sha256": document_digest(&run_facts(&cli_run_document)),
                     "agree": runs_agree,
                 },
                 "stream": {
@@ -1512,37 +1456,24 @@ async fn surface_parity(bundle: &mut Bundle, realm: &Realm, run: AgentRunId) {
                     "mcp_frames": mcp_frames,
                     "agree": streams_agree,
                 },
-                "cli": {
-                    "operation": invocation.operation,
-                    "operands": invocation.operands,
-                    "exit_class_code": exit.code(),
-                    "note": "clap is not a dependency of this test crate, so `Cli` is constructed \
-                             rather than parsed from argv; `invocation()` and `perform_with` are \
-                             the real ones and `perform_with` calls the same `kontor_mcp::execute` \
-                             the MCP server does",
-                },
             }),
         )
         .expect("the surface parity evidence is written");
 
-    let cli_succeeded = exit == kontor_cli::output::ExitClass::Success;
-    if timelines_agree && runs_agree && streams_agree && cli_succeeded {
+    if timelines_agree && runs_agree && streams_agree {
         bundle.pass(
             "surface.parity",
-            format!(
-                "the same session was read over three surfaces against one running Realm. The HTTP \
-                 route, the MCP tool `session_timeline` and the CLI's `session timeline` returned \
-                 the byte-identical timeline document — same `agent_run_id`, same epoch, same \
+            "the same session was read over two surfaces against one running Realm. The HTTP \
+                 route and the MCP tool `kontor_session_timeline_get` returned the byte-identical \
+                 timeline document — same `agent_run_id`, same epoch, same \
                  item positions, same continuation cursor `next` and same anchor. `run_show` \
-                 agreed across all three on the run id, the revision, the binding id, the \
+                 agreed across both on the run id, the revision, the binding id, the \
                  lifecycle and the snapshot cursor, compared field by field because the run \
                  document also carries a freshness judgement about *now*. The bounded live read \
-                 agreed frame for frame, ids included. The CLI exited {} (success). All three ran \
+                 agreed frame for frame, ids included. Both ran \
                  in-process against the same `axum::Router` over a `Transport` written here, \
                  because the shipped `HttpTransport` needs a socket and TST-001 forbids binding \
                  one",
-                exit.code(),
-            ),
             &[artifact],
         );
     } else {
@@ -1550,27 +1481,22 @@ async fn surface_parity(bundle: &mut Bundle, realm: &Realm, run: AgentRunId) {
             "surface.parity",
             format!(
                 "timelines_agree={timelines_agree}, runs_agree={runs_agree}, \
-                 streams_agree={streams_agree}, cli_exit={:?}",
-                exit
+                 streams_agree={streams_agree}"
             ),
         );
     }
 }
 
 /// Run one catalogue tool and return its document, or `null` when it refused.
-async fn call_tool(
-    client: &RealmClient,
-    tier: CallerTier,
-    name: &str,
-    arguments: &[(&str, Value)],
-) -> Value {
+async fn call_tool(dispatcher: &Dispatcher, name: &str, arguments: &[(&str, Value)]) -> Value {
     let mut operands = Map::new();
     for (key, value) in arguments {
         operands.insert((*key).to_owned(), value.clone());
     }
-    kontor_mcp::execute(client, Gate::new(tier), name, &operands)
+    dispatcher
+        .call(name, &Value::Object(operands))
         .await
-        .map_or(Value::Null, |envelope| envelope.data)
+        .map_or(Value::Null, |envelope| envelope.body)
 }
 
 /// A stable digest of one JSON document.
@@ -1981,8 +1907,8 @@ fn sse_frames(body: &str) -> Vec<(String, String, Value)> {
 ///
 /// The two shipped transports are both wrong here: `HttpTransport` needs a real
 /// socket, which TST-001 forbids, and `FakeTransport` is a recording mock rather
-/// than a Realm. Surface parity is only worth claiming if the CLI and the MCP
-/// catalogue reach the *same daemon* the HTTP case did, so the narrow seam the
+/// than a Realm. Surface parity is only worth claiming if the MCP catalogue
+/// reaches the *same daemon* the HTTP case did, so the narrow seam the
 /// client is built on is implemented over `oneshot` instead.
 struct RouterTransport {
     router: Router,

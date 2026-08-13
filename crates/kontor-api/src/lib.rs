@@ -35,15 +35,14 @@
 //! configuration. Those exist only in daemon state, and a DTO cannot leak what it
 //! has nowhere to put.
 
+pub mod applications;
 pub mod auth;
 pub mod control;
 pub mod dto;
 pub mod error;
 pub mod openapi;
-pub mod query;
 pub mod sessions;
 pub mod state;
-pub mod wired;
 
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
@@ -198,60 +197,149 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/v1/commands/{kind}", post(control::command))
         .route("/v1/events", get(control::events))
-        // The KON-MVP-16 contract amendment. Every one of these is a thin read
-        // over a repository method that already existed; see `query`'s own docs
-        // for what is deliberately absent and which ticket owns it.
-        // The KON-MVP-16 second amendment: the surfaces whose owning seams are
-        // merged. See `wired` for what each one reads and what it refuses.
-        .route("/v1/projects", get(wired::projects))
-        .route("/v1/projects/{project_id}/team-runs", get(wired::missions))
-        .route("/v1/projects/{project_id}/runs", get(wired::runs))
+        // The declarative application operations. Every one of them answers with
+        // the durable projection its service produced, not with an intent.
+        .route("/v1/projects:ensure", post(applications::ensure_project))
         .route(
-            "/v1/projects/{project_id}/scheduler/plan",
-            get(wired::scheduler_plan),
-        )
-        .route("/v1/projects/{project_id}/tickets", get(wired::tickets))
-        .route(
-            "/v1/projects/{project_id}/tickets/{link_id}",
-            get(wired::ticket),
+            "/v1/catalog/work-profiles",
+            get(applications::work_profiles),
         )
         .route(
-            "/v1/projects/{project_id}/tickets/{link_id}/comments",
-            get(wired::ticket_comments),
+            "/v1/catalog/team-templates",
+            get(applications::team_templates),
         )
         .route(
-            "/v1/projects/{project_id}/tickets/{link_id}/transitions",
-            get(wired::ticket_transitions),
+            "/v1/runtime-capabilities",
+            get(applications::runtime_capabilities),
         )
         .route(
-            "/v1/runtimes/{runtime_kind}/sessions",
-            get(wired::runtime_sessions),
-        )
-        .route("/v1/projects/{project_id}", get(query::project))
-        .route("/v1/projects/{project_id}/tasks", get(query::tasks))
-        .route(
-            "/v1/projects/{project_id}/tasks/{task_id}/gates",
-            get(query::gates),
+            "/v1/projects/{project_id}/provider-account-profiles",
+            get(applications::account_profiles),
         )
         .route(
-            "/v1/projects/{project_id}/team-runs/{team_run_id}",
-            get(query::mission),
+            "/v1/projects/{project_id}/provider-account-profiles:ensure",
+            post(applications::ensure_account_profile),
         )
         .route(
-            "/v1/projects/{project_id}/profiles/{profile_key}/{version}",
-            get(query::profile),
+            "/v1/projects/{project_id}/epics:apply",
+            post(applications::apply_epic),
         )
         .route(
-            "/v1/projects/{project_id}/receipts/{receipt_id}",
-            get(query::receipt),
+            "/v1/projects/{project_id}/epics/{epic_id}",
+            get(applications::read_epic),
         )
-        .route("/v1/projects/{project_id}/accounts", get(query::accounts))
         .route(
-            "/v1/projects/{project_id}/accounts/{account_profile_id}",
-            get(query::account),
+            "/v1/projects/{project_id}/epics/{epic_id}/execution:arm",
+            post(applications::arm),
         )
-        .route("/v1/runtimes", get(query::runtimes))
-        .route("/v1/scheduler/contention", get(query::scheduler_contention))
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/execution:disarm",
+            post(applications::disarm),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/scheduler:plan",
+            post(applications::plan),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/scheduler:start",
+            post(applications::start),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/lifecycle",
+            post(applications::lifecycle),
+        )
+        // The Lead-required control and evidence operations. Every one of them is
+        // task-scoped, because that is the grain at which a profile is pinned, a
+        // gate is judged and a ticket is linked.
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/context:resolve",
+            post(applications::resolve_context),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/record",
+            post(applications::record_gate),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/profile-selection",
+            post(applications::select_profile),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/team-selection",
+            post(applications::select_team),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/account-selection",
+            post(applications::select_account),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
+            post(applications::ticket_reconcile_plan),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply",
+            post(applications::ticket_reconcile_apply),
+        )
+        // Settling a run is addressed by the run, not by the task: a run is what
+        // a runtime holds a session for, and it is the thing being asked about.
+        .route(
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
+            post(applications::settle_runtime),
+        )
+        // Profile detail and validation. Workspace-level, like the catalog they
+        // extend: a category resolves to the same bundle in every Realm running
+        // this build, so there is no project in the address.
+        .route(
+            "/v1/catalog/work-profiles/{category}",
+            get(applications::work_profile),
+        )
+        .route(
+            "/v1/catalog/work-profiles/{category}/validate",
+            post(applications::validate_work_profile),
+        )
+        // Triggers and intake.
+        .route(
+            "/v1/projects/{project_id}/triggers/{trigger}/{version}",
+            get(applications::trigger),
+        )
+        .route(
+            "/v1/projects/{project_id}/intake:submit",
+            post(applications::submit_intake),
+        )
+        .route(
+            "/v1/projects/{project_id}/intake/{receipt_id}",
+            get(applications::intake_receipt),
+        )
+        // Connector specifications, addressed by the connector they map.
+        .route(
+            "/v1/projects/{project_id}/connectors/{connector}/field-specs",
+            get(applications::connector_field_specs),
+        )
+        .route(
+            "/v1/projects/{project_id}/connectors/{connector}/workflow-specs",
+            get(applications::connector_workflow_specs),
+        )
+        // Conflicts, inbound comments and ownership, all task-scoped: a ticket is
+        // linked to a task, and every one of these is a fact about that link.
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:conflicts",
+            get(applications::ticket_conflicts),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:resolve-conflict",
+            post(applications::resolve_ticket_conflict),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:pull-comments",
+            post(applications::pull_ticket_comments),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:comments",
+            get(applications::ticket_comments),
+        )
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/ticket:claim",
+            post(applications::claim_ticket),
+        )
         .route(
             "/v1/sessions/{agent_run_id}/timeline",
             get(sessions::timeline),

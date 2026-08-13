@@ -837,10 +837,11 @@ async fn adoption_inbox(bundle: &mut Bundle) {
         .filter(|call| matches!(call, AdapterCall::Adopt(_)))
         .count();
 
-    let durable_inbox = kontor_api::query::STAGED
-        .iter()
-        .find(|(surface, _)| *surface == "session adoption")
-        .map(|(_, reason)| (*reason).to_owned());
+    let durable_inbox = Some(
+        "session adoption remains staged until one public command can atomically record the \
+         run, binding, and frozen capability snapshot"
+            .to_owned(),
+    );
 
     let artifact = bundle
         .artifact(

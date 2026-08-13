@@ -151,7 +151,7 @@ pub(crate) fn stored_document<T: DeserializeOwned>(json: &str, hash: &str) -> Re
     Ok(document.deserialize::<T>()?)
 }
 
-fn scope_columns(scope: WorkScope) -> (&'static str, Option<String>, Option<String>) {
+pub(crate) fn scope_columns(scope: WorkScope) -> (&'static str, Option<String>, Option<String>) {
     match scope {
         WorkScope::Project => ("project", None, None),
         WorkScope::MiniProject { mini_project_id } => {
@@ -161,7 +161,7 @@ fn scope_columns(scope: WorkScope) -> (&'static str, Option<String>, Option<Stri
     }
 }
 
-fn read_scope(
+pub(crate) fn read_scope(
     kind: &str,
     mini_project: Option<String>,
     task: Option<String>,
@@ -259,7 +259,7 @@ impl SqliteStore {
 // Projects, goals and tasks
 // ---------------------------------------------------------------------------
 
-fn read_project(row: &Row<'_>) -> RepositoryResult<Project> {
+pub(crate) fn read_project(row: &Row<'_>) -> RepositoryResult<Project> {
     Ok(Project {
         id: ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
         name: ExternalName::parse(&row.get::<_, String>(1).map_err(backend)?)?,
@@ -269,7 +269,7 @@ fn read_project(row: &Row<'_>) -> RepositoryResult<Project> {
     })
 }
 
-fn read_task(row: &Row<'_>) -> RepositoryResult<Task> {
+pub(crate) fn read_task(row: &Row<'_>) -> RepositoryResult<Task> {
     let mini_project: Option<String> = row.get(2).map_err(backend)?;
     let module: Option<String> = row.get(4).map_err(backend)?;
     Ok(Task {
@@ -288,7 +288,7 @@ fn read_task(row: &Row<'_>) -> RepositoryResult<Task> {
     })
 }
 
-const TASK_COLUMNS: &str =
+pub(crate) const TASK_COLUMNS: &str =
     "id, project_id, mini_project_id, title, module_key, state, revision, created_at, updated_at";
 
 const ACCOUNT_PROFILE_COLUMNS: &str = "id, project_id, label, external_account_id, created_at, \
