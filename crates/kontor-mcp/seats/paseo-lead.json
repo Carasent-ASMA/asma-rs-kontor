@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kontor-paseo-lead": {
+      "command": "kontor-mcp",
+      "args": [
+        "--state-root", "/REPLACE/WITH/REALM/STATE/ROOT",
+        "--credential-tier", "admin"
+      ]
+    }
+  }
+}

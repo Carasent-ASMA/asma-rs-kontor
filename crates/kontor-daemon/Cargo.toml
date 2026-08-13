@@ -64,6 +64,12 @@ thiserror = { workspace = true }
 # and never binds a socket, launches this binary or spawns a child process
 # (TST-001). The runtime under test is always the scripted fake.
 kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
+# KON-MVP-16: the MCP journey drives the real router through the same registry,
+# gate and dispatch path the stdio server uses. A dev dependency only — nothing
+# in the daemon links the tool surface, and `kontor-mcp` does not link back.
+# `async-trait` is already a normal dependency above, so the journey's transport
+# impl needs no second edge for it.
+kontor-mcp = { path = "../kontor-mcp", version = "=0.1.0" }
 futures = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
