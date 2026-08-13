@@ -364,9 +364,23 @@ pub trait RuntimeAdapter: Send + Sync {
 
     /// Bind an already-running native session to an agent run.
     ///
+    /// **One live session per agent run here too, and checked before the first
+    /// effect.** An [`AdoptRequest`] names no seat, so admission cannot answer
+    /// for this door; the run-keyed rule is all there is, and without it a run
+    /// that already holds a session picks up a second by being adopted onto
+    /// another one. [`RuntimeError::SessionAlreadyBound`], decided against the
+    /// sessions the runtime owns rather than against anything the caller
+    /// presents — a fresh [`kontor_core::id::RuntimeBindingId`] buys nothing.
+    ///
+    /// Re-adopting the session a run *already* holds is that binding being
+    /// re-issued and stays allowed: it is how a run recovers its own session
+    /// after a runtime restart, and the superseded binding stops driving
+    /// anything.
+    ///
     /// # Errors
     /// Refuses a session that does not already carry this run's correlation
-    /// label, and one from another runtime generation.
+    /// label, one from another runtime generation, and a run that already holds
+    /// a different session.
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome>;
 
     /// Enumerate the native sessions the runtime currently owns.

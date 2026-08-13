@@ -469,6 +469,28 @@ impl FakeState {
         Ok(session)
     }
 
+    /// Whether this run already holds a native session other than `excluding`.
+    ///
+    /// One live session per [`AgentRunId`], asked of the runtime's own session
+    /// table rather than of anything the caller presents — a caller minting a
+    /// fresh binding id is exactly the move it has to catch.
+    ///
+    /// Both doors into a binding ask it, because a seat reservation only
+    /// answers for one of them: [`Self::launch_admitted`] with nothing to
+    /// exclude, and [`crate::RuntimeAdapter::adopt`] excluding the session it
+    /// was asked to adopt. Re-adopting the session a run already holds re-issues
+    /// that one binding — [`Self::session`] stops the superseded snapshot
+    /// driving anything — so it is not a second.
+    fn run_holds_other_session(
+        &self,
+        agent_run_id: AgentRunId,
+        excluding: Option<&ExternalId>,
+    ) -> bool {
+        self.sessions.iter().any(|(native_id, session)| {
+            session.agent_run_id == agent_run_id && Some(native_id) != excluding
+        })
+    }
+
     /// Refuse a workspace snapshot this runtime never issued.
     ///
     /// [`crate::capability::preflight`] proves the claim is internally
@@ -690,11 +712,7 @@ impl FakeState {
     fn launch_admitted(&mut self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
         // The run-keyed companion. Not implied by the seat check: one run
         // admitted into two different seats passes admission twice.
-        if self
-            .sessions
-            .values()
-            .any(|session| session.agent_run_id == request.agent_run_id())
-        {
+        if self.run_holds_other_session(request.agent_run_id(), None) {
             return Err(RuntimeError::SessionAlreadyBound {
                 rule: "recovery launches a successor run, never the same run twice",
             });
@@ -1486,6 +1504,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {
         let mut state = self.lock();
+
+        // Adoption is the other door into a binding, and the one no seat
+        // reservation answers for: an `AdoptRequest` names no seat to admit
+        // against. It does name the run, so the run-keyed half of the
+        // cardinality rule is enforced here — first, and out of the runtime's
+        // own ledger. Before the preflight on purpose: the answer is already in
+        // this table, so no refusal can arrive after an effect.
+        if state.run_holds_other_session(request.agent_run_id, Some(&request.native.native_id)) {
+            return Err(RuntimeError::SessionAlreadyBound {
+                rule: "a run holding a session is re-adopted into that one, never a second",
+            });
+        }
+
         let declared = state.capabilities.clone();
         preflight(
             &declared,
