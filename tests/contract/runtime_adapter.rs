@@ -1343,6 +1343,81 @@ async fn adopt_requires_explicit_correlation() {
 }
 
 #[tokio::test]
+async fn adopt_refuses_a_second_session_for_one_run() {
+    let team = Team::new(TrustGrade::A).await;
+    let run = AgentRunId::generate();
+    team.load(ORPHAN, &[CorrelationLabel::for_run(run)]);
+
+    // The run launches its own session, and the orphan carrying its label is
+    // sitting there adoptable. Both are legitimately this run's to claim; the
+    // point is that it may not hold both.
+    let bound = team.role(run).await;
+    let orphan = kontor_core::state::NativeRuntimeIdentity {
+        native_id: ExternalId::parse("native-adoptable").expect("valid native id"),
+        ..bound.identity().clone()
+    };
+
+    team.fake.take_calls();
+    assert_eq!(
+        team.fake
+            .adopt(&AdoptRequest {
+                agent_run_id: run,
+                binding_id: RuntimeBindingId::generate(),
+                native: orphan,
+                adopted_at: at("2026-08-10T09:15:00Z"),
+            })
+            .await
+            .expect_err("a run already holding a session may not be bound to a second"),
+        RuntimeError::SessionAlreadyBound {
+            rule: "a run holding a session is re-adopted into that one, never a second",
+        }
+    );
+    assert!(
+        team.fake.calls().is_empty(),
+        "the refusal must happen before the runtime is called"
+    );
+    assert_eq!(
+        team.fake.sessions_for(run),
+        1,
+        "a refused adoption leaves the run holding exactly what it already held"
+    );
+
+    // The other side of the same rule: re-adopting the session this run already
+    // holds is that one binding being re-issued, not a second one — which is
+    // what recovery after a restart does, and what the refusal must not cost.
+    let readopted = team
+        .fake
+        .adopt(&AdoptRequest {
+            agent_run_id: run,
+            binding_id: RuntimeBindingId::generate(),
+            native: bound.identity().clone(),
+            adopted_at: at("2026-08-10T09:15:01Z"),
+        })
+        .await
+        .expect("a run is re-adopted into the session it already holds");
+    assert_eq!(team.fake.sessions_for(run), 1);
+    assert_eq!(
+        team.fake
+            .resume(&ResumeRequest {
+                binding: bound,
+                requested_at: at("2026-08-10T09:15:02Z"),
+            })
+            .await
+            .expect_err("the superseded binding no longer drives the session"),
+        RuntimeError::StaleBinding {
+            rule: "the runtime issued a different binding for this native session",
+        }
+    );
+    team.fake
+        .resume(&ResumeRequest {
+            binding: readopted.snapshot,
+            requested_at: at("2026-08-10T09:15:03Z"),
+        })
+        .await
+        .expect("the binding adoption issued is the one live binding");
+}
+
+#[tokio::test]
 async fn restart_generation_invalidates_stale_binding() {
     let team = Team::new(TrustGrade::A).await;
     team.load(RESTART, &[]);
