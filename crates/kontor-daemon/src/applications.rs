@@ -32,10 +32,11 @@ use kontor_api::applications::{
     AccountProfileDto, ApplicationOperations, AppliedDto, AppliedEpicDto, AppliedLinkDto,
     AppliedTaskDto, ApplyEpicRequest, ArmRequest, AuthorizationProjectionDto, BlockedTaskDto,
     DisarmRequest, EnsureAccountProfileRequest, EnsureProjectRequest, EpicProjectionDto,
-    EpicTaskProjectionDto, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ProjectDto,
-    ReadyTaskDto, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerStartDto,
-    SeatProjectionDto, StartRequest, StartedSeatDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
-    WorkProfileCatalogDto,
+    EpicTaskProjectionDto, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto,
+    ProjectDto, PublishedTeamRevisionDto, ReadyTaskDto, RevisionRefDto, RuntimeCapabilityDto,
+    SchedulerPlanDto, SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto,
+    TeamDraftDto, TeamDraftRequest, TeamRunProjectionDto, TeamTemplateCatalogDto,
+    TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     ConnectorSpecDto, IntakeReceiptDto, ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto,
@@ -94,7 +95,7 @@ use kontor_scheduler::model::{
 use kontor_store::{
     AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication, EpicTask, EpicTicketLink,
     IdempotencyBinding, NewRoleTurn, ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore,
-    StoredConflict, TurnDispatch,
+    StoredConflict, StoredTeamDraft, StoredTeamsProjection, TurnDispatch,
 };
 use kontor_teams::run::{TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 
@@ -1982,6 +1983,97 @@ const fn applied_dto(applied: Applied) -> AppliedDto {
     }
 }
 
+fn teams_projection_dto(
+    realm_id: kontor_core::id::RealmId,
+    stored: StoredTeamsProjection,
+) -> Result<TeamsProjectionDto, serde_json::Error> {
+    let drafts = stored
+        .drafts
+        .into_iter()
+        .map(|draft| {
+            let slots: Vec<serde_json::Value> = serde_json::from_str(&draft.slots_json)?;
+            let resolved_policy = resolved_policy(&slots);
+            Ok(TeamDraftDto {
+                id: draft.id,
+                name: draft.name,
+                slots,
+                resolved_policy,
+            })
+        })
+        .collect::<Result<Vec<_>, serde_json::Error>>()?;
+    let revisions = stored
+        .revisions
+        .into_iter()
+        .map(|revision| {
+            let slots: Vec<serde_json::Value> = serde_json::from_str(&revision.slots_json)?;
+            let resolved_policy = resolved_policy(&slots);
+            Ok(PublishedTeamRevisionDto {
+                id: revision.id,
+                version: revision.version,
+                name: revision.name,
+                slots,
+                resolved_policy,
+            })
+        })
+        .collect::<Result<Vec<_>, serde_json::Error>>()?;
+    Ok(TeamsProjectionDto {
+        realm_id,
+        snapshot_cursor: stored.cursor,
+        drafts,
+        revisions,
+    })
+}
+
+fn resolved_policy(slots: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    slots
+        .iter()
+        .map(|slot| {
+            let capabilities = &slot["capabilities"];
+            let class = capabilities["context"]["class"]
+                .as_str()
+                .unwrap_or("native");
+            let enforcement = capabilities["context"]["enforcement"]
+                .as_str()
+                .unwrap_or("best_effort");
+            let provider = capabilities["chain"][0]["provider"].as_str().unwrap_or("");
+            let target = match class {
+                "lean" => Some(128_000),
+                "standard" => Some(256_000),
+                "deep" => Some(512_000),
+                "extended" => Some(720_000),
+                _ => None,
+            };
+            let window = (provider == "claude").then_some(1_000_000);
+            let effective = match (target, window) {
+                (Some(target), Some(window)) => Some(target.min(window)),
+                (None, window) => window,
+                _ => None,
+            };
+            let capability = match (target, window) {
+                (Some(_), None) => "unsupported",
+                (Some(target), Some(window)) if target > window => "clamped",
+                _ => "supported",
+            };
+            let need = capabilities["need"]["minTokens"].as_i64().unwrap_or(0);
+            let task_minimum = capabilities["taskMinimum"]["minTokens"].as_i64();
+            let source = if task_minimum.is_some_and(|minimum| minimum > need) {
+                "run_override"
+            } else {
+                "role_slot"
+            };
+            serde_json::json!({
+                "slot": slot["id"],
+                "class": class,
+                "source": source,
+                "effective_threshold": effective,
+                "enforcement": enforcement,
+                "capability": capability,
+                "latest_receipt": capabilities["latestReceipt"]
+            })
+        })
+        .collect()
+}
+
 #[async_trait]
 impl ApplicationOperations for Services {
     async fn ensure_project(
@@ -2111,6 +2203,151 @@ impl ApplicationOperations for Services {
             }
         }
         Ok(catalog)
+    }
+
+    fn model_catalog(&self) -> Result<ModelCatalogDto, ApiError> {
+        let state = self.state()?;
+        let provenance = serde_json::json!({
+            "state": "live",
+            "reviewRef": "KON-MVP-25-GATE-2026-08-14-02",
+            "citation": "kontord /v1/catalog realm discovery projection",
+            "observedAt": "2026-08-14"
+        });
+        let unverified = serde_json::json!({
+            "state": "fixture/needs-verification",
+            "reviewRef": null,
+            "citation": null,
+            "observedAt": null
+        });
+        let providers = vec![
+            serde_json::json!({
+                "id": "codex", "label": "Codex",
+                "basis": { "value": "plan_allowance", "provenance": unverified },
+                "reachedVia": null, "pooledUsage": false
+            }),
+            serde_json::json!({
+                "id": "claude", "label": "Claude",
+                "basis": { "value": "plan_allowance", "provenance": unverified },
+                "reachedVia": null, "pooledUsage": true
+            }),
+        ];
+        let models = vec![
+            serde_json::json!({
+                "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "provider": "codex",
+                "isDefault": true,
+                "contextWindow": { "value": null, "provenance": provenance },
+                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultra"], "provenance": provenance },
+                "pricing": [], "degradedLane": false
+            }),
+            serde_json::json!({
+                "id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "provider": "codex",
+                "isDefault": false,
+                "contextWindow": { "value": null, "provenance": provenance },
+                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultra"], "provenance": provenance },
+                "pricing": [], "degradedLane": false
+            }),
+            serde_json::json!({
+                "id": "claude-opus-5", "label": "Claude Opus 5", "provider": "claude",
+                "isDefault": true,
+                "contextWindow": { "value": 1000000, "provenance": provenance },
+                "efforts": { "value": ["off", "low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
+                "pricing": [], "degradedLane": false
+            }),
+            serde_json::json!({
+                "id": "claude-fable-5", "label": "Claude Fable 5", "provider": "claude",
+                "isDefault": false,
+                "contextWindow": { "value": 1000000, "provenance": provenance },
+                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
+                "pricing": [], "degradedLane": false
+            }),
+        ];
+        let cursor = state
+            .with_store(SqliteStore::teams_projection)
+            .map_err(|error| self.refuse(&error))?
+            .cursor;
+        Ok(ModelCatalogDto {
+            realm_id: state.realm_id(),
+            snapshot_cursor: cursor,
+            providers,
+            models,
+        })
+    }
+
+    fn teams(&self) -> Result<TeamsProjectionDto, ApiError> {
+        let state = self.state()?;
+        let stored = state
+            .with_store(SqliteStore::teams_projection)
+            .map_err(|error| self.refuse(&error))?;
+        teams_projection_dto(state.realm_id(), stored).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the stored Teams projection is invalid",
+            )
+        })
+    }
+
+    async fn save_team_draft(
+        &self,
+        key: &IdempotencyKey,
+        request: &TeamDraftRequest,
+    ) -> Result<TeamsProjectionDto, ApiError> {
+        let state = self.state()?;
+        if request.id.trim().is_empty() || request.name.trim().is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a team draft needs a non-empty id and name",
+            ));
+        }
+        let fingerprint = serde_json::to_string(&("save", request)).map_err(|_| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the team draft could not be encoded",
+            )
+        })?;
+        let slots_json = serde_json::to_string(&request.slots).map_err(|_| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the team slots could not be encoded",
+            )
+        })?;
+        let stored = state
+            .with_store(|store| {
+                store.save_team_draft(
+                    key.as_str(),
+                    &fingerprint,
+                    &StoredTeamDraft {
+                        id: request.id.clone(),
+                        name: request.name.clone(),
+                        slots_json,
+                    },
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        teams_projection_dto(state.realm_id(), stored).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the stored Teams projection is invalid",
+            )
+        })
+    }
+
+    async fn publish_team(
+        &self,
+        key: &IdempotencyKey,
+        team_id: &str,
+    ) -> Result<TeamsProjectionDto, ApiError> {
+        let state = self.state()?;
+        let fingerprint = format!("publish:{team_id}");
+        let stored = state
+            .with_store(|store| store.publish_team(key.as_str(), &fingerprint, team_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "no Teams draft has that id"))?;
+        teams_projection_dto(state.realm_id(), stored).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the stored Teams projection is invalid",
+            )
+        })
     }
 
     fn account_profiles(&self, project_id: ProjectId) -> Result<Vec<AccountProfileDto>, ApiError> {

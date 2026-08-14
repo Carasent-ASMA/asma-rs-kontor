@@ -18,6 +18,7 @@
 import type {
   Health,
   MessageAck,
+  ModelCatalogProjection,
   PermissionAck,
   Realm,
   Refusal,
@@ -26,6 +27,8 @@ import type {
   StreamRefusal,
   TaskSnapshot,
   TimelinePage,
+  TeamsProjection,
+  TeamDraftRequest,
 } from './types'
 import type { Endpoint } from './endpoint'
 import { SseParser } from './sse'
@@ -235,6 +238,33 @@ export class KontorClient {
     return this.#json<TaskSnapshot>(
       `/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`,
     )
+  }
+
+  /** The model catalog discovered and served by this Realm. */
+  async modelCatalog(): Promise<ModelCatalogProjection> {
+    return this.#json<ModelCatalogProjection>('/v1/catalog')
+  }
+
+  /** Current Teams drafts and immutable revisions at one Realm cursor. */
+  async teams(): Promise<TeamsProjection> {
+    return this.#json<TeamsProjection>('/v1/teams')
+  }
+
+  /** Create or replace one server-held Teams draft. */
+  async saveTeamDraft(draft: TeamDraftRequest, commandId: string): Promise<TeamsProjection> {
+    return this.#json<TeamsProjection>('/v1/teams/drafts:save', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': commandId, 'Content-Type': 'application/json' },
+      body: JSON.stringify(draft),
+    })
+  }
+
+  /** Publish the next immutable revision of one server-held Teams draft. */
+  async publishTeam(teamId: string, commandId: string): Promise<TeamsProjection> {
+    return this.#json<TeamsProjection>(`/v1/teams/${encodeURIComponent(teamId)}/publish`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': commandId },
+    })
   }
 
   /** One page of a session's recorded content. */

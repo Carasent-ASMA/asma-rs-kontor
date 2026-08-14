@@ -1468,6 +1468,84 @@ async fn a_session_whose_family_is_not_configured_answers_unavailable() {
 // Disclosure
 // ---------------------------------------------------------------------------
 
+#[tokio::test]
+async fn teams_catalog_drafts_and_immutable_revisions_share_one_realm_projection() {
+    let world = World::open().await;
+    let catalog = Call::get("/v1/catalog")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    assert_eq!(catalog.realm(), world.realm_id());
+    assert!(
+        !catalog.json()["models"]
+            .as_array()
+            .expect("models")
+            .is_empty()
+    );
+
+    let draft = serde_json::json!({
+        "id": "team-live",
+        "name": "Live team v1",
+        "slots": [{"id": "lead", "capabilities": {"context": {"class": "standard"}}}]
+    });
+    let saved = Call::post("/v1/teams/drafts:save", &draft)
+        .signed_as(&world, "operator")
+        .with_key("team-save-1")
+        .send(&world)
+        .await;
+    assert_eq!(saved.status, 200, "{}", saved.body);
+    assert_eq!(saved.json()["snapshot_cursor"], serde_json::json!(1));
+    assert_eq!(
+        saved.json()["drafts"][0]["resolved_policy"][0]["class"],
+        serde_json::json!("standard")
+    );
+    assert_eq!(
+        saved.json()["drafts"][0]["resolved_policy"][0]["source"],
+        serde_json::json!("role_slot")
+    );
+    assert_eq!(
+        saved.json()["drafts"][0]["resolved_policy"][0]["capability"],
+        serde_json::json!("unsupported")
+    );
+
+    let first = Call::post("/v1/teams/team-live/publish", &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("team-publish-1")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(
+        first.json()["revisions"][0]["version"],
+        serde_json::json!(1)
+    );
+
+    let renamed = serde_json::json!({
+        "id": "team-live", "name": "Live team v2", "slots": draft["slots"]
+    });
+    Call::post("/v1/teams/drafts:save", &renamed)
+        .signed_as(&world, "operator")
+        .with_key("team-save-2")
+        .send(&world)
+        .await;
+    let second = Call::post("/v1/teams/team-live/publish", &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("team-publish-2")
+        .send(&world)
+        .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(second.realm(), world.realm_id());
+    assert_eq!(second.json()["snapshot_cursor"], serde_json::json!(4));
+    assert_eq!(
+        second.json()["revisions"][0]["name"],
+        serde_json::json!("Live team v1")
+    );
+    assert_eq!(
+        second.json()["revisions"][1]["version"],
+        serde_json::json!(2)
+    );
+}
+
 /// Text that must never appear in a response, in the contract document, in a
 /// stored row or in a log line.
 ///

@@ -13,6 +13,33 @@
     "version": "1.0.0"
   },
   "paths": {
+    "/v1/catalog": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "The provider/model catalog discovered for this Realm.",
+        "operationId": "model_catalog",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelCatalogDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/catalog/packs": {
       "get": {
         "tags": [
@@ -3112,6 +3139,137 @@
           }
         }
       }
+    },
+    "/v1/teams": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Current Teams drafts and immutable published revisions.",
+        "operationId": "teams",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamsProjectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/teams/drafts:save": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Create or replace one Teams draft in this Realm.",
+        "operationId": "save_team_draft",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamsProjectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/teams/{team_id}/publish": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish the next immutable revision of one Teams draft.",
+        "operationId": "publish_team",
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "description": "The logical team-template id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamsProjectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4892,6 +5050,41 @@
           }
         }
       },
+      "ModelCatalogDto": {
+        "type": "object",
+        "description": "The realm-qualified model catalog consumed by the Teams editor.",
+        "required": [
+          "realm_id",
+          "snapshot_cursor",
+          "providers",
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Model routes, including effort, window and price provenance."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Provider rows, including charging-basis provenance."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that performed discovery."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The control-plane position at which this projection was read."
+          }
+        }
+      },
       "PermissionAckDto": {
         "type": "object",
         "description": "The runtime's answer to one permission response.",
@@ -5306,6 +5499,47 @@
           "source_id": {
             "type": "string",
             "description": "The source inside that layer."
+          }
+        }
+      },
+      "PublishedTeamRevisionDto": {
+        "type": "object",
+        "description": "One immutable published team-template revision.",
+        "required": [
+          "id",
+          "version",
+          "name",
+          "slots",
+          "resolved_policy"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable logical template id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human label frozen at publish."
+          },
+          "resolved_policy": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Server-resolved context policy preview frozen from this revision."
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Slot declarations frozen at publish."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Monotonic version within `id`.",
+            "minimum": 0
           }
         }
       },
@@ -5846,7 +6080,7 @@
         "properties": {
           "account_env": {
             "type": "boolean",
-            "description": "Whether it can prove which coding account a run executes as. Paseo 1.0\nreports `false`, which is why a per-run account pin against it is refused\nrather than silently ignored."
+            "description": "Whether the runtime can prove which coding account a run executes as.\nWhen false, a per-run account pin is refused rather than silently ignored."
           },
           "max_concurrent_sessions": {
             "type": "integer",
@@ -6710,6 +6944,66 @@
           }
         }
       },
+      "TeamDraftDto": {
+        "type": "object",
+        "description": "One server-held draft.",
+        "required": [
+          "id",
+          "name",
+          "slots",
+          "resolved_policy"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable logical template id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human label."
+          },
+          "resolved_policy": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Server-resolved context policy preview for every slot."
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Slot declarations in editor wire form."
+          }
+        }
+      },
+      "TeamDraftRequest": {
+        "type": "object",
+        "description": "One mutable draft document accepted by the realm.",
+        "required": [
+          "id",
+          "name",
+          "slots"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable logical template id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human label."
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Slot declarations in editor wire form."
+          }
+        }
+      },
       "TeamRunProjectionDto": {
         "type": "object",
         "description": "One team run and its seats, as the epic projection reports them.",
@@ -6764,6 +7058,41 @@
           "template": {
             "$ref": "#/components/schemas/RevisionRefDto",
             "description": "The template revision."
+          }
+        }
+      },
+      "TeamsProjectionDto": {
+        "type": "object",
+        "description": "Realm-qualified Teams read projection shared by HTTP, CLI and MCP.",
+        "required": [
+          "realm_id",
+          "snapshot_cursor",
+          "drafts",
+          "revisions"
+        ],
+        "properties": {
+          "drafts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamDraftDto"
+            },
+            "description": "Current mutable drafts."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that owns the documents."
+          },
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublishedTeamRevisionDto"
+            },
+            "description": "Immutable published revisions."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Teams projection cursor; every successful write advances it once."
           }
         }
       },

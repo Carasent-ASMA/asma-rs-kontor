@@ -243,6 +243,13 @@ pub fn router(state: ApiState) -> Router {
             "/v1/catalog/team-templates",
             get(applications::team_templates),
         )
+        .route("/v1/catalog", get(applications::model_catalog))
+        .route("/v1/teams", get(applications::teams))
+        .route("/v1/teams/drafts:save", post(applications::save_team_draft))
+        .route(
+            "/v1/teams/{team_id}/publish",
+            post(applications::publish_team),
+        )
         .route(
             "/v1/runtime-capabilities",
             get(applications::runtime_capabilities),

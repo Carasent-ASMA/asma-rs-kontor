@@ -24,8 +24,8 @@ use kontor_core::id::{
     SpecVersion, TeamTemplateId,
 };
 use kontor_core::spec::{
-    ContextTemplateRef, ContextWindowPolicy, RoleAuthority, RoleRef, SkillRef, TeamRunSnapshot,
-    TeamTemplateRevision,
+    ContextTemplateRef, ContextWindowPolicy, ModelChainPolicy, RoleAuthority, RoleRef, SkillRef,
+    TeamRunSnapshot, TeamTemplateRevision,
 };
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
@@ -101,6 +101,9 @@ pub struct RoleSlotSpec {
     /// omission hands the decision to the work profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<ContextWindowPolicy>,
+    /// Ordered provider/model/effort fallbacks for this seat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_chain: Option<ModelChainPolicy>,
 }
 
 /// One declared handoff between two slots of the same team.
@@ -267,6 +270,9 @@ impl TeamTemplateSpec {
             }
             if let Some(policy) = &slot.waiver_policy {
                 Self::validate_waiver_policy(policy, &slot.role.role)?;
+            }
+            if let Some(chain) = &slot.model_chain {
+                chain.validate()?;
             }
         }
         Ok(())
