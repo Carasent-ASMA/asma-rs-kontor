@@ -610,6 +610,23 @@ pub struct TeamClosureCertificate {
     policy_digest: ContentHash,
     children: Vec<TeamChildEvidence>,
     outcome: TerminalOutcome,
+    basis: TeamClosureBasis,
+}
+
+/// What a team's closure was proved from.
+///
+/// Separately typed on purpose. The two are not interchangeable readings of one
+/// fact: one says the team's child *runs* ended, the other says Kontor's work in
+/// every declared slot is finished while the seats holding it are expected to
+/// still be live. A call site that could confuse them could close a team on
+/// evidence about the wrong thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeamClosureBasis {
+    /// Every declared slot produced a terminal run.
+    TerminalRuns,
+    /// Every declared slot settled its final bounded Kontor turn. The native
+    /// sessions may still be live, and normally are.
+    SettledTurns,
 }
 
 impl TeamClosureCertificate {
@@ -617,6 +634,44 @@ impl TeamClosureCertificate {
     #[must_use]
     pub const fn team_run_id(&self) -> TeamRunId {
         self.team_run_id
+    }
+
+    /// What this certificate was proved from.
+    #[must_use]
+    pub const fn basis(&self) -> TeamClosureBasis {
+        self.basis
+    }
+
+    /// The team closure envelope for a settled-turn certificate.
+    ///
+    /// Separate from [`TeamClosureCertificate::into_terminal_evidence`], which
+    /// builds a child-evidence envelope and would be a lie here: there is no
+    /// child terminal evidence, deliberately.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::Invalid`] when the certificate was not proved from
+    /// settled turns. The two envelopes are not interchangeable.
+    pub fn into_settled_turn_evidence(
+        self,
+        closed_at: Timestamp,
+    ) -> DomainResult<TeamTerminalEvidence> {
+        if self.basis != TeamClosureBasis::SettledTurns {
+            return Err(DomainError::invalid(
+                "team closure",
+                "this certificate was not proved from settled turns",
+            ));
+        }
+        Ok(TeamTerminalEvidence {
+            outcome: self.outcome,
+            source: TeamEvidenceSource::SettledTurns {
+                team_run_id: self.team_run_id,
+            },
+            // The declared-slot policy digest *is* the evidence here: it covers
+            // the template, every declared slot and the turn digest that
+            // accounted for it, so the store can re-derive what was proved.
+            evidence_hash: self.policy_digest,
+            closed_at,
+        })
     }
 
     /// The digest of the declared-slot policy this certificate proves.
@@ -684,6 +739,23 @@ struct PolicyDigestInput<'a> {
     template_version: SpecVersion,
     template_hash: &'a ContentHash,
     slots: Vec<SlotDigest<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct SettledPolicyDigestInput<'a> {
+    schema_version: SchemaVersion,
+    team_run_id: TeamRunId,
+    template_id: TeamTemplateId,
+    template_version: SpecVersion,
+    template_hash: &'a ContentHash,
+    slots: Vec<SettledSlotDigest<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct SettledSlotDigest<'a> {
+    slot: &'a RoleSlotId,
+    turn_evidence: Option<&'a ContentHash>,
+    waiver: Option<&'a RoleSlotWaiver>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1373,26 +1445,15 @@ impl TeamRunSlots {
         })
     }
 
-    /// Certify that every slot the pinned template declares is accounted for.
+    /// Validate a waiver set against the template, and index it by slot.
     ///
-    /// Every declared slot must either have a lineage whose leaf closed with
-    /// evidence, or an authorized, evidence-bearing waiver. The declared-slot
-    /// and waiver proof runs *before* the outcome is reduced, and the reduction
-    /// itself stays the existing core policy — this crate does not invent a
-    /// second one.
-    ///
-    /// # Errors
-    /// * [`DomainError::MissingEvidence`] for a slot with no attempts and no
-    ///   waiver, and for a slot still live.
-    /// * [`DomainError::MissingAuthority`] for a waiver on a slot the template
-    ///   does not allow waiving, or by a role it does not authorize.
-    /// * [`DomainError::Invalid`] for a waiver naming an undeclared or repeated
-    ///   slot.
-    /// * Whatever [`reduce_team_outcome`] returns for the collected children.
-    pub fn certify_team_closure(
+    /// Shared by both certifiers on purpose: the rules about *who* may waive a
+    /// slot and *what* they must cite are properties of the template, and do not
+    /// change with what the closure is otherwise proved from.
+    fn validated_waivers<'w>(
         &self,
-        waivers: &[RoleSlotWaiver],
-    ) -> DomainResult<TeamClosureCertificate> {
+        waivers: &'w [RoleSlotWaiver],
+    ) -> DomainResult<BTreeMap<&'w RoleSlotId, &'w RoleSlotWaiver>> {
         let mut by_slot: BTreeMap<&RoleSlotId, &RoleSlotWaiver> = BTreeMap::new();
         for waiver in waivers {
             let declared = self
@@ -1433,6 +1494,30 @@ impl TeamRunSlots {
                 });
             }
         }
+        Ok(by_slot)
+    }
+
+    /// Certify that every slot the pinned template declares is accounted for.
+    ///
+    /// Every declared slot must either have a lineage whose leaf closed with
+    /// evidence, or an authorized, evidence-bearing waiver. The declared-slot
+    /// and waiver proof runs *before* the outcome is reduced, and the reduction
+    /// itself stays the existing core policy — this crate does not invent a
+    /// second one.
+    ///
+    /// # Errors
+    /// * [`DomainError::MissingEvidence`] for a slot with no attempts and no
+    ///   waiver, and for a slot still live.
+    /// * [`DomainError::MissingAuthority`] for a waiver on a slot the template
+    ///   does not allow waiving, or by a role it does not authorize.
+    /// * [`DomainError::Invalid`] for a waiver naming an undeclared or repeated
+    ///   slot.
+    /// * Whatever [`reduce_team_outcome`] returns for the collected children.
+    pub fn certify_team_closure(
+        &self,
+        waivers: &[RoleSlotWaiver],
+    ) -> DomainResult<TeamClosureCertificate> {
+        let by_slot = self.validated_waivers(waivers)?;
 
         let mut children: Vec<TeamChildEvidence> = Vec::new();
         let mut digest_slots: Vec<SlotDigest<'_>> = Vec::new();
@@ -1495,6 +1580,75 @@ impl TeamRunSlots {
             policy_digest,
             children,
             outcome,
+            basis: TeamClosureBasis::TerminalRuns,
+        })
+    }
+
+    /// Certify closure because every declared slot settled its final turn.
+    ///
+    /// The same walk over the template's *declared* slots as
+    /// [`TeamRunSlots::certify_team_closure`], and deliberately not the same
+    /// admissibility rule. A slot is accounted for by `accounted` — the caller's
+    /// read of this team's immutable role-turn rows — rather than by a terminal
+    /// run, and **a live run is not disqualifying**: a persistent seat outliving
+    /// the work taken in it is the normal case this exists for.
+    ///
+    /// What is unchanged: an *unaccounted* declared slot still fails, and it
+    /// fails whether or not a run exists for it, because the template is what
+    /// says which seats must be answered for.
+    ///
+    /// The outcome is not reduced through
+    /// [`kontor_core::state::reduce_team_outcome`], which requires every child
+    /// terminal and would refuse every team this path exists to close. It is
+    /// `Succeeded` because every declared slot finished its turn — which is the
+    /// only thing this certificate claims, and is a statement about Kontor's
+    /// work rather than about any runtime's verdict.
+    ///
+    /// # Errors
+    /// * [`DomainError::MissingEvidence`] when a declared slot is neither
+    ///   accounted for by a settled turn nor waived.
+    /// * As [`TeamRunSlots::certify_team_closure`] for waiver validation.
+    pub fn certify_from_settled_turns(
+        &self,
+        accounted: &BTreeMap<RoleSlotId, ContentHash>,
+        waivers: &[RoleSlotWaiver],
+    ) -> DomainResult<TeamClosureCertificate> {
+        let by_slot = self.validated_waivers(waivers)?;
+        let mut digest_slots: Vec<SettledSlotDigest<'_>> = Vec::new();
+        for declared in &self.template.slots {
+            let settled = accounted.get(&declared.id);
+            let waiver = by_slot.get(&declared.id).copied();
+            if settled.is_none() && waiver.is_none() {
+                return Err(DomainError::MissingEvidence {
+                    subject: "team closure",
+                    rule: "a declared role slot settled no final turn and was not waived",
+                });
+            }
+            digest_slots.push(SettledSlotDigest {
+                slot: &declared.id,
+                turn_evidence: settled,
+                waiver,
+            });
+        }
+        let policy_digest = CanonicalDocument::from_serializable(&SettledPolicyDigestInput {
+            schema_version: kontor_core::id::SCHEMA_VERSION,
+            team_run_id: self.team_run_id(),
+            template_id: self.template.template_id,
+            template_version: self.template.version,
+            template_hash: &self.template_hash,
+            slots: digest_slots,
+        })?
+        .hash()
+        .clone();
+        Ok(TeamClosureCertificate {
+            team_run_id: self.team_run_id(),
+            policy_digest,
+            // No child evidence is cited: the children are expected to be live,
+            // and citing a live run as closure evidence is exactly the confusion
+            // the separate basis exists to prevent.
+            children: Vec::new(),
+            outcome: TerminalOutcome::Succeeded,
+            basis: TeamClosureBasis::SettledTurns,
         })
     }
 }

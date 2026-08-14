@@ -1158,6 +1158,90 @@ pub struct ProfileValidationDto {
 }
 
 // ---------------------------------------------------------------------------
+// Bounded role turns
+// ---------------------------------------------------------------------------
+
+/// What `turns:settle` is asked for.
+///
+/// It settles **Kontor's** bounded turn in a persistent seat. There is no field
+/// here for a runtime verdict, a terminal state or a native observation, and
+/// that is the point: a seat is expected to still be sitting there when this
+/// returns, ready for its next turn. Whether the *session* ever ended is a
+/// separate question only the runtime can answer, and `runtime:settle` is where
+/// it is asked.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct SettleTurnRequest {
+    // There is deliberately **no** actor field. A caller-supplied account id
+    // proves nothing about who is asking — checking that it exists and is
+    // enabled is a fact about the account, not about the caller — so persisting
+    // one as attribution would record a claim nothing verified. The settling
+    // authority is taken from the credential the caller actually presented.
+    /// The role slot whose turn this is.
+    pub role_slot: String,
+    /// The task revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// The artifacts the turn produced.
+    #[serde(default)]
+    pub artifacts: Vec<String>,
+}
+
+/// One follow-up a settled turn derived.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TurnFollowUpDto {
+    /// The slot the work was handed to.
+    pub to_role_slot: String,
+    /// The seat it reached, when one was materialized for that slot.
+    pub target_agent_run_id: Option<String>,
+    /// Whether the effect actually reached the seat.
+    pub dispatched: bool,
+    /// Why it was derived: the handoff's phase and artifact conditions are met.
+    pub after_phase: Option<String>,
+}
+
+/// What settling one bounded role turn produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SettledTurnDto {
+    /// The Realm it was settled in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The receipt.
+    pub turn_id: String,
+    /// The task it served.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The seat's agent run, which stays open.
+    pub agent_run_id: String,
+    /// The role slot.
+    pub role_slot: String,
+    /// Its position in that seat's sequence of turns.
+    pub turn_ordinal: u32,
+    /// The native binding generation the seat was bound under.
+    pub binding_generation: u64,
+    /// The artifacts it produced.
+    pub artifacts: Vec<String>,
+    /// The tier the settling caller authenticated at. Not a claimed identity:
+    /// it is what the presented credential proved.
+    pub settled_by: String,
+    /// The provider account the seat runs as, derived from the bound run rather
+    /// than supplied by the caller. Operational context, never attribution.
+    pub account_profile: Option<String>,
+    /// The digest it was settled under.
+    pub evidence_hash: String,
+    /// Whether this call settled it, or replayed a settlement.
+    pub applied: AppliedDto,
+    /// Whether the seat's native session is still live. Settling a turn must
+    /// never end one, so this is the assertion that it did not.
+    pub seat_live: bool,
+    /// The team run, once every declared slot has settled its final turn and the
+    /// team's closure was certified from those rows. `None` while any slot is
+    /// still unaccounted for.
+    pub team_run_closed: Option<String>,
+    /// The follow-ups this settlement derived, in slot order.
+    pub follow_ups: Vec<TurnFollowUpDto>,
+}
+
+// ---------------------------------------------------------------------------
 // Catalogue registration
 // ---------------------------------------------------------------------------
 
@@ -1579,6 +1663,24 @@ pub trait ApplicationOperations: Send + Sync {
         task_id: TaskId,
         request: &TicketReconcileApplyRequest,
     ) -> Result<TicketReconcileAppliedDto, ApiError>;
+
+    /// Retry every follow-up that was derived and never delivered.
+    ///
+    /// Called from startup reconciliation. It delivers nothing new — a follow-up
+    /// is *derived* only by settling a turn — so a restart cannot invent work;
+    /// it only finishes what a previous process decided and did not manage to
+    /// hand over. Returns how many reached a seat this time.
+    async fn retry_undelivered_dispatches(&self) -> Result<usize, ApiError>;
+
+    /// Settle one bounded Kontor role turn, leaving the seat live.
+    async fn settle_turn(
+        &self,
+        key: &IdempotencyKey,
+        authority: CallerCapability,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &SettleTurnRequest,
+    ) -> Result<SettledTurnDto, ApiError>;
 
     /// Settle one run against a fresh reading of its runtime.
     async fn settle_runtime(
@@ -2303,6 +2405,48 @@ pub async fn ticket_reconcile_apply(
         state
             .applications()
             .ticket_reconcile_apply(&key, project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// Settle one bounded Kontor role turn.
+///
+/// Operator, because it is a decision about Kontor's own work rather than about
+/// the fleet. It closes the **turn**, never the run: the seat's native session
+/// stays live and reusable, and nothing here is admissible as evidence that the
+/// runtime ended anything.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The seat's agent run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SettleTurnRequest,
+    responses(
+        (status = 200, body = SettledTurnDto, description = "Settled, or replayed"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The task moved, or the key settled a different turn")
+    )
+)]
+pub async fn settle_turn(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SettleTurnRequest>,
+) -> Result<Json<SettledTurnDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    // The tier the bearer proved, handed on as the settling authority. This is
+    // the only identity in this operation the control plane can vouch for.
+    Ok(Json(
+        state
+            .applications()
+            .settle_turn(&key, caller.0, project_id, agent_run_id, &request)
             .await?,
     ))
 }

@@ -1342,7 +1342,7 @@ fn read_link(row: &Row<'_>) -> RepositoryResult<TicketLinkSummary> {
 }
 
 /// One text column.
-fn column_text(row: &Row<'_>, index: usize) -> RepositoryResult<String> {
+pub(crate) fn column_text(row: &Row<'_>, index: usize) -> RepositoryResult<String> {
     row.get(index).map_err(backend)
 }
 

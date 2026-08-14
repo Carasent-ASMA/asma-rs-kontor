@@ -1164,17 +1164,10 @@ fn ensure_capacity(
     let config = &request.capacity;
     let project = request.admitted.project_id;
 
-    let refuse = |limit: &'static str| {
-        Err(conflict(
-            "admission",
-            match limit {
-                "global" => "the global concurrency ceiling is already spent",
-                "project" => "the project concurrency ceiling is already spent",
-                "mission" => "the goal concurrency ceiling is already spent",
-                _ => "the account concurrency ceiling is already spent",
-            },
-        ))
-    };
+    // A spent ceiling is not a conflict: nothing about the presented state was
+    // stale, and no re-read makes room. It gets its own variant so the boundary
+    // can say "come back later" instead of "you are behind".
+    let refuse = |scope| Err(RepositoryError::CapacityExhausted { scope });
 
     if count_in_flight(transaction, InFlightScope::Global)?
         >= i64::from(config.global_max_in_flight)
@@ -1190,7 +1183,7 @@ fn ensure_capacity(
         && count_in_flight(transaction, InFlightScope::Mission(project, mission))?
             >= i64::from(config.mission_max_in_flight)
     {
-        return refuse("mission");
+        return refuse("goal");
     }
     if let Some(account) = request.admitted.account_profile_id
         && count_in_flight(transaction, InFlightScope::Account(project, account))?
@@ -1214,7 +1207,23 @@ enum InFlightScope {
 }
 
 fn count_in_flight(transaction: &Transaction<'_>, scope: InFlightScope) -> RepositoryResult<i64> {
-    let open = format!("run.lifecycle NOT IN ({TERMINAL_LIFECYCLES})");
+    // A run is in flight when its own lifecycle is open *and* the team it serves
+    // has not closed on settled turns.
+    //
+    // The second half exists because a seat is persistent: a team whose declared
+    // slots have all finished their bounded turns is done, and its native
+    // sessions are deliberately still live. Counting those runs would let a
+    // finished task hold capacity for as long as its seat sits there — and the
+    // seat is meant to sit there. The run's own lifecycle stays open, because
+    // nothing observed the session end; it simply stops being *work in flight*.
+    let open = format!(
+        "run.lifecycle NOT IN ({TERMINAL_LIFECYCLES})
+         AND NOT EXISTS (
+             SELECT 1 FROM team_runs AS settled
+             WHERE settled.project_id = run.project_id
+               AND settled.id = run.team_run_id
+               AND settled.terminal_source_kind = 'settled_turns')"
+    );
     let (sql, bindings): (String, Vec<String>) = match scope {
         InFlightScope::Global => (
             format!("SELECT count(*) FROM agent_runs AS run WHERE {open}"),

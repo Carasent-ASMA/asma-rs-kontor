@@ -1712,6 +1712,46 @@ pub struct TeamRunSnapshot {
 }
 
 impl TeamRunSnapshot {
+    /// The role slots the frozen template declares, by id.
+    ///
+    /// Read from the run's own copied definition, so it is the set this run was
+    /// pinned to rather than whatever the template says now. It exists here
+    /// rather than in `kontor-teams` because the store needs it — a closure
+    /// re-proof has to know which seats must be accounted for — and the store is
+    /// stated against this crate.
+    ///
+    /// Deliberately narrow: it reads slot *identity* and nothing else. Anything
+    /// that needs the slots' rules parses the whole template.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::Invalid`] when the frozen definition does not
+    /// carry a readable slot list, which no snapshot this crate froze ever does.
+    pub fn declared_role_slots(&self) -> DomainResult<BTreeSet<crate::id::RoleSlotId>> {
+        let value: serde_json::Value =
+            serde_json::from_str(self.definition.json()).map_err(|_| {
+                DomainError::invalid("TeamRunSnapshot", "the frozen definition is not valid JSON")
+            })?;
+        let slots = value
+            .get("slots")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(DomainError::Invalid {
+                subject: "TeamRunSnapshot",
+                rule: "the frozen definition declares no role slots",
+            })?;
+        slots
+            .iter()
+            .map(|slot| {
+                slot.get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(DomainError::Invalid {
+                        subject: "TeamRunSnapshot",
+                        rule: "a frozen role slot carries no id",
+                    })
+                    .and_then(crate::id::RoleSlotId::parse)
+            })
+            .collect()
+    }
+
     /// Freeze a template revision into a run.
     ///
     /// The run starts with no context-window inputs; a composer that has the

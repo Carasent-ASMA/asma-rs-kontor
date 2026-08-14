@@ -5753,3 +5753,332 @@ fn compaction_receipts_survive_crash_reopen_and_report_the_most_recent() {
     // Unknown telemetry is still unknown after a round trip through storage.
     assert!(latest.telemetry.is_unknown());
 }
+
+/// Every team-closure evidence source survives a reload as *itself*.
+///
+/// The settled-turn source was persisted correctly and decoded back as
+/// `ChildEvidence`, because the decoder's catch-all collapsed everything it did
+/// not name. That is the separate typing being quietly undone on the way out of
+/// the database: a team closed because its declared slots finished their turns
+/// came back claiming its child runs had ended — a statement about runs that are
+/// deliberately still live.
+///
+/// A round trip per source, so a future variant that is persisted and not decoded
+/// fails here rather than in whatever reads it next.
+#[test]
+fn every_team_closure_source_round_trips_as_itself() {
+    let RunFixture { fixture, run } = with_run(true);
+    let existing = fixture
+        .store
+        .get_agent_run(fixture.project, run)
+        .expect("the read succeeds")
+        .expect("the run exists");
+    let team = existing.team_run_id;
+
+    // Drive the team to a closable lifecycle.
+    let stored = fixture
+        .store
+        .get_team_run(fixture.project, team)
+        .expect("the read succeeds")
+        .expect("the team exists");
+    let launching = fixture
+        .store
+        .advance_team_run(&TeamRunAdvance {
+            project_id: fixture.project,
+            team_run_id: team,
+            expected_revision: stored.revision,
+            to: RunLifecycle::Launching,
+            occurred_at: now(),
+        })
+        .expect("the team launches");
+    let running = fixture
+        .store
+        .advance_team_run(&TeamRunAdvance {
+            project_id: fixture.project,
+            team_run_id: team,
+            expected_revision: launching,
+            to: RunLifecycle::Running,
+            occurred_at: now(),
+        })
+        .expect("the team runs");
+
+    // A settled-turn closure. Its child run is deliberately left **open**: that
+    // is the whole case this source exists for, and it is what makes the
+    // collapsed decoding a lie rather than a harmless relabelling.
+    let child = fixture
+        .store
+        .get_agent_run(fixture.project, run)
+        .expect("the read succeeds")
+        .expect("the run exists");
+    assert!(
+        child.terminal.is_none(),
+        "the seat is still live, which is the point of this source"
+    );
+
+    let evidence_hash = ContentHash::of(b"declared-slot policy digest");
+    fixture
+        .store
+        .close_team_run(&TeamRunClosure {
+            project_id: fixture.project,
+            team_run_id: team,
+            expected_revision: running,
+            evidence: TeamTerminalEvidence {
+                outcome: TerminalOutcome::Succeeded,
+                source: TeamEvidenceSource::SettledTurns { team_run_id: team },
+                evidence_hash: evidence_hash.clone(),
+                closed_at: at("2026-08-09T12:00:00Z"),
+            },
+        })
+        .expect("a settled-turn closure is accepted with a live child");
+
+    let reloaded = fixture
+        .store
+        .get_team_run(fixture.project, team)
+        .expect("the read succeeds")
+        .expect("the team exists");
+    let terminal = reloaded.terminal.expect("the team is closed");
+    assert_eq!(
+        terminal.source,
+        TeamEvidenceSource::SettledTurns { team_run_id: team },
+        "a settled-turn closure reloads as one, not as child evidence"
+    );
+    assert_eq!(terminal.outcome, TerminalOutcome::Succeeded);
+    assert_eq!(terminal.evidence_hash, evidence_hash);
+    // And the seat it was closed around is still open, on the way back out too.
+    let after = fixture
+        .store
+        .get_agent_run(fixture.project, run)
+        .expect("the read succeeds")
+        .expect("the run exists");
+    assert!(
+        after.terminal.is_none(),
+        "closing the team on settled turns did not close its child"
+    );
+}
+
+/// A team template whose frozen definition really declares role slots.
+///
+/// The shared fixture's template carries an opaque marker document, which is
+/// fine for the tests that only need a revision to point at. The declared-slot
+/// re-proof reads the slots *out of* that document, so it needs one that has
+/// them.
+fn slotted_team_definition(slots: &[&str]) -> CanonicalDocument {
+    CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "slots": slots
+            .iter()
+            .map(|id| serde_json::json!({ "id": id }))
+            .collect::<Vec<_>>(),
+    }))
+    .expect("a canonical document")
+}
+
+/// The declared-slot re-proof refuses a settled-turn closure whose evidence is
+/// missing, and refuses it for that exact reason.
+///
+/// This is the defence-in-depth half of the settled-turn closure. Through public
+/// operations the certifier accepts every declared slot before a team can ever be
+/// marked closed, so the store check can never fire there. It exists for the
+/// state this test constructs directly: a team already recorded as closed on
+/// settled turns whose `role_turns` evidence no longer accounts for one of its
+/// declared slots — corruption, a partial write, or a future caller that closes a
+/// team another way.
+#[test]
+fn a_settled_turn_closure_missing_a_slots_turn_is_refused_by_the_store() {
+    let fixture = fixture();
+
+    // A template that declares two slots, and a team run frozen against it.
+    let template = TeamTemplateId::generate();
+    fixture
+        .store
+        .insert_team_template(
+            fixture.project,
+            &TeamTemplateRevision {
+                template_id: template,
+                version: SpecVersion::FIRST,
+                name: name("Two-slot team"),
+                definition: slotted_team_definition(&["zz.maker", "zz.checker"]),
+                role_authority: Vec::new(),
+            },
+        )
+        .expect("the team revision is stored");
+    let revision = fixture
+        .store
+        .get_team_template(fixture.project, template, SpecVersion::FIRST)
+        .expect("the read succeeds")
+        .expect("the revision exists");
+    let team_run = TeamRunId::generate();
+    fixture
+        .store
+        .create_team_run(&NewTeamRun {
+            id: team_run,
+            project_id: fixture.project,
+            task_id: fixture.task,
+            snapshot: TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION),
+            created_at: now(),
+        })
+        .expect("the team run is created");
+
+    // The task's profile must *pin* that team, or no closure is demanded at all
+    // and this test would prove nothing about the re-proof.
+    let mut profile = work_profile();
+    profile.id = kontor_core::id::WorkProfileKey::parse("zz.teamed").expect("a profile key");
+    profile.team_template = Some(kontor_core::spec::TeamTemplateRef {
+        template_id: template,
+        version: SpecVersion::FIRST,
+    });
+    fixture
+        .store
+        .insert_work_profile(fixture.project, &profile)
+        .expect("the profile is stored");
+    fixture
+        .store
+        .create_task_workflow(&NewTaskWorkflow {
+            id: TaskWorkflowId::generate(),
+            project_id: fixture.project,
+            task_id: fixture.task,
+            snapshot: ResolvedWorkProfileSnapshot::resolve(&profile, now())
+                .expect("the profile resolves"),
+            current_phase: phase("zz.one"),
+            created_at: now(),
+        })
+        .expect("the workflow is created");
+
+    // One seat per declared slot, each settling its final turn. The runs stay
+    // open on purpose: that is the state this closure basis exists for.
+    let mut seats = Vec::new();
+    for slot in ["zz.maker", "zz.checker"] {
+        let run = AgentRunId::generate();
+        fixture
+            .store
+            .create_agent_run(&NewAgentRun {
+                id: run,
+                project_id: fixture.project,
+                team_run_id: team_run,
+                parent_agent_run_id: None,
+                role: role(slot),
+                account_profile_id: Some(fixture.account),
+                binding: None,
+                created_at: now(),
+            })
+            .expect("the seat is created");
+        fixture
+            .store
+            .settle_role_turn(&kontor_store::NewRoleTurn {
+                id: kontor_core::id::RoleTurnId::generate(),
+                project_id: fixture.project,
+                task_id: fixture.task,
+                team_run_id: team_run,
+                agent_run_id: run,
+                role_slot_id: kontor_core::id::RoleSlotId::parse(slot).expect("a slot"),
+                idempotency_key: format!("turn-{slot}"),
+                task_revision: AggregateRevision::INITIAL,
+                binding_generation: 1,
+                authority_tier: "operator",
+                account_profile: Some(fixture.account),
+                artifacts: [artifact("zz.output")].into_iter().collect(),
+                evidence_hash: ContentHash::of(slot.as_bytes()),
+                settled_at: now(),
+            })
+            .expect("the turn settles");
+        seats.push(run);
+    }
+
+    // Close the team on settled turns and drive the task to the point of a
+    // terminal transition.
+    let launching = fixture
+        .store
+        .advance_team_run(&TeamRunAdvance {
+            project_id: fixture.project,
+            team_run_id: team_run,
+            expected_revision: AggregateRevision::INITIAL,
+            to: RunLifecycle::Launching,
+            occurred_at: now(),
+        })
+        .expect("the team launches");
+    let running = fixture
+        .store
+        .advance_team_run(&TeamRunAdvance {
+            project_id: fixture.project,
+            team_run_id: team_run,
+            expected_revision: launching,
+            to: RunLifecycle::Running,
+            occurred_at: now(),
+        })
+        .expect("the team runs");
+    let policy_digest = ContentHash::of(b"declared-slot policy digest");
+    fixture
+        .store
+        .close_team_run(&TeamRunClosure {
+            project_id: fixture.project,
+            team_run_id: team_run,
+            expected_revision: running,
+            evidence: TeamTerminalEvidence {
+                outcome: TerminalOutcome::Succeeded,
+                source: TeamEvidenceSource::SettledTurns {
+                    team_run_id: team_run,
+                },
+                evidence_hash: policy_digest.clone(),
+                closed_at: now(),
+            },
+        })
+        .expect("a settled-turn closure is accepted");
+
+    let terminal = |revision: AggregateRevision| TaskTransitionRequest {
+        project_id: fixture.project,
+        task_id: fixture.task,
+        expected_revision: revision,
+        to: TaskState::Failed,
+        resume_receipt: None,
+        run_outcome: Some(TerminalOutcome::Failed),
+        produced_artifacts: Default::default(),
+        completed_phases: Default::default(),
+        team_closure: TaskTeamClosure::Certified {
+            team_run_id: team_run,
+            policy_digest: policy_digest.clone(),
+        },
+        occurred_at: now(),
+    };
+    // With both declared slots accounted for, the store's re-proof is satisfied.
+    // The re-proof runs on any transition that cites a closure, not only a
+    // terminal one, so the start carries the citation and leaves the task in a
+    // state from which the negative half's transition is otherwise *legal* —
+    // without that, removing the check would still refuse for the wrong reason
+    // and the mutation below would prove nothing.
+    let started = fixture
+        .store
+        .transition_task(&TaskTransitionRequest {
+            to: TaskState::InProgress,
+            run_outcome: None,
+            ..terminal(AggregateRevision::INITIAL)
+        })
+        .expect("both declared slots settled a turn, so the team is accounted for");
+
+    // Now the defence-in-depth case: the same closure with one slot's evidence
+    // gone. A second connection to the same file, because no public operation can
+    // produce this state — which is exactly why the check exists.
+    {
+        let raw = rusqlite::Connection::open(&fixture.path).expect("the file reopens");
+        // The row is permanent by trigger — that guard is asserted by
+        // `schema_v1.rs` and is working here too, which is why it has to be
+        // lifted to reach the state under test. Lifting it *is* the point: this
+        // is the corruption case, and the application has no way to reach it.
+        raw.execute_batch(
+            "DROP TRIGGER role_turns_are_permanent;
+             DELETE FROM role_turns WHERE role_slot_id = 'zz.checker';",
+        )
+        .expect("the row is removed");
+    }
+
+    // The very citation that was just accepted is now refused, and nothing but
+    // the persisted evidence changed between the two calls.
+    let refusal = fixture
+        .store
+        .transition_task(&terminal(started.revision))
+        .expect_err("a missing declared slot must be refused");
+    let text = refusal.to_string();
+    assert!(
+        text.contains("declared role slot") && text.contains("settled no turn"),
+        "refused for the missing settled slot, not something else: {text}"
+    );
+}

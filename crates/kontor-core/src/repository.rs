@@ -69,6 +69,24 @@ pub enum RepositoryError {
         /// The rule that refused.
         rule: &'static str,
     },
+    /// A configured concurrency ceiling is already spent.
+    ///
+    /// Deliberately *not* a [`RepositoryError::Conflict`]. A conflict says the
+    /// caller worked from a state that has moved, and the way out of one is to
+    /// re-read and retry against the current revision. A spent ceiling is the
+    /// opposite: the presented state was fine and re-reading changes nothing —
+    /// it clears only when other work finishes. Collapsing the two tells an
+    /// operator to retry in a way that can never succeed.
+    ///
+    /// `scope` is diagnostic and stays off the wire: it names which ceiling
+    /// bound, which is a fact about this realm's configuration and its current
+    /// load. See `ApiError::from_repository`, which maps this variant to one
+    /// static rule naming no scope at all.
+    #[error("the {scope} concurrency ceiling is already spent")]
+    CapacityExhausted {
+        /// Which ceiling bound. Never disclosed.
+        scope: &'static str,
+    },
     /// A reference pointed at a row owned by a different project.
     #[error("{subject} references another project")]
     CrossProject {

@@ -750,6 +750,23 @@ pub enum TeamEvidenceSource {
         /// The receipt that recorded the abandon decision.
         receipt_id: CommandReceiptId,
     },
+    /// Every declared role slot settled its final bounded Kontor turn.
+    ///
+    /// A separate source, and separate on purpose. [`Self::ChildEvidence`] closes
+    /// a team because its child *runs* ended; this closes one because Kontor's
+    /// own work in every declared slot is finished, which is a different fact
+    /// about a different thing. A seat is persistent: its native session is
+    /// expected to still be live when the team closes, and reading that as a run
+    /// ending — or casting the run terminal to make the arithmetic work — would
+    /// be a claim about the runtime that nothing observed.
+    ///
+    /// The store re-proves it from the immutable `role_turns` rows of this very
+    /// team, so a certificate cannot assert closure the rows do not support.
+    SettledTurns {
+        /// The team whose declared slots must be accounted for. The store proves
+        /// it.
+        team_run_id: TeamRunId,
+    },
 }
 
 /// The immutable evidence that closed a team run.
@@ -1038,6 +1055,21 @@ pub fn plan_team_closure(
                 rule: "the cited receipt is not stored in this project",
             })?;
             evidence.verify_abandon(stored_revision, facts)?;
+        }
+        // Deliberately *not* verified against child runs. The whole point of
+        // this source is that the children are expected to still be live: a
+        // persistent seat outlives the Kontor work taken in it. What must be
+        // re-proved is that every declared role slot settled its final bounded
+        // turn, and that is a question about the `role_turns` rows rather than
+        // about run lifecycles — so the store proves it, where those rows are,
+        // and this function refuses to pretend it can.
+        TeamEvidenceSource::SettledTurns { team_run_id: cited } => {
+            if cited != team_run_id {
+                return Err(DomainError::MissingEvidence {
+                    subject: "team closure",
+                    rule: "the settled-turn evidence names another team run",
+                });
+            }
         }
     }
     stored_revision.next()

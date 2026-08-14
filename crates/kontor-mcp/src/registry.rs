@@ -963,6 +963,51 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Record one gate verdict. A waiver requires admin authority.",
     },
     ToolSpec {
+        name: "kontor_turn_settle",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle",
+        kind: OpKind::Write,
+        // A *turn* is smaller than a run: this closes Kontor's bounded piece of
+        // work and leaves the seat's native session live and reusable. It takes
+        // no verdict and no terminal state — whether the session ever ended is
+        // `kontor_runtime_settle`'s question, and only the runtime can answer it.
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The seat's agent run. It stays open.",
+            ),
+            req(
+                "role_slot",
+                Place::Body,
+                ArgType::OpenKey,
+                "The role slot whose turn this is.",
+            ),
+            req(
+                "expected_task_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The task revision the turn was taken against.",
+            ),
+            opt(
+                "artifacts",
+                Place::Body,
+                ArgType::TextArray,
+                "The artifacts the turn produced.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Settle one bounded Kontor role turn, leaving the seat live and reusable.",
+    },
+    ToolSpec {
         name: "kontor_runtime_settle",
         tier: CallerTier::Operator,
         method: Method::Post,

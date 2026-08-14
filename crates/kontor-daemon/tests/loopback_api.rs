@@ -39,6 +39,7 @@ use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{AgentRunId, CanonicalDocument, ProjectId, TaskId};
 use kontor_core::repository::{
     NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunRepository,
+    WorkflowRepository,
 };
 use kontor_core::state::{Freshness, ObservedRunState, RuntimeContact};
 use kontor_daemon::{Daemon, DaemonConfig};
@@ -4754,6 +4755,14 @@ async fn the_preview_reads_and_the_compact_command_requires_an_operator() {
 /// Bring an empty realm to "one armed epic with one ready task", and return the
 /// project, the epic and the plan hash the next `scheduler:start` must present.
 async fn armed_and_planned(world: &World, slug: &'static str) -> (String, String, String) {
+    armed_and_planned_with(world, slug).await.0
+}
+
+/// As [`armed_and_planned`], additionally returning the account that armed it.
+async fn armed_and_planned_with(
+    world: &World,
+    slug: &'static str,
+) -> ((String, String, String), String) {
     let created = ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
     assert_eq!(created.status, 200, "{}", created.body);
     let project = created.json()["project_id"]
@@ -4835,7 +4844,7 @@ async fn armed_and_planned(world: &World, slug: &'static str) -> (String, String
         .as_str()
         .expect("a hash")
         .to_owned();
-    (project, epic, plan_hash)
+    ((project, epic, plan_hash), account_id)
 }
 
 /// BLK-001. A runtime that holds a plane-level container is unusable until
@@ -6307,4 +6316,1999 @@ async fn an_unreadable_binding_claim_shuts_scheduling_rather_than_vanishing() {
 
     restarted.state().signals().stop();
     drop(directory);
+}
+
+/// Bring a plane-holding realm to "seats materialized", and return the project,
+/// the epic, the arming account and the started seats.
+async fn seated_turns(
+    world: &World,
+    slug: &'static str,
+) -> (String, String, String, serde_json::Value) {
+    let ((project, epic, plan_hash), account) = armed_and_planned_with(world, slug).await;
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-start"))
+    .send(world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let seats = started.json()["started"].clone();
+    assert!(
+        !seats.as_array().expect("seats").is_empty(),
+        "{}",
+        started.body
+    );
+    (project, epic, account, seats)
+}
+
+/// BLK-009. A bounded Kontor role turn settles on Kontor's own authority, and
+/// the seat it was taken in stays live: settling a turn is not a claim that the
+/// runtime ended anything, and the persistent Paseo session is expected to still
+/// be sitting there when it returns.
+#[tokio::test]
+async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-live").await;
+
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-live-1")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["applied"], "created");
+    assert_eq!(settled.json()["turn_ordinal"], 1);
+    assert_eq!(settled.json()["role_slot"], serde_json::json!(role_slot));
+
+    // The two assertions this whole design exists for.
+    assert_eq!(
+        settled.json()["seat_live"],
+        serde_json::json!(true),
+        "settling a turn must leave the seat's session live: {}",
+        settled.body
+    );
+    let run = Call::get(format!("/v1/runs/{agent_run}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(run.status, 200, "{}", run.body);
+    assert!(
+        run.json()["terminal"].is_null(),
+        "settling a turn must not close the run: {}",
+        run.body
+    );
+
+    // And the seat is still operable, which is what "reusable" means in practice.
+    let timeline = Call::get(format!("/v1/sessions/{agent_run}/timeline"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(timeline.status, 200, "{}", timeline.body);
+
+    // Idempotent: the same key replays the same receipt rather than opening a
+    // second position in the seat's sequence.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-live-1")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+    assert_eq!(replayed.json()["turn_id"], settled.json()["turn_id"]);
+    assert_eq!(replayed.json()["turn_ordinal"], 1);
+
+    // The same key with different content is a conflict, not a second turn.
+    let drifted = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "artifacts": ["change-set", "review-notes"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-live-1")
+    .send(&world)
+    .await;
+    assert_eq!(drifted.status, 409, "{}", drifted.body);
+
+    // `seat_live` is reported, not assumed. With the frozen snapshot gone this
+    // process cannot drive the seat, and the settlement says so rather than
+    // claiming a reusable seat it could not reach.
+    world.daemon.state().sessions().forget(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.get_agent_run(
+                    kontor_core::id::ProjectId::parse(&project).expect("a project id"),
+                    AgentRunId::parse(&agent_run).expect("a run id"),
+                )
+            })
+            .expect("readable")
+            .expect("the seat")
+            .binding
+            .expect("a bound seat")
+            .id,
+    );
+    let unreachable = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "artifacts": ["late-notes"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-live-unreachable")
+    .send(&world)
+    .await;
+    assert_eq!(unreachable.status, 200, "{}", unreachable.body);
+    assert_eq!(
+        unreachable.json()["seat_live"],
+        serde_json::json!(false),
+        "a seat this process cannot reach is reported as such: {}",
+        unreachable.body
+    );
+
+    // A stale revision is refused: a turn is settled against a named task state.
+    let stale = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision + 99,
+            "artifacts": []
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-live-stale")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+}
+
+/// BLK-010. The next turn on a settled slot reuses the *same* seat: same Paseo
+/// agent id, same native session, same role slot, same binding generation. This
+/// is only meaningful after the prior turn is settled, which is why it is tested
+/// in that order and not before.
+#[tokio::test]
+async fn the_next_turn_on_a_settled_slot_reuses_the_same_seat() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-reuse").await;
+
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+
+    // What the seat *is*, read before the first turn is settled.
+    let before = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_agent_run(
+                kontor_core::id::ProjectId::parse(&project).expect("a project id"),
+                AgentRunId::parse(&agent_run).expect("a run id"),
+            )
+        })
+        .expect("the seat is readable")
+        .expect("the seat exists");
+    let native_before = before
+        .binding
+        .as_ref()
+        .expect("a bound seat")
+        .identity
+        .clone();
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    let first = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot, "expected_task_revision": revision, "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-reuse-1")
+    .send(&world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["turn_ordinal"], 1);
+
+    // The correction turn: a *second* bounded turn in the same seat, settled
+    // under its own key. Its ordinal advances; everything about the seat does
+    // not.
+    let second = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot, "expected_task_revision": revision, "artifacts": ["change-set", "review-notes"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-reuse-2")
+    .send(&world)
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(second.json()["applied"], "created");
+    assert_eq!(
+        second.json()["turn_ordinal"],
+        2,
+        "a second turn takes the next position in the seat's sequence: {}",
+        second.body
+    );
+
+    // The identity assertions BLK-010 asks for.
+    assert_eq!(
+        second.json()["agent_run_id"],
+        serde_json::json!(agent_run),
+        "the same seat"
+    );
+    assert_eq!(
+        second.json()["role_slot"],
+        serde_json::json!(role_slot),
+        "the same role slot"
+    );
+    assert_eq!(
+        second.json()["binding_generation"],
+        first.json()["binding_generation"],
+        "the same binding generation"
+    );
+
+    let after = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_agent_run(
+                kontor_core::id::ProjectId::parse(&project).expect("a project id"),
+                AgentRunId::parse(&agent_run).expect("a run id"),
+            )
+        })
+        .expect("the seat is readable")
+        .expect("the seat exists");
+    let native_after = after
+        .binding
+        .as_ref()
+        .expect("a bound seat")
+        .identity
+        .clone();
+    assert_eq!(
+        native_after, native_before,
+        "the same native Paseo session, unchanged across both turns"
+    );
+    assert!(
+        after.terminal.is_none(),
+        "neither turn closed the run: {after:?}"
+    );
+}
+
+/// BLK-008. A settled turn derives its follow-up from persisted facts, targets
+/// the already-materialized eligible slot, and produces **at most one** effect —
+/// under a replayed settlement and across a restart.
+#[tokio::test]
+async fn a_settled_turn_derives_its_follow_up_at_most_once() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-follow").await;
+
+    // The bundled team is a chain, so the first slot hands to exactly one other.
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot, "expected_task_revision": revision, "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-follow-1")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    let follow_ups = settled.json()["follow_ups"]
+        .as_array()
+        .expect("follow-ups")
+        .clone();
+    assert_eq!(
+        follow_ups.len(),
+        1,
+        "the settled slot hands to exactly one successor: {}",
+        settled.body
+    );
+    assert_ne!(
+        follow_ups[0]["to_role_slot"],
+        serde_json::json!(role_slot),
+        "a handoff goes to another slot"
+    );
+    assert!(
+        follow_ups[0]["target_agent_run_id"].is_string(),
+        "the successor's seat was already materialized: {}",
+        settled.body
+    );
+
+    let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
+    let dispatches = |world: &World| {
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_turn_dispatches(project_id))
+            .expect("the dispatch ledger is readable")
+    };
+    // The row count is guaranteed by the primary key, so it is the *effects*
+    // that have to be counted: how many times the successor's seat was actually
+    // driven. That is the number "at most one follow-up effect" is about.
+    let sends = |world: &World| {
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::Send(..)))
+            .count()
+    };
+    assert_eq!(dispatches(&world).len(), 1, "one follow-up was derived");
+    let sends_after_first = sends(&world);
+    assert_eq!(
+        sends_after_first, 1,
+        "the follow-up drove the successor's seat exactly once"
+    );
+
+    // Replaying the settlement derives nothing further.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot, "expected_task_revision": revision, "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-follow-1")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+    assert_eq!(
+        dispatches(&world).len(),
+        1,
+        "a replayed settlement derives no second follow-up"
+    );
+    assert_eq!(
+        sends(&world),
+        sends_after_first,
+        "and produces no second effect"
+    );
+
+    // And a restart derives none either: reconciliation only *finishes* what was
+    // already decided.
+    let observer = secret(&world, "observer");
+    let World {
+        directory,
+        daemon,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(daemon);
+    fake.rebuild_adapter_state();
+
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same state root reopens");
+    restarted.reconcile().await;
+    let after_restart = restarted
+        .state()
+        .with_store(|store| store.list_turn_dispatches(project_id))
+        .expect("the dispatch ledger is readable");
+    assert_eq!(
+        after_restart.len(),
+        1,
+        "a restart derives no second follow-up: {after_restart:?}"
+    );
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::Send(..)))
+            .count(),
+        sends_after_first,
+        "and a restart produces no second effect either"
+    );
+    let _ = observer;
+    restarted.state().signals().stop();
+    drop(directory);
+}
+
+/// BLK-008, the ambiguous-acknowledgement path. A follow-up whose effect the
+/// runtime committed but could not acknowledge must not be delivered twice when
+/// reconciliation retries it. The message id belongs to the *dispatch row*, not
+/// to the attempt, so the retry presents the same id and the runtime recognises
+/// its own committed effect.
+#[tokio::test]
+async fn a_follow_up_whose_acknowledgement_was_lost_is_not_delivered_twice() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-lost").await;
+
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    // The runtime commits the follow-up and then loses the acknowledgement: the
+    // effect happened, and the control plane cannot know it did.
+    world
+        .fake
+        .push_step(kontor_runtime::fake::ScriptStep::LoseSendAck);
+
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot, "expected_task_revision": revision, "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-lost-1")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    let follow_ups = settled.json()["follow_ups"]
+        .as_array()
+        .expect("follow-ups")
+        .clone();
+    assert_eq!(follow_ups.len(), 1, "{}", settled.body);
+    assert_eq!(
+        follow_ups[0]["dispatched"],
+        serde_json::json!(false),
+        "the acknowledgement was lost, so the follow-up is derived and undelivered: {}",
+        settled.body
+    );
+
+    let rows = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_turn_dispatches(project_id))
+        .expect("the dispatch ledger is readable");
+    assert_eq!(rows.len(), 1);
+    assert!(!rows[0].dispatched, "the row records it as undelivered");
+    let message_id = rows[0].message_id.clone();
+    let successor = rows[0].target_agent_run.expect("a materialized successor");
+
+    // How much content the successor's session holds *in total*. Counting only
+    // items that carry the stored id would be blind to the very defect this
+    // test exists for: a retry that minted a fresh id delivers a second effect
+    // under a *different* id, which such a filter cannot see.
+    let delivered_items = |world: &World| {
+        let timeline = futures::executor::block_on(async {
+            Call::get(format!("/v1/sessions/{successor}/timeline?limit=64"))
+                .signed_as(world, "observer")
+                .send(world)
+                .await
+        });
+        timeline
+            .json()
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default()
+    };
+    let after_first = delivered_items(&world);
+
+    // Reconciliation retries exactly this undelivered row.
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let after_retry = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_turn_dispatches(project_id))
+        .expect("the dispatch ledger is readable");
+    assert_eq!(after_retry.len(), 1, "the retry derived nothing new");
+    assert_eq!(
+        after_retry[0].message_id, message_id,
+        "the retry presents the *same* message id, which is the whole fix"
+    );
+    assert!(
+        after_retry[0].dispatched,
+        "and the retry completed the handover: {after_retry:?}"
+    );
+
+    // One effect, not two. Before the id was bound to the row, the retry minted
+    // a fresh id and the runtime had no way to recognise its own committed
+    // effect, so the successor received the follow-up twice.
+    assert_eq!(
+        delivered_items(&world),
+        after_first,
+        "a retried follow-up is the same effect, not a second one"
+    );
+}
+
+/// P1-D. The settlement authority is the tier the caller *authenticated at*, and
+/// nothing a caller writes in the body can change it.
+///
+/// Checking that a named account exists and is enabled is a fact about the
+/// account, not about who is asking. Persisting such a name as attribution would
+/// record a claim the control plane never verified, so the field is gone and the
+/// receipt carries what the bearer actually proved.
+#[tokio::test]
+async fn a_turn_receipt_records_proven_authority_and_not_a_claimed_actor() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-authority").await;
+
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+
+    // A second, perfectly real and enabled account — the one an operator would
+    // have named to attribute the settlement elsewhere.
+    let other = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Someone Else", "harness": "fake.runtime",
+            "credential_alias": "other", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("turn-authority-other")
+    .send(&world)
+    .await;
+    assert_eq!(other.status, 200, "{}", other.body);
+    let other_id = other.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    // The attribution attempt: a body naming another enabled account.
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "actor": other_id,
+            "account_profile": other_id,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-authority-1")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+
+    // The receipt records the tier the *bearer* proved…
+    assert_eq!(
+        settled.json()["settled_by"],
+        serde_json::json!("operator"),
+        "the receipt records proven authority: {}",
+        settled.body
+    );
+    // …and not the account the body tried to attribute it to. The seat's own
+    // account is operational context, derived from the bound run.
+    assert_ne!(
+        settled.json()["account_profile"],
+        serde_json::json!(other_id),
+        "a caller may not attribute a settlement to an account it merely named: {}",
+        settled.body
+    );
+
+    // The contract has no field for a caller identity at all, which is what
+    // makes the attempt above unrepresentable rather than merely refused.
+    let document = Call::get("/v1/openapi.json")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let request_schema =
+        document.json()["components"]["schemas"]["SettleTurnRequest"]["properties"]
+            .as_object()
+            .expect("the settle-turn request schema")
+            .keys()
+            .cloned()
+            .collect::<Vec<String>>();
+    assert!(
+        !request_schema.iter().any(|name| name == "actor"),
+        "the request carries no caller-supplied actor: {request_schema:?}"
+    );
+
+    // An admin settling the same seat records *its* tier, so the field tracks the
+    // credential rather than the route.
+    let by_admin = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "artifacts": ["change-set", "review-notes"]
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("turn-authority-2")
+    .send(&world)
+    .await;
+    assert_eq!(by_admin.status, 200, "{}", by_admin.body);
+    assert_eq!(by_admin.json()["settled_by"], serde_json::json!("admin"));
+}
+
+/// P1-A. The whole close-out, through public operations only, on a team whose
+/// native seats stay **live**.
+///
+/// This is the journey BLK-009 was about and that the receipt alone did not
+/// deliver: every declared seat materialized, each settles its final bounded
+/// turn, the profile's gates and artifacts are discharged, and then the team
+/// closes, the task completes and the epic closes — with every Paseo session
+/// still sitting there and no `agent_runs.terminal` fabricated for any of them.
+#[tokio::test]
+async fn a_team_closes_on_settled_turns_while_every_seat_stays_live() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, account, seats) = seated_turns(&world, "close-live").await;
+    let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
+
+    let seat_list = seats.as_array().expect("seats").clone();
+    assert!(seat_list.len() > 1, "the bundled team seats several slots");
+    let task_id = {
+        let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        projection.json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("a task id")
+            .to_owned()
+    };
+    let lifecycle = format!("/v1/projects/{project}/epics/{epic}/lifecycle");
+
+    // Every declared slot settles its final turn. Each seat's session stays live
+    // across its own settlement — asserted per seat, not once at the end.
+    for (index, seat) in seat_list.iter().enumerate() {
+        let agent_run = seat["agent_run_id"].as_str().expect("id");
+        let role_slot = seat["role_slot"].as_str().expect("slot");
+        let projected = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        let revision = projected.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("a revision");
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+            &serde_json::json!({
+                "role_slot": role_slot,
+                "expected_task_revision": revision,
+                "artifacts": ["change-set"]
+            }),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("close-live-turn-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(settled.status, 200, "slot `{role_slot}`: {}", settled.body);
+        assert_eq!(
+            settled.json()["seat_live"],
+            serde_json::json!(true),
+            "slot `{role_slot}` is still live after settling its turn: {}",
+            settled.body
+        );
+    }
+
+    // The profile's own gates, read from the projection and discharged.
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let gates = projection.json()["tasks"][0]["gates"]
+        .as_array()
+        .expect("gates")
+        .clone();
+    let workflow_revision = projection.json()["tasks"][0]["workflow_revision"]
+        .as_u64()
+        .expect("a workflow revision");
+    for (index, gate) in gates.iter().enumerate() {
+        let name = gate["gate"].as_str().expect("a gate");
+        let evaluator = gate["evaluator_roles"][0]
+            .as_str()
+            .expect("an authorized evaluator");
+        let evidence: Vec<&str> = gate["required_evidence"]
+            .as_array()
+            .expect("evidence")
+            .iter()
+            .map(|item| item.as_str().expect("an artifact"))
+            .collect();
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/tasks/{task_id}/gates/{name}/record"),
+            &serde_json::json!({
+                "expected_revision": workflow_revision,
+                "verdict": "passed",
+                "evaluator_role": evaluator,
+                "evaluator_account": account,
+                "evidence": evidence,
+            }),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("close-live-gate-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(recorded.status, 200, "gate `{name}`: {}", recorded.body);
+    }
+
+    // The task completes. Reaching this at all is the whole of P1-A: the team's
+    // closure was certified from its own settled-turn rows, not from any run
+    // having ended.
+    let after_gates = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let after_body = after_gates.json();
+    let artifacts: Vec<&str> = after_body["tasks"][0]["required_artifacts"]
+        .as_array()
+        .expect("required artifacts")
+        .iter()
+        .map(|item| item.as_str().expect("an artifact"))
+        .collect();
+    let task_revision = after_body["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+    let done = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "complete_task", "task_id": task_id,
+            "expected_revision": task_revision, "reason": "every slot settled its turn",
+            "evidence": artifacts,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("close-live-complete")
+    .send(&world)
+    .await;
+    assert_eq!(
+        done.status, 200,
+        "a task whose team closed on settled turns completes: {}",
+        done.body
+    );
+    assert_eq!(done.json()["state"], "done");
+
+    let epic_seen = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let epic_revision = epic_seen.json()["revision"].as_u64().expect("a revision");
+    let closed = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "close_epic", "expected_revision": epic_revision,
+            "reason": "the work is finished"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("close-live-epic-close")
+    .send(&world)
+    .await;
+    assert_eq!(closed.status, 200, "{}", closed.body);
+    assert_eq!(closed.json()["state"], "closed");
+
+    // The two postconditions that make this closure honest rather than
+    // convenient: no run was cast terminal, and every seat is still operable.
+    for seat in &seat_list {
+        let agent_run = seat["agent_run_id"].as_str().expect("id");
+        let run = world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.get_agent_run(project_id, AgentRunId::parse(agent_run).expect("a run id"))
+            })
+            .expect("readable")
+            .expect("the seat");
+        assert!(
+            run.terminal.is_none(),
+            "no agent run was cast terminal to close the team: {agent_run}"
+        );
+        let timeline = Call::get(format!("/v1/sessions/{agent_run}/timeline"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        assert_eq!(
+            timeline.status, 200,
+            "seat `{agent_run}` is still live and operable after the epic closed: {}",
+            timeline.body
+        );
+    }
+}
+
+/// P1-A negatives. A team does not close because *some* slots settled: the walk
+/// is over the template's declared slots, so an unaccounted one refuses, and the
+/// profile's gates and artifacts are still their own obligation.
+#[tokio::test]
+async fn an_unaccounted_slot_or_an_undischarged_gate_withholds_closure() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, account, seats) = seated_turns(&world, "close-partial").await;
+
+    let seat_list = seats.as_array().expect("seats").clone();
+    let projected = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_id = projected.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+    let lifecycle = format!("/v1/projects/{project}/epics/{epic}/lifecycle");
+
+    // Only the *first* slot settles. Every other declared slot is unaccounted.
+    let first = &seat_list[0];
+    let seen = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = seen.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+    let settled = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/turns:settle",
+            first["agent_run_id"].as_str().expect("id")
+        ),
+        &serde_json::json!({
+            "role_slot": first["role_slot"].as_str().expect("slot"),
+            "expected_task_revision": revision,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("close-partial-turn-0")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+
+    // Every gate and artifact obligation is discharged first, so the *only*
+    // thing missing when completion is attempted is the unaccounted slots. A
+    // refusal here with gates outstanding would prove nothing about the
+    // declared-slot walk — it would just be the gates refusing.
+    let gate_view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let gates = gate_view.json()["tasks"][0]["gates"]
+        .as_array()
+        .expect("gates")
+        .clone();
+    let workflow_revision = gate_view.json()["tasks"][0]["workflow_revision"]
+        .as_u64()
+        .expect("a workflow revision");
+    for (index, gate) in gates.iter().enumerate() {
+        let name = gate["gate"].as_str().expect("a gate");
+        let evaluator = gate["evaluator_roles"][0]
+            .as_str()
+            .expect("an authorized evaluator");
+        let evidence: Vec<&str> = gate["required_evidence"]
+            .as_array()
+            .expect("evidence")
+            .iter()
+            .map(|item| item.as_str().expect("an artifact"))
+            .collect();
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/tasks/{task_id}/gates/{name}/record"),
+            &serde_json::json!({
+                "expected_revision": workflow_revision,
+                "verdict": "passed",
+                "evaluator_role": evaluator,
+                "evaluator_account": account,
+                "evidence": evidence,
+            }),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("close-partial-gate-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(recorded.status, 200, "gate `{name}`: {}", recorded.body);
+    }
+    let artifact_view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let artifact_body = artifact_view.json();
+    let artifacts: Vec<&str> = artifact_body["tasks"][0]["required_artifacts"]
+        .as_array()
+        .expect("required artifacts")
+        .iter()
+        .map(|item| item.as_str().expect("an artifact"))
+        .collect();
+
+    // Completion is refused: the declared-slot walk is over the *template*, so
+    // slots that settled nothing are exactly the ones that fail.
+    let seen_again = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = seen_again.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+    let refused = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "complete_task", "task_id": task_id,
+            "expected_revision": task_revision, "reason": "one slot is enough, surely",
+            "evidence": artifacts,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("close-partial-complete")
+    .send(&world)
+    .await;
+    // The *reason* is asserted, not merely the refusal. With gates discharged,
+    // a bare "not 200" would still pass if the team were refused for some other
+    // cause — and it was: an earlier version of this test could not tell the
+    // declared-slot walk from the store's "the cited team run has not closed".
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    assert_eq!(refused.code(), "unsupported_capability");
+    assert!(
+        refused.body.contains("declared role slot"),
+        "the refusal names the unaccounted slot: {}",
+        refused.body
+    );
+}
+
+/// P1-B. The follow-up reaches the successor's **existing** seat because Kontor's
+/// own derivation selected it — not because a caller named a URI.
+///
+/// The earlier version of this proof settled twice against the same
+/// `agent_run` address and observed the same id come back, which proves the
+/// address and nothing else. Here the target is chosen by the frozen handoff DAG
+/// during settlement of a *different* slot's turn, so the seat's identity is an
+/// outcome rather than an input: the test records what the successor seat is
+/// **before** the settlement, and then asserts the effect landed in exactly that
+/// session, unreplaced.
+#[tokio::test]
+async fn a_follow_up_selects_the_successors_existing_seat_and_does_not_replace_it() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "reuse-select").await;
+    let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
+
+    let seat_list = seats.as_array().expect("seats").clone();
+    let first = seat_list[0].clone();
+    let from_slot = first["role_slot"].as_str().expect("slot").to_owned();
+    let from_run = first["agent_run_id"].as_str().expect("id").to_owned();
+    let team_run_id =
+        kontor_core::id::TeamRunId::parse(first["team_run_id"].as_str().expect("a team run id"))
+            .expect("a team run id");
+
+    // The whole roster as it stands *before* anything is settled. Identity is
+    // captured here so every assertion afterwards is about a value this test did
+    // not choose.
+    let roster_before = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the roster is readable");
+    assert!(
+        roster_before.len() > 1,
+        "the bundled team seats several slots"
+    );
+
+    let revision_view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = revision_view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{from_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": from_slot,
+            "expected_task_revision": revision,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("reuse-select-turn")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+
+    // Kontor chose the target. The test asserts *which* seat it chose by looking
+    // it up in the roster captured before the settlement.
+    let follow_ups = settled.json()["follow_ups"]
+        .as_array()
+        .expect("follow-ups")
+        .clone();
+    assert_eq!(follow_ups.len(), 1, "{}", settled.body);
+    let to_slot = follow_ups[0]["to_role_slot"].as_str().expect("a slot");
+    let target_run = follow_ups[0]["target_agent_run_id"]
+        .as_str()
+        .expect("a target seat");
+    assert!(
+        follow_ups[0]["dispatched"].as_bool().expect("a flag"),
+        "the follow-up reached the seat: {}",
+        settled.body
+    );
+    assert_ne!(to_slot, from_slot, "a handoff goes to another slot");
+
+    let expected = roster_before
+        .iter()
+        .find(|seat| seat.role.as_str() == to_slot)
+        .expect("the successor slot was already materialized before the settlement");
+    assert_eq!(
+        target_run,
+        expected.agent_run_id.to_string(),
+        "the derivation selected the seat that already existed for that slot"
+    );
+
+    // No replacement: the successor's roster entry is the same run, the same
+    // native session and the same binding it held before. A replacement would
+    // show up as a different run id or a different native id for that slot.
+    let roster_after = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the roster is readable");
+    assert_eq!(
+        roster_after.len(),
+        roster_before.len(),
+        "no seat was added or replaced: {roster_after:?}"
+    );
+    let actual = roster_after
+        .iter()
+        .find(|seat| seat.role.as_str() == to_slot)
+        .expect("the successor slot is still seated");
+    assert_eq!(actual.agent_run_id, expected.agent_run_id, "same agent run");
+    assert_eq!(actual.native_id, expected.native_id, "same native session");
+    assert_eq!(actual.binding_id, expected.binding_id, "same binding");
+    assert_eq!(actual.runtime_kind, expected.runtime_kind);
+
+    // The binding generation, read from the seat's own persisted binding.
+    let target_before = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_agent_run(project_id, expected.agent_run_id))
+        .expect("readable")
+        .expect("the successor seat");
+    let generation = target_before
+        .binding
+        .as_ref()
+        .expect("a bound successor")
+        .identity
+        .generation;
+    assert_eq!(
+        generation, 1,
+        "the successor is still in the generation it was bound under"
+    );
+    assert!(
+        target_before.terminal.is_none(),
+        "the successor was not closed to hand it work"
+    );
+
+    // Exactly one effect in that seat, counted as total content growth rather
+    // than by a message id the test supplies — a filtered count would be blind
+    // to a duplicate delivered under a different id.
+    let timeline = Call::get(format!("/v1/sessions/{target_run}/timeline?limit=64"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(timeline.status, 200, "{}", timeline.body);
+    let after_first = timeline
+        .json()
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+
+    // Reconciliation — the other public path that can drive a follow-up — must
+    // not produce a second effect in that seat.
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let after_reconcile = Call::get(format!("/v1/sessions/{target_run}/timeline?limit=64"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        after_reconcile
+            .json()
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default(),
+        after_first,
+        "reconciliation delivers no second effect into the selected seat: {}",
+        after_reconcile.body
+    );
+}
+
+/// The alpha pack, whose handoffs carry *real* conditions — unlike the bundled
+/// team, where every handoff declares `after_phase: null` and
+/// `required_artifacts: []` and both guards are therefore vacuous.
+const ALPHA_PACK: &str = include_str!("../../kontor-profiles/tests/fixtures/custom-pack-a.json");
+
+/// Settle one `alpha-k1` turn.
+async fn alpha_settle(
+    world: &World,
+    project: &str,
+    run: &str,
+    key: &'static str,
+    artifacts: serde_json::Value,
+    revision: u64,
+) -> Answer {
+    Call::post(
+        format!("/v1/projects/{project}/agent-runs/{run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": "alpha-k1",
+            "expected_task_revision": revision,
+            "artifacts": artifacts
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// The alpha task's current revision.
+async fn alpha_revision(world: &World, project: &str, epic: &str) -> u64 {
+    let seen = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    seen.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision")
+}
+
+/// How much content one seat's session holds.
+async fn alpha_content(world: &World, agent_run: &str) -> usize {
+    let timeline = Call::get(format!("/v1/sessions/{agent_run}/timeline?limit=64"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    timeline
+        .json()
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default()
+}
+
+/// P1-C. Both handoff guards are load-bearing, proved on a pack whose conditions
+/// are non-empty.
+///
+/// `alpha-k1 → alpha-k3` waits for phase `alpha-p2` **and** artifact `alpha-a2`.
+/// The follow-up is withheld while either is unmet and becomes eligible only when
+/// both persisted conditions hold — then it is delivered exactly once, across a
+/// replayed settlement and a restart.
+#[tokio::test]
+async fn both_handoff_conditions_withhold_a_follow_up_until_each_is_satisfied() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let pack: serde_json::Value = serde_json::from_str(ALPHA_PACK).expect("the alpha pack parses");
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack.clone()}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alpha-register")
+    .send(&world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let created = ensure_project(&world, "alpha", "Kontor", "/tmp/kontor-alpha").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
+    let revision = created.json()["revision"].as_u64().expect("revision");
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alpha-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Alpha epic",
+            "alpha-cat",
+            serde_json::json!([{"title": "Alpha task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alpha-epic-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    let task_id = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision, "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id, "reason": "Run alpha"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alpha-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("alpha-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let seats = started.json()["started"].as_array().expect("seats").clone();
+    assert!(!seats.is_empty(), "nothing started: {}", started.body);
+    let k1 = seats
+        .iter()
+        .find(|seat| seat["role_slot"] == serde_json::json!("alpha-k1"))
+        .unwrap_or_else(|| panic!("alpha-k1 among {seats:?}"))
+        .clone();
+    let k1_run = k1["agent_run_id"].as_str().expect("id").to_owned();
+
+    // (1) Neither condition holds: the task is at the entry phase and no
+    // artifact was produced. The follow-up is withheld — and withheld means
+    // *not derived at all*, so there is no dispatch row to deliver later.
+    let first = alpha_settle(
+        &world,
+        &project,
+        &k1_run,
+        "alpha-turn-1",
+        serde_json::json!([]),
+        alpha_revision(&world, &project, &epic).await,
+    )
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert!(
+        first.json()["follow_ups"]
+            .as_array()
+            .expect("follow-ups")
+            .is_empty(),
+        "with neither condition met the handoff is withheld: {}",
+        first.body
+    );
+
+    // (2) The artifact now exists; the phase does not. Still withheld, and this
+    // is the assertion the `after_phase` guard is load-bearing for.
+    let second = alpha_settle(
+        &world,
+        &project,
+        &k1_run,
+        "alpha-turn-2",
+        serde_json::json!(["alpha-a2"]),
+        alpha_revision(&world, &project, &epic).await,
+    )
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert!(
+        second.json()["follow_ups"]
+            .as_array()
+            .expect("follow-ups")
+            .is_empty(),
+        "the artifact alone does not release the handoff: {}",
+        second.body
+    );
+    let dispatches = |world: &World| {
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_turn_dispatches(project_id))
+            .expect("the dispatch ledger is readable")
+    };
+    assert!(
+        dispatches(&world).is_empty(),
+        "nothing was derived while a condition was unmet"
+    );
+
+    // (3) Advance the workflow to `alpha-p2`. There is no public route for a
+    // phase advance yet, so this one setup step goes through the store — the
+    // *guard* is what is under test, not the advance.
+    world.daemon.state().with_store(|store| {
+        let workflow = store
+            .get_active_task_workflow(
+                project_id,
+                kontor_core::id::TaskId::parse(&task_id).expect("a task id"),
+            )
+            .expect("readable")
+            .expect("an active workflow");
+        store
+            .advance_phase(&kontor_core::repository::PhaseAdvance {
+                project_id,
+                workflow_id: workflow.id,
+                expected_revision: workflow.revision,
+                next_phase: kontor_core::id::PhaseKey::parse("alpha-p2").expect("a phase"),
+                advanced_at: at("2026-08-10T10:00:00Z"),
+            })
+            .expect("the phase advances");
+    });
+
+    // Both conditions now hold, and only now is the follow-up eligible.
+    let third = alpha_settle(
+        &world,
+        &project,
+        &k1_run,
+        "alpha-turn-3",
+        serde_json::json!(["alpha-a2"]),
+        alpha_revision(&world, &project, &epic).await,
+    )
+    .await;
+    assert_eq!(third.status, 200, "{}", third.body);
+    let follow_ups = third.json()["follow_ups"]
+        .as_array()
+        .expect("follow-ups")
+        .clone();
+    assert_eq!(
+        follow_ups.len(),
+        1,
+        "with both conditions met the handoff is released: {}",
+        third.body
+    );
+    assert_eq!(
+        follow_ups[0]["to_role_slot"],
+        serde_json::json!("alpha-k3"),
+        "and it is the handoff the template declares"
+    );
+    assert_eq!(
+        follow_ups[0]["after_phase"],
+        serde_json::json!("alpha-p2"),
+        "reported with the condition it waited on"
+    );
+    assert_eq!(dispatches(&world).len(), 1);
+
+    let target = follow_ups[0]["target_agent_run_id"]
+        .as_str()
+        .expect("a target seat")
+        .to_owned();
+    let after_release = alpha_content(&world, &target).await;
+
+    // Delivered once: a replayed settlement adds no second effect.
+    let replay = alpha_settle(
+        &world,
+        &project,
+        &k1_run,
+        "alpha-turn-3",
+        serde_json::json!(["alpha-a2"]),
+        alpha_revision(&world, &project, &epic).await,
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    assert_eq!(dispatches(&world).len(), 1, "no second follow-up derived");
+    assert_eq!(
+        alpha_content(&world, &target).await,
+        after_release,
+        "and no second effect"
+    );
+
+    // And a restart delivers none either.
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    assert_eq!(dispatches(&world).len(), 1);
+    assert_eq!(
+        alpha_content(&world, &target).await,
+        after_release,
+        "reconciliation produces no second effect"
+    );
+}
+/// P1-C, the artifact guard on its own.
+///
+/// Its sibling proves the *phase* guard by withholding while the artifact is
+/// already satisfied. That ordering cannot also prove the artifact guard: the
+/// handoff waits on the **task's** artifacts, so once `alpha-a2` has ever been
+/// settled the condition holds forever and deleting the check changes nothing.
+///
+/// So this realm advances the phase *first* and then settles with no artifacts.
+/// The phase condition is met, the artifact condition is not, and the follow-up
+/// must still be withheld — which is the only arrangement in which deleting the
+/// artifact check is observable.
+#[tokio::test]
+async fn the_artifact_condition_alone_withholds_a_follow_up_once_the_phase_is_met() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let pack: serde_json::Value = serde_json::from_str(ALPHA_PACK).expect("the alpha pack parses");
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack.clone()}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alpha2-register")
+    .send(&world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let created = ensure_project(&world, "alpha2", "Kontor", "/tmp/kontor-alpha2").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
+    let revision = created.json()["revision"].as_u64().expect("revision");
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alpha2-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Alpha epic",
+            "alpha-cat",
+            serde_json::json!([{"title": "Alpha task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alpha2-epic-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    let task_id = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision, "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id, "reason": "Run alpha"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alpha2-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("alpha2-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let seats = started.json()["started"].as_array().expect("seats").clone();
+    assert!(!seats.is_empty(), "nothing started: {}", started.body);
+    let k1 = seats
+        .iter()
+        .find(|seat| seat["role_slot"] == serde_json::json!("alpha-k1"))
+        .unwrap_or_else(|| panic!("alpha-k1 among {seats:?}"))
+        .clone();
+    let k1_run = k1["agent_run_id"].as_str().expect("id").to_owned();
+
+    // The phase is advanced *before* anything is settled, so the artifact is the
+    // only unmet condition below. No public route advances a phase yet, so this
+    // setup step goes through the store; the guard is what is under test.
+    world.daemon.state().with_store(|store| {
+        let workflow = store
+            .get_active_task_workflow(
+                project_id,
+                kontor_core::id::TaskId::parse(&task_id).expect("a task id"),
+            )
+            .expect("readable")
+            .expect("an active workflow");
+        store
+            .advance_phase(&kontor_core::repository::PhaseAdvance {
+                project_id,
+                workflow_id: workflow.id,
+                expected_revision: workflow.revision,
+                next_phase: kontor_core::id::PhaseKey::parse("alpha-p2").expect("a phase"),
+                advanced_at: at("2026-08-10T10:00:00Z"),
+            })
+            .expect("the phase advances");
+    });
+
+    let dispatches = |world: &World| {
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_turn_dispatches(project_id))
+            .expect("the dispatch ledger is readable")
+    };
+
+    // Phase met, artifact missing: withheld.
+    let withheld = alpha_settle(
+        &world,
+        &project,
+        &k1_run,
+        "alpha2-turn-1",
+        serde_json::json!([]),
+        alpha_revision(&world, &project, &epic).await,
+    )
+    .await;
+    assert_eq!(withheld.status, 200, "{}", withheld.body);
+    assert!(
+        withheld.json()["follow_ups"]
+            .as_array()
+            .expect("follow-ups")
+            .is_empty(),
+        "the phase alone does not release the handoff: {}",
+        withheld.body
+    );
+    assert!(
+        dispatches(&world).is_empty(),
+        "nothing was derived while the artifact was missing"
+    );
+
+    // The artifact arrives and the handoff is released.
+    let released = alpha_settle(
+        &world,
+        &project,
+        &k1_run,
+        "alpha2-turn-2",
+        serde_json::json!(["alpha-a2"]),
+        alpha_revision(&world, &project, &epic).await,
+    )
+    .await;
+    assert_eq!(released.status, 200, "{}", released.body);
+    let follow_ups = released.json()["follow_ups"]
+        .as_array()
+        .expect("follow-ups")
+        .clone();
+    assert_eq!(
+        follow_ups.len(),
+        1,
+        "with the artifact settled the handoff is released: {}",
+        released.body
+    );
+    assert_eq!(follow_ups[0]["to_role_slot"], serde_json::json!("alpha-k3"));
+    assert_eq!(dispatches(&world).len(), 1);
+}
+
+/// BLK-010, the capacity half. A team that closed on settled turns must stop
+/// holding admission capacity even though every one of its seats is still live —
+/// otherwise a persistent-seat realm would deadlock after its first team, with
+/// finished work occupying the ceiling forever.
+///
+/// The oracle is a real refusal and a real start: an independent second task is
+/// refused by name for the *account* ceiling while the first team is open, and
+/// admitted once that team closes on settled turns with all four seats still
+/// sitting there. `task_not_ready` or an in-flight refusal would prove nothing
+/// about capacity, so both are excluded by asserting the exact rule.
+#[tokio::test]
+async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
+    let world = World::open_empty_with_a_plane().await;
+    // The persistent seats of the first team are still occupying native sessions
+    // when the second task is seated, so the runtime must declare room for both
+    // teams. Otherwise the second task is refused by the *runtime's* session
+    // ceiling and this would prove nothing about Kontor's own.
+    world.script(
+        r#"{
+  "limits": {"max_message_bytes": 65536, "max_history_page": 100, "max_concurrent_sessions": 32},
+  "history": [
+    {"kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:01:00Z", "body": "one"}
+  ],
+  "live": [
+    {"kind": "message", "sequence": 2, "emitted_at": "2026-08-10T09:02:00Z", "body": "two"}
+  ]
+}"#,
+    );
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project(&world, "cap", "Kontor", "/tmp/kontor-cap").await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("cap-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // Two tasks with no dependency between them: both are ready at once, so
+    // whatever refuses the second is a capacity decision and not an ordering one.
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Capacity epic",
+            &category,
+            serde_json::json!([{"title": "First task"}, {"title": "Second task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("cap-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            // Above the ceiling under test, so the authorization window is not
+            // what refuses the second task.
+            "max_concurrency": 8,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Start the epic"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("cap-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    // Both tasks run as the same account, which is what makes the account
+    // ceiling the binding one — and is the ordinary case, since a realm's work
+    // is done by the accounts the operator has.
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    for index in 0..2 {
+        let task = projection.json()["tasks"][index]["task_id"]
+            .as_str()
+            .expect("a task id")
+            .to_owned();
+        let task_revision = projection.json()["tasks"][index]["revision"]
+            .as_u64()
+            .expect("a revision");
+        let pinned = Call::post(
+            format!("/v1/projects/{project}/tasks/{task}/account-selection"),
+            &serde_json::json!({
+                "expected_revision": task_revision,
+                "account_profile_id": account_id,
+                "reason": "Run as the lead"
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key(format!("cap-select-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(pinned.status, 200, "{}", pinned.body);
+    }
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert_eq!(
+        plan.json()["ready"].as_array().expect("ready").len(),
+        2,
+        "both tasks are ready, so neither waits on the other: {}",
+        plan.body
+    );
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("cap-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let seats = started.json()["started"].as_array().expect("seats").clone();
+    assert!(
+        seats.len() > 1,
+        "the first task seats the whole declared team: {}",
+        started.body
+    );
+    assert!(
+        seats
+            .iter()
+            .all(|seat| seat["task_id"] == seats[0]["task_id"]),
+        "only the first task was seated: {}",
+        started.body
+    );
+
+    // The exact refusal, by code and by rule. A spent ceiling has its own code,
+    // so this cannot be satisfied by a revision conflict, a not-ready task or an
+    // already-in-flight one — each of which would mean the second task never
+    // reached the capacity check at all.
+    let blocked = started.json()["blocked"]
+        .as_array()
+        .expect("blocked")
+        .clone();
+    assert_eq!(blocked.len(), 1, "{}", started.body);
+    assert_eq!(
+        blocked[0]["task_id"],
+        projection.json()["tasks"][1]["task_id"],
+        "the second task is the refused one: {}",
+        started.body
+    );
+    assert_eq!(blocked[0]["code"], "capacity_exhausted", "{}", started.body);
+    let rule = blocked[0]["evidence"][0]["rule"]
+        .as_str()
+        .expect("a rule")
+        .to_owned();
+    assert_eq!(
+        rule, "a configured concurrency ceiling is currently spent",
+        "{}",
+        started.body
+    );
+    // And it names no scope, no ceiling value, no count and no identifier.
+    for leak in [
+        "account",
+        "project",
+        "global",
+        "goal",
+        "spent capacity",
+        project.as_str(),
+        account_id.as_str(),
+    ] {
+        assert!(
+            !rule.contains(leak),
+            "the refusal discloses `{leak}`: {}",
+            started.body
+        );
+    }
+    assert!(
+        !rule.chars().any(|character| character.is_ascii_digit()),
+        "the refusal discloses a ceiling value or a count: {}",
+        started.body
+    );
+
+    // Every declared slot settles, which closes the team on settled turns.
+    for (index, seat) in seats.iter().enumerate() {
+        let agent_run = seat["agent_run_id"].as_str().expect("id");
+        let role_slot = seat["role_slot"].as_str().expect("slot");
+        let projected = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        let revision = projected.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("a revision");
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+            &serde_json::json!({
+                "role_slot": role_slot,
+                "expected_task_revision": revision,
+                "artifacts": ["change-set"]
+            }),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("cap-turn-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(settled.status, 200, "slot `{role_slot}`: {}", settled.body);
+        assert_eq!(
+            settled.json()["seat_live"],
+            serde_json::json!(true),
+            "the released capacity is held by a seat that is still live: {}",
+            settled.body
+        );
+    }
+
+    // Nothing was torn down: the four runs that were holding the ceiling are all
+    // still open. That is the whole point — capacity is released by the team's
+    // closure, not by the sessions ending.
+    for seat in &seats {
+        let agent_run = seat["agent_run_id"].as_str().expect("id");
+        let run = Call::get(format!("/v1/runs/{agent_run}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        assert_eq!(run.status, 200, "{}", run.body);
+        assert!(
+            run.json()["terminal"].is_null(),
+            "the seat is still live while its capacity is released: {}",
+            run.body
+        );
+    }
+
+    let replanned = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(replanned.status, 200, "{}", replanned.body);
+    let plan_hash = replanned.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let restarted = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("cap-restart")
+    .send(&world)
+    .await;
+    assert_eq!(restarted.status, 200, "{}", restarted.body);
+    let restarted_seats = restarted.json()["started"]
+        .as_array()
+        .expect("seats")
+        .clone();
+    assert!(
+        !restarted_seats.is_empty(),
+        "the second task starts once the first team's capacity is released: {}",
+        restarted.body
+    );
+    assert!(
+        restarted_seats
+            .iter()
+            .all(|seat| seat["task_id"] == projection.json()["tasks"][1]["task_id"]),
+        "and it is the task that was refused for capacity that starts: {}",
+        restarted.body
+    );
+
+    // The only thing still refused is the *first* task, which is not ready
+    // because its own team already settled — not a capacity fact at all.
+    let left = restarted.json()["blocked"]
+        .as_array()
+        .expect("blocked")
+        .clone();
+    assert_eq!(left.len(), 1, "{}", restarted.body);
+    assert_eq!(
+        left[0]["task_id"],
+        projection.json()["tasks"][0]["task_id"],
+        "{}",
+        restarted.body
+    );
+    assert_eq!(left[0]["code"], "task_not_ready", "{}", restarted.body);
 }

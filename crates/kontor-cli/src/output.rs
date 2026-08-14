@@ -71,7 +71,10 @@ impl ExitClass {
     /// `resnapshot_required` and `timeline_refetch_required` sit with
     /// `revision_conflict`: all three mean "the position you hold is not usable,
     /// read again from what the body tells you". And why `unsupported_capability`
-    /// sits with `not_found`: neither will succeed on a retry.
+    /// sits with `not_found`: neither will succeed on a retry. And why
+    /// `capacity_exhausted` sits with `reconciliation_pending`: both are "the
+    /// plane is not able to take this yet", and both clear without the caller
+    /// changing anything about the request.
     #[must_use]
     pub(crate) fn of(code: &str) -> Self {
         match code {
@@ -82,7 +85,7 @@ impl ExitClass {
             | "stale_binding"
             | "resnapshot_required"
             | "timeline_refetch_required" => Self::Conflict,
-            "reconciliation_pending" | "unavailable" => Self::Unavailable,
+            "reconciliation_pending" | "unavailable" | "capacity_exhausted" => Self::Unavailable,
             "not_found" | "unsupported_capability" => Self::Absent,
             "invalid_request" => Self::Local,
             // Outside the closed vocabulary: whatever answered is not a realm of
@@ -175,6 +178,7 @@ mod tests {
             "resnapshot_required",
             "timeline_refetch_required",
             "reconciliation_pending",
+            "capacity_exhausted",
             "unavailable",
             "not_found",
             "invalid_request",
@@ -220,6 +224,12 @@ mod tests {
         assert_eq!(
             ExitClass::of("reconciliation_pending"),
             ExitClass::Unavailable
+        );
+        assert_eq!(
+            ExitClass::of("capacity_exhausted"),
+            ExitClass::Unavailable,
+            "a spent ceiling clears on its own, so the answer is to come back — \
+             not to re-read a revision that was never stale"
         );
         assert_eq!(
             ExitClass::of("unsupported_capability"),

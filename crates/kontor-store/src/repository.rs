@@ -2102,7 +2102,11 @@ impl RunRepository for SqliteStore {
         let children =
             read_team_child_evidence(&transaction, request.project_id, request.team_run_id)?;
         let receipt_column = match request.evidence.source {
-            TeamEvidenceSource::ChildEvidence { .. } => None,
+            TeamEvidenceSource::ChildEvidence { .. }
+            // A settled-turn closure cites no receipt: its evidence is the team's
+            // own immutable `role_turns` rows, which the transition check
+            // re-proves rather than a receipt attesting.
+            | TeamEvidenceSource::SettledTurns { .. } => None,
             TeamEvidenceSource::OperatorAbandon { receipt_id } => Some(receipt_id),
         };
         let receipt = receipt_column
@@ -2141,6 +2145,7 @@ impl RunRepository for SqliteStore {
                     match request.evidence.source {
                         TeamEvidenceSource::ChildEvidence { .. } => "child_evidence",
                         TeamEvidenceSource::OperatorAbandon { .. } => "operator_abandon",
+                        TeamEvidenceSource::SettledTurns { .. } => "settled_turns",
                     },
                     receipt_column,
                     request.evidence.evidence_hash.as_str(),
@@ -2288,6 +2293,14 @@ impl RunRepository for SqliteStore {
                                 (Some(kind), Some(outcome), Some(hash)) => {
                                     Some(TeamTerminalEvidence {
                                         outcome: TerminalOutcome::parse(&outcome)?,
+                                        // Every stored kind decodes to its own
+                                        // variant. A catch-all that collapsed the
+                                        // unrecognized ones into `ChildEvidence`
+                                        // silently undid the separate typing on
+                                        // reload: a team closed on settled turns
+                                        // came back claiming its children had
+                                        // ended, which is a claim about runs that
+                                        // are deliberately still live.
                                         source: match kind.as_str() {
                                             "operator_abandon" => {
                                                 TeamEvidenceSource::OperatorAbandon {
@@ -2296,9 +2309,24 @@ impl RunRepository for SqliteStore {
                                                     )?,
                                                 }
                                             }
-                                            _ => TeamEvidenceSource::ChildEvidence {
+                                            "settled_turns" => {
+                                                TeamEvidenceSource::SettledTurns { team_run_id: id }
+                                            }
+                                            "child_evidence" => TeamEvidenceSource::ChildEvidence {
                                                 team_run_id: id,
                                             },
+                                            // The column's `CHECK` admits exactly
+                                            // three values, so anything else is a
+                                            // row this binary cannot read — and
+                                            // guessing which closure it meant is
+                                            // how the defect above happened.
+                                            _ => {
+                                                return Err(RepositoryError::Backend {
+                                                    detail: "a team run carries an \
+                                                             unreadable terminal source"
+                                                        .to_owned(),
+                                                });
+                                            }
                                         },
                                         evidence_hash: ContentHash::parse(&hash)?,
                                         closed_at: read_timestamp(
@@ -4426,6 +4454,24 @@ fn ensure_team_accounted_for(
         .into());
     }
 
+    // How the team closed decides what "accounted for" means, and the two are
+    // not interchangeable. A child-evidence closure is proved by every child run
+    // having ended. A settled-turn closure cannot be — its children are expected
+    // to still be live — so it is proved from this team's own immutable
+    // `role_turns` rows instead.
+    let source_kind: Option<String> = transaction
+        .query_row(
+            "SELECT terminal_source_kind FROM team_runs WHERE project_id = ?1 AND id = ?2",
+            params![request.project_id.to_string(), team_run_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?
+        .flatten();
+    if source_kind.as_deref() == Some("settled_turns") {
+        return ensure_declared_slots_settled(transaction, request.project_id, team_run_id);
+    }
+
     // The open-slot check, decided from the rows rather than from the citation.
     let children = read_team_child_evidence(transaction, request.project_id, team_run_id)?;
     if children.iter().any(|child| !child.lifecycle.is_terminal()) {
@@ -4434,6 +4480,56 @@ fn ensure_team_accounted_for(
             rule: "a role slot of the cited team run is still open",
         }
         .into());
+    }
+    Ok(())
+}
+
+/// Re-prove that every role slot the frozen template declares settled a turn.
+///
+/// The declared slots come from `team_runs.snapshot` — the template the run was
+/// pinned to — so the set being checked is the one the team actually froze, not
+/// whatever rows happen to exist. A slot that never ran is therefore still
+/// required to be accounted for, which is the property the whole declared-slot
+/// walk exists for.
+///
+/// A live seat is *not* a failure here. That is the entire difference from the
+/// child-evidence path: the seat is expected to outlive the turn taken in it.
+fn ensure_declared_slots_settled(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    team_run_id: TeamRunId,
+) -> RepositoryResult<()> {
+    let snapshot: String = transaction
+        .query_row(
+            "SELECT snapshot FROM team_runs WHERE project_id = ?1 AND id = ?2",
+            params![project_id.to_string(), team_run_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(backend)?;
+    let snapshot: TeamRunSnapshot = from_json(&snapshot)?;
+    let declared = snapshot.declared_role_slots()?;
+
+    let mut settled = std::collections::BTreeSet::new();
+    let mut statement = transaction
+        .prepare(
+            "SELECT DISTINCT role_slot_id FROM role_turns
+             WHERE project_id = ?1 AND team_run_id = ?2",
+        )
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![project_id.to_string(), team_run_id.to_string()])
+        .map_err(backend)?;
+    while let Some(row) = rows.next().map_err(backend)? {
+        settled.insert(row.get::<_, String>(0).map_err(backend)?);
+    }
+    for slot in &declared {
+        if !settled.contains(slot.as_role_key().as_str()) {
+            return Err(DomainError::MissingEvidence {
+                subject: "task transition",
+                rule: "a declared role slot of the cited team run settled no turn",
+            }
+            .into());
+        }
     }
     Ok(())
 }

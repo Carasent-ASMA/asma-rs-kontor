@@ -70,6 +70,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "recovery_steps",
     "registered_profile_packs",
     "resource_leases",
+    "role_turns",
     "run_context_policies",
     "run_park_closures",
     "runtime_binding_snapshots",
@@ -98,6 +99,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "ticket_field_specs",
     "ticket_sync_projections",
     "trigger_specs",
+    "turn_dispatches",
     "work_calendars",
     "work_profiles",
 ];
@@ -198,7 +200,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 17);
+    assert_eq!(SCHEMA_VERSION, 19);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
