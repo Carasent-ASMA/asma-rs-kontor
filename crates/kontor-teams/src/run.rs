@@ -62,8 +62,8 @@ use kontor_core::id::{
 };
 use kontor_core::repository::{AgentRun, NewAgentRun};
 use kontor_core::spec::{
-    ContextPolicySnapshot, ContextWindowPolicy, ResolvedContextPolicy, TeamContextPolicySeed,
-    TeamRunSnapshot,
+    ContextPolicySnapshot, ContextWindowPolicy, ModelRung, ResolvedContextPolicy,
+    TeamContextPolicySeed, TeamRunSnapshot,
 };
 use kontor_core::state::{
     RunLifecycle, SlotDisposition, TaskTeamClosure, TeamChildEvidence, TeamEvidenceSource,
@@ -367,6 +367,7 @@ impl LaunchPermit {
             cwd: launch.cwd,
             account_profile_id: launch.account_profile_id,
             prompt: launch.prompt,
+            model_rung: launch.model_rung,
             context_policy: launch.context_policy,
             requested_at: launch.requested_at,
         });
@@ -449,6 +450,8 @@ pub struct SlotLaunch {
     pub account_profile_id: Option<AccountProfileId>,
     /// What the session starts with.
     pub prompt: BoundedText,
+    /// The exact provider/model/effort rung selected from the frozen template.
+    pub model_rung: ModelRung,
     /// The frozen requested/effective context-window policy for this seat.
     ///
     /// Resolved from [`TeamRunSlots::requested_context_window`] and the

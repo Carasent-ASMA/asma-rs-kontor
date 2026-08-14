@@ -294,6 +294,11 @@ async fn run_one(
             cwd: adapter.config().task_worktree.clone(),
             account_profile_id: Some(profile.id),
             prompt: BoundedText::parse(PROMPT).expect("bounded text"),
+            model_rung: kontor_core::spec::ModelRung {
+                provider: kontor_core::spec::ProviderRef("codex".to_owned()),
+                model: kontor_core::spec::ModelRef("gpt-5.6-sol".to_owned()),
+                effort: None,
+            },
             context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
                 &kontor_core::spec::ContextWindowBounds::unknown(),
                 true,

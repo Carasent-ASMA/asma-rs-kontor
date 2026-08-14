@@ -164,6 +164,8 @@ impl PaseoCommand {
         workspace_id: &str,
         canonical_cwd: &str,
         provider: &str,
+        model: &str,
+        thinking: Option<&str>,
         title: &str,
         labels: &BTreeMap<String, String>,
         parent_agent_id: &str,
@@ -172,11 +174,12 @@ impl PaseoCommand {
         let mut argv = Argv::new(&["agent", "run", "--background"])
             .option("--workspace", workspace_id)
             .option("--cwd", canonical_cwd)
-            // 0.3.1 refuses a launch with no provider: `MISSING_PROVIDER`,
-            // before it creates anything. It is a plane-level choice, so it
-            // comes from configuration rather than from the run.
             .option("--provider", provider)
-            .option("--title", title);
+            .option("--model", model);
+        if let Some(thinking) = thinking {
+            argv = argv.option("--thinking", thinking);
+        }
+        let mut argv = argv.option("--title", title);
         for (key, value) in labels {
             argv = argv.option("--label", &format!("{key}={value}"));
         }
@@ -1328,6 +1331,8 @@ mod tests {
                 "wks_1",
                 "/w/task-1",
                 "codex",
+                "gpt-5.6-sol",
+                Some("xhigh"),
                 "KON-MVP-11 Implement",
                 &labels(),
                 "agt_orchestrator",
@@ -1361,6 +1366,8 @@ mod tests {
             "wks_1",
             "/w/task-1",
             "codex",
+            "gpt-5.6-sol",
+            None,
             "t",
             &labels(),
             "agt_p",
@@ -1381,11 +1388,35 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_launch_carries_the_selected_route() {
+        let command = PaseoCommand::agent_run(
+            "wks_1",
+            "/w/task-1",
+            "claude",
+            "claude-opus-5",
+            Some("xhigh"),
+            "t",
+            &labels(),
+            "agt_p",
+            "p",
+        );
+        let argv = command.argv();
+        assert!(argv.windows(2).any(|pair| pair == ["--provider", "claude"]));
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair == ["--model", "claude-opus-5"])
+        );
+        assert!(argv.windows(2).any(|pair| pair == ["--thinking", "xhigh"]));
+    }
+
+    #[test]
     fn the_ledger_route_never_quotes_the_operators_work() {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/private/worktrees/secret-project",
             "codex",
+            "gpt-5.6-sol",
+            None,
             "KON-MVP-11 Implement",
             &labels(),
             "agt_orchestrator",
@@ -1410,6 +1441,8 @@ mod tests {
             "wks_1",
             "/w/task-1",
             "codex",
+            "gpt-5.6-sol",
+            None,
             "t",
             &labels(),
             "agt_orchestrator",
@@ -1437,9 +1470,19 @@ mod tests {
         );
         // …and a command whose own flags sit next to each other is fine, which
         // a whole-argv scan would have refused.
-        PaseoCommand::agent_run("wks_1", "/w/task-1", "codex", "t", &labels(), "agt_p", "p")
-            .ensure_dispatchable()
-            .expect("`--background --workspace wks_1` is an ordinary command");
+        PaseoCommand::agent_run(
+            "wks_1",
+            "/w/task-1",
+            "codex",
+            "gpt-5.6-sol",
+            None,
+            "t",
+            &labels(),
+            "agt_p",
+            "p",
+        )
+        .ensure_dispatchable()
+        .expect("`--background --workspace wks_1` is an ordinary command");
         PaseoCommand::agent_stop("agt_1")
             .ensure_dispatchable()
             .expect("an ordinary id dispatches");
@@ -1449,7 +1492,18 @@ mod tests {
     fn only_writes_are_counted_as_mutations() {
         assert!(!PaseoCommand::version().mutates());
         assert!(
-            PaseoCommand::agent_run("w", "/w/t", "codex", "t", &labels(), "agt_p", "p").mutates()
+            PaseoCommand::agent_run(
+                "w",
+                "/w/t",
+                "codex",
+                "gpt-5.6-sol",
+                None,
+                "t",
+                &labels(),
+                "agt_p",
+                "p",
+            )
+            .mutates()
         );
         assert!(PaseoCommand::workspace_create("/w/t", "p", "t").mutates());
         assert!(PaseoCommand::agent_update_labels("agt_1", &labels()).mutates());

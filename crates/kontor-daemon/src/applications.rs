@@ -72,8 +72,8 @@ use kontor_core::repository::{
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, ContextPolicySnapshot, EffectiveContextPolicy,
-    IntakeReceipt, IntakeResult, RequestedContextPolicy, SourceIdentity, SourceProcessingState,
-    TeamRunSnapshot, TriggerSpec,
+    IntakeReceipt, IntakeResult, ModelRung, RequestedContextPolicy, SourceIdentity,
+    SourceProcessingState, TeamRunSnapshot, TriggerSpec,
 };
 use kontor_core::state::{GateVerdict, TaskState, TaskTeamClosure};
 use kontor_core::ticket::OwnershipAction;
@@ -1879,6 +1879,21 @@ async fn freeze_seat_context_policy(
         capabilities.supports(RuntimeCapability::ContextPolicy),
     )?;
     Ok(ContextPolicySnapshot::freeze(requested, effective, now)?)
+}
+
+/// Select the primary model rung from the team run's immutable template.
+fn freeze_seat_model_rung(
+    snapshot: &TeamRunSnapshot,
+    slot: &RoleSlotId,
+) -> kontor_core::DomainResult<ModelRung> {
+    kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
+        .slot(slot)
+        .and_then(|seat| seat.model_chain.as_ref())
+        .and_then(|chain| chain.rungs.first())
+        .cloned()
+        .ok_or_else(|| {
+            kontor_core::DomainError::invalid("TeamRunSnapshot", "the role slot has no model route")
+        })
 }
 
 /// The stable spelling of one context layer.
@@ -5303,6 +5318,16 @@ impl Services {
                 "the pinned team template seats no role slot",
             ));
         }
+        if team.slots.iter().any(|slot| {
+            slot.model_chain
+                .as_ref()
+                .is_none_or(|chain| chain.rungs.is_empty())
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "every role slot must declare a model route",
+            ));
+        }
         let roots = eligible_roots(&team);
         // A root leads: the seat that no handoff feeds is the one the work starts
         // at. Ordering the roots first is not required for correctness — every
@@ -5486,30 +5511,23 @@ impl Services {
         let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let model_rung = freeze_seat_model_rung(&team_snapshot, &slot)
+            .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter
-            .launch(
-                &authority.into_request(LaunchParts {
-                    agent_run_id,
-                    team_run_id,
-                    role_slot_id: slot.clone(),
-                    task_id: admitted.task_id,
-                    binding_id,
-                    workspace: Some(workspace.clone()),
-                    cwd: workspace.root().clone(),
-                    account_profile_id: admitted.account_profile_id,
-                    prompt: slot_prompt(&slot, &roots)
-                        .map_err(|error| self.refuse_domain(&error))?,
-                    context_policy: freeze_seat_context_policy(
-                        &adapter,
-                        &team_snapshot,
-                        &slot,
-                        now,
-                    )
-                    .await
-                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?,
-                    requested_at: now,
-                }),
-            )
+            .launch(&authority.into_request(LaunchParts {
+                agent_run_id,
+                team_run_id,
+                role_slot_id: slot.clone(),
+                task_id: admitted.task_id,
+                binding_id,
+                workspace: Some(workspace.clone()),
+                cwd: workspace.root().clone(),
+                account_profile_id: admitted.account_profile_id,
+                prompt: slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
+                model_rung,
+                context_policy: context_policy.clone(),
+                requested_at: now,
+            }))
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
 
@@ -5661,24 +5679,23 @@ impl Services {
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        let model_rung = freeze_seat_model_rung(&team_snapshot, slot)
+            .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter
-            .launch(
-                &authority.into_request(LaunchParts {
-                    agent_run_id,
-                    team_run_id,
-                    role_slot_id: slot.clone(),
-                    task_id: admitted.task_id,
-                    binding_id,
-                    workspace: Some(workspace.clone()),
-                    cwd: workspace.root().clone(),
-                    account_profile_id: admitted.account_profile_id,
-                    prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
-                    context_policy: freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
-                        .await
-                        .map_err(|error| ApiError::from_runtime(realm_id, &error))?,
-                    requested_at: now,
-                }),
-            )
+            .launch(&authority.into_request(LaunchParts {
+                agent_run_id,
+                team_run_id,
+                role_slot_id: slot.clone(),
+                task_id: admitted.task_id,
+                binding_id,
+                workspace: Some(workspace.clone()),
+                cwd: workspace.root().clone(),
+                account_profile_id: admitted.account_profile_id,
+                prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
+                model_rung,
+                context_policy: context_policy.clone(),
+                requested_at: now,
+            }))
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let binding = RuntimeBinding {

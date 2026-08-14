@@ -45,12 +45,13 @@ pub const RUNTIMES_FILE: &str = "runtimes.json";
 
 /// The document generation this build writes and is willing to read.
 ///
-/// Bumped to 2 when the `ao` family was withdrawn. A generation-1 document may
+/// Bumped to 3 when the `ao` family was withdrawn and provider/model routing
+/// moved from a plane default to each frozen role launch. An older document may
 /// legally contain `family: "ao"`, and this build cannot compose one — so it
 /// refuses the whole generation rather than reading the Paseo entries and
 /// quietly ignoring the rest, which would start a fleet the operator did not
 /// describe.
-const RUNTIMES_SCHEMA: u32 = 2;
+const RUNTIMES_SCHEMA: u32 = 3;
 
 /// Families this build knows the name of and deliberately cannot compose.
 ///
@@ -170,8 +171,6 @@ pub struct PaseoSetting {
     pub host_key: String,
     /// The Kontor mini-project this plane serves.
     pub mini_project_id: String,
-    /// The Paseo provider every seat on this plane runs under.
-    pub provider: String,
     /// The Jira epic the mini-project is tracked as.
     pub jira_epic_key: String,
     /// The compact epic title.
@@ -339,7 +338,6 @@ fn compose_paseo(
         host_key: host_key.clone(),
         mini_project_id: ExternalId::parse(&setting.mini_project_id)
             .map_err(|_| refuse("mini_project_id"))?,
-        provider: ExternalName::parse(&setting.provider).map_err(|_| refuse("provider"))?,
         scope: PaseoExecutionScope {
             jira_epic_key: ExternalId::parse(&setting.jira_epic_key)
                 .map_err(|_| refuse("jira_epic_key"))?,
@@ -386,7 +384,6 @@ mod tests {
             runtime_kind: runtime_kind.to_owned(),
             host_key: "paseo-host".to_owned(),
             mini_project_id: "mini-1".to_owned(),
-            provider: "codex".to_owned(),
             jira_epic_key: "ASMA-1".to_owned(),
             mini_project_short_title: "Epic".to_owned(),
             plan_item_key: "KON-MVP-15".to_owned(),
@@ -406,7 +403,7 @@ mod tests {
 
     /// The fleet document an operator would write for one AO lane.
     fn ao_document() -> &'static [u8] {
-        br#"{"schema_version": 2, "runtimes": [{"family": "ao",
+        br#"{"schema_version": 3, "runtimes": [{"family": "ao",
              "runtime_kind": "ao.claude-code", "host": "ao-host",
              "project_id": "proj-1", "project_path": "/w/ao-project",
              "kind": "worker", "harness": "claude-code",
@@ -491,7 +488,6 @@ mod tests {
             runtime_kind: "paseo.agent".to_owned(),
             host_key: "paseo-host".to_owned(),
             mini_project_id: "mini-1".to_owned(),
-            provider: "codex".to_owned(),
             jira_epic_key: "ASMA-1".to_owned(),
             mini_project_short_title: "Epic".to_owned(),
             plan_item_key: "KON-MVP-15".to_owned(),
@@ -550,7 +546,7 @@ mod tests {
         for family in DEFERRED_FAMILIES {
             std::fs::write(
                 path_in(directory.path()),
-                format!(r#"{{"schema_version": 2, "runtimes": [{{"family": "{family}"}}]}}"#),
+                format!(r#"{{"schema_version": 3, "runtimes": [{{"family": "{family}"}}]}}"#),
             )
             .expect("the fixture is written");
             let error = read(directory.path()).expect_err("a deferred family is refused");
@@ -566,7 +562,7 @@ mod tests {
         let directory = tempfile::TempDir::new().expect("a temporary directory");
         std::fs::write(
             path_in(directory.path()),
-            br#"{"schema_version": 2, "runtimes": [{"family": "https://user:hunter2@host"}]}"#,
+            br#"{"schema_version": 3, "runtimes": [{"family": "https://user:hunter2@host"}]}"#,
         )
         .expect("the fixture is written");
         let error = read(directory.path()).expect_err("an unknown family is not a fleet");

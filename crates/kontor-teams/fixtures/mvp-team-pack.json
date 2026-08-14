@@ -17,6 +17,7 @@
         {
           "id": "architect",
           "role": { "role": "architect", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh" }] },
           "skills": [{ "skill": "planning", "version": 1 }],
           "context": { "template": "team-brief", "version": 1 },
           "may_evaluate": [
@@ -31,6 +32,7 @@
         {
           "id": "builder",
           "role": { "role": "builder", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "claude", "model": "claude-opus-5", "effort": "xhigh" }] },
           "skills": [{ "skill": "implementation", "version": 1 }],
           "context": null,
           "may_evaluate": [],
@@ -40,6 +42,7 @@
         {
           "id": "tester",
           "role": { "role": "tester", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "codex", "model": "gpt-5.6-terra", "effort": "high" }] },
           "skills": [{ "skill": "verification", "version": 1 }],
           "context": null,
           "may_evaluate": ["qa-gate", "functionality-qa-gate"],
@@ -49,6 +52,7 @@
         {
           "id": "inspector",
           "role": { "role": "inspector", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "claude", "model": "claude-opus-5", "effort": "xhigh" }] },
           "skills": [{ "skill": "inspection", "version": 1 }],
           "context": null,
           "may_evaluate": [
@@ -64,6 +68,7 @@
         {
           "id": "verifier",
           "role": { "role": "therapist-verifier", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh" }] },
           "skills": [{ "skill": "clinical-simulation", "version": 1 }],
           "context": null,
           "may_evaluate": ["functionality-qa-gate"],
@@ -118,6 +123,7 @@
         {
           "id": "researcher-a",
           "role": { "role": "researcher", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh" }] },
           "skills": [{ "skill": "research-method", "version": 1 }],
           "context": null,
           "may_evaluate": [],
@@ -127,6 +133,7 @@
         {
           "id": "researcher-b",
           "role": { "role": "researcher", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "claude", "model": "claude-opus-5", "effort": "xhigh" }] },
           "skills": [{ "skill": "research-method", "version": 1 }],
           "context": null,
           "may_evaluate": [],
@@ -139,6 +146,7 @@
         {
           "id": "judge",
           "role": { "role": "judge", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh" }] },
           "skills": [{ "skill": "inspection", "version": 1 }],
           "context": null,
           "may_evaluate": ["evidence-gate", "synthesis-gate"],
@@ -148,6 +156,7 @@
         {
           "id": "synthesizer",
           "role": { "role": "synthesizer", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "claude", "model": "claude-opus-5", "effort": "xhigh" }] },
           "skills": [{ "skill": "synthesis", "version": 1 }],
           "context": null,
           "may_evaluate": [],
@@ -157,6 +166,7 @@
         {
           "id": "final-reviewer",
           "role": { "role": "reviewer", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh" }] },
           "skills": [{ "skill": "editorial", "version": 1 }],
           "context": null,
           "may_evaluate": ["research-final-gate"],

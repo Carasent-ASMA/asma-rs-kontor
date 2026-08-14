@@ -1247,14 +1247,13 @@ async fn a_permission_answer_is_applied_once_and_a_foreign_request_is_refused() 
 /// exist.
 fn fleet_settings() -> serde_json::Value {
     serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "runtimes": [
             {
                 "family": "paseo",
                 "runtime_kind": "paseo.agent",
                 "host_key": "paseo-host",
                 "mini_project_id": "mini-1",
-                "provider": "codex",
                 "jira_epic_key": "ASMA-7759",
                 "mini_project_short_title": "Kontor MVP",
                 "plan_item_key": "KON-MVP-15",

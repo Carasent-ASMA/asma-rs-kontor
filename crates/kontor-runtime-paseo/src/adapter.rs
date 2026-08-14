@@ -52,6 +52,7 @@ use kontor_core::id::{
     RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId, Timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
+use kontor_core::spec::ModelRung;
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
@@ -223,14 +224,6 @@ pub struct PaseoConfig {
     pub host_key: ExternalName,
     /// The Kontor mini-project this plane serves.
     pub mini_project_id: ExternalId,
-    /// The Paseo provider every seat on this plane runs under, e.g. `codex`.
-    ///
-    /// A property of the plane rather than of a run: 0.3.1's `agent run` refuses
-    /// outright without `--provider`, and picking one per launch would be
-    /// account routing this adapter has explicitly declared it cannot prove
-    /// (`account_env: false`). One plane, one provider, named in configuration
-    /// where an operator can see it.
-    pub provider: ExternalName,
     /// The validated command variables.
     pub scope: PaseoExecutionScope,
     /// The most sessions Kontor will hold open on this plane at once.
@@ -386,6 +379,12 @@ pub struct PaseoSeatRecord {
     pub workspace_id: ExternalId,
     /// The Paseo agent.
     pub agent_id: ExternalId,
+    /// The provider confirmed by Paseo's authoritative readback.
+    pub provider: String,
+    /// The model confirmed by Paseo's authoritative readback.
+    pub model: String,
+    /// The effective reasoning option confirmed by Paseo, if selected.
+    pub thinking: Option<String>,
     /// The provider's own session id, when Paseo exposed one.
     pub provider_session_id: Option<ExternalId>,
     /// The Orchestrator agent this seat was launched under.
@@ -1312,7 +1311,29 @@ impl PaseoAdapter {
         // …and the workspace itself, which is where the project half of the
         // agent's placement is proved on this wire.
         let workspace = self.fetch_workspace(workspace_id.as_str()).await?;
-        self.verify_workspace_placement(&workspace, &project)
+        self.verify_workspace_placement(&workspace, &project)?;
+        let record = self
+            .seat_record(binding.binding_id())
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        if agent.provider != record.provider
+            || agent.model != record.model
+            || agent.effective_thinking_option_id != record.thinking
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(())
+    }
+
+    fn verify_agent_route(agent: &PaseoAgent, requested: &ModelRung) -> RuntimeResult<()> {
+        if agent.provider != requested.provider.0 || agent.model != requested.model.0 {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if let Some(effort) = requested.effort
+            && agent.effective_thinking_option_id.as_deref() != Some(effort.as_str())
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(())
     }
 
     // -- Evidence -----------------------------------------------------------
@@ -1374,6 +1395,9 @@ impl PaseoAdapter {
             "raw_digest": ContentHash::of(raw.as_bytes()).as_str(),
             "read": {
                 "agent_id": agent.id,
+                "provider": agent.provider,
+                "model": agent.model,
+                "thinking": agent.effective_thinking_option_id,
                 "workspace_id": agent.workspace_id,
                 "status": format!("{:?}", agent.status),
                 "archived_at": agent.archived_at,
@@ -2130,7 +2154,9 @@ impl PaseoAdapter {
         let command = PaseoCommand::agent_run(
             &workspace_id,
             self.config.scope.canonical_worktree_cwd.as_str(),
-            self.config.provider.as_str(),
+            &request.model_rung().provider.0,
+            &request.model_rung().model.0,
+            request.model_rung().effort.map(|effort| effort.as_str()),
             &self.config.scope.agent_display_name(request.role_slot_id()),
             &labels,
             self.config.scope.orchestrator_agent_id.as_str(),
@@ -2154,6 +2180,7 @@ impl PaseoAdapter {
         // trusting the CLI here is a defect the fixtures name explicitly.
         let agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
+        Self::verify_agent_route(&agent, request.model_rung())?;
 
         let snapshot = self.bind(
             request.agent_run_id(),
@@ -2187,6 +2214,9 @@ impl PaseoAdapter {
             project_id: project.project_id.clone(),
             workspace_id: ExternalId::parse(&workspace_id)?,
             agent_id: ExternalId::parse(&agent.id)?,
+            provider: agent.provider.clone(),
+            model: agent.model.clone(),
+            thinking: agent.effective_thinking_option_id.clone(),
             provider_session_id: agent
                 .provider_session_id()
                 .map(ExternalId::parse)
@@ -2895,6 +2925,9 @@ impl RuntimeAdapter for PaseoAdapter {
             project_id: project.project_id.clone(),
             workspace_id: ExternalId::parse(&workspace_id)?,
             agent_id: ExternalId::parse(&after.id)?,
+            provider: after.provider.clone(),
+            model: after.model.clone(),
+            thinking: after.effective_thinking_option_id.clone(),
             provider_session_id: after
                 .provider_session_id()
                 .map(ExternalId::parse)

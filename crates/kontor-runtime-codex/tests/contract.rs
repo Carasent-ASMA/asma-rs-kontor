@@ -474,6 +474,11 @@ async fn admitted(adapter: &CodexAdapter<'_>, seat: &Seat, parts: &Parts) -> Lau
             cwd: parts.cwd.clone(),
             account_profile_id: parts.account,
             prompt: BoundedText::parse(&parts.prompt).expect("bounded text"),
+            model_rung: kontor_core::spec::ModelRung {
+                provider: kontor_core::spec::ProviderRef("codex".to_owned()),
+                model: kontor_core::spec::ModelRef("gpt-5.6-sol".to_owned()),
+                effort: None,
+            },
             context_policy: standard_context_policy(),
             requested_at: at("2026-08-10T09:00:00Z"),
         })

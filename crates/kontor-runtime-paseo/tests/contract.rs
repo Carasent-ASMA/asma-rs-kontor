@@ -39,6 +39,7 @@ use kontor_core::id::{
     AgentRunId, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId, RuntimeKindKey, TaskId,
     TeamRunId,
 };
+use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
 use kontor_runtime::adapter::{LaunchOutcome, RuntimeAdapter, RuntimeError, RuntimeResult};
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
@@ -293,9 +294,16 @@ fn config() -> PaseoConfig {
         runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("a valid runtime key"),
         host_key: name(HOST_KEY),
         mini_project_id: external(MINI_PROJECT),
-        provider: name("codex"),
         scope: scope(),
         max_concurrent_sessions: 8,
+    }
+}
+
+fn model_rung() -> ModelRung {
+    ModelRung {
+        provider: ProviderRef("claude".to_owned()),
+        model: ModelRef("claude-opus-5".to_owned()),
+        effort: None,
     }
 }
 
@@ -309,7 +317,9 @@ fn any_agent_run() -> PaseoCommand {
     PaseoCommand::agent_run(
         WORKSPACE_ID,
         CWD,
-        "codex",
+        "claude",
+        "claude-opus-5",
+        None,
         "t",
         &BTreeMap::new(),
         ORCHESTRATOR,
@@ -393,6 +403,17 @@ impl Plane {
         slot_id: &RoleSlotId,
         workspace: &WorkspaceBindingSnapshot,
     ) -> RuntimeResult<LaunchRequest> {
+        self.launch_request_for(agent_run_id, slot_id, workspace, model_rung())
+            .await
+    }
+
+    async fn launch_request_for(
+        &self,
+        agent_run_id: AgentRunId,
+        slot_id: &RoleSlotId,
+        workspace: &WorkspaceBindingSnapshot,
+        model_rung: ModelRung,
+    ) -> RuntimeResult<LaunchRequest> {
         let binding_id = RuntimeBindingId::generate();
         let authority = self
             .adapter
@@ -415,6 +436,7 @@ impl Plane {
             cwd: root(),
             account_profile_id: None,
             prompt: text("bootstrap the role"),
+            model_rung,
             context_policy: standard_context_policy(),
             requested_at: at("2026-08-10T09:00:00Z"),
         }))
@@ -1007,6 +1029,51 @@ async fn prelaunch_trusts_no_cli_answer_without_a_protocol_readback() {
     );
 }
 
+#[tokio::test]
+async fn prelaunch_refuses_a_route_the_readback_did_not_apply() {
+    for (field, value) in [("provider", "codex"), ("model", "claude-fable-5")] {
+        let recorded = daemon();
+        let mut wrong = v(AGENT);
+        wrong["agent"][field] = serde_json::json!(value);
+        recorded.set_answer_rpc("fetch_agent_request", wrong);
+        let (plane, workspace) = Plane::prepared(recorded).await;
+
+        let error = plane
+            .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+            .await
+            .expect_err("a runtime default cannot replace the selected route");
+        assert_eq!(error, RuntimeError::CorrelationFailed, "field: {field}");
+    }
+}
+
+#[tokio::test]
+async fn prelaunch_refuses_an_effort_the_readback_did_not_apply() {
+    let recorded = daemon();
+    let mut wrong = v(AGENT);
+    wrong["agent"]["thinkingOptionId"] = serde_json::json!("high");
+    wrong["agent"]["effectiveThinkingOptionId"] = serde_json::json!("high");
+    recorded.set_answer_rpc("fetch_agent_request", wrong);
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let mut requested = model_rung();
+    requested.effort = Some(EffortLevel::Xhigh);
+    let request = plane
+        .launch_request_for(
+            run(RUN_IMPLEMENT),
+            &slot("implement-a"),
+            &workspace,
+            requested,
+        )
+        .await
+        .expect("the seat is admitted");
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("the effective effort must match the launch");
+    assert_eq!(error, RuntimeError::CorrelationFailed);
+}
+
 // ---------------------------------------------------------------------------
 // role_slot_
 // ---------------------------------------------------------------------------
@@ -1080,6 +1147,7 @@ async fn role_slot_a_same_slot_race_yields_one_permit_and_one_agent() {
             cwd: root(),
             account_profile_id: None,
             prompt: text("bootstrap"),
+            model_rung: model_rung(),
             context_policy: standard_context_policy(),
             requested_at: at("2026-08-10T09:00:00Z"),
         });

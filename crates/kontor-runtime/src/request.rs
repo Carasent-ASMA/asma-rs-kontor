@@ -16,7 +16,7 @@ use kontor_core::id::{
     AccountProfileId, AgentRunId, BoundedText, CanonicalDocument, CompactionReceiptId, ContentHash,
     ExternalId, RoleSlotId, RuntimeBindingId, TaskId, TeamRunId, Timestamp,
 };
-use kontor_core::spec::{ContextEnforcement, ContextPolicySnapshot};
+use kontor_core::spec::{ContextEnforcement, ContextPolicySnapshot, ModelRung};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
@@ -162,6 +162,8 @@ pub struct LaunchParts {
     pub account_profile_id: Option<AccountProfileId>,
     /// What the session starts with.
     pub prompt: BoundedText,
+    /// The exact provider/model/effort rung selected for this launch.
+    pub model_rung: ModelRung,
     /// The immutable context-window policy this seat runs under.
     ///
     /// Both halves are already frozen and hashed: the launch carries the record,
@@ -281,6 +283,12 @@ impl LaunchRequest {
     #[must_use]
     pub const fn prompt(&self) -> &BoundedText {
         &self.parts.prompt
+    }
+
+    /// The exact provider/model/effort rung selected for this launch.
+    #[must_use]
+    pub const fn model_rung(&self) -> &ModelRung {
+        &self.parts.model_rung
     }
 
     /// The immutable context-window policy this seat runs under.
