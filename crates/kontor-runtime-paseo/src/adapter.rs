@@ -1312,12 +1312,14 @@ impl PaseoAdapter {
         // agent's placement is proved on this wire.
         let workspace = self.fetch_workspace(workspace_id.as_str()).await?;
         self.verify_workspace_placement(&workspace, &project)?;
-        let record = self
-            .seat_record(binding.binding_id())
-            .ok_or(RuntimeError::CorrelationFailed)?;
-        if agent.provider != record.provider
-            || agent.model != record.model
-            || agent.effective_thinking_option_id != record.thinking
+        // A live launch/adoption owns a full seat record and therefore freezes
+        // its route. Restart restoration deliberately reconstructs only facts
+        // Paseo can re-attest; its launch-time route remains in observation
+        // evidence rather than being fabricated into a new seat record.
+        if let Some(record) = self.seat_record(binding.binding_id())
+            && (agent.provider != record.provider
+                || agent.model != record.model
+                || agent.effective_thinking_option_id != record.thinking)
         {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -1397,7 +1399,8 @@ impl PaseoAdapter {
                 "agent_id": agent.id,
                 "provider": agent.provider,
                 "model": agent.model,
-                "thinking": agent.effective_thinking_option_id,
+                "thinking": agent.thinking_option_id,
+                "effective_thinking": agent.effective_thinking_option_id,
                 "workspace_id": agent.workspace_id,
                 "status": format!("{:?}", agent.status),
                 "archived_at": agent.archived_at,
@@ -2890,6 +2893,9 @@ impl RuntimeAdapter for PaseoAdapter {
         // and adopting it would bind a run to a transcript that no longer
         // contains the work the operator wanted kept.
         let after = self.fetch_agent(&native_id).await?;
+        if after.provider.is_empty() || after.model.is_empty() {
+            return Err(RuntimeError::CorrelationFailed);
+        }
         if after.provider_session_id() != before.provider_session_id() {
             return Err(RuntimeError::CorrelationFailed);
         }
