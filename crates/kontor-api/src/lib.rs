@@ -285,6 +285,12 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
             post(applications::settle_runtime),
         )
+        // A *turn* is smaller than a run: settling one closes Kontor's bounded
+        // piece of work and leaves the seat's native session live.
+        .route(
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle",
+            post(applications::settle_turn),
+        )
         // Profile detail and validation. Workspace-level, like the catalog they
         // extend: a category resolves to the same bundle in every Realm running
         // this build, so there is no project in the address.

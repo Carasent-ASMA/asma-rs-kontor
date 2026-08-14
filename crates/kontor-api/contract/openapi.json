@@ -457,6 +457,79 @@
         }
       }
     },
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Settle one bounded Kontor role turn.",
+        "description": "Operator, because it is a decision about Kontor's own work rather than about\nthe fleet. It closes the **turn**, never the run: the seat's native session\nstays live and reusable, and nothing here is admissible as evidence that the\nruntime ended anything.",
+        "operationId": "settle_turn",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The seat's agent run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettleTurnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Settled, or replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettledTurnDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The task moved, or the key settled a different turn"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/connectors/{connector}/field-specs": {
       "get": {
         "tags": [
@@ -5447,6 +5520,130 @@
           }
         }
       },
+      "SettleTurnRequest": {
+        "type": "object",
+        "description": "What `turns:settle` is asked for.\n\nIt settles **Kontor's** bounded turn in a persistent seat. There is no field\nhere for a runtime verdict, a terminal state or a native observation, and\nthat is the point: a seat is expected to still be sitting there when this\nreturns, ready for its next turn. Whether the *session* ever ended is a\nseparate question only the runtime can answer, and `runtime:settle` is where\nit is asked.",
+        "required": [
+          "role_slot",
+          "expected_task_revision"
+        ],
+        "properties": {
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The artifacts the turn produced."
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The task revision the caller believes is current.",
+            "minimum": 0
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "The role slot whose turn this is."
+          }
+        }
+      },
+      "SettledTurnDto": {
+        "type": "object",
+        "description": "What settling one bounded role turn produced.",
+        "required": [
+          "realm_id",
+          "turn_id",
+          "task_id",
+          "agent_run_id",
+          "role_slot",
+          "turn_ordinal",
+          "binding_generation",
+          "artifacts",
+          "settled_by",
+          "evidence_hash",
+          "applied",
+          "seat_live",
+          "follow_ups"
+        ],
+        "properties": {
+          "account_profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider account the seat runs as, derived from the bound run rather\nthan supplied by the caller. Operational context, never attribution."
+          },
+          "agent_run_id": {
+            "type": "string",
+            "description": "The seat's agent run, which stays open."
+          },
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call settled it, or replayed a settlement."
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The artifacts it produced."
+          },
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The native binding generation the seat was bound under.",
+            "minimum": 0
+          },
+          "evidence_hash": {
+            "type": "string",
+            "description": "The digest it was settled under."
+          },
+          "follow_ups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TurnFollowUpDto"
+            },
+            "description": "The follow-ups this settlement derived, in slot order."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was settled in."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "The role slot."
+          },
+          "seat_live": {
+            "type": "boolean",
+            "description": "Whether the seat's native session is still live. Settling a turn must\nnever end one, so this is the assertion that it did not."
+          },
+          "settled_by": {
+            "type": "string",
+            "description": "The tier the settling caller authenticated at. Not a claimed identity:\nit is what the presented credential proved."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task it served."
+          },
+          "team_run_closed": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team run, once every declared slot has settled its final turn and the\nteam's closure was certified from those rows. `None` while any slot is\nstill unaccounted for."
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "The receipt."
+          },
+          "turn_ordinal": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its position in that seat's sequence of turns.",
+            "minimum": 0
+          }
+        }
+      },
       "SnapshotDto_RunDto": {
         "type": "object",
         "description": "A point-in-time value and the position it is consistent with.\n\nIt is the wire spelling of `kontor-core`'s own `SnapshotEnvelope`: a\nsubscriber resumes strictly after `snapshot_cursor`, in the same Realm.",
@@ -6397,6 +6594,38 @@
           "work_profile": {
             "$ref": "#/components/schemas/RevisionRefDto",
             "description": "The work profile revision the work it proposes would use."
+          }
+        }
+      },
+      "TurnFollowUpDto": {
+        "type": "object",
+        "description": "One follow-up a settled turn derived.",
+        "required": [
+          "to_role_slot",
+          "dispatched"
+        ],
+        "properties": {
+          "after_phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it was derived: the handoff's phase and artifact conditions are met."
+          },
+          "dispatched": {
+            "type": "boolean",
+            "description": "Whether the effect actually reached the seat."
+          },
+          "target_agent_run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The seat it reached, when one was materialized for that slot."
+          },
+          "to_role_slot": {
+            "type": "string",
+            "description": "The slot the work was handed to."
           }
         }
       },

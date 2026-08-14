@@ -24,7 +24,7 @@
 //! nothing can). There is no method here, and no route above it, that creates a
 //! session any other way.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
@@ -40,8 +40,8 @@ use kontor_api::applications::{
 use kontor_api::applications::{
     ConnectorSpecDto, IntakeReceiptDto, ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto,
     ProfilePhaseDto, ProfileValidationDto, RegisterPackRequest, ResolveConflictRequest,
-    SubmitIntakeRequest, TicketClaimDto, TicketCommentDto, TicketCommentPullDto, TicketConflictDto,
-    TriggerSpecDto, WorkProfileDetailDto,
+    SettleTurnRequest, SettledTurnDto, SubmitIntakeRequest, TicketClaimDto, TicketCommentDto,
+    TicketCommentPullDto, TicketConflictDto, TriggerSpecDto, TurnFollowUpDto, WorkProfileDetailDto,
 };
 use kontor_api::applications::{
     GateProjectionDto, GateVerdictDto, ProvenanceDto, RecordGateRequest, RedactionDto,
@@ -53,11 +53,11 @@ use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, CommandReceiptId,
-    ConnectorKey, ContentHash, CurrencyCode, ExecutionAuthorizationId, ExternalId, ExternalName,
-    GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money, ProjectId,
-    RoleSlotId, RuntimeKindKey, SCHEMA_VERSION, SourceEventId, SpecVersion, StatusConflictId,
-    TaskId, TeamRunId, Timestamp, TriggerKey,
+    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CanonicalDocument,
+    CommandReceiptId, ConnectorKey, ContentHash, CurrencyCode, ExecutionAuthorizationId,
+    ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey,
+    Money, ProjectId, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SourceEventId,
+    SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp, TriggerKey,
 };
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
@@ -92,7 +92,8 @@ use kontor_scheduler::model::{
 };
 use kontor_store::{
     AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication, EpicTask, EpicTicketLink,
-    IdempotencyBinding, ProjectEnsure, RegisteredPack, SqliteStore, StoredConflict,
+    IdempotencyBinding, NewRoleTurn, ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore,
+    StoredConflict, TurnDispatch,
 };
 use kontor_teams::run::{TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 
@@ -401,12 +402,52 @@ impl Services {
                 ));
             }
         };
-        match slots.certify_team_closure(&[]) {
+        // Two ways a team can be finished, tried in the order that does not lie.
+        //
+        // Terminal runs first: if every declared slot's run actually ended, that
+        // is the stronger statement and the one to make. Only when it does not
+        // hold is the settled-turn basis considered — and that is not a fallback
+        // in the sense of "try something weaker", it is a different question:
+        // *did Kontor's work in every declared slot finish?* A persistent seat
+        // makes that question the only answerable one, because the session is
+        // meant to still be sitting there.
+        if let Ok(certificate) = slots.certify_team_closure(&[]) {
+            return Ok(Ok(certificate));
+        }
+        let accounted = self.settled_slots(project_id, team_run_id)?;
+        match slots.certify_from_settled_turns(&accounted, &[]) {
             Ok(certificate) => Ok(Ok(certificate)),
             Err(_) => Ok(Err(
-                "a declared role slot is still live or produced no terminal run",
+                "a declared role slot has neither ended nor settled its final turn",
             )),
         }
+    }
+
+    /// The final settled turn of each role slot in one team run.
+    ///
+    /// The digest carried per slot is the turn's own `evidence_hash`, so the
+    /// closure policy digest transitively covers *which* turn accounted for each
+    /// seat rather than merely that one did.
+    fn settled_slots(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+    ) -> Result<BTreeMap<RoleSlotId, ContentHash>, ApiError> {
+        let state = self.state()?;
+        let task_id = self.task_for_team_run(project_id, team_run_id)?;
+        let mut accounted: BTreeMap<RoleSlotId, ContentHash> = BTreeMap::new();
+        for turn in state
+            .with_store(|store| store.list_settled_turns(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if turn.team_run_id != team_run_id {
+                continue;
+            }
+            // Ordered oldest-first by the store, so the last write per slot is
+            // that slot's newest turn.
+            accounted.insert(turn.role_slot_id, turn.evidence_hash);
+        }
+        Ok(accounted)
     }
 
     /// Close the team run behind a settled agent run, when every slot is done.
@@ -433,9 +474,17 @@ impl Services {
             Ok(certificate) => certificate,
             Err(pending) => return Ok((None, Some(pending.to_owned()))),
         };
-        let evidence = certificate
-            .into_terminal_evidence(now)
-            .map_err(|error| self.refuse_domain(&error))?;
+        // The envelope has to match what the certificate actually proved. A
+        // settled-turn closure cites no child evidence, because its children are
+        // expected to be live.
+        let evidence = match certificate.basis() {
+            kontor_teams::run::TeamClosureBasis::TerminalRuns => certificate
+                .into_terminal_evidence(now)
+                .map_err(|error| self.refuse_domain(&error))?,
+            kontor_teams::run::TeamClosureBasis::SettledTurns => certificate
+                .into_settled_turn_evidence(now)
+                .map_err(|error| self.refuse_domain(&error))?,
+        };
         state
             .with_store(|store| {
                 store.close_team_run(&kontor_core::repository::TeamRunClosure {
@@ -495,11 +544,11 @@ impl Services {
             // No team ran, so there are no role slots to account for.
             return Ok(Ok(TaskTeamClosure::NoTeam));
         };
-        if !lifecycle.is_terminal() {
-            return Ok(Err(
-                "the task's team run has not closed; settle its runs first",
-            ));
-        }
+        // A team run that has not closed yet is not a refusal on its own: it may
+        // be closable *now* on settled turns, and the certifier is what decides.
+        // Refusing here on lifecycle alone is what made the public close route
+        // unreachable for a team whose seats are deliberately still live.
+        let _ = lifecycle;
         match self.certify_team(project_id, team_run_id)? {
             Ok(certificate) => Ok(Ok(certificate.task_team_closure())),
             Err(pending) => Ok(Err(pending)),
@@ -618,6 +667,282 @@ impl Services {
             .map_err(|error| self.refuse(&error))?;
         state.sessions().forget(binding_id);
         Ok(())
+    }
+
+    /// The task one team run serves.
+    fn task_for_team_run(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+    ) -> Result<TaskId, ApiError> {
+        let state = self.state()?;
+        state
+            .with_store(|store| store.get_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|run| run.task_id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this seat's team run does not exist in this project",
+                )
+            })
+    }
+
+    /// Derive, at most once, the follow-ups one settled turn unlocks.
+    ///
+    /// Everything it decides from is *persisted*: the settled turns of this task
+    /// (which carry the artifacts each produced), the task's pinned workflow
+    /// phase, and the frozen team template's handoff DAG. Nothing is read from
+    /// memory that a restart would lose, which is what lets the same derivation
+    /// run again from the reconciliation seam and reach the same answer.
+    ///
+    /// At-most-once is the store's, not a flag's: `turn_dispatches` is keyed by
+    /// `(settling turn, receiving slot)`, so a replayed settlement and a restart
+    /// that re-derives the same follow-up both insert nothing.
+    async fn derive_follow_ups(
+        &self,
+        project_id: ProjectId,
+        settled: &SettledTurn,
+        now: Timestamp,
+    ) -> Result<Vec<TurnFollowUpDto>, ApiError> {
+        let state = self.state()?;
+        let Some(team_run) = state
+            .with_store(|store| store.get_team_run(project_id, settled.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(Vec::new());
+        };
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team_run.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+
+        // Every artifact this task's turns have produced, not only this turn's.
+        // A handoff waits on artifacts, and it does not care which turn produced
+        // which: the condition is about the task's state, not about authorship.
+        let produced: BTreeSet<ArtifactKey> = state
+            .with_store(|store| store.list_settled_turns(project_id, settled.task_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .flat_map(|turn| turn.artifacts)
+            .collect();
+        let phase = state
+            .with_store(|store| store.get_active_task_workflow(project_id, settled.task_id))
+            .map_err(|error| self.refuse(&error))?;
+
+        let mut follow_ups = Vec::new();
+        for handoff in &template.handoffs {
+            if handoff.from_slot != settled.role_slot_id {
+                continue;
+            }
+            // Both halves of the condition, read from persisted facts.
+            if !handoff
+                .required_artifacts
+                .iter()
+                .all(|artifact| produced.contains(artifact))
+            {
+                continue;
+            }
+            if let (Some(after), Some(workflow)) = (handoff.after_phase.as_ref(), phase.as_ref())
+                && !phase_reached(
+                    &workflow.snapshot.definition,
+                    &workflow.current_phase,
+                    after,
+                )
+            {
+                continue;
+            }
+            // The seat for the receiving slot, already materialized by the start
+            // that seated this team. A follow-up never creates one: activation is
+            // about giving work to a seat that exists.
+            let target = self.seat_for_slot(project_id, settled.team_run_id, &handoff.to_slot)?;
+            // The message id is minted *once*, with the row, and never per
+            // attempt. A retry of an undelivered follow-up therefore presents
+            // the same id, which is what lets the runtime recognise an effect it
+            // already committed but could not acknowledge.
+            let message_id = kontor_runtime::request::MessageId::generate();
+            let derived = state
+                .with_store(|store| {
+                    store.derive_turn_dispatch(&TurnDispatch {
+                        settled_turn_id: settled.id,
+                        to_role_slot_id: handoff.to_slot.clone(),
+                        project_id,
+                        team_run_id: settled.team_run_id,
+                        message_id: message_id.to_string(),
+                        target_agent_run: target,
+                        dispatched: false,
+                        derived_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+            let dispatched = if derived == Applied::Created {
+                // Only a *newly* derived follow-up produces an effect. A replay
+                // reaches the same row and does nothing, which is the whole of
+                // "at most one follow-up effect".
+                self.deliver_follow_up(project_id, settled, handoff, target, message_id, now)
+                    .await?
+            } else {
+                self.already_dispatched(project_id, settled.id, &handoff.to_slot)?
+            };
+            follow_ups.push(TurnFollowUpDto {
+                to_role_slot: handoff.to_slot.as_role_key().as_str().to_owned(),
+                target_agent_run_id: target.map(|id| id.to_string()),
+                dispatched,
+                after_phase: handoff
+                    .after_phase
+                    .as_ref()
+                    .map(|phase| phase.as_str().to_owned()),
+            });
+        }
+        Ok(follow_ups)
+    }
+
+    /// One settled turn of this project, by id.
+    fn settled_turn(
+        &self,
+        project_id: ProjectId,
+        turn: RoleTurnId,
+    ) -> Result<Option<SettledTurn>, ApiError> {
+        let state = self.state()?;
+        // Turns are listed per task, so the lookup goes through the dispatch row
+        // that named this turn: it carries the team run, and the team run names
+        // the task. A by-id read would be a second index over a table nothing
+        // else queries that way.
+        let dispatches = state
+            .with_store(|store| store.list_turn_dispatches(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        for row in dispatches {
+            if row.settled_turn_id != turn {
+                continue;
+            }
+            let task_id = self.task_for_team_run(project_id, row.team_run_id)?;
+            let turns = state
+                .with_store(|store| store.list_settled_turns(project_id, task_id))
+                .map_err(|error| self.refuse(&error))?;
+            return Ok(turns.into_iter().find(|candidate| candidate.id == turn));
+        }
+        Ok(None)
+    }
+
+    /// The handoff a derived follow-up came from.
+    fn handoff_for(
+        &self,
+        project_id: ProjectId,
+        settled: &SettledTurn,
+        to_slot: &RoleSlotId,
+    ) -> Result<Option<kontor_teams::spec::RoleHandoff>, ApiError> {
+        let state = self.state()?;
+        let Some(team_run) = state
+            .with_store(|store| store.get_team_run(project_id, settled.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team_run.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        Ok(template
+            .handoffs
+            .iter()
+            .find(|handoff| {
+                handoff.from_slot == settled.role_slot_id && &handoff.to_slot == to_slot
+            })
+            .cloned())
+    }
+
+    /// Whether one derived follow-up has already reached its seat.
+    fn already_dispatched(
+        &self,
+        project_id: ProjectId,
+        turn: RoleTurnId,
+        slot: &RoleSlotId,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        Ok(state
+            .with_store(|store| store.list_turn_dispatches(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .any(|row| {
+                row.settled_turn_id == turn && &row.to_role_slot_id == slot && row.dispatched
+            }))
+    }
+
+    /// The seat holding one role slot in a team run, if it was materialized.
+    fn seat_for_slot(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        slot: &RoleSlotId,
+    ) -> Result<Option<AgentRunId>, ApiError> {
+        let state = self.state()?;
+        let role = slot.clone().into_role_key();
+        Ok(state
+            .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|seat| seat.role == role)
+            .map(|seat| seat.agent_run_id))
+    }
+
+    /// Give one already-materialized seat its follow-up work.
+    ///
+    /// The effect is a message into the seat's live session, which is why the
+    /// seat has to still be one: a follow-up to a seat this process cannot drive
+    /// is recorded as derived and undelivered rather than reported as done, and
+    /// the next reconciliation retries exactly that row.
+    async fn deliver_follow_up(
+        &self,
+        project_id: ProjectId,
+        settled: &SettledTurn,
+        handoff: &kontor_teams::spec::RoleHandoff,
+        target: Option<AgentRunId>,
+        message_id: kontor_runtime::request::MessageId,
+        now: Timestamp,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        let Some(target) = target else {
+            return Ok(false);
+        };
+        let Some(run) = state
+            .with_store(|store| store.get_agent_run(project_id, target))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(false);
+        };
+        let Some(binding) = run.binding.as_ref() else {
+            return Ok(false);
+        };
+        let Some(snapshot) = state.sessions().get(binding.id) else {
+            return Ok(false);
+        };
+        let Some(adapter) = state.runtimes().get(&binding.identity.runtime_kind) else {
+            return Ok(false);
+        };
+        let body = kontor_core::id::BoundedText::parse(&format!(
+            "handoff: {} finished its turn. The artifacts it owed are recorded. Begin your turn.",
+            settled.role_slot_id.as_role_key().as_str()
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        // The id belongs to the dispatch row, not to this attempt: it was minted
+        // once when the follow-up was derived and is read back on every retry. An
+        // effect the runtime committed but could not acknowledge is therefore
+        // recognised as the *same* message rather than delivered a second time.
+        let request = kontor_runtime::request::SendMessageRequest {
+            binding: snapshot,
+            message_id,
+            body,
+            sent_at: now,
+        };
+        match adapter.send(&request).await {
+            Ok(_) => {
+                state
+                    .with_store(|store| {
+                        store.mark_turn_dispatched(settled.id, &handoff.to_slot, target)
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                Ok(true)
+            }
+            // Derived and undelivered. The row stands, so the next reconciliation
+            // retries this one instead of deriving another.
+            Err(_) => Ok(false),
+        }
     }
 
     /// The root a task's workspace is prepared at.
@@ -3260,6 +3585,203 @@ impl ApplicationOperations for Services {
         })
     }
 
+    async fn retry_undelivered_dispatches(&self) -> Result<usize, ApiError> {
+        let state = self.state()?;
+        let projects = state
+            .with_store(SqliteStore::list_projects)
+            .map_err(|error| self.refuse(&error))?;
+        let now = kontor_api::now();
+        let mut delivered = 0;
+        for project in &projects {
+            let pending: Vec<_> = state
+                .with_store(|store| store.list_turn_dispatches(project.project_id))
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .filter(|row| !row.dispatched)
+                .collect();
+            for row in pending {
+                // The follow-up already exists as a decision; this only finishes
+                // handing it over. Nothing here re-derives, so a restart cannot
+                // turn one decision into two effects.
+                let Some(settled) = self.settled_turn(project.project_id, row.settled_turn_id)?
+                else {
+                    continue;
+                };
+                let Some(handoff) =
+                    self.handoff_for(project.project_id, &settled, &row.to_role_slot_id)?
+                else {
+                    continue;
+                };
+                let Ok(message_id) = kontor_runtime::request::MessageId::parse(&row.message_id)
+                else {
+                    continue;
+                };
+                if self
+                    .deliver_follow_up(
+                        project.project_id,
+                        &settled,
+                        &handoff,
+                        row.target_agent_run,
+                        message_id,
+                        now,
+                    )
+                    .await?
+                {
+                    delivered += 1;
+                }
+            }
+        }
+        Ok(delivered)
+    }
+
+    async fn settle_turn(
+        &self,
+        key: &IdempotencyKey,
+        authority: kontor_api::auth::CallerCapability,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &SettleTurnRequest,
+    ) -> Result<SettledTurnDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+
+        // The seat, and the binding that makes it a seat. A run that was never
+        // bound has no turn to settle: there was no session to take one in.
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such agent run exists in this project",
+                )
+            })?;
+        let binding = run.binding.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::NotFound,
+                "this run holds no seat, so it has no turn to settle",
+            )
+        })?;
+        // A settled turn must never be a way to keep working a closed run. The
+        // run staying *open* is the postcondition; a run already terminal is a
+        // refusal rather than a turn.
+        if run.terminal.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "this run is closed, so there is no bounded turn left to settle",
+            ));
+        }
+
+        let team_run_id = run.team_run_id;
+        let task_id = self.task_for_team_run(project_id, team_run_id)?;
+        let task = self.task_row(project_id, task_id)?;
+        // The revision is the caller's statement about *which* task state this
+        // turn was taken against. A task that moved underneath the turn means the
+        // work was judged against something else.
+        if task.revision != request.expected_task_revision {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the task moved since the caller read it",
+            ));
+        }
+
+        let role_slot =
+            RoleSlotId::parse(&request.role_slot).map_err(|error| self.refuse_domain(&error))?;
+        if run.role != role_slot.clone().into_role_key() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "this seat does not hold that role slot",
+            ));
+        }
+        // The settling authority is the tier the caller *authenticated at*, not a
+        // name from the request body. A caller-supplied account id proves nothing
+        // about who is asking, so there is no longer a field for one.
+        //
+        // The provider account is derived from the bound run — it is the account
+        // the seat actually runs as — and is operational context rather than
+        // attribution. A run with none contributes none; nothing is invented.
+        let account_profile = run.account_profile_id;
+
+        let artifacts: BTreeSet<ArtifactKey> = request
+            .artifacts
+            .iter()
+            .map(|key| ArtifactKey::parse(key))
+            .collect::<Result<_, _>>()
+            .map_err(|error| self.refuse_domain(&error))?;
+        // The digest covers exactly what identifies this turn, so a replay under
+        // the same key with different content is a conflict and not a second
+        // position in the seat's sequence.
+        let evidence = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "settle_role_turn",
+            "task_id": task_id.to_string(),
+            "team_run_id": team_run_id.to_string(),
+            "agent_run_id": agent_run_id.to_string(),
+            "role_slot": role_slot.as_role_key().as_str(),
+            "task_revision": task.revision.get(),
+            "binding_generation": binding.identity.generation,
+            "authority_tier": authority.as_str(),
+            "account_profile": account_profile.map(|id| id.to_string()),
+            "artifacts": artifacts.iter().map(|key| key.as_str()).collect::<Vec<_>>(),
+        }))?;
+
+        let (settled, applied) = state
+            .with_store(|store| {
+                store.settle_role_turn(&NewRoleTurn {
+                    id: RoleTurnId::generate(),
+                    project_id,
+                    task_id,
+                    team_run_id,
+                    agent_run_id,
+                    role_slot_id: role_slot.clone(),
+                    idempotency_key: key.as_str().to_owned(),
+                    task_revision: task.revision,
+                    binding_generation: binding.identity.generation,
+                    authority_tier: authority.as_str(),
+                    account_profile,
+                    artifacts: artifacts.clone(),
+                    evidence_hash: evidence.hash().clone(),
+                    settled_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+
+        // The postcondition, asserted rather than assumed: settling a turn must
+        // leave the seat's session live. If this process no longer holds the
+        // frozen snapshot the seat is not reusable, and saying so is the honest
+        // answer.
+        let seat_live = state.sessions().get(binding.id).is_some();
+
+        // Closing the team is attempted on every settlement, not only the last
+        // one, because "was that the last slot?" is not a question the caller can
+        // be trusted to answer — the certifier decides it from the template's
+        // declared slots. Until every one is accounted for this is a no-op.
+        let (team_run_closed, _) = self.settle_team(project_id, &run, now)?;
+        let follow_ups = self.derive_follow_ups(project_id, &settled, now).await?;
+
+        Ok(SettledTurnDto {
+            realm_id: state.realm_id(),
+            turn_id: settled.id.to_string(),
+            task_id,
+            agent_run_id: agent_run_id.to_string(),
+            role_slot: settled.role_slot_id.as_role_key().as_str().to_owned(),
+            turn_ordinal: settled.turn_ordinal,
+            binding_generation: settled.binding_generation,
+            artifacts: settled
+                .artifacts
+                .iter()
+                .map(|key| key.as_str().to_owned())
+                .collect(),
+            settled_by: authority.as_str().to_owned(),
+            account_profile: account_profile.map(|id| id.to_string()),
+            evidence_hash: settled.evidence_hash.as_str().to_owned(),
+            applied: applied_dto(applied),
+            seat_live,
+            team_run_closed,
+            follow_ups,
+        })
+    }
+
     async fn settle_runtime(
         &self,
         key: &IdempotencyKey,
@@ -4227,13 +4749,18 @@ impl Services {
                     "the task's work profile prescribes no team, so there is no seat to fill",
                 )
             })?;
+        // Every pack this realm holds, not only the compiled one. A registered
+        // pack's profile can be selected and frozen onto a task, so its team has
+        // to be seatable too — resolving only the seeds here made a registered
+        // profile applicable and unrunnable, which is worse than refusing it.
         let team = self
-            .pack
-            .team(pinned.template_id, pinned.version)
+            .packs()?
+            .into_iter()
+            .find_map(|pack| pack.team(pinned.template_id, pinned.version).cloned())
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::NotFound,
-                    "the pinned team template revision is not in this build's pack",
+                    "the pinned team template revision is in no pack this realm holds",
                 )
             })?;
         let revision = team
@@ -4258,7 +4785,7 @@ impl Services {
                 "the pinned team template seats no role slot",
             ));
         }
-        let roots = eligible_roots(team);
+        let roots = eligible_roots(&team);
         // A root leads: the seat that no handoff feeds is the one the work starts
         // at. Ordering the roots first is not required for correctness — every
         // seat is created either way — but it keeps the admitted seat, the one
@@ -4993,6 +5520,26 @@ fn ownership_action_name(action: OwnershipAction) -> String {
         .ok()
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| "reassign_to_principal".to_owned())
+}
+
+/// Whether a workflow has reached at least `target` in its profile's phase order.
+///
+/// Phases are an ordered list on the pinned profile, so "reached" is position and
+/// not name matching: a handoff that waits for `review` is satisfied once the
+/// task is at `review` or past it. A phase the profile does not declare is never
+/// reached, because a condition nothing can satisfy must not silently pass.
+fn phase_reached(
+    definition: &kontor_core::spec::WorkProfileSpec,
+    current: &kontor_core::id::PhaseKey,
+    target: &kontor_core::id::PhaseKey,
+) -> bool {
+    let position = |key: &kontor_core::id::PhaseKey| {
+        definition.phases.iter().position(|phase| &phase.id == key)
+    };
+    match (position(current), position(target)) {
+        (Some(current), Some(target)) => current >= target,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

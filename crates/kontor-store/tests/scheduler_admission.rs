@@ -935,22 +935,32 @@ fn a_ceiling_is_recounted_from_the_rows_rather_than_trusted() {
         .store
         .admit_candidate(&request)
         .expect_err("a spent ceiling refuses the admission");
-    assert!(
-        matches!(error, RepositoryError::Conflict { .. }),
+    // Its own variant, not a conflict. Nothing the caller presented was stale,
+    // so the two refusals mean different things and are typed differently.
+    assert_eq!(
+        error,
+        RepositoryError::CapacityExhausted { scope: "global" },
         "{error:?}"
     );
 
-    // Each keyed ceiling is recounted independently.
-    for narrow in [
-        |config: &mut CapacityConfig| config.project_max_in_flight = 1,
-        |config: &mut CapacityConfig| config.mission_max_in_flight = 1,
-        |config: &mut CapacityConfig| config.account_max_in_flight = 1,
-    ] {
+    // Each keyed ceiling is recounted independently, and each says which one it
+    // was — internally. That name is what the boundary withholds, so it has to
+    // exist here to be withheld there.
+    for expected in ["project", "goal", "account"] {
         let mut request = commit(&scope, &admitted, &peers, &parts, &scope.template, now());
-        narrow(&mut request.capacity);
-        assert!(
-            harness.store.admit_candidate(&request).is_err(),
-            "each keyed ceiling is recounted"
+        match expected {
+            "project" => request.capacity.project_max_in_flight = 1,
+            "goal" => request.capacity.mission_max_in_flight = 1,
+            _ => request.capacity.account_max_in_flight = 1,
+        }
+        let error = harness
+            .store
+            .admit_candidate(&request)
+            .expect_err("each keyed ceiling is recounted");
+        assert_eq!(
+            error,
+            RepositoryError::CapacityExhausted { scope: expected },
+            "{error:?}"
         );
     }
 }

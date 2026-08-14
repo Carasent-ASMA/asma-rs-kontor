@@ -175,6 +175,13 @@ entity_ids! {
     StatusConflictId,
     /// Identifies one append-only guardrail evaluation.
     GuardrailEvaluationId,
+    /// Identifies one bounded Kontor role turn taken in a persistent seat.
+    ///
+    /// A turn is *smaller* than a run: a seat holds one native session across
+    /// many turns, and settling a turn closes Kontor's bounded piece of work
+    /// without ending the session. A turn receipt is therefore never terminal
+    /// evidence about the runtime.
+    RoleTurnId,
     /// Identifies a lease over a contended resource (a module, a worktree, …).
     ResourceLeaseId,
     /// Identifies one command intent and its receipt.

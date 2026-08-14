@@ -363,6 +363,31 @@ impl Daemon {
             _ => BarrierState::Failed,
         };
         self.state.barrier().settle(outcome);
+        // Follow-ups that a previous process derived and never handed over are
+        // finished here, on the seam that already owns "what did this realm
+        // leave unfinished?". Nothing is *derived* at startup — a follow-up
+        // exists only because a turn was settled — so a restart cannot invent
+        // work, and the dispatch table's key makes a retry idempotent.
+        if outcome == BarrierState::Open {
+            match self
+                .state
+                .applications()
+                .retry_undelivered_dispatches()
+                .await
+            {
+                Ok(0) => {}
+                Ok(delivered) => info!(
+                    realm_id = %realm_id,
+                    delivered,
+                    "follow-ups derived before the restart were handed over"
+                ),
+                Err(error) => warn!(
+                    realm_id = %realm_id,
+                    detail = %error.code.as_str(),
+                    "follow-ups derived before the restart could not be handed over"
+                ),
+            }
+        }
         info!(
             realm_id = %realm_id,
             barrier = ?outcome,

@@ -30,10 +30,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use kontor_core::DomainError;
 use kontor_core::calendar::ExecutionAuthorization;
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, CommandReceiptId, ConnectorKey, ContentHash,
-    ExecutionAuthorizationId, ExternalId, ExternalName, MiniProjectId, ModuleKey, ProjectId,
-    RuntimeBindingId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamTemplateId,
-    TicketLinkId, TicketObservationId, Timestamp,
+    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CommandReceiptId, ConnectorKey,
+    ContentHash, ExecutionAuthorizationId, ExternalId, ExternalName, MiniProjectId, ModuleKey,
+    ProjectId, RoleSlotId, RoleTurnId, RuntimeBindingId, SpecVersion, StatusConflictId, TaskId,
+    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, TicketObservationId, Timestamp,
 };
 use kontor_core::repository::{
     MiniProject, Project, RepositoryError, RepositoryResult, Task, TicketLink,
@@ -45,9 +45,10 @@ use kontor_core::ticket::StatusConflictKind;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
+use crate::query::column_text;
 use crate::repository::{
-    TASK_COLUMNS, backend, conflict, read_project, read_scope, read_task, read_timestamp,
-    read_version, revision_of, text, version_column,
+    TASK_COLUMNS, backend, conflict, from_json, read_project, read_scope, read_task,
+    read_timestamp, read_version, revision_of, text, to_json, version_column,
 };
 
 // ---------------------------------------------------------------------------
@@ -2155,4 +2156,351 @@ impl SqliteStore {
         }
         Ok(found)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bounded role turns
+// ---------------------------------------------------------------------------
+
+/// One bounded Kontor role turn, as it is settled.
+///
+/// It attests that *Kontor's* turn finished, under a named actor's authority,
+/// against a named task revision and native binding generation. It is not, and
+/// must never be read as, evidence that the runtime ended anything: the seat is
+/// expected to still be sitting there, ready for the next turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewRoleTurn {
+    /// The receipt id.
+    pub id: RoleTurnId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The task the turn served.
+    pub task_id: TaskId,
+    /// The team run it belongs to.
+    pub team_run_id: TeamRunId,
+    /// The seat's agent run. It stays open.
+    pub agent_run_id: AgentRunId,
+    /// The role slot the turn was taken in.
+    pub role_slot_id: RoleSlotId,
+    /// The caller's stable key.
+    pub idempotency_key: String,
+    /// The task revision the caller presented.
+    pub task_revision: AggregateRevision,
+    /// The native binding generation the seat was bound under.
+    pub binding_generation: u64,
+    /// The tier the settling caller authenticated at. Truthful by construction:
+    /// it is what the bearer proved, not what a request body claimed.
+    pub authority_tier: &'static str,
+    /// The provider account the seat runs as, derived from the bound run.
+    pub account_profile: Option<AccountProfileId>,
+    /// The artifacts the turn produced, in canonical order.
+    pub artifacts: BTreeSet<ArtifactKey>,
+    /// Digest over the settled turn's identifying content.
+    pub evidence_hash: ContentHash,
+    /// When it was settled.
+    pub settled_at: Timestamp,
+}
+
+/// One settled role turn, as it was stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettledTurn {
+    /// The receipt.
+    pub id: RoleTurnId,
+    /// The task it served.
+    pub task_id: TaskId,
+    /// The team run.
+    pub team_run_id: TeamRunId,
+    /// The seat's agent run.
+    pub agent_run_id: AgentRunId,
+    /// The role slot.
+    pub role_slot_id: RoleSlotId,
+    /// Its position in that seat's sequence of turns.
+    pub turn_ordinal: u32,
+    /// The artifacts it produced.
+    pub artifacts: BTreeSet<ArtifactKey>,
+    /// The digest it was settled under.
+    pub evidence_hash: ContentHash,
+    /// The native binding generation.
+    pub binding_generation: u64,
+    /// When it was settled.
+    pub settled_at: Timestamp,
+}
+
+/// One follow-up a settled turn derived.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnDispatch {
+    /// The turn that derived it.
+    pub settled_turn_id: RoleTurnId,
+    /// The slot it hands to.
+    pub to_role_slot_id: RoleSlotId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The team run both slots belong to.
+    pub team_run_id: TeamRunId,
+    /// The message this follow-up is delivered as. Fixed at derivation, so a
+    /// retry of an undelivered row is the same message and not a second effect.
+    pub message_id: String,
+    /// The seat it targeted, once one was found.
+    pub target_agent_run: Option<AgentRunId>,
+    /// Whether the effect actually reached the seat.
+    pub dispatched: bool,
+    /// When it was derived.
+    pub derived_at: Timestamp,
+}
+
+impl SqliteStore {
+    /// Settle one bounded role turn, or return the turn that key already
+    /// settled.
+    ///
+    /// The ordinal is allocated inside the transaction from the seat's own
+    /// sequence, so two settlements racing for the same seat cannot both take
+    /// position *n*. Nothing here touches `agent_runs`: the seat stays open and
+    /// its binding stays live, which is the whole point of a turn being a
+    /// smaller thing than a run.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the key already settled a turn
+    /// whose identifying content differs, and a backend error otherwise.
+    pub fn settle_role_turn(&self, turn: &NewRoleTurn) -> RepositoryResult<(SettledTurn, Applied)> {
+        let transaction = self.begin()?;
+        // Key first, and compared whole: a replay of the same settlement is the
+        // original answer, and the same key naming a different turn is a
+        // conflict rather than a second position in the sequence.
+        let existing: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT id, evidence_hash FROM role_turns WHERE idempotency_key = ?1",
+                params![turn.idempotency_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((id, evidence)) = existing {
+            if evidence != turn.evidence_hash.as_str() {
+                return Err(conflict(
+                    "role turn",
+                    "this key already settled a turn with different content",
+                ));
+            }
+            let settled = read_turn(&transaction, &id)?.ok_or(RepositoryError::NotFound {
+                subject: "settled role turn",
+            })?;
+            return Ok((settled, Applied::Unchanged));
+        }
+
+        let ordinal: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(turn_ordinal), 0) + 1 FROM role_turns
+                 WHERE project_id = ?1 AND agent_run_id = ?2 AND role_slot_id = ?3",
+                params![
+                    turn.project_id.to_string(),
+                    turn.agent_run_id.to_string(),
+                    turn.role_slot_id.as_role_key().as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        let artifacts = to_json(
+            &turn
+                .artifacts
+                .iter()
+                .map(|key| key.as_str().to_owned())
+                .collect::<Vec<_>>(),
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO role_turns
+                     (id, project_id, task_id, team_run_id, agent_run_id, role_slot_id,
+                      turn_ordinal, idempotency_key, task_revision, binding_generation,
+                      authority_tier, account_profile, artifacts, evidence_hash, settled_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    turn.id.to_string(),
+                    turn.project_id.to_string(),
+                    turn.task_id.to_string(),
+                    turn.team_run_id.to_string(),
+                    turn.agent_run_id.to_string(),
+                    turn.role_slot_id.as_role_key().as_str(),
+                    ordinal,
+                    turn.idempotency_key,
+                    crate::repository::revision_column(turn.task_revision)?,
+                    i64::try_from(turn.binding_generation).unwrap_or(i64::MAX),
+                    turn.authority_tier,
+                    turn.account_profile.map(|id| id.to_string()),
+                    artifacts,
+                    turn.evidence_hash.as_str(),
+                    text(turn.settled_at)
+                ],
+            )
+            .map_err(backend)?;
+        let settled =
+            read_turn(&transaction, &turn.id.to_string())?.ok_or(RepositoryError::NotFound {
+                subject: "settled role turn",
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok((settled, Applied::Created))
+    }
+
+    /// Every turn settled on one task, oldest first.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn list_settled_turns(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Vec<SettledTurn>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, task_id, team_run_id, agent_run_id, role_slot_id, turn_ordinal,
+                        artifacts, evidence_hash, binding_generation, settled_at
+                 FROM role_turns
+                 WHERE project_id = ?1 AND task_id = ?2
+                 ORDER BY settled_at, turn_ordinal",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), task_id.to_string()])
+            .map_err(backend)?;
+        let mut turns = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            turns.push(turn_from_row(row)?);
+        }
+        Ok(turns)
+    }
+
+    /// Record a derived follow-up, or prove one was already derived.
+    ///
+    /// This is what makes successor activation *at most once*. The primary key
+    /// is the settling turn plus the slot it hands to, so re-deriving the same
+    /// follow-up — on a replayed settlement or on the next reconciliation
+    /// re-reading the same facts — inserts nothing.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn derive_turn_dispatch(&self, dispatch: &TurnDispatch) -> RepositoryResult<Applied> {
+        let changed = self
+            .connection
+            .execute(
+                "INSERT INTO turn_dispatches
+                     (settled_turn_id, to_role_slot_id, project_id, team_run_id,
+                      message_id, target_agent_run, dispatched, derived_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (settled_turn_id, to_role_slot_id) DO NOTHING",
+                params![
+                    dispatch.settled_turn_id.to_string(),
+                    dispatch.to_role_slot_id.as_role_key().as_str(),
+                    dispatch.project_id.to_string(),
+                    dispatch.team_run_id.to_string(),
+                    dispatch.message_id,
+                    dispatch.target_agent_run.map(|id| id.to_string()),
+                    i64::from(dispatch.dispatched),
+                    text(dispatch.derived_at)
+                ],
+            )
+            .map_err(backend)?;
+        Ok(if changed == 0 {
+            Applied::Unchanged
+        } else {
+            Applied::Created
+        })
+    }
+
+    /// Mark one derived follow-up as delivered.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn mark_turn_dispatched(
+        &self,
+        settled_turn_id: RoleTurnId,
+        to_role_slot_id: &RoleSlotId,
+        target: AgentRunId,
+    ) -> RepositoryResult<()> {
+        self.connection
+            .execute(
+                "UPDATE turn_dispatches
+                 SET dispatched = 1, target_agent_run = ?3
+                 WHERE settled_turn_id = ?1 AND to_role_slot_id = ?2",
+                params![
+                    settled_turn_id.to_string(),
+                    to_role_slot_id.as_role_key().as_str(),
+                    target.to_string()
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Every follow-up derived from one task's turns.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn list_turn_dispatches(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<TurnDispatch>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT settled_turn_id, to_role_slot_id, project_id, team_run_id,
+                        message_id, target_agent_run, dispatched, derived_at
+                 FROM turn_dispatches WHERE project_id = ?1
+                 ORDER BY derived_at, to_role_slot_id",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut found = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let target: Option<String> = row.get(5).map_err(backend)?;
+            found.push(TurnDispatch {
+                settled_turn_id: RoleTurnId::parse(&column_text(row, 0)?)?,
+                to_role_slot_id: RoleSlotId::parse(&column_text(row, 1)?)?,
+                project_id: ProjectId::parse(&column_text(row, 2)?)?,
+                team_run_id: TeamRunId::parse(&column_text(row, 3)?)?,
+                message_id: column_text(row, 4)?,
+                target_agent_run: target.as_deref().map(AgentRunId::parse).transpose()?,
+                dispatched: row.get::<_, i64>(6).map_err(backend)? == 1,
+                derived_at: read_timestamp(&column_text(row, 7)?)?,
+            });
+        }
+        Ok(found)
+    }
+}
+
+/// One settled turn, read by id inside an open transaction.
+fn read_turn(transaction: &Transaction<'_>, id: &str) -> RepositoryResult<Option<SettledTurn>> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT id, task_id, team_run_id, agent_run_id, role_slot_id, turn_ordinal,
+                    artifacts, evidence_hash, binding_generation, settled_at
+             FROM role_turns WHERE id = ?1",
+        )
+        .map_err(backend)?;
+    let mut rows = statement.query(params![id]).map_err(backend)?;
+    let Some(row) = rows.next().map_err(backend)? else {
+        return Ok(None);
+    };
+    turn_from_row(row).map(Some)
+}
+
+/// One settled turn, from a row carrying the standard column order.
+fn turn_from_row(row: &rusqlite::Row<'_>) -> RepositoryResult<SettledTurn> {
+    let artifacts: Vec<String> = from_json(&column_text(row, 6)?)?;
+    Ok(SettledTurn {
+        id: RoleTurnId::parse(&column_text(row, 0)?)?,
+        task_id: TaskId::parse(&column_text(row, 1)?)?,
+        team_run_id: TeamRunId::parse(&column_text(row, 2)?)?,
+        agent_run_id: AgentRunId::parse(&column_text(row, 3)?)?,
+        role_slot_id: RoleSlotId::parse(&column_text(row, 4)?)?,
+        turn_ordinal: u32::try_from(row.get::<_, i64>(5).map_err(backend)?).unwrap_or(u32::MAX),
+        artifacts: artifacts
+            .iter()
+            .map(|key| ArtifactKey::parse(key))
+            .collect::<Result<_, _>>()?,
+        evidence_hash: ContentHash::parse(&column_text(row, 7)?)?,
+        binding_generation: u64::try_from(row.get::<_, i64>(8).map_err(backend)?).unwrap_or(0),
+        settled_at: read_timestamp(&column_text(row, 9)?)?,
+    })
 }

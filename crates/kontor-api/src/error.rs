@@ -48,6 +48,14 @@ closed_enum! {
         TimelineRefetchRequired => "timeline_refetch_required",
         /// Startup reconciliation has not finished, so scheduling is still shut.
         ReconciliationPending => "reconciliation_pending",
+        /// A configured concurrency ceiling is spent. The request was well
+        /// formed and the presented state was current; there is simply no room
+        /// right now, and there will be when other work finishes.
+        ///
+        /// Distinct from `revision_conflict` on purpose. A client that cannot
+        /// tell the two apart re-reads and retries against a fresh revision,
+        /// which is exactly the one thing that never clears this.
+        CapacityExhausted => "capacity_exhausted",
         /// A dependency could not be reached. A fact about the channel only.
         Unavailable => "unavailable",
         /// The addressed thing does not exist in this Realm.
@@ -81,6 +89,11 @@ impl ApiErrorCode {
             Self::UnsupportedCapability => StatusCode::UNPROCESSABLE_ENTITY,
             // The position the caller wants is genuinely gone.
             Self::ResnapshotRequired => StatusCode::GONE,
+            // Nothing is wrong with the request or the state it presented, so a
+            // 4xx that blames either would misdirect. "Too many requests" is
+            // what a spent ceiling is, and it is the status a client already
+            // knows to back off and retry on.
+            Self::CapacityExhausted => StatusCode::TOO_MANY_REQUESTS,
             Self::ReconciliationPending | Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
@@ -219,6 +232,19 @@ impl ApiError {
                 ApiErrorCode::RevisionConflict,
                 "a persistence rule refused the write against the presented state",
             ),
+            // Which ceiling bound is a fact about this Realm's configuration and
+            // its current load, so it is logged for the operator who runs the
+            // plane and withheld from the caller who hit it. One static rule for
+            // all four scopes: a client's response is the same either way, and
+            // the difference is only actionable from inside.
+            RepositoryError::CapacityExhausted { scope } => {
+                warn!(scope, "an admission was refused for spent capacity");
+                Self::new(
+                    realm_id,
+                    ApiErrorCode::CapacityExhausted,
+                    "a configured concurrency ceiling is currently spent",
+                )
+            }
             RepositoryError::CrossProject { .. } => Self::new(
                 realm_id,
                 ApiErrorCode::NotFound,
@@ -390,6 +416,46 @@ mod tests {
             !body.contains(&elsewhere.to_string()),
             "and says nothing about the realm the value claimed to come from"
         );
+    }
+
+    #[test]
+    fn a_spent_ceiling_is_its_own_refusal_and_names_no_scope() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_repository(
+            realm,
+            &RepositoryError::CapacityExhausted { scope: "account" },
+        );
+
+        // Its own code, and a status a client already knows to back off on.
+        assert_eq!(refusal.code, ApiErrorCode::CapacityExhausted);
+        assert_eq!(refusal.code.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            refusal.rule,
+            "a configured concurrency ceiling is currently spent"
+        );
+
+        // The scope reached the log, never the envelope. Nothing about which
+        // ceiling bound, and no revision to mislead a caller into retrying.
+        let body = serde_json::to_string(&refusal.body()).expect("the envelope serializes");
+        for scope in ["account", "project", "global", "goal"] {
+            assert!(
+                !body.contains(scope),
+                "a spent ceiling must not disclose which one: {body}"
+            );
+        }
+        assert_eq!(refusal.current_revision, None);
+
+        // And an actual conflict is still a conflict: the two are not merged in
+        // either direction.
+        let conflict = ApiError::from_repository(
+            realm,
+            &RepositoryError::Conflict {
+                subject: "task",
+                rule: "a uniqueness rule refused",
+            },
+        );
+        assert_eq!(conflict.code, ApiErrorCode::RevisionConflict);
+        assert_eq!(conflict.code.status(), StatusCode::CONFLICT);
     }
 
     #[test]
