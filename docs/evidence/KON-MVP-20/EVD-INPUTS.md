@@ -46,7 +46,7 @@ real restart record; it does not claim character-level terminal persistence.
 - `apps/console/e2e/teams.spec.ts:43` passes in desktop and phone Playwright
   projects; screenshots hash to
   `cee018dbb118a6b6914e3f8b53065f831d7d24b3ef9990b4c3a77bc0dd6f6132`
-  and `24bb7690fb106e77168e1d496a09d434e865ff42bb29f35b5fbcbe254be617a1`.
+  and `f7eea548d968430689eef1713d108ed21a62a5011ce180498e0e60f0b9273442`.
 - OpenAPI-to-client verification is clean (`verify:api` exit 0).
 
 Result input: API/CLI/MCP catalogue parity and responsive editor behavior are

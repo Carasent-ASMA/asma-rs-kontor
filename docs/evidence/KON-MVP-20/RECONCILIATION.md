@@ -1,14 +1,15 @@
 # KON-MVP-20 reconciliation snapshot
 
-Snapshot time: 2026-08-14 Europe/Oslo. This is a read-only truth record; it made
-no AgentsRoom, Jira, Paseo, git-remote, or process-state mutation.
+Snapshot time: 2026-08-14 Europe/Oslo; R3 evidence-integrity refresh:
+2026-08-15. This is a read-only truth record; it made no AgentsRoom, Jira,
+Paseo, git-remote, or process-state mutation.
 
 ## Git and archive truth
 
-- Outer `HEAD` = `origin/master` =
-  `f9e341440b140ec4b94fbfeadfe5f52fd8e0ea89`.
-- Its gitlink = submodule `HEAD` = submodule `origin/master` =
-  `5cc0e223e8f297f551bb521c580508395620d432` (PR #24 merge).
+- Shipped outer archive commit =
+  `7f3419a1843ff3788f210fe075a9e3caa24ec986`.
+- Its gitlink = shipped submodule archive commit =
+  `e206801af76b3f553fe83c94e8d64ca9118e8faa` (PR #25 merge).
 - Committed/worktree/regenerated `Cargo.lock` SHA-256 =
   `2e89a646b8a4340951a96f4a655adcfafa82922c9943751657929894624f8179`.
 - Source archive SHA-256 =
@@ -70,6 +71,10 @@ The requested untracked files were left byte-identical and uncommitted:
 - foreign `docs/evidence/KON-MVP-18/run-bcb865f13ce774ed/` relative-path
   SHA-256-manifest aggregate —
   `a3db84dd0a5efd3dfeee42d0e33ebb90d261caae1e0b41c47549e1af3eb5ca4d`.
+- `docs/evidence/KON-MVP-20/TSC-SEAT-B.md`, observed untracked beside the
+  shipped `e206801a` checkout, is a final-TSC incident artifact. It is
+  deliberately excluded from the shipped archive and this R3 commit, and is
+  not an acceptance-evidence input.
 
 Incident input
 `/Users/igor/kon-mvp-20-scratch/evidence/paseo-corrective/incidents/2026-08-14-destructive-reset-dirty-tsw.md`
