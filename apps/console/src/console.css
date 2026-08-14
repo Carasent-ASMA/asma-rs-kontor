@@ -138,7 +138,11 @@ code {
 .badge[data-state="interrupted"],
 .badge[data-state="behind"],
 .badge[data-state="unknown"],
-.badge[data-state="draining"] {
+.badge[data-state="draining"],
+.badge[data-state="clamped"],
+.badge[data-state="notice"],
+.badge[data-state="cannot_verdict"],
+.badge[data-state="fixture/needs-verification"] {
   border-color: var(--warn);
   color: var(--warn);
 }
@@ -150,7 +154,9 @@ code {
 .badge[data-state="resnapshot_required"],
 .badge[data-state="not_loopback"],
 .badge[data-state="failed"],
-.badge[data-state="rejected"] {
+.badge[data-state="rejected"],
+.badge[data-state="unsupported"],
+.badge[data-state="blocking"] {
   border-color: var(--stop);
   color: var(--stop);
 }
@@ -265,16 +271,20 @@ code {
 /* ------------------------------------------------------------------ lists */
 
 .run-list ul,
+.team-list ul,
 .permissions,
 .timeline,
 .phase-layers,
-.phase-layer ol {
+.phase-layer ol,
+.chain-rows,
+.issues {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.run-list ul button {
+.run-list ul button,
+.team-list ul button {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
@@ -289,7 +299,8 @@ code {
   cursor: pointer;
 }
 
-.run-list ul button[aria-current="true"] {
+.run-list ul button[aria-current="true"],
+.team-list ul button[aria-current="true"] {
   background: var(--paper-sunk);
   box-shadow: inset 3px 0 0 var(--accent);
 }
@@ -463,6 +474,172 @@ td {
   font: inherit;
 }
 
+/* ------------------------------------------------------------------ teams */
+
+/*
+ * The one editing surface in the console, so it is also the only place with a
+ * form grid. Controls stay in a row while they fit and wrap rather than shrink:
+ * a provider select squeezed to four characters is a control an operator cannot
+ * read the state of, which is worse than a second line.
+ */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.field.grow {
+  flex: 1 1 12rem;
+}
+
+.field label {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.field select,
+.field input {
+  padding: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  font: inherit;
+}
+
+.field select:disabled {
+  color: var(--ink-soft);
+  background: var(--paper-sunk);
+}
+
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap);
+  align-items: flex-end;
+}
+
+.team-list ul button {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.team-name {
+  font-weight: 600;
+}
+
+.team-editor > .field {
+  margin-bottom: var(--gap);
+}
+
+.seat-editor {
+  margin: var(--gap) 0;
+  padding: var(--gap);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.seat-editor header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.seat-editor h4,
+.seat-editor h5 {
+  margin: 0;
+}
+
+.seat-editor > section {
+  margin-top: var(--gap);
+}
+
+.chain-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+
+.chain-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: flex-end;
+  padding: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-sunk);
+}
+
+.rung-number {
+  align-self: center;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.rung-window {
+  align-self: center;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.class-table caption {
+  padding-bottom: 0.3rem;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  text-align: left;
+}
+
+.class-table tr[data-selected="true"] {
+  background: var(--paper-sunk);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.recommendation {
+  margin: 0.4rem 0 0;
+  font-size: 0.88rem;
+}
+
+.authority-row {
+  margin: 0.2rem 0;
+}
+
+.authority-label {
+  margin-right: 0.4rem;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.issues li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: baseline;
+  padding: 0.3rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.issues li[data-severity="blocking"] .issue-message {
+  color: var(--stop);
+}
+
+.issue-rung {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.issue-message {
+  flex: 1 1 16rem;
+}
+
 /* ----------------------------------------------------------- narrow layout */
 
 @media (max-width: 767px) {
@@ -523,5 +700,17 @@ td {
 
   .phase-layers {
     flex-direction: column;
+  }
+
+  /* Three selects side by side do not fit a phone, and a select narrow enough
+     to fit is one whose value cannot be read. */
+  .chain-row .field,
+  .field-row .field {
+    flex: 1 1 100%;
+  }
+
+  .class-table {
+    display: block;
+    overflow-x: auto;
   }
 }
