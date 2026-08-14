@@ -56,6 +56,7 @@ fn sample(ty: ArgType, name: &str) -> serde_json::Value {
         ArgType::ProjectId
         | ArgType::MiniProjectId
         | ArgType::TaskId
+        | ArgType::TeamRunId
         | ArgType::AgentRunId
         | ArgType::AccountProfileId => serde_json::Value::String(UUID.to_owned()),
         ArgType::IntakeReceiptId => serde_json::Value::String(UUID.to_owned()),

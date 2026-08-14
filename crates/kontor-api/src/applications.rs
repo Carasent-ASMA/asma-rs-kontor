@@ -1199,6 +1199,65 @@ pub struct TurnFollowUpDto {
     pub after_phase: Option<String>,
 }
 
+/// Excuse one declared role slot that was never bound to a session.
+///
+/// What this body deliberately does **not** carry is the design: no
+/// `agent_run_id`, no binding or runtime identity, no outcome or lifecycle, no
+/// `terminal: true`, no generic disposition kind, no caller credential. A waiver
+/// is a statement about a *slot* and the template's own permission to omit it —
+/// every one of those omitted fields would turn it into a statement about a
+/// session or a run that nothing observed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct WaiveRoleSlotRequest {
+    /// The team revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_team_revision: AggregateRevision,
+    /// The role the waiver is attributed to. Policy attribution, checked against
+    /// the frozen slot's own policy — never a person, never the caller.
+    pub authorized_by_role: String,
+    /// Every evidence reference the frozen policy demands, at least.
+    pub evidence: Vec<String>,
+}
+
+/// One recorded waiver.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RoleSlotWaiverDto {
+    /// The Realm it was recorded in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The task the team serves.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The team run whose slot was excused.
+    pub team_run_id: String,
+    /// The excused slot.
+    pub role_slot: String,
+    /// The waiver.
+    pub waiver_id: String,
+    /// Always `waived`. Spelled out rather than implied, and closed: there is no
+    /// second disposition a caller may select.
+    pub disposition: &'static str,
+    /// The role it is attributed to.
+    pub authorized_by_role: String,
+    /// The tier the credential proved.
+    pub authority_tier: String,
+    /// The evidence cited.
+    pub evidence: Vec<String>,
+    /// The canonical digest the closure re-derives.
+    pub evidence_hash: String,
+    /// When it was recorded.
+    #[schema(value_type = String)]
+    pub recorded_at: Timestamp,
+    /// Whether this call recorded it or replayed one.
+    pub applied: AppliedDto,
+    /// The team run this waiver closed, when it was the last slot outstanding.
+    /// `null` while any other declared slot is still unaccounted for.
+    pub team_run_closed: Option<String>,
+}
+
 /// What settling one bounded role turn produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct SettledTurnDto {
@@ -1671,6 +1730,20 @@ pub trait ApplicationOperations: Send + Sync {
     /// it only finishes what a previous process decided and did not manage to
     /// hand over. Returns how many reached a seat this time.
     async fn retry_undelivered_dispatches(&self) -> Result<usize, ApiError>;
+
+    /// Excuse one declared role slot that was never bound.
+    ///
+    /// Admin, matching gate-waiver authority. Every rule that makes the waiver
+    /// legal is proved against the run's *frozen* snapshot inside the write
+    /// transaction, so nothing here can be true of a state that has since moved.
+    async fn waive_role_slot(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        team_run_id: kontor_core::id::TeamRunId,
+        role_slot: &str,
+        request: &WaiveRoleSlotRequest,
+    ) -> Result<RoleSlotWaiverDto, ApiError>;
 
     /// Settle one bounded Kontor role turn, leaving the seat live.
     async fn settle_turn(
@@ -2447,6 +2520,48 @@ pub async fn settle_turn(
         state
             .applications()
             .settle_turn(&key, caller.0, project_id, agent_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Excuse one declared role slot that was never bound to a session.
+///
+/// Admin, because it is the same kind of act as waiving a gate: it discharges an
+/// obligation the template imposed, on the template's own terms.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/waivers",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("team_run_id" = String, Path, description = "The team run"),
+        ("role_slot_id" = String, Path, description = "The declared slot being excused"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = WaiveRoleSlotRequest,
+    responses(
+        (status = 200, body = RoleSlotWaiverDto, description = "Recorded, or replayed"),
+        (status = 401), (status = 403),
+        (status = 404, description = "No such team run, or the template declares no such slot"),
+        (status = 409, description = "Stale revision, already accounted for, or ever bound"),
+        (status = 422, description = "The slot cannot be waived on this template's terms")
+    )
+)]
+pub async fn waive_role_slot(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, team_run_id, role_slot_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<WaiveRoleSlotRequest>,
+) -> Result<Json<RoleSlotWaiverDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let team_run_id = parse_id(&state, kontor_core::id::TeamRunId::parse(&team_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .waive_role_slot(&key, project_id, team_run_id, &role_slot_id, &request)
             .await?,
     ))
 }

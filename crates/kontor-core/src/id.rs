@@ -182,6 +182,13 @@ entity_ids! {
     /// without ending the session. A turn receipt is therefore never terminal
     /// evidence about the runtime.
     RoleTurnId,
+    /// Identifies one authorized excuse for a declared, never-bound role slot.
+    ///
+    /// A waiver is not a turn and not a run: it records that the frozen template
+    /// permitted a seat to be omitted, who exercised that permission, and what
+    /// they cited. It is the only thing besides a settled turn that accounts for
+    /// a declared slot at closure.
+    RoleSlotWaiverId,
     /// Identifies a lease over a contended resource (a module, a worktree, …).
     ResourceLeaseId,
     /// Identifies one command intent and its receipt.

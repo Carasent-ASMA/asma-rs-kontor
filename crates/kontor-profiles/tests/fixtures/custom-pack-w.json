@@ -1,0 +1,648 @@
+{
+ "schema_version": 1,
+ "pack_id": "custom-pack-w",
+ "version": 1,
+ "manifest": [
+  {
+   "category": "omega-cat",
+   "label": "Alpha runnable",
+   "availability": "seeded",
+   "profile": "omega-profile",
+   "profile_version": 1
+  },
+  {
+   "category": "omega-vocab",
+   "label": "Alpha vocabulary only",
+   "availability": "manifest_only",
+   "profile": null,
+   "profile_version": null
+  },
+  {
+   "category": "omega-u-cat",
+   "label": "Omega unconditional handoff",
+   "availability": "seeded",
+   "profile": "omega-u-profile",
+   "profile_version": 1
+  }
+ ],
+ "roles": [
+  {
+   "role": "omega-r1",
+   "version": 1,
+   "label": "Alpha role one"
+  },
+  {
+   "role": "omega-r2",
+   "version": 1,
+   "label": "Alpha role two"
+  },
+  {
+   "role": "omega-r3",
+   "version": 1,
+   "label": "Alpha role three"
+  }
+ ],
+ "skills": [
+  {
+   "skill": "omega-s1",
+   "version": 1,
+   "label": "Alpha skill one"
+  }
+ ],
+ "contexts": [],
+ "teams": [
+  {
+   "schema_version": 1,
+   "template_id": "01936f5a-0000-7000-8000-0000000000ba",
+   "version": 1,
+   "name": "Omega team",
+   "roles": [
+    {
+     "role": {
+      "role": "omega-r1",
+      "version": 1
+     },
+     "min_slots": 1,
+     "max_slots": 1
+    },
+    {
+     "role": {
+      "role": "omega-r2",
+      "version": 1
+     },
+     "min_slots": 1,
+     "max_slots": 1
+    },
+    {
+     "role": {
+      "role": "omega-r3",
+      "version": 1
+     },
+     "min_slots": 1,
+     "max_slots": 1
+    }
+   ],
+   "slots": [
+    {
+     "id": "omega-k1",
+     "role": {
+      "role": "omega-r1",
+      "version": 1
+     },
+     "skills": [
+      {
+       "skill": "omega-s1",
+       "version": 1
+      }
+     ],
+     "context": null,
+     "may_evaluate": [],
+     "may_waive": [],
+     "waiver_policy": null
+    },
+    {
+     "id": "omega-k4",
+     "role": {
+      "role": "omega-r3",
+      "version": 1
+     },
+     "skills": [],
+     "context": null,
+     "may_evaluate": [
+      "omega-g2"
+     ],
+     "may_waive": [],
+     "waiver_policy": null
+    },
+    {
+     "id": "omega-k3",
+     "role": {
+      "role": "omega-r2",
+      "version": 1
+     },
+     "skills": [],
+     "context": null,
+     "may_evaluate": [
+      "omega-g1"
+     ],
+     "may_waive": [],
+     "waiver_policy": {
+      "authorized_roles": [
+       "omega-r1"
+      ],
+      "required_evidence": [
+       "omega-a3"
+      ]
+     }
+    }
+   ],
+   "handoffs": [
+    {
+     "from_slot": "omega-k1",
+     "to_slot": "omega-k3",
+     "after_phase": "omega-p2",
+     "required_artifacts": [
+      "omega-a2"
+     ]
+    },
+    {
+     "from_slot": "omega-k3",
+     "to_slot": "omega-k4",
+     "after_phase": "omega-p4",
+     "required_artifacts": [
+      "omega-a4"
+     ]
+    }
+   ],
+   "max_successor_depth": 2,
+   "max_handoff_depth": 4
+  },
+  {
+   "schema_version": 1,
+   "template_id": "01936f5a-0000-7000-8000-0000000000bb",
+   "version": 1,
+   "name": "Omega unconditional team",
+   "roles": [
+    {
+     "role": {
+      "role": "omega-r1",
+      "version": 1
+     },
+     "min_slots": 1,
+     "max_slots": 1
+    },
+    {
+     "role": {
+      "role": "omega-r2",
+      "version": 1
+     },
+     "min_slots": 1,
+     "max_slots": 1
+    },
+    {
+     "role": {
+      "role": "omega-r3",
+      "version": 1
+     },
+     "min_slots": 1,
+     "max_slots": 1
+    }
+   ],
+   "slots": [
+    {
+     "id": "omega-k1",
+     "role": {
+      "role": "omega-r1",
+      "version": 1
+     },
+     "skills": [
+      {
+       "skill": "omega-s1",
+       "version": 1
+      }
+     ],
+     "context": null,
+     "may_evaluate": [],
+     "may_waive": [],
+     "waiver_policy": null
+    },
+    {
+     "id": "omega-k4",
+     "role": {
+      "role": "omega-r3",
+      "version": 1
+     },
+     "skills": [],
+     "context": null,
+     "may_evaluate": [
+      "omega-g2"
+     ],
+     "may_waive": [],
+     "waiver_policy": null
+    },
+    {
+     "id": "omega-k3",
+     "role": {
+      "role": "omega-r2",
+      "version": 1
+     },
+     "skills": [],
+     "context": null,
+     "may_evaluate": [
+      "omega-g1"
+     ],
+     "may_waive": [],
+     "waiver_policy": {
+      "authorized_roles": [
+       "omega-r1"
+      ],
+      "required_evidence": [
+       "omega-a3"
+      ]
+     }
+    }
+   ],
+   "handoffs": [
+    {
+     "from_slot": "omega-k1",
+     "to_slot": "omega-k3",
+     "after_phase": null,
+     "required_artifacts": []
+    }
+   ],
+   "max_successor_depth": 2,
+   "max_handoff_depth": 4
+  }
+ ],
+ "profiles": [
+  {
+   "schema_version": 1,
+   "id": "omega-profile",
+   "version": 1,
+   "name": "Alpha branched profile",
+   "phases": [
+    {
+     "id": "omega-p1",
+     "label": "Alpha one",
+     "required_artifacts": [
+      "omega-a1"
+     ],
+     "gates": [],
+     "rejection_route": null
+    },
+    {
+     "id": "omega-p2",
+     "label": "Alpha two",
+     "required_artifacts": [
+      "omega-a2"
+     ],
+     "gates": [],
+     "rejection_route": "omega-p1"
+    },
+    {
+     "id": "omega-p3",
+     "label": "Alpha three",
+     "required_artifacts": [
+      "omega-a3"
+     ],
+     "gates": [],
+     "rejection_route": "omega-p1"
+    },
+    {
+     "id": "omega-p4",
+     "label": "Alpha four",
+     "required_artifacts": [
+      "omega-a4"
+     ],
+     "gates": [
+      "omega-g1"
+     ],
+     "rejection_route": "omega-p1"
+    },
+    {
+     "id": "omega-p5",
+     "label": "Alpha five",
+     "required_artifacts": [
+      "omega-a5"
+     ],
+     "gates": [
+      "omega-g2"
+     ],
+     "rejection_route": "omega-p1"
+    }
+   ],
+   "edges": [
+    {
+     "from": "omega-p1",
+     "to": "omega-p2",
+     "handoff_role": "omega-r1"
+    },
+    {
+     "from": "omega-p1",
+     "to": "omega-p3",
+     "handoff_role": "omega-r1"
+    },
+    {
+     "from": "omega-p2",
+     "to": "omega-p4",
+     "handoff_role": "omega-r2"
+    },
+    {
+     "from": "omega-p3",
+     "to": "omega-p4",
+     "handoff_role": "omega-r2"
+    },
+    {
+     "from": "omega-p4",
+     "to": "omega-p5",
+     "handoff_role": "omega-r3"
+    }
+   ],
+   "entry_phase": "omega-p1",
+   "terminal_phases": [
+    "omega-p5"
+   ],
+   "roles": [
+    {
+     "role": "omega-r1",
+     "version": 1
+    },
+    {
+     "role": "omega-r2",
+     "version": 1
+    },
+    {
+     "role": "omega-r3",
+     "version": 1
+    }
+   ],
+   "skills": [
+    {
+     "skill": "omega-s1",
+     "version": 1
+    }
+   ],
+   "team_template": {
+    "template_id": "01936f5a-0000-7000-8000-0000000000ba",
+    "version": 1
+   },
+   "artifacts": [
+    {
+     "key": "omega-a1",
+     "label": "Alpha artifact one",
+     "producer_phase": "omega-p1",
+     "content_type": "document",
+     "evidence_required": true
+    },
+    {
+     "key": "omega-a2",
+     "label": "Alpha artifact two",
+     "producer_phase": "omega-p2",
+     "content_type": "report",
+     "evidence_required": true
+    },
+    {
+     "key": "omega-a3",
+     "label": "Alpha artifact three",
+     "producer_phase": "omega-p3",
+     "content_type": "report",
+     "evidence_required": true
+    },
+    {
+     "key": "omega-a4",
+     "label": "Alpha artifact four",
+     "producer_phase": "omega-p4",
+     "content_type": "dataset",
+     "evidence_required": true
+    },
+    {
+     "key": "omega-a5",
+     "label": "Alpha artifact five",
+     "producer_phase": "omega-p5",
+     "content_type": "link",
+     "evidence_required": true
+    }
+   ],
+   "gates": [
+    {
+     "id": "omega-g1",
+     "phase": "omega-p4",
+     "evaluator_roles": [
+      "omega-r2"
+     ],
+     "required_evidence": [
+      "omega-a2",
+      "omega-a3",
+      "omega-a4"
+     ],
+     "rejection_target": "omega-p1",
+     "waiver_allowed": false,
+     "waiver_roles": []
+    },
+    {
+     "id": "omega-g2",
+     "phase": "omega-p5",
+     "evaluator_roles": [
+      "omega-r3"
+     ],
+     "required_evidence": [
+      "omega-a5"
+     ],
+     "rejection_target": "omega-p1",
+     "waiver_allowed": false,
+     "waiver_roles": []
+    }
+   ],
+   "runtime_routing": {
+    "runtime_kind": "omega-runtime",
+    "version": 1
+   },
+   "budget_defaults": {
+    "max_tokens": 1000,
+    "max_commands": 10,
+    "max_duration_seconds": 600,
+    "max_cost": {
+     "minor_units": 100,
+     "currency": "EUR"
+    }
+   },
+   "calendar_policy": null,
+   "external_workflow": null
+  },
+  {
+   "schema_version": 1,
+   "id": "omega-u-profile",
+   "version": 1,
+   "name": "Omega unconditional profile",
+   "phases": [
+    {
+     "id": "omega-p1",
+     "label": "Alpha one",
+     "required_artifacts": [
+      "omega-a1"
+     ],
+     "gates": [],
+     "rejection_route": null
+    },
+    {
+     "id": "omega-p2",
+     "label": "Alpha two",
+     "required_artifacts": [
+      "omega-a2"
+     ],
+     "gates": [],
+     "rejection_route": "omega-p1"
+    },
+    {
+     "id": "omega-p3",
+     "label": "Alpha three",
+     "required_artifacts": [
+      "omega-a3"
+     ],
+     "gates": [],
+     "rejection_route": "omega-p1"
+    },
+    {
+     "id": "omega-p4",
+     "label": "Alpha four",
+     "required_artifacts": [
+      "omega-a4"
+     ],
+     "gates": [
+      "omega-g1"
+     ],
+     "rejection_route": "omega-p1"
+    },
+    {
+     "id": "omega-p5",
+     "label": "Alpha five",
+     "required_artifacts": [
+      "omega-a5"
+     ],
+     "gates": [
+      "omega-g2"
+     ],
+     "rejection_route": "omega-p1"
+    }
+   ],
+   "edges": [
+    {
+     "from": "omega-p1",
+     "to": "omega-p2",
+     "handoff_role": "omega-r1"
+    },
+    {
+     "from": "omega-p1",
+     "to": "omega-p3",
+     "handoff_role": "omega-r1"
+    },
+    {
+     "from": "omega-p2",
+     "to": "omega-p4",
+     "handoff_role": "omega-r2"
+    },
+    {
+     "from": "omega-p3",
+     "to": "omega-p4",
+     "handoff_role": "omega-r2"
+    },
+    {
+     "from": "omega-p4",
+     "to": "omega-p5",
+     "handoff_role": "omega-r3"
+    }
+   ],
+   "entry_phase": "omega-p1",
+   "terminal_phases": [
+    "omega-p5"
+   ],
+   "roles": [
+    {
+     "role": "omega-r1",
+     "version": 1
+    },
+    {
+     "role": "omega-r2",
+     "version": 1
+    },
+    {
+     "role": "omega-r3",
+     "version": 1
+    }
+   ],
+   "skills": [
+    {
+     "skill": "omega-s1",
+     "version": 1
+    }
+   ],
+   "team_template": {
+    "template_id": "01936f5a-0000-7000-8000-0000000000bb",
+    "version": 1
+   },
+   "artifacts": [
+    {
+     "key": "omega-a1",
+     "label": "Alpha artifact one",
+     "producer_phase": "omega-p1",
+     "content_type": "document",
+     "evidence_required": true
+    },
+    {
+     "key": "omega-a2",
+     "label": "Alpha artifact two",
+     "producer_phase": "omega-p2",
+     "content_type": "report",
+     "evidence_required": true
+    },
+    {
+     "key": "omega-a3",
+     "label": "Alpha artifact three",
+     "producer_phase": "omega-p3",
+     "content_type": "report",
+     "evidence_required": true
+    },
+    {
+     "key": "omega-a4",
+     "label": "Alpha artifact four",
+     "producer_phase": "omega-p4",
+     "content_type": "dataset",
+     "evidence_required": true
+    },
+    {
+     "key": "omega-a5",
+     "label": "Alpha artifact five",
+     "producer_phase": "omega-p5",
+     "content_type": "link",
+     "evidence_required": true
+    }
+   ],
+   "gates": [
+    {
+     "id": "omega-g1",
+     "phase": "omega-p4",
+     "evaluator_roles": [
+      "omega-r2"
+     ],
+     "required_evidence": [
+      "omega-a2",
+      "omega-a3",
+      "omega-a4"
+     ],
+     "rejection_target": "omega-p1",
+     "waiver_allowed": false,
+     "waiver_roles": []
+    },
+    {
+     "id": "omega-g2",
+     "phase": "omega-p5",
+     "evaluator_roles": [
+      "omega-r3"
+     ],
+     "required_evidence": [
+      "omega-a5"
+     ],
+     "rejection_target": "omega-p1",
+     "waiver_allowed": false,
+     "waiver_roles": []
+    }
+   ],
+   "runtime_routing": {
+    "runtime_kind": "omega-runtime",
+    "version": 1
+   },
+   "budget_defaults": {
+    "max_tokens": 1000,
+    "max_commands": 10,
+    "max_duration_seconds": 600,
+    "max_cost": {
+     "minor_units": 100,
+     "currency": "EUR"
+    }
+   },
+   "calendar_policy": null,
+   "external_workflow": null
+  }
+ ],
+ "personas": []
+}

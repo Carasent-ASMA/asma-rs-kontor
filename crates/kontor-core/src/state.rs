@@ -767,6 +767,97 @@ pub enum TeamEvidenceSource {
         /// it.
         team_run_id: TeamRunId,
     },
+    /// Every declared role slot is accounted for by *exactly one* disposition:
+    /// a settled turn, or an authorized waiver of a slot that was never bound.
+    ///
+    /// Distinct from [`Self::SettledTurns`], which can only speak for slots that
+    /// produced work. A slot that never got a seat settles nothing, and the two
+    /// ways to close such a team without this source are both untrue: invent an
+    /// `AgentRun` and cast it terminal, or let the closure skip the slot in
+    /// silence. A waiver is neither — it is the frozen template's own permission,
+    /// exercised by a role the template authorized, with the evidence it demanded.
+    ///
+    /// The store re-proves the whole disposition set from the immutable
+    /// `role_turns` and `role_slot_waivers` rows of this very team, and recomputes
+    /// the digest rather than trusting the one it is handed.
+    RoleSlotDispositions {
+        /// The team whose declared slots must each carry exactly one source.
+        team_run_id: TeamRunId,
+    },
+}
+
+/// The one way a declared role slot is accounted for at closure.
+///
+/// "Exactly one" is the point: a slot that both settled a turn and was waived is
+/// a contradiction the closure refuses rather than picks a winner from, and a
+/// slot with neither is the gap the waiver design exists to name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum SlotDisposition {
+    /// Kontor finished bounded work in a real bound seat.
+    SettledTurn {
+        /// The digest of the final settled turn's identifying content.
+        evidence_hash: ContentHash,
+    },
+    /// The slot was never bound and the frozen template's policy excused it.
+    WaivedUnbound {
+        /// The digest the waiver was recorded under.
+        evidence_hash: ContentHash,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct DispositionDigestInput<'a> {
+    schema_version: crate::id::SchemaVersion,
+    team_run_id: TeamRunId,
+    template_id: crate::id::TeamTemplateId,
+    template_version: crate::id::SpecVersion,
+    template_hash: &'a ContentHash,
+    slots: Vec<DispositionSlotEntry<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct DispositionSlotEntry<'a> {
+    slot: &'a crate::id::RoleSlotId,
+    disposition: &'a SlotDisposition,
+}
+
+/// The canonical digest of a team's role-slot dispositions.
+///
+/// Lives here, and is the *only* implementation, because two of them would be
+/// the whole defect: `kontor-teams` computes it to build a certificate and the
+/// store recomputes it to re-prove one, and each deriving its own shape from its
+/// own inputs is precisely how they could disagree without either being wrong on
+/// its own terms.
+///
+/// `slots` is in the frozen definition's order and must carry every declared
+/// slot exactly once; both callers walk the declaration to build it.
+///
+/// # Errors
+/// [`DomainError`] if the canonical document cannot be built.
+pub fn role_slot_disposition_digest(
+    schema_version: crate::id::SchemaVersion,
+    team_run_id: TeamRunId,
+    template_id: crate::id::TeamTemplateId,
+    template_version: crate::id::SpecVersion,
+    template_hash: &ContentHash,
+    slots: &[(crate::id::RoleSlotId, SlotDisposition)],
+) -> DomainResult<ContentHash> {
+    Ok(
+        crate::id::CanonicalDocument::from_serializable(&DispositionDigestInput {
+            schema_version,
+            team_run_id,
+            template_id,
+            template_version,
+            template_hash,
+            slots: slots
+                .iter()
+                .map(|(slot, disposition)| DispositionSlotEntry { slot, disposition })
+                .collect(),
+        })?
+        .hash()
+        .clone(),
+    )
 }
 
 /// The immutable evidence that closed a team run.
@@ -1068,6 +1159,17 @@ pub fn plan_team_closure(
                 return Err(DomainError::MissingEvidence {
                     subject: "team closure",
                     rule: "the settled-turn evidence names another team run",
+                });
+            }
+        }
+        // Same shape, same reason: which slots are disposed of, and how, is a
+        // question about `role_turns` and `role_slot_waivers` rows. The store
+        // answers it where those rows are.
+        TeamEvidenceSource::RoleSlotDispositions { team_run_id: cited } => {
+            if cited != team_run_id {
+                return Err(DomainError::MissingEvidence {
+                    subject: "team closure",
+                    rule: "the role-slot disposition evidence names another team run",
                 });
             }
         }

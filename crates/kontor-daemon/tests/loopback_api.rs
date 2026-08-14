@@ -31,6 +31,7 @@
 
 mod harness;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
@@ -42,10 +43,11 @@ use kontor_core::repository::{
     WorkflowRepository,
 };
 use kontor_core::state::{Freshness, ObservedRunState, RuntimeContact};
-use kontor_daemon::{Daemon, DaemonConfig};
+use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep};
+use kontor_scheduler::model::CapacityConfig;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -7488,6 +7490,15 @@ async fn a_follow_up_selects_the_successors_existing_seat_and_does_not_replace_i
 /// `required_artifacts: []` and both guards are therefore vacuous.
 const ALPHA_PACK: &str = include_str!("../../kontor-profiles/tests/fixtures/custom-pack-a.json");
 
+/// A pack whose team declares two slots and puts the *waivable* one last.
+///
+/// A fresh immutable template rather than an edit to the bundled v1, whose
+/// `tester`/`researcher-a` slots carry no waiver policy and must keep carrying
+/// none. Last, because seating stops at the first slot the runtime refuses: a
+/// waivable slot in the middle would leave the ones after it undeclared-but-also
+/// unseated, which is a different (and unwaivable) shape.
+const OMEGA_PACK: &str = include_str!("../../kontor-profiles/tests/fixtures/custom-pack-w.json");
+
 /// Settle one `alpha-k1` turn.
 async fn alpha_settle(
     world: &World,
@@ -7992,19 +8003,24 @@ async fn the_artifact_condition_alone_withholds_a_follow_up_once_the_phase_is_me
     assert_eq!(dispatches(&world).len(), 1);
 }
 
-/// BLK-010, the capacity half. A team that closed on settled turns must stop
-/// holding admission capacity even though every one of its seats is still live —
-/// otherwise a persistent-seat realm would deadlock after its first team, with
-/// finished work occupying the ceiling forever.
+/// Two independent ready tasks, one account, and a plan that offers both.
 ///
-/// The oracle is a real refusal and a real start: an independent second task is
-/// refused by name for the *account* ceiling while the first team is open, and
-/// admitted once that team closes on settled turns with all four seats still
-/// sitting there. `task_not_ready` or an in-flight refusal would prove nothing
-/// about capacity, so both are excluded by asserting the exact rule.
-#[tokio::test]
-async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
-    let world = World::open_empty_with_a_plane().await;
+/// Shared by the two capacity journeys — the ceiling being spent and the ceiling
+/// being configured wider — because the *only* difference that may exist between
+/// them is the capacity the Realm was composed with. A second copy of this setup
+/// could drift from the first, and then the two tests would no longer be a
+/// comparison of anything.
+struct CapacityFixture {
+    project: String,
+    epic: String,
+    account_id: String,
+    /// The epic projection the task ids and revisions are read from.
+    projection: Answer,
+    plan_hash: String,
+}
+
+/// Build the fixture inside an already-composed `world`.
+async fn capacity_fixture(world: &World) -> CapacityFixture {
     // The persistent seats of the first team are still occupying native sessions
     // when the second task is seated, so the runtime must declare room for both
     // teams. Otherwise the second task is refused by the *runtime's* session
@@ -8022,14 +8038,14 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
     );
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
 
-    let created = ensure_project(&world, "cap", "Kontor", "/tmp/kontor-cap").await;
+    let created = ensure_project(world, "cap", "Kontor", "/tmp/kontor-cap").await;
     assert_eq!(created.status, 200, "{}", created.body);
     let project = created.json()["project_id"]
         .as_str()
         .expect("id")
         .to_owned();
     let revision = created.json()["revision"].as_u64().expect("revision");
-    let category = first_category(&world).await;
+    let category = first_category(world).await;
 
     let account = Call::post(
         format!("/v1/projects/{project}/provider-account-profiles:ensure"),
@@ -8038,9 +8054,9 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
             "credential_alias": "lead", "enabled": true
         }),
     )
-    .signed_as(&world, "admin")
+    .signed_as(world, "admin")
     .with_key("cap-account")
-    .send(&world)
+    .send(world)
     .await;
     assert_eq!(account.status, 200, "{}", account.body);
     let account_id = account.json()["account_profile_id"]
@@ -8059,9 +8075,9 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
             serde_json::json!([{"title": "First task"}, {"title": "Second task"}]),
         ),
     )
-    .signed_as(&world, "admin")
+    .signed_as(world, "admin")
     .with_key("cap-epic")
-    .send(&world)
+    .send(world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
@@ -8083,9 +8099,9 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
             "reason": "Start the epic"
         }),
     )
-    .signed_as(&world, "admin")
+    .signed_as(world, "admin")
     .with_key("cap-arm")
-    .send(&world)
+    .send(world)
     .await;
     assert_eq!(armed.status, 200, "{}", armed.body);
 
@@ -8093,8 +8109,8 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
     // ceiling the binding one — and is the ordinary case, since a realm's work
     // is done by the accounts the operator has.
     let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
-        .signed_as(&world, "observer")
-        .send(&world)
+        .signed_as(world, "observer")
+        .send(world)
         .await;
     assert_eq!(projection.status, 200, "{}", projection.body);
     for index in 0..2 {
@@ -8113,9 +8129,9 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
                 "reason": "Run as the lead"
             }),
         )
-        .signed_as(&world, "admin")
+        .signed_as(world, "admin")
         .with_key(format!("cap-select-{index}"))
-        .send(&world)
+        .send(world)
         .await;
         assert_eq!(pinned.status, 200, "{}", pinned.body);
     }
@@ -8124,8 +8140,8 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
         format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
         &serde_json::json!({}),
     )
-    .signed_as(&world, "operator")
-    .send(&world)
+    .signed_as(world, "operator")
+    .send(world)
     .await;
     assert_eq!(plan.status, 200, "{}", plan.body);
     assert_eq!(
@@ -8138,6 +8154,36 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
         .as_str()
         .expect("a hash")
         .to_owned();
+
+    CapacityFixture {
+        project,
+        epic,
+        account_id,
+        projection,
+        plan_hash,
+    }
+}
+
+/// BLK-010, the capacity half. A team that closed on settled turns must stop
+/// holding admission capacity even though every one of its seats is still live —
+/// otherwise a persistent-seat realm would deadlock after its first team, with
+/// finished work occupying the ceiling forever.
+///
+/// The oracle is a real refusal and a real start: an independent second task is
+/// refused by name for the *account* ceiling while the first team is open, and
+/// admitted once that team closes on settled turns with all four seats still
+/// sitting there. `task_not_ready` or an in-flight refusal would prove nothing
+/// about capacity, so both are excluded by asserting the exact rule.
+#[tokio::test]
+async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
+    let world = World::open_empty_with_a_plane().await;
+    let CapacityFixture {
+        project,
+        epic,
+        account_id,
+        projection,
+        plan_hash,
+    } = capacity_fixture(&world).await;
 
     let started = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
@@ -8311,4 +8357,1024 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
         restarted.body
     );
     assert_eq!(left[0]["code"], "task_not_ready", "{}", restarted.body);
+}
+
+/// MUT-006. Same-seat convergence, proved across *consecutive* turns.
+///
+/// A persistent role seat is the whole point of the turn model: `(team_run_id,
+/// role_slot_id)` names one seat for the life of the team run, and settling a
+/// turn in it must leave that pairing resolving to the same agent run and the
+/// same native session it did before. The existing reuse test names the seat in
+/// the URL, so it can only prove that a seat the caller already held stayed put.
+/// This one drives the path where *Kontor* resolves the pairing — the follow-up
+/// target — and does it twice, so a resolver that answered differently on a
+/// later turn would be caught.
+///
+/// Three things are asserted together, because each is unfalsifiable alone:
+/// the resolution converges, the seat census does not grow, and no additional
+/// native session exists behind any seat.
+#[tokio::test]
+async fn consecutive_turns_on_one_slot_converge_on_one_seat_and_one_session() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-converge").await;
+    let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
+
+    let seat_list = seats.as_array().expect("seats").clone();
+    assert!(
+        seat_list.len() > 1,
+        "the bundled team seats several slots, so a handoff has somewhere to go"
+    );
+    let team_run = kontor_core::id::TeamRunId::parse(
+        seat_list[0]["team_run_id"].as_str().expect("a team run id"),
+    )
+    .expect("a team run id");
+
+    // What the team run's seats *are*, before any turn is settled: one seat per
+    // role, each behind exactly one native session.
+    let census = |world: &World| -> std::collections::BTreeMap<String, (String, String)> {
+        let rows = world
+            .daemon
+            .state()
+            .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run))
+            .expect("the seats are readable");
+        let mut seen: std::collections::BTreeMap<String, (String, String)> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            let native = row
+                .native_id
+                .as_ref()
+                .expect("a seated role holds a native session")
+                .as_str()
+                .to_owned();
+            let previous = seen.insert(
+                row.role.as_str().to_owned(),
+                (row.agent_run_id.to_string(), native),
+            );
+            assert!(
+                previous.is_none(),
+                "a role slot is held by exactly one seat, found a second for `{}`",
+                row.role.as_str()
+            );
+            assert_eq!(
+                world.fake.sessions_for(row.agent_run_id),
+                1,
+                "a seat is behind exactly one native session"
+            );
+        }
+        seen
+    };
+    let before = census(&world);
+    assert_eq!(
+        before.len(),
+        seat_list.len(),
+        "every started seat is accounted for once"
+    );
+
+    let seat = seat_list[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+
+    // Two consecutive bounded turns in that one seat.
+    let mut settlements = Vec::new();
+    for ordinal in 1..=2u64 {
+        let projected = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        let revision = projected.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("a revision");
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+            &serde_json::json!({
+                "role_slot": role_slot,
+                "expected_task_revision": revision,
+                "artifacts": ["change-set"]
+            }),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("turn-converge-{ordinal}"))
+        .send(&world)
+        .await;
+        assert_eq!(settled.status, 200, "turn {ordinal}: {}", settled.body);
+        assert_eq!(settled.json()["applied"], "created", "{}", settled.body);
+        assert_eq!(
+            settled.json()["turn_ordinal"],
+            serde_json::json!(ordinal),
+            "each turn takes the next position in the seat's sequence: {}",
+            settled.body
+        );
+        // The seat itself is the same one, turn after turn.
+        assert_eq!(
+            settled.json()["agent_run_id"],
+            serde_json::json!(agent_run),
+            "turn {ordinal} settled in the same seat: {}",
+            settled.body
+        );
+        assert_eq!(
+            settled.json()["role_slot"],
+            serde_json::json!(role_slot),
+            "turn {ordinal} settled the same slot: {}",
+            settled.body
+        );
+        settlements.push(settled.json().clone());
+    }
+    assert_eq!(
+        settlements[1]["binding_generation"], settlements[0]["binding_generation"],
+        "the seat was never rebound between turns: {settlements:?}"
+    );
+
+    // The convergence the resolver is responsible for. Each turn hands to a
+    // successor slot, and Kontor — not the caller — picks the seat that slot
+    // already occupies. Twice, and it must be the same answer both times.
+    let target_of = |settlement: &serde_json::Value| -> (String, String) {
+        let follow_ups = settlement["follow_ups"].as_array().expect("follow-ups");
+        assert_eq!(
+            follow_ups.len(),
+            1,
+            "the bundled team is a chain, so one successor: {settlement:?}"
+        );
+        (
+            follow_ups[0]["to_role_slot"]
+                .as_str()
+                .expect("a slot")
+                .to_owned(),
+            follow_ups[0]["target_agent_run_id"]
+                .as_str()
+                .expect("the successor's seat was resolved, not left empty")
+                .to_owned(),
+        )
+    };
+    let (first_slot, first_target) = target_of(&settlements[0]);
+    let (second_slot, second_target) = target_of(&settlements[1]);
+    assert_eq!(first_slot, second_slot, "the same successor slot");
+    assert_eq!(
+        first_target, second_target,
+        "`(team_run_id, role_slot_id)` resolved to a different seat on the \
+         second turn, which is exactly the drift this asserts against"
+    );
+    // And the seat it converged on is the one that already existed — not a new
+    // one that merely happens to be stable between the two reads.
+    assert_eq!(
+        Some(&first_target),
+        before
+            .get(&first_slot)
+            .map(|(agent_run_id, _)| agent_run_id),
+        "the resolved successor is the seat that slot has held since seating"
+    );
+
+    // Nothing was added behind any of it: same roles, same seats, same native
+    // sessions, one session each. A duplicate seat or a re-launched session
+    // fails here even if every identity assertion above still held.
+    assert_eq!(
+        census(&world),
+        before,
+        "consecutive turns must not add a seat or move a native session"
+    );
+
+    // A second start attempt on the same team must not seat the slot again. The
+    // refusal it earns is not the point and is not asserted — what is asserted
+    // is that nothing new exists behind the team run afterwards.
+    let replanned = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(replanned.status, 200, "{}", replanned.body);
+    let restarted = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({
+            "plan_hash": replanned.json()["plan_hash"].as_str().expect("a hash")
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-converge-restart")
+    .send(&world)
+    .await;
+    assert!(
+        restarted
+            .json()
+            .get("started")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(|started| started
+                .iter()
+                .all(|seat| seat["team_run_id"] != serde_json::json!(team_run.to_string()))),
+        "a second start seated this team run again: {}",
+        restarted.body
+    );
+    assert_eq!(
+        census(&world),
+        before,
+        "a second start must not add a seat or a native session"
+    );
+
+    // Settlement round-trips: both turns are readable, in order, against the
+    // same seat and the same slot.
+    let stored = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_settled_turns(
+                project_id,
+                kontor_core::id::TaskId::parse(
+                    settlements[0]["task_id"].as_str().expect("a task id"),
+                )
+                .expect("a task id"),
+            )
+        })
+        .expect("the settled turns are readable");
+    let mine: Vec<_> = stored
+        .iter()
+        .filter(|turn| turn.agent_run_id.to_string() == agent_run)
+        .collect();
+    assert_eq!(mine.len(), 2, "both turns persisted: {stored:?}");
+    assert_eq!(
+        mine.iter()
+            .map(|turn| turn.turn_ordinal)
+            .collect::<Vec<_>>(),
+        vec![1, 2],
+        "in the order they were taken"
+    );
+    assert!(
+        mine.iter()
+            .all(|turn| turn.role_slot_id.as_str() == role_slot && turn.team_run_id == team_run),
+        "each against the same slot of the same team run: {mine:?}"
+    );
+}
+
+/// One alpha team seated with `alpha-k2` deliberately never launched.
+///
+/// `alpha-k2` is the slot whose *frozen* revision carries a `waiver_policy`
+/// (`authorized_roles: ["alpha-r2"]`, `required_evidence: ["alpha-a3"]`), so this
+/// pins a registered immutable template that permits the waiver rather than
+/// editing the bundled v1 — whose `tester`/`researcher-a` slots deliberately
+/// permit nothing — or branching on a seed id.
+struct UnboundWorld {
+    world: World,
+    project: String,
+    epic: String,
+    team_run: String,
+    seats: Vec<serde_json::Value>,
+}
+
+async fn alpha_with_one_unbound_slot(slug: &'static str) -> UnboundWorld {
+    omega_with_one_unbound_slot(slug, "omega-cat").await
+}
+
+/// The same, against a named work-profile category of the omega pack.
+///
+/// `omega-cat` pins the team whose handoff to the waivable slot carries phase
+/// and artifact conditions; `omega-u-cat` pins the one whose handoff is
+/// unconditional. Only the second reaches the waived-slot guard in
+/// `derive_follow_ups` — with a condition in front of it the derivation
+/// short-circuits first, and the guard cannot be falsified.
+async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str) -> UnboundWorld {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    // The runtime will not take this seat. That is the only way a declared slot
+    // is never bound, and it is a transport fact: no session, no binding.
+    world
+        .fake
+        .refusing_launch_of(&kontor_core::id::RoleSlotId::parse("omega-k3").expect("a slot"));
+
+    let pack: serde_json::Value = serde_json::from_str(OMEGA_PACK).expect("the omega pack parses");
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack}),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-register"))
+    .send(&world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let created = ensure_project(&world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-account"))
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Omega epic",
+            category,
+            serde_json::json!([{"title": "Omega task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-epic-apply"))
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision, "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id, "reason": "Run omega"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-arm"))
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(format!("{slug}-start"))
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+
+    // Seating is all-or-nothing in its *answer*: one refused launch blocks the
+    // batch. The rows it wrote before the refusal are still there, and that is
+    // exactly the shape this design exists for — a team run whose declared slots
+    // are partly seated and partly not. So the seats are read from the store
+    // rather than from the response.
+    let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
+    let task_id = {
+        let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        kontor_core::id::TaskId::parse(
+            projection.json()["tasks"][0]["task_id"]
+                .as_str()
+                .expect("a task id"),
+        )
+        .expect("a task id")
+    };
+    let team_run_id = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_team_runs_for_task(project_id, task_id))
+        .expect("the team runs are readable")
+        .into_iter()
+        .next_back()
+        .map(|(id, _)| id)
+        .expect("the admission created a team run");
+    let rows = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats are readable");
+    let seats: Vec<serde_json::Value> = rows
+        .iter()
+        .filter(|row| row.native_id.is_some())
+        .map(|row| {
+            serde_json::json!({
+                "agent_run_id": row.agent_run_id.to_string(),
+                "role_slot": row.role.as_str(),
+                "team_run_id": team_run_id.to_string(),
+            })
+        })
+        .collect();
+    assert!(
+        seats.iter().all(|seat| seat["role_slot"] != "omega-k3"),
+        "omega-k3 must never have been bound: {rows:?}"
+    );
+    assert!(
+        !seats.is_empty(),
+        "the slots the runtime did take are bound: {rows:?}"
+    );
+    let team_run = team_run_id.to_string();
+    UnboundWorld {
+        world,
+        project,
+        epic,
+        team_run,
+        seats,
+    }
+}
+
+/// Journeys 5 and 6 through the public surface: a waiver is refused without
+/// admin authority, without the frozen policy's role, and without its evidence —
+/// and an ever-bound slot is refused whatever else is true.
+#[tokio::test]
+async fn a_public_waiver_is_refused_without_authority_policy_or_evidence() {
+    let seeded = alpha_with_one_unbound_slot("waive-refuse").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        team_run,
+        seats,
+        ..
+    } = &seeded;
+    let revision = |body: &serde_json::Value| body["team_run_revision"].as_u64();
+    let _ = revision;
+
+    let waive = |slot: &'static str,
+                 role: &'static str,
+                 evidence: serde_json::Value,
+                 signer: &'static str,
+                 key: &'static str| {
+        let uri = format!("/v1/projects/{project}/team-runs/{team_run}/role-slots/{slot}/waivers");
+        Call::post(
+            uri,
+            &serde_json::json!({
+                "expected_team_revision": 1,
+                "authorized_by_role": role,
+                "evidence": evidence
+            }),
+        )
+        .signed_as(world, signer)
+        .with_key(key)
+    };
+
+    // Not admin.
+    let refused = waive(
+        "omega-k3",
+        "omega-r1",
+        serde_json::json!(["omega-a3"]),
+        "operator",
+        "w-op",
+    )
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    // A slot whose frozen revision permits no waiver at all. Forbidden, per the
+    // design's own table: it is an authority answer, not a shape answer.
+    let refused = waive(
+        "omega-k1",
+        "omega-r1",
+        serde_json::json!(["omega-a3"]),
+        "admin",
+        "w-nopolicy",
+    )
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "forbidden", "{}", refused.body);
+
+    // A role the policy does not authorize.
+    let refused = waive(
+        "omega-k3",
+        "omega-r2",
+        serde_json::json!(["omega-a3"]),
+        "admin",
+        "w-role",
+    )
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    // Evidence the policy demands and the caller does not cite.
+    let refused = waive(
+        "omega-k3",
+        "omega-r1",
+        serde_json::json!(["omega-a1"]),
+        "admin",
+        "w-evidence",
+    )
+    .send(world)
+    .await;
+    assert!(
+        refused.status == 422 || refused.status == 400,
+        "incomplete evidence is refused: {}",
+        refused.body
+    );
+
+    // A slot that *was* bound is refused, and stays refused: the binding history
+    // is the fact, not a live session.
+    let bound = seats[0]["role_slot"].as_str().expect("a slot").to_owned();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/team-runs/{team_run}/role-slots/{bound}/waivers"),
+        &serde_json::json!({
+            "expected_team_revision": 1,
+            "authorized_by_role": "omega-r1",
+            "evidence": ["omega-a3"]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("w-bound")
+    .send(world)
+    .await;
+    assert!(
+        refused.status.as_u16() >= 400,
+        "an ever-bound slot cannot be waived: {}",
+        refused.body
+    );
+
+    // Nothing above wrote anything.
+    let unknown = Call::post(
+        format!("/v1/projects/{project}/team-runs/{team_run}/role-slots/omega-zz/waivers"),
+        &serde_json::json!({
+            "expected_team_revision": 1,
+            "authorized_by_role": "omega-r1",
+            "evidence": ["omega-a3"]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("w-unknown")
+    .send(world)
+    .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+    let _ = epic;
+}
+
+/// Journeys 1, 2, 4 and 8: the happy public journey. Every bound slot settles,
+/// the one unbound slot is waived, the team closes on role-slot dispositions
+/// with its seats still live, no session was invented for the waived slot, and
+/// the waiver replays on its key rather than appending a second one.
+#[tokio::test]
+async fn a_waiver_completes_a_team_whose_declared_slot_was_never_bound() {
+    let seeded = alpha_with_one_unbound_slot("waive-happy").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        team_run,
+        seats,
+        ..
+    } = &seeded;
+    let project_id = kontor_core::id::ProjectId::parse(project).expect("a project id");
+    let team_run_id = kontor_core::id::TeamRunId::parse(team_run).expect("a team run id");
+
+    // Every seat that exists settles its turn.
+    for (index, seat) in seats.iter().enumerate() {
+        let agent_run = seat["agent_run_id"].as_str().expect("id");
+        let role_slot = seat["role_slot"].as_str().expect("slot");
+        let projected = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        let revision = projected.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("a revision");
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+            &serde_json::json!({
+                "role_slot": role_slot,
+                "expected_task_revision": revision,
+                "artifacts": ["omega-a3"]
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("waive-happy-turn-{index}"))
+        .send(world)
+        .await;
+        assert_eq!(settled.status, 200, "slot `{role_slot}`: {}", settled.body);
+        assert_eq!(settled.json()["seat_live"], serde_json::json!(true));
+        // Journey 8: no follow-up is ever aimed at the waivable slot's seat,
+        // because there is no such seat.
+        for follow_up in settled.json()["follow_ups"].as_array().expect("follow-ups") {
+            assert_ne!(
+                follow_up["to_role_slot"],
+                serde_json::json!("omega-k3"),
+                "a dispatch to a slot with no seat: {}",
+                settled.body
+            );
+        }
+    }
+
+    // The team is not closed yet: one declared slot is still unaccounted for.
+    let before = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_team_run(project_id, team_run_id))
+        .expect("the team is readable")
+        .expect("the team exists");
+    assert!(
+        before.terminal.is_none(),
+        "an unaccounted slot withholds closure: {before:?}"
+    );
+    let runs_before = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats are readable")
+        .len();
+
+    // The waiver.
+    let waived = Call::post(
+        format!("/v1/projects/{project}/team-runs/{team_run}/role-slots/omega-k3/waivers"),
+        &serde_json::json!({
+            "expected_team_revision": before.revision.get(),
+            "authorized_by_role": "omega-r1",
+            "evidence": ["omega-a3"]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("waive-happy-1")
+    .send(world)
+    .await;
+    assert_eq!(waived.status, 200, "{}", waived.body);
+    assert_eq!(waived.json()["disposition"], "waived", "{}", waived.body);
+    assert_eq!(waived.json()["applied"], "created", "{}", waived.body);
+    assert_eq!(waived.json()["authority_tier"], "admin", "{}", waived.body);
+    assert_eq!(
+        waived.json()["team_run_closed"],
+        serde_json::json!(team_run),
+        "the waiver was the last thing outstanding, so the team closed: {}",
+        waived.body
+    );
+
+    // Journey 2's assertions, read from the rows rather than the answer.
+    let after = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_team_run(project_id, team_run_id))
+        .expect("the team is readable")
+        .expect("the team exists");
+    let terminal = after.terminal.as_ref().expect("the team closed");
+    assert_eq!(
+        terminal.source,
+        kontor_core::state::TeamEvidenceSource::RoleSlotDispositions { team_run_id },
+        "closed on dispositions, not on some neighbouring source"
+    );
+    assert_eq!(
+        terminal.outcome,
+        kontor_core::state::TerminalOutcome::Succeeded
+    );
+
+    // Exactly one waiver, no turn for the waived slot, and no seat invented for
+    // it: the run census is unchanged by the waiver.
+    let waivers = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_role_slot_waivers(project_id, team_run_id))
+        .expect("the waivers are readable");
+    assert_eq!(waivers.len(), 1, "{waivers:?}");
+    assert_eq!(waivers[0].role_slot_id.as_str(), "omega-k3");
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+            .expect("the seats are readable")
+            .len(),
+        runs_before,
+        "a waiver must not invent a seat"
+    );
+
+    // Every seat that does exist is still live. Waiving one slot ended nothing.
+    for seat in seats {
+        let agent_run = seat["agent_run_id"].as_str().expect("id");
+        let run = Call::get(format!("/v1/runs/{agent_run}"))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        assert!(
+            run.json()["terminal"].is_null(),
+            "a waiver must not close a live seat: {}",
+            run.body
+        );
+    }
+
+    // Journey 4: the same key replays the same waiver; a different key on the
+    // same slot appends nothing.
+    let replay = Call::post(
+        format!("/v1/projects/{project}/team-runs/{team_run}/role-slots/omega-k3/waivers"),
+        &serde_json::json!({
+            "expected_team_revision": before.revision.get(),
+            "authorized_by_role": "omega-r1",
+            "evidence": ["omega-a3"]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("waive-happy-1")
+    .send(world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged", "{}", replay.body);
+    assert_eq!(
+        replay.json()["waiver_id"],
+        waived.json()["waiver_id"],
+        "a replay is the original row"
+    );
+    let second = Call::post(
+        format!("/v1/projects/{project}/team-runs/{team_run}/role-slots/omega-k3/waivers"),
+        &serde_json::json!({
+            "expected_team_revision": after.revision.get(),
+            "authorized_by_role": "omega-r1",
+            "evidence": ["omega-a3"]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("waive-happy-2")
+    .send(world)
+    .await;
+    assert!(
+        second.status.as_u16() >= 400,
+        "no second waiver: {}",
+        second.body
+    );
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_role_slot_waivers(project_id, team_run_id))
+            .expect("the waivers are readable")
+            .len(),
+        1,
+        "exactly one waiver survives"
+    );
+}
+
+/// Journey 10. A settle addressed to a run that was never bound is refused with
+/// its own code, and writes nothing.
+#[tokio::test]
+async fn settling_a_never_bound_run_is_refused_as_an_unbound_role_slot() {
+    let seeded = alpha_with_one_unbound_slot("waive-unbound").await;
+    let UnboundWorld {
+        world,
+        project,
+        team_run,
+        ..
+    } = &seeded;
+    let project_id = kontor_core::id::ProjectId::parse(project).expect("a project id");
+    let team_run_id = kontor_core::id::TeamRunId::parse(team_run).expect("a team run id");
+
+    // The alpha team's admission seats its first slot through the scheduler, and
+    // any run that exists without a binding is the case under test. If the
+    // refused launch left no row at all there is nothing to address, and the
+    // slot is reached through the waiver route instead — which journey 1 covers.
+    let unbound = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats are readable")
+        .into_iter()
+        .find(|seat| seat.native_id.is_none());
+    let Some(unbound) = unbound else {
+        // No placeholder row: the refused launch rolled back cleanly, which is
+        // itself the stronger outcome and is asserted by the happy journey.
+        return;
+    };
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/turns:settle",
+            unbound.agent_run_id
+        ),
+        &serde_json::json!({
+            "role_slot": unbound.role.as_str(),
+            "expected_task_revision": 1,
+            "artifacts": ["omega-a3"]
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("unbound-settle")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    assert_eq!(
+        refused.json()["code"],
+        "role_slot_unbound",
+        "{}",
+        refused.body
+    );
+}
+
+/// Journey 8. A waiver taken *before* the other slots settle suppresses the
+/// dispatch the frozen handoff DAG would otherwise derive to it.
+///
+/// The waived slot is a handoff target in this template, so without the guard a
+/// settlement would derive a row aimed at a seat the waiver says will never
+/// exist — undeliverable for ever, and retried at every startup.
+#[tokio::test]
+async fn a_waived_slot_is_never_given_a_follow_up() {
+    let seeded = omega_with_one_unbound_slot("waive-dispatch", "omega-u-cat").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        team_run,
+        seats,
+        ..
+    } = &seeded;
+
+    // Waive first, while the other slots are still outstanding: the team cannot
+    // close yet, so settlement still happens afterwards.
+    let waived = Call::post(
+        format!("/v1/projects/{project}/team-runs/{team_run}/role-slots/omega-k3/waivers"),
+        &serde_json::json!({
+            "expected_team_revision": 1,
+            "authorized_by_role": "omega-r1",
+            "evidence": ["omega-a3"]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("waive-dispatch-1")
+    .send(world)
+    .await;
+    assert_eq!(waived.status, 200, "{}", waived.body);
+    assert_eq!(
+        waived.json()["team_run_closed"],
+        serde_json::Value::Null,
+        "slots are still outstanding, so nothing closed: {}",
+        waived.body
+    );
+
+    // `omega-k1` hands off to `omega-k3`, so this is the settlement that would
+    // derive the dispatch.
+    let projected = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let revision = projected.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+    let settled = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/turns:settle",
+            seats
+                .iter()
+                .find(|seat| seat["role_slot"] == "omega-k1")
+                .expect("omega-k1 is seated")["agent_run_id"]
+                .as_str()
+                .expect("id")
+        ),
+        &serde_json::json!({
+            "role_slot": "omega-k1",
+            "expected_task_revision": revision,
+            "artifacts": ["omega-a2", "omega-a3"]
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("waive-dispatch-turn")
+    .send(world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    for follow_up in settled.json()["follow_ups"].as_array().expect("follow-ups") {
+        assert_ne!(
+            follow_up["to_role_slot"],
+            serde_json::json!("omega-k3"),
+            "a dispatch was derived to a waived slot: {}",
+            settled.body
+        );
+    }
+}
+
+/// The control for `a_waived_slot_is_never_given_a_follow_up`, and the reason
+/// that test cannot pass for the wrong reason.
+///
+/// Same template, same settlement, slot **not** waived: the follow-up *is*
+/// derived. So the absence in the other test is the waived-slot guard's doing,
+/// and not a handoff condition quietly refusing the derivation — which is the
+/// exact confusion that let the guard's mutation survive on the conditional
+/// template.
+#[tokio::test]
+async fn an_unwaived_slot_on_the_same_template_does_receive_the_follow_up() {
+    let control = omega_with_one_unbound_slot("waive-control", "omega-u-cat").await;
+    let projected = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        control.project, control.epic
+    ))
+    .signed_as(&control.world, "observer")
+    .send(&control.world)
+    .await;
+    let revision = projected.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+    let giver = control
+        .seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k1")
+        .expect("omega-k1 is seated")["agent_run_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let unwaived = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{giver}/turns:settle",
+            control.project
+        ),
+        &serde_json::json!({
+            "role_slot": "omega-k1",
+            "expected_task_revision": revision,
+            "artifacts": ["omega-a2", "omega-a3"]
+        }),
+    )
+    .signed_as(&control.world, "operator")
+    .with_key("waive-control-turn")
+    .send(&control.world)
+    .await;
+    assert_eq!(unwaived.status, 200, "{}", unwaived.body);
+    assert!(
+        unwaived.json()["follow_ups"]
+            .as_array()
+            .expect("follow-ups")
+            .iter()
+            .any(|follow_up| follow_up["to_role_slot"] == serde_json::json!("omega-k3")),
+        "the handoff is unconditional, so without a waiver it must derive: {}",
+        unwaived.body
+    );
+}
+
+/// KON-MVP-09. The ceilings are a Realm's configuration, and the configured
+/// value is what admission is judged against.
+///
+/// The oracle is the *contrast* with
+/// `a_team_that_closed_on_settled_turns_releases_admission_capacity`: same
+/// fixture, same plan, same single `scheduler:start`, and exactly one number
+/// different. Under [`DEFAULT_CAPACITY`] the first team's four seats spend the
+/// account ceiling of four and the second task comes back `capacity_exhausted`;
+/// with that one ceiling configured wider, both tasks are seated by the same
+/// call and nothing is blocked.
+///
+/// Two things follow that a test of the override alone would not prove. The
+/// configured number is read at admission rather than at planning — the planner
+/// passes both candidates either way, so a refusal that disappears can only have
+/// come from the recount that commits — and no *other* ceiling was silently
+/// widened to make room, because every one of them is still the default.
+#[tokio::test]
+async fn the_configured_capacity_and_not_a_compiled_one_decides_what_is_admitted() {
+    // One ceiling, one change: the account ceiling that the sibling test proves
+    // is the binding one, lifted from four to eight. Everything else — global,
+    // project, goal, provider, runtime and the adaptive window — is left at the
+    // default, so a second admitted task cannot be explained by any of them.
+    let world = World::open_empty_with_a_plane_and_capacity(CapacityConfig {
+        account_max_in_flight: 8,
+        ..DEFAULT_CAPACITY
+    })
+    .await;
+    let CapacityFixture {
+        project,
+        epic,
+        projection,
+        plan_hash,
+        ..
+    } = capacity_fixture(&world).await;
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("cap-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+
+    assert_eq!(
+        started.json()["blocked"].as_array().expect("blocked").len(),
+        0,
+        "the ceiling that refused the second task at four has room at eight: {}",
+        started.body
+    );
+    let seated: BTreeSet<String> = started.json()["started"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .map(|seat| seat["task_id"].as_str().expect("a task id").to_owned())
+        .collect();
+    let expected: BTreeSet<String> = (0..2)
+        .map(|index| {
+            projection.json()["tasks"][index]["task_id"]
+                .as_str()
+                .expect("a task id")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        seated, expected,
+        "both independent tasks are seated by one start: {}",
+        started.body
+    );
 }

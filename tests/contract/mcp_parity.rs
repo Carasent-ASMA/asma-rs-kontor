@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        46,
+        47,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        48,
+        49,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -532,6 +532,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // explicit compaction drives a session and is an operator act.
         ("kontor_context_policy_preview", CallerTier::Observer),
         ("kontor_session_compact", CallerTier::Operator),
+        // KON-16: excusing a declared slot discharges an obligation the frozen
+        // template imposed, which is the same kind of act as waiving a gate — so
+        // the daemon requires admin on the route and the registry says so too.
+        ("kontor_role_slot_waive", CallerTier::Admin),
     ]);
     for tool in REGISTRY {
         assert_eq!(

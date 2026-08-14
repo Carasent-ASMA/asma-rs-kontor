@@ -341,6 +341,7 @@ fn check(tool: &'static str, arg: &ArgSpec, value: &serde_json::Value) -> Result
         ArgType::ProjectId
         | ArgType::MiniProjectId
         | ArgType::TaskId
+        | ArgType::TeamRunId
         | ArgType::AgentRunId
         | ArgType::AccountProfileId
         | ArgType::IntakeReceiptId
@@ -422,6 +423,7 @@ fn parse_domain(ty: ArgType, text: &str) -> Result<(), kontor_core::DomainError>
         ArgType::ProjectId => id::ProjectId::parse(text).map(drop),
         ArgType::MiniProjectId => id::MiniProjectId::parse(text).map(drop),
         ArgType::TaskId => id::TaskId::parse(text).map(drop),
+        ArgType::TeamRunId => id::TeamRunId::parse(text).map(drop),
         ArgType::AgentRunId => id::AgentRunId::parse(text).map(drop),
         ArgType::AccountProfileId => id::AccountProfileId::parse(text).map(drop),
         ArgType::IntakeReceiptId => id::IntakeReceiptId::parse(text).map(drop),

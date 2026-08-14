@@ -40,8 +40,9 @@ use kontor_api::applications::{
 use kontor_api::applications::{
     ConnectorSpecDto, IntakeReceiptDto, ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto,
     ProfilePhaseDto, ProfileValidationDto, RegisterPackRequest, ResolveConflictRequest,
-    SettleTurnRequest, SettledTurnDto, SubmitIntakeRequest, TicketClaimDto, TicketCommentDto,
-    TicketCommentPullDto, TicketConflictDto, TriggerSpecDto, TurnFollowUpDto, WorkProfileDetailDto,
+    RoleSlotWaiverDto, SettleTurnRequest, SettledTurnDto, SubmitIntakeRequest, TicketClaimDto,
+    TicketCommentDto, TicketCommentPullDto, TicketConflictDto, TriggerSpecDto, TurnFollowUpDto,
+    WaiveRoleSlotRequest, WorkProfileDetailDto,
 };
 use kontor_api::applications::{
     GateProjectionDto, GateVerdictDto, ProvenanceDto, RecordGateRequest, RedactionDto,
@@ -85,10 +86,10 @@ use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::request::LaunchParts;
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_scheduler::model::{
-    AccountAdmissionEvidence, AdaptiveWindow, AdaptiveWindowConfig, AdmissionEventId,
-    AdmittedCandidate, AuthorizationEvidence, CalendarAdmission, Candidate, CandidateDecision,
-    CapacityConfig, CapacityUsage, ExternalWorkEvidence, ReconciliationEvidence,
-    ReconciliationScope, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
+    AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
+    AuthorizationEvidence, CalendarAdmission, Candidate, CandidateDecision, CapacityConfig,
+    CapacityUsage, ExternalWorkEvidence, ReconciliationEvidence, ReconciliationScope,
+    RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
 };
 use kontor_store::{
     AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication, EpicTask, EpicTicketLink,
@@ -103,28 +104,6 @@ use kontor_teams::run::{TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 /// and it is also a closed `CHECK` value in the schema, so the two spellings have
 /// to be the same one.
 const REGISTER_PACK: &str = "register_profile_pack";
-
-/// How many simultaneous runs a Realm allows before the planner refuses.
-///
-/// ponytail: one fixed capacity configuration rather than a settings file. A
-/// Realm is a single-operator control plane on one machine, and nothing in the
-/// journey this ticket owns varies it. The upgrade, if a deployment ever needs
-/// one, is to read it out of the state root next to `runtimes.json` — not to
-/// spread the numbers across handlers.
-const CAPACITY: CapacityConfig = CapacityConfig {
-    global_max_in_flight: 16,
-    project_max_in_flight: 8,
-    mission_max_in_flight: 8,
-    account_max_in_flight: 4,
-    provider_max_in_flight: 4,
-    runtime_max_in_flight: 8,
-    adaptive: AdaptiveWindowConfig {
-        initial: 4,
-        floor: 1,
-        ceiling: 8,
-        growth_step: 1,
-    },
-};
 
 /// How long a scheduler-held module or worktree lease lives, in seconds.
 const LEASE_SECONDS: i64 = 3_600;
@@ -142,6 +121,14 @@ pub struct Services {
     pack: ProfilePackSpec,
     /// The connector specifications this build ships, parsed on first use.
     connectors: OnceLock<SpecCatalog>,
+    /// How many simultaneous runs this Realm admits, from its configuration.
+    ///
+    /// Held here and read at both the planning and the admission call site, so a
+    /// plan and the commit that follows it are judged against the same ceilings.
+    /// It arrives at construction and never changes: a Realm that re-read its
+    /// ceilings mid-flight could refuse a candidate the plan it is executing had
+    /// already admitted.
+    capacity: CapacityConfig,
 }
 
 impl std::fmt::Debug for Services {
@@ -150,22 +137,37 @@ impl std::fmt::Debug for Services {
             .debug_struct("Services")
             .field("attached", &self.state.get().is_some())
             .field("pack", &self.pack.pack_id.as_str())
+            .field("capacity", &self.capacity)
             .finish_non_exhaustive()
     }
 }
 
 impl Services {
-    /// Compose the services around the profile pack this build ships.
+    /// Compose the services around the profile pack this build ships, admitting
+    /// work under `capacity`.
+    ///
+    /// The ceilings are a parameter rather than a constant in this file because
+    /// they are a deployment's number and not a decision this module gets to make
+    /// — the same reason [`kontor_scheduler::model::CapacityConfig`] ships no
+    /// default of its own. [`crate::DEFAULT_CAPACITY`] is what a daemon composed
+    /// the ordinary way passes.
     ///
     /// # Errors
     /// Returns the domain's own refusal when the bundled pack does not validate,
-    /// which is a defect in the shipped data and not a runtime condition.
-    pub fn new(realm_id: kontor_core::id::RealmId) -> Result<Arc<Self>, kontor_core::DomainError> {
+    /// which is a defect in the shipped data and not a runtime condition. The
+    /// ceilings are *not* judged here: [`crate::Daemon::start`] validates them
+    /// before it claims a state root, so a refused set stops a start rather than
+    /// failing a composition halfway through one.
+    pub fn new(
+        realm_id: kontor_core::id::RealmId,
+        capacity: CapacityConfig,
+    ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
             state: OnceLock::new(),
             pack: kontor_profiles::seeds::bundled_pack()?,
             connectors: OnceLock::new(),
+            capacity,
         }))
     }
 
@@ -411,16 +413,140 @@ impl Services {
         // *did Kontor's work in every declared slot finish?* A persistent seat
         // makes that question the only answerable one, because the session is
         // meant to still be sitting there.
-        if let Ok(certificate) = slots.certify_team_closure(&[]) {
+        //
+        // Every basis is offered the *persisted* waivers. Passing an empty slice
+        // would make a waiver a thing the API records and the closure ignores,
+        // which is the one way this design can silently do nothing.
+        let waivers = self.recorded_waivers(project_id, team_run_id)?;
+        if let Ok(certificate) = slots.certify_team_closure(&waivers) {
             return Ok(Ok(certificate));
         }
         let accounted = self.settled_slots(project_id, team_run_id)?;
-        match slots.certify_from_settled_turns(&accounted, &[]) {
-            Ok(certificate) => Ok(Ok(certificate)),
-            Err(_) => Ok(Err(
-                "a declared role slot has neither ended nor settled its final turn",
-            )),
+        if waivers.is_empty() {
+            return match slots.certify_from_settled_turns(&accounted, &waivers) {
+                Ok(certificate) => Ok(Ok(certificate)),
+                Err(_) => Ok(Err(
+                    "a declared role slot has neither ended nor settled its final turn",
+                )),
+            };
         }
+        // A waived slot settles no turn, so the settled-turn basis cannot speak
+        // for this team at all. The disposition basis is the only honest one,
+        // and it requires *exactly one* source per declared slot.
+        let dispositions = self.slot_dispositions(project_id, team_run_id, &accounted)?;
+        match slots.certify_from_dispositions(&dispositions, &waivers) {
+            Ok(certificate) => Ok(Ok(certificate)),
+            Err(_) => Ok(Err("a declared role slot is neither settled nor waived")),
+        }
+    }
+
+    /// The wire view of one recorded waiver.
+    fn waiver_dto(
+        &self,
+        realm_id: kontor_core::id::RealmId,
+        stored: kontor_store::StoredWaiver,
+        applied: Applied,
+        closed: Option<TeamRunId>,
+    ) -> RoleSlotWaiverDto {
+        RoleSlotWaiverDto {
+            realm_id,
+            project_id: stored.project_id,
+            task_id: stored.task_id,
+            team_run_id: stored.team_run_id.to_string(),
+            role_slot: stored.role_slot_id.as_str().to_owned(),
+            waiver_id: stored.id.to_string(),
+            disposition: "waived",
+            authorized_by_role: stored.authorized_role,
+            authority_tier: stored.authority_tier,
+            evidence: stored.evidence,
+            evidence_hash: stored.evidence_hash.as_str().to_owned(),
+            recorded_at: stored.recorded_at,
+            applied: applied_dto(applied),
+            team_run_closed: closed.map(|id| id.to_string()),
+        }
+    }
+
+    /// Whether one slot of one team run carries a waiver.
+    fn slot_is_waived(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        slot: &RoleSlotId,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        Ok(state
+            .with_store(|store| store.list_role_slot_waivers(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .iter()
+            .any(|waiver| &waiver.role_slot_id == slot))
+    }
+
+    /// The waivers persisted against one team run, in the shape the certifiers
+    /// validate.
+    fn recorded_waivers(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+    ) -> Result<Vec<kontor_teams::run::RoleSlotWaiver>, ApiError> {
+        let state = self.state()?;
+        state
+            .with_store(|store| store.list_role_slot_waivers(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .map(|waiver| {
+                Ok(kontor_teams::run::RoleSlotWaiver {
+                    slot: waiver.role_slot_id,
+                    authorized_by: kontor_core::id::RoleKey::parse(&waiver.authorized_role)
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    evidence: waiver
+                        .evidence
+                        .iter()
+                        .map(|key| kontor_core::id::ArtifactKey::parse(key))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    recorded_at: waiver.recorded_at,
+                })
+            })
+            .collect::<Result<Vec<_>, ApiError>>()
+    }
+
+    /// One disposition per declared slot, built from the same rows the store
+    /// re-proves the closure from.
+    ///
+    /// A slot carrying both sources is left carrying both, deliberately: the
+    /// certifier refuses that rather than this function picking a winner.
+    fn slot_dispositions(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        accounted: &BTreeMap<RoleSlotId, ContentHash>,
+    ) -> Result<BTreeMap<RoleSlotId, kontor_core::state::SlotDisposition>, ApiError> {
+        let state = self.state()?;
+        let mut dispositions: BTreeMap<RoleSlotId, kontor_core::state::SlotDisposition> =
+            BTreeMap::new();
+        for (slot, evidence_hash) in accounted {
+            dispositions.insert(
+                slot.clone(),
+                kontor_core::state::SlotDisposition::SettledTurn {
+                    evidence_hash: evidence_hash.clone(),
+                },
+            );
+        }
+        for waiver in state
+            .with_store(|store| store.list_role_slot_waivers(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if dispositions.contains_key(&waiver.role_slot_id) {
+                continue;
+            }
+            dispositions.insert(
+                waiver.role_slot_id,
+                kontor_core::state::SlotDisposition::WaivedUnbound {
+                    evidence_hash: waiver.evidence_hash,
+                },
+            );
+        }
+        Ok(dispositions)
     }
 
     /// The final settled turn of each role slot in one team run.
@@ -483,6 +609,9 @@ impl Services {
                 .map_err(|error| self.refuse_domain(&error))?,
             kontor_teams::run::TeamClosureBasis::SettledTurns => certificate
                 .into_settled_turn_evidence(now)
+                .map_err(|error| self.refuse_domain(&error))?,
+            kontor_teams::run::TeamClosureBasis::RoleSlotDispositions => certificate
+                .into_disposition_evidence(now)
                 .map_err(|error| self.refuse_domain(&error))?,
         };
         state
@@ -748,6 +877,12 @@ impl Services {
                     after,
                 )
             {
+                continue;
+            }
+            // A waived slot is not a recipient. The waiver is the durable
+            // statement that this seat will not exist, so deriving a dispatch to
+            // it would create a row nothing can ever deliver.
+            if self.slot_is_waived(project_id, settled.team_run_id, &handoff.to_slot)? {
                 continue;
             }
             // The seat for the receiving slot, already materialized by the start
@@ -1411,8 +1546,8 @@ impl Services {
             module_leases,
             worktree_leases,
             usage: CapacityUsage::default(),
-            capacity: CAPACITY,
-            adaptive_window: AdaptiveWindow::start(CAPACITY.adaptive),
+            capacity: self.capacity,
+            adaptive_window: AdaptiveWindow::start(self.capacity.adaptive),
             freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
         })
     }
@@ -3600,6 +3735,14 @@ impl ApplicationOperations for Services {
                 .filter(|row| !row.dispatched)
                 .collect();
             for row in pending {
+                // A slot waived since the dispatch was derived has no seat to
+                // hand anything to, and never will. The row stays undelivered on
+                // purpose — it is the durable record that the handoff was decided
+                // and then excused — but retrying it forever would be a process
+                // waiting on a session that was explicitly declared absent.
+                if self.slot_is_waived(project.project_id, row.team_run_id, &row.to_role_slot_id)? {
+                    continue;
+                }
                 // The follow-up already exists as a decision; this only finishes
                 // handing it over. Nothing here re-derives, so a restart cannot
                 // turn one decision into two effects.
@@ -3634,6 +3777,140 @@ impl ApplicationOperations for Services {
         Ok(delivered)
     }
 
+    async fn waive_role_slot(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role_slot: &str,
+        request: &WaiveRoleSlotRequest,
+    ) -> Result<RoleSlotWaiverDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let role_slot_id =
+            RoleSlotId::parse(role_slot).map_err(|error| self.refuse_domain(&error))?;
+        if request.evidence.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a waiver must cite the evidence its slot requires",
+            ));
+        }
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such team run exists in this project",
+                )
+            })?;
+        // The frozen definition decides whether this slot exists at all, and a
+        // slot the pinned revision never declared is simply not addressable.
+        if !team
+            .snapshot
+            .declared_role_slots()
+            .map_err(|error| self.refuse_domain(&error))?
+            .contains(&role_slot_id)
+        {
+            return Err(self.deny(
+                ApiErrorCode::NotFound,
+                "the pinned team template declares no such role slot",
+            ));
+        }
+        let task_id = self.task_for_team_run(project_id, team_run_id)?;
+
+        // Canonical, and deliberately free of anything incidental: no waiver id,
+        // no idempotency key, no timestamp. An identical retry hashes identically,
+        // which is what makes a replay recognisable as one.
+        let mut sorted: Vec<String> = request.evidence.clone();
+        sorted.sort();
+        sorted.dedup();
+        let evidence_hash = self
+            .intent(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "role_slot_waiver",
+                "project_id": project_id.to_string(),
+                "task_id": task_id.to_string(),
+                "team_run_id": team_run_id.to_string(),
+                "role_slot_id": role_slot_id.as_str(),
+                "team_run_revision": request.expected_team_revision.get(),
+                "authorized_role": request.authorized_by_role,
+                "authority_tier": "admin",
+                "evidence": sorted,
+            }))?
+            .hash()
+            .clone();
+
+        let (stored, applied, _revision) = state
+            .with_store(|store| {
+                store.waive_role_slot(&kontor_store::NewRoleSlotWaiver {
+                    id: kontor_core::id::RoleSlotWaiverId::generate(),
+                    project_id,
+                    task_id,
+                    team_run_id,
+                    role_slot_id: role_slot_id.clone(),
+                    idempotency_key: key.as_str().to_owned(),
+                    expected_team_revision: request.expected_team_revision,
+                    authorized_role: request.authorized_by_role.clone(),
+                    evidence: request.evidence.clone(),
+                    evidence_hash: evidence_hash.clone(),
+                    recorded_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+
+        // A waiver may be the last thing a team was waiting for. It may equally
+        // not be, and then this reports nothing rather than guessing: the field
+        // is null until every *other* declared slot is accounted for too.
+        //
+        // A replay finds the team already closed — by the call this one is a
+        // replay of — and reports that, rather than attempting a second closure
+        // the aggregate would rightly refuse.
+        let already = state
+            .with_store(|store| store.get_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some_and(|team| team.lifecycle.is_terminal());
+        if already {
+            return Ok(self.waiver_dto(state.realm_id(), stored, applied, Some(team_run_id)));
+        }
+        let team_run_closed = match self.certify_team(project_id, team_run_id)? {
+            Ok(certificate) => {
+                let evidence = certificate
+                    .into_disposition_evidence(now)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                let team = state
+                    .with_store(|store| store.get_team_run(project_id, team_run_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::NotFound,
+                            "no such team run exists in this project",
+                        )
+                    })?;
+                state
+                    .with_store(|store| {
+                        store.close_team_run(&kontor_core::repository::TeamRunClosure {
+                            project_id,
+                            team_run_id,
+                            expected_revision: team.revision,
+                            evidence,
+                        })
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                state.signals().appended();
+                Some(team_run_id.to_string())
+            }
+            Err(_) => None,
+        };
+
+        Ok(self.waiver_dto(
+            state.realm_id(),
+            stored,
+            applied,
+            team_run_closed.map(|_| team_run_id),
+        ))
+    }
+
     async fn settle_turn(
         &self,
         key: &IdempotencyKey,
@@ -3656,10 +3933,14 @@ impl ApplicationOperations for Services {
                     "no such agent run exists in this project",
                 )
             })?;
+        // A known run that was never bound is a *slot* problem, not a missing
+        // address: the caller found the right thing and it has no session. Its
+        // own code says so, and points at the only two ways forward — bind and
+        // settle, or waive under the template's policy.
         let binding = run.binding.as_ref().ok_or_else(|| {
             self.deny(
-                ApiErrorCode::NotFound,
-                "this run holds no seat, so it has no turn to settle",
+                ApiErrorCode::RoleSlotUnbound,
+                "this run was never bound to a session, so it has no turn to settle",
             )
         })?;
         // A settled turn must never be a way to keep working a closed run. The
@@ -4885,7 +5166,7 @@ impl Services {
             store.admit_candidate(&AdmissionCommit {
                 admitted,
                 serializes_with: &BTreeSet::new(),
-                capacity: CAPACITY,
+                capacity: self.capacity,
                 team_run: NewTeamRun {
                     id: team_run_id,
                     project_id,

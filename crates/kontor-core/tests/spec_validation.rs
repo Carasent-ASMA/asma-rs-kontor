@@ -20,6 +20,7 @@ use kontor_core::calendar::{
     IanaTimeZone, Weekday, WeeklyWindow, WorkCalendarAssignment, resolve_effective_state,
     validate_windows,
 };
+use kontor_core::compaction::CompactionStatus;
 use kontor_core::id::{
     AccountProfileId, ArtifactKey, CanonicalDocument, CommandReceiptId, ContentHash, ExternalName,
     GateKey, IdempotencyKey, IntakeReceiptId, PhaseKey, ProjectId, RoleKey, SchemaVersion,
@@ -1492,6 +1493,52 @@ fn best_effort_on_an_incapable_runtime_is_visibly_not_enforced() {
         ContextPolicySnapshot::freeze(requested, effective.pending(), at("2026-08-13T09:43:00Z"))
             .expect("freezes");
     assert!(!pending.permits_reuse());
+}
+
+/// MUT-007. The enum variant is not the contract — the *spelling* is, because
+/// that is what reaches JSON, errors and logs, and what a reader takes as the
+/// verdict. A runtime that declares no context control must render as
+/// `not_enforced` and never as a word that reads like success.
+///
+/// Re-spelling `ContextCapabilityResult::NotEnforced` as `"configured"`, or
+/// `CompactionStatus::NotEnforced` / `Unsupported` as `"confirmed"`, makes this
+/// fail.
+#[test]
+fn an_unenforced_context_policy_renders_as_not_enforced_and_never_as_success() {
+    let resolved = resolve_context_window(&ContextPolicyInputs::default()).expect("resolves");
+    let requested = RequestedContextPolicy::of(&resolved, SCHEMA_VERSION);
+    let effective =
+        EffectiveContextPolicy::derive(&requested, &ContextWindowBounds::unknown(), false)
+            .expect("best effort continues on a runtime that declares no context control");
+
+    assert_eq!(effective.capability, ContextCapabilityResult::NotEnforced);
+    assert_eq!(
+        effective.capability.as_str(),
+        "not_enforced",
+        "the stable spelling of an unenforced policy"
+    );
+    assert_eq!(effective.capability.to_string(), "not_enforced");
+    assert_eq!(
+        serde_json::to_value(effective.capability).expect("the capability serializes"),
+        serde_json::json!("not_enforced")
+    );
+    assert_ne!(
+        effective.capability.as_str(),
+        ContextCapabilityResult::Configured.as_str(),
+        "a runtime that enforces nothing must never render as a configured one"
+    );
+
+    // The compaction half of the same fact tells the same truth: neither an
+    // unenforced nor an unsupported runtime may render as a confirmed one.
+    assert_eq!(CompactionStatus::NotEnforced.as_str(), "not_enforced");
+    assert_eq!(CompactionStatus::Unsupported.as_str(), "unsupported");
+    for honest in [CompactionStatus::NotEnforced, CompactionStatus::Unsupported] {
+        assert_ne!(
+            honest.as_str(),
+            CompactionStatus::Confirmed.as_str(),
+            "{honest} must not render as a confirmed compaction"
+        );
+    }
 }
 
 #[test]

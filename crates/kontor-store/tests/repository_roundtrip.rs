@@ -6040,11 +6040,11 @@ fn a_settled_turn_closure_missing_a_slots_turn_is_refused_by_the_store() {
         occurred_at: now(),
     };
     // With both declared slots accounted for, the store's re-proof is satisfied.
-    // The re-proof runs on any transition that cites a closure, not only a
-    // terminal one, so the start carries the citation and leaves the task in a
-    // state from which the negative half's transition is otherwise *legal* —
-    // without that, removing the check would still refuse for the wrong reason
-    // and the mutation below would prove nothing.
+    // The re-proof runs on *terminal* transitions, so the start below is not
+    // where it fires — the negative half is. What the start is for is leaving
+    // the task in a state from which that terminal transition is otherwise
+    // *legal*: without it, removing the check would still refuse for the wrong
+    // reason and the mutation below would prove nothing.
     let started = fixture
         .store
         .transition_task(&TaskTransitionRequest {
@@ -6081,4 +6081,719 @@ fn a_settled_turn_closure_missing_a_slots_turn_is_refused_by_the_store() {
         text.contains("declared role slot") && text.contains("settled no turn"),
         "refused for the missing settled slot, not something else: {text}"
     );
+}
+
+/// A team definition whose second slot may be waived by the first slot's role.
+fn waivable_team_definition() -> CanonicalDocument {
+    CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "slots": [
+            {
+                "id": "zz.maker",
+                "role": {"role": "zz.maker", "version": 1},
+                "waiver_policy": null
+            },
+            {
+                "id": "zz.checker",
+                "role": {"role": "zz.checker", "version": 1},
+                "waiver_policy": {
+                    "authorized_roles": ["zz.maker"],
+                    "required_evidence": ["zz.output"]
+                }
+            }
+        ],
+    }))
+    .expect("a canonical document")
+}
+
+/// A team run frozen against the waivable template, with a seat for the maker.
+struct WaiverFixture {
+    fixture: Fixture,
+    team_run: TeamRunId,
+    template: TeamTemplateId,
+    maker_run: AgentRunId,
+}
+
+fn waiver_fixture() -> WaiverFixture {
+    let fixture = fixture();
+    let template = TeamTemplateId::generate();
+    fixture
+        .store
+        .insert_team_template(
+            fixture.project,
+            &TeamTemplateRevision {
+                template_id: template,
+                version: SpecVersion::FIRST,
+                name: name("Waivable team"),
+                definition: waivable_team_definition(),
+                role_authority: Vec::new(),
+            },
+        )
+        .expect("the template is stored");
+    let revision = fixture
+        .store
+        .get_team_template(fixture.project, template, SpecVersion::FIRST)
+        .expect("the template is readable")
+        .expect("the template exists");
+    let team_run = TeamRunId::generate();
+    fixture
+        .store
+        .create_team_run(&NewTeamRun {
+            id: team_run,
+            project_id: fixture.project,
+            task_id: fixture.task,
+            snapshot: TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION),
+            created_at: now(),
+        })
+        .expect("the team run is created");
+    // Only the maker is seated. The checker is *declared but never bound*, which
+    // is the state the whole waiver design exists for.
+    let maker_run = AgentRunId::generate();
+    fixture
+        .store
+        .create_agent_run(&NewAgentRun {
+            id: maker_run,
+            project_id: fixture.project,
+            team_run_id: team_run,
+            parent_agent_run_id: None,
+            role: kontor_core::id::RoleKey::parse("zz.maker").expect("a role"),
+            account_profile_id: Some(fixture.account),
+            binding: None,
+            created_at: now(),
+        })
+        .expect("the seat is created");
+    WaiverFixture {
+        fixture,
+        team_run,
+        template,
+        maker_run,
+    }
+}
+
+fn waiver_request(fixture: &WaiverFixture, key: &str) -> kontor_store::NewRoleSlotWaiver {
+    kontor_store::NewRoleSlotWaiver {
+        id: kontor_core::id::RoleSlotWaiverId::generate(),
+        project_id: fixture.fixture.project,
+        task_id: fixture.fixture.task,
+        team_run_id: fixture.team_run,
+        role_slot_id: kontor_core::id::RoleSlotId::parse("zz.checker").expect("a slot"),
+        idempotency_key: key.to_owned(),
+        expected_team_revision: AggregateRevision::INITIAL,
+        authorized_role: "zz.maker".to_owned(),
+        evidence: vec!["zz.output".to_owned()],
+        evidence_hash: ContentHash::of(b"waiver evidence"),
+        recorded_at: now(),
+    }
+}
+
+/// Journey 5 and 6. Authority, evidence and the never-bound predicate are each
+/// proved inside the write transaction, and each refuses on its own terms.
+#[test]
+fn a_waiver_is_refused_without_policy_authority_evidence_or_an_unbound_slot() {
+    let fixture = waiver_fixture();
+
+    // A slot the frozen template does not allow waiving at all.
+    let mut undeclared = waiver_request(&fixture, "w-maker");
+    undeclared.role_slot_id = kontor_core::id::RoleSlotId::parse("zz.maker").expect("a slot");
+    let refusal = fixture
+        .fixture
+        .store
+        .waive_role_slot(&undeclared)
+        .expect_err("a slot with no policy cannot be waived");
+    assert!(
+        refusal.to_string().contains("does not allow"),
+        "{refusal:?}"
+    );
+
+    // A role the policy does not authorize.
+    let mut wrong_role = waiver_request(&fixture, "w-role");
+    wrong_role.authorized_role = "zz.checker".to_owned();
+    let refusal = fixture
+        .fixture
+        .store
+        .waive_role_slot(&wrong_role)
+        .expect_err("an unauthorized role cannot waive");
+    assert!(
+        refusal.to_string().contains("cannot excuse itself"),
+        "the slot's own role is refused before the roster check: {refusal:?}"
+    );
+    let mut stranger = waiver_request(&fixture, "w-stranger");
+    stranger.authorized_role = "zz.stranger".to_owned();
+    let refusal = fixture
+        .fixture
+        .store
+        .waive_role_slot(&stranger)
+        .expect_err("an unauthorized role cannot waive");
+    assert!(
+        refusal.to_string().contains("not authorized"),
+        "{refusal:?}"
+    );
+
+    // Evidence the policy demands and the waiver does not cite.
+    let mut thin = waiver_request(&fixture, "w-evidence");
+    thin.evidence = vec!["zz.unrelated".to_owned()];
+    let refusal = fixture
+        .fixture
+        .store
+        .waive_role_slot(&thin)
+        .expect_err("incomplete evidence cannot waive");
+    assert!(
+        refusal.to_string().contains("every evidence reference"),
+        "{refusal:?}"
+    );
+
+    // A stale team revision.
+    let mut stale = waiver_request(&fixture, "w-stale");
+    stale.expected_team_revision = AggregateRevision::INITIAL.next().expect("a revision");
+    let refusal = fixture
+        .fixture
+        .store
+        .waive_role_slot(&stale)
+        .expect_err("a stale revision cannot waive");
+    assert!(refusal.to_string().contains("revision"), "{refusal:?}");
+
+    // And the never-bound predicate, which is the one that distinguishes an
+    // unbound slot from an unreachable one. The checker gets a seat *and* a
+    // binding, and is then no longer waivable — permanently, because the binding
+    // history is what is consulted.
+    let checker = AgentRunId::generate();
+    fixture
+        .fixture
+        .store
+        .create_agent_run(&NewAgentRun {
+            id: checker,
+            project_id: fixture.fixture.project,
+            team_run_id: fixture.team_run,
+            parent_agent_run_id: None,
+            role: kontor_core::id::RoleKey::parse("zz.checker").expect("a role"),
+            account_profile_id: Some(fixture.fixture.account),
+            binding: Some(RuntimeBinding {
+                id: RuntimeBindingId::generate(),
+                agent_run_id: checker,
+                identity: identity(7),
+                bound_at: now(),
+            }),
+            created_at: now(),
+        })
+        .expect("the checker is seated and bound");
+    let refusal = fixture
+        .fixture
+        .store
+        .waive_role_slot(&waiver_request(&fixture, "w-bound"))
+        .expect_err("an ever-bound slot cannot be waived");
+    assert!(refusal.to_string().contains("ever bound"), "{refusal:?}");
+    let _ = fixture.template;
+    let _ = fixture.maker_run;
+}
+
+/// Journey 4. One key replays; a second key on a waived slot is refused rather
+/// than appended; the same key with different content is a conflict.
+#[test]
+fn a_waiver_replays_on_its_key_and_is_never_appended_to() {
+    let fixture = waiver_fixture();
+    let (first, applied, revision) = fixture
+        .fixture
+        .store
+        .waive_role_slot(&waiver_request(&fixture, "w-1"))
+        .expect("the waiver is recorded");
+    assert_eq!(applied, kontor_store::Applied::Created);
+    assert_eq!(
+        revision,
+        AggregateRevision::INITIAL.next().expect("a revision"),
+        "recording a waiver advances the team it excuses a slot of"
+    );
+
+    // Same key, same content: the original row, and no second revision bump.
+    let mut replay = waiver_request(&fixture, "w-1");
+    replay.id = kontor_core::id::RoleSlotWaiverId::generate();
+    let (again, applied, replayed_revision) = fixture
+        .fixture
+        .store
+        .waive_role_slot(&replay)
+        .expect("the waiver replays");
+    assert_eq!(applied, kontor_store::Applied::Unchanged);
+    assert_eq!(again.id, first.id, "the original row, not a new one");
+    assert_eq!(replayed_revision, revision, "a replay moves nothing");
+
+    // Same key, different content.
+    let mut altered = waiver_request(&fixture, "w-1");
+    altered.evidence_hash = ContentHash::of(b"different evidence");
+    let refusal = fixture
+        .fixture
+        .store
+        .waive_role_slot(&altered)
+        .expect_err("a key cannot waive two different things");
+    assert!(
+        refusal.to_string().contains("different content"),
+        "{refusal:?}"
+    );
+
+    // A different key on the same slot appends nothing.
+    let mut second = waiver_request(&fixture, "w-2");
+    second.expected_team_revision = revision;
+    let refusal = fixture
+        .fixture
+        .store
+        .waive_role_slot(&second)
+        .expect_err("a slot is waived once or not at all");
+    assert!(
+        refusal.to_string().contains("already waived"),
+        "{refusal:?}"
+    );
+    assert_eq!(
+        fixture
+            .fixture
+            .store
+            .list_role_slot_waivers(fixture.fixture.project, fixture.team_run)
+            .expect("the waivers are readable")
+            .len(),
+        1,
+        "exactly one waiver survives every attempt above"
+    );
+}
+
+/// Journey 7. After a waiver the database itself refuses the seat: no new run
+/// for the slot, no binding, no turn, and no operational update to a placeholder.
+/// Direct SQL, because these are the writes an application bug would attempt.
+#[test]
+fn a_waived_slot_is_refused_a_run_a_binding_a_turn_and_an_update() {
+    let fixture = waiver_fixture();
+    // A placeholder seat for the slot: unbound, non-terminal, and left exactly
+    // as it is by the waiver. This is the BLK-009 shape the design allows.
+    fixture
+        .fixture
+        .store
+        .create_agent_run(&NewAgentRun {
+            id: AgentRunId::generate(),
+            project_id: fixture.fixture.project,
+            team_run_id: fixture.team_run,
+            parent_agent_run_id: None,
+            role: kontor_core::id::RoleKey::parse("zz.checker").expect("a role"),
+            account_profile_id: Some(fixture.fixture.account),
+            binding: None,
+            created_at: now(),
+        })
+        .expect("the placeholder is created");
+    fixture
+        .fixture
+        .store
+        .waive_role_slot(&waiver_request(&fixture, "w-1"))
+        .expect("the waiver is recorded");
+
+    let raw = rusqlite::Connection::open(&fixture.fixture.path).expect("the file reopens");
+    let project = fixture.fixture.project.to_string();
+    let team = fixture.team_run.to_string();
+
+    for (statement, params, expected) in [
+        (
+            "UPDATE role_slot_waivers SET authorized_role = 'zz.other' WHERE project_id = ?1",
+            vec![project.clone()],
+            "immutable",
+        ),
+        (
+            "DELETE FROM role_slot_waivers WHERE project_id = ?1",
+            vec![project.clone()],
+            "never removed",
+        ),
+    ] {
+        let error = raw
+            .execute(&statement.replace("?1", &format!("'{}'", params[0])), [])
+            .expect_err("the waiver is permanent");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+
+    // A second seat for the waived slot.
+    let error = raw
+        .execute(
+            "INSERT INTO agent_runs (id, project_id, team_run_id, role_key, lifecycle,
+                 desired_state, observed_state, derived_state, revision, created_at)
+             VALUES (?1, ?2, ?3, 'zz.checker', 'queued', 'run_requested', 'unknown', 'unknown',
+                     1, '2026-08-09T10:00:00Z')",
+            rusqlite::params![AgentRunId::generate().to_string(), project, team],
+        )
+        .expect_err("a waived slot cannot be seated");
+    assert!(error.to_string().contains("cannot be seated"), "{error}");
+
+    // An operational update to the placeholder run the waived slot may own.
+    // Waiving a slot must never become a back door to declaring a run finished.
+    let error = raw
+        .execute(
+            "UPDATE agent_runs SET lifecycle = 'succeeded', terminal_outcome = 'succeeded'
+             WHERE project_id = ?1 AND role_key = 'zz.checker'",
+            rusqlite::params![project.clone()],
+        )
+        .expect_err("a waived slot has no operable run");
+    assert!(error.to_string().contains("no operable run"), "{error}");
+
+    // A turn for the waived slot.
+    let error = raw
+        .execute(
+            "INSERT INTO role_turns (id, project_id, task_id, team_run_id, agent_run_id,
+                 role_slot_id, turn_ordinal, idempotency_key, task_revision, binding_generation,
+                 authority_tier, artifacts, evidence_hash, settled_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'zz.checker', 1, 'sneak', 1, 1, 'operator', '[]',
+                     '0000000000000000000000000000000000000000000000000000000000000000',
+                     '2026-08-09T10:00:00Z')",
+            rusqlite::params![
+                kontor_core::id::RoleTurnId::generate().to_string(),
+                project,
+                fixture.fixture.task.to_string(),
+                team,
+                fixture.maker_run.to_string()
+            ],
+        )
+        .expect_err("a waived slot cannot settle a turn");
+    assert!(
+        error.to_string().contains("cannot settle a turn"),
+        "{error}"
+    );
+}
+
+/// Journey 2, 9 and 10 at the store: the disposition closure re-proves itself
+/// from the rows, the new source round-trips as its own variant, and a slot that
+/// is neither settled nor waived withholds the task's closure.
+#[test]
+fn a_disposition_closure_reproves_itself_and_round_trips_as_its_own_source() {
+    let fixture = waiver_fixture();
+    let project = fixture.fixture.project;
+
+    // The maker settles; the checker is waived.
+    fixture
+        .fixture
+        .store
+        .settle_role_turn(&kontor_store::NewRoleTurn {
+            id: kontor_core::id::RoleTurnId::generate(),
+            project_id: project,
+            task_id: fixture.fixture.task,
+            team_run_id: fixture.team_run,
+            agent_run_id: fixture.maker_run,
+            role_slot_id: kontor_core::id::RoleSlotId::parse("zz.maker").expect("a slot"),
+            idempotency_key: "turn-maker".to_owned(),
+            task_revision: AggregateRevision::INITIAL,
+            binding_generation: 1,
+            authority_tier: "operator",
+            account_profile: Some(fixture.fixture.account),
+            artifacts: [artifact("zz.output")].into_iter().collect(),
+            evidence_hash: ContentHash::of(b"maker turn"),
+            settled_at: now(),
+        })
+        .expect("the maker's turn settles");
+    let (waiver, _, _) = fixture
+        .fixture
+        .store
+        .waive_role_slot(&waiver_request(&fixture, "w-1"))
+        .expect("the checker is waived");
+
+    // The digest the closure must carry, computed the one canonical way.
+    let snapshot = fixture
+        .fixture
+        .store
+        .get_team_run(project, fixture.team_run)
+        .expect("the team is readable")
+        .expect("the team exists")
+        .snapshot;
+    let digest = kontor_core::state::role_slot_disposition_digest(
+        SCHEMA_VERSION,
+        fixture.team_run,
+        snapshot.template_id,
+        snapshot.template_version,
+        snapshot.definition.hash(),
+        &[
+            (
+                kontor_core::id::RoleSlotId::parse("zz.maker").expect("a slot"),
+                kontor_core::state::SlotDisposition::SettledTurn {
+                    evidence_hash: ContentHash::of(b"maker turn"),
+                },
+            ),
+            (
+                kontor_core::id::RoleSlotId::parse("zz.checker").expect("a slot"),
+                kontor_core::state::SlotDisposition::WaivedUnbound {
+                    evidence_hash: waiver.evidence_hash.clone(),
+                },
+            ),
+        ],
+    )
+    .expect("the digest is computable");
+
+    let launching = fixture
+        .fixture
+        .store
+        .advance_team_run(&TeamRunAdvance {
+            project_id: project,
+            team_run_id: fixture.team_run,
+            expected_revision: AggregateRevision::INITIAL.next().expect("a revision"),
+            to: RunLifecycle::Launching,
+            occurred_at: now(),
+        })
+        .expect("the team launches");
+    let running = fixture
+        .fixture
+        .store
+        .advance_team_run(&TeamRunAdvance {
+            project_id: project,
+            team_run_id: fixture.team_run,
+            expected_revision: launching,
+            to: RunLifecycle::Running,
+            occurred_at: now(),
+        })
+        .expect("the team runs");
+    fixture
+        .fixture
+        .store
+        .close_team_run(&TeamRunClosure {
+            project_id: project,
+            team_run_id: fixture.team_run,
+            expected_revision: running,
+            evidence: TeamTerminalEvidence {
+                outcome: TerminalOutcome::Succeeded,
+                source: TeamEvidenceSource::RoleSlotDispositions {
+                    team_run_id: fixture.team_run,
+                },
+                evidence_hash: digest.clone(),
+                closed_at: now(),
+            },
+        })
+        .expect("a disposition closure is accepted");
+
+    // Journey 9: the new source reloads as itself, not as a neighbour.
+    let reloaded = fixture
+        .fixture
+        .store
+        .get_team_run(project, fixture.team_run)
+        .expect("the team is readable")
+        .expect("the team exists");
+    assert_eq!(
+        reloaded
+            .terminal
+            .as_ref()
+            .expect("the team is closed")
+            .source,
+        TeamEvidenceSource::RoleSlotDispositions {
+            team_run_id: fixture.team_run
+        },
+        "a disposition closure must not decode as some other source"
+    );
+
+    // The task's profile must pin this team, or no closure is demanded and the
+    // citation would be refused for an unrelated reason.
+    let mut profile = work_profile();
+    profile.id = kontor_core::id::WorkProfileKey::parse("zz.teamed").expect("a profile key");
+    profile.team_template = Some(kontor_core::spec::TeamTemplateRef {
+        template_id: fixture.template,
+        version: SpecVersion::FIRST,
+    });
+    fixture
+        .fixture
+        .store
+        .insert_work_profile(project, &profile)
+        .expect("the profile is stored");
+    fixture
+        .fixture
+        .store
+        .create_task_workflow(&NewTaskWorkflow {
+            id: TaskWorkflowId::generate(),
+            project_id: project,
+            task_id: fixture.fixture.task,
+            snapshot: ResolvedWorkProfileSnapshot::resolve(&profile, now())
+                .expect("the profile resolves"),
+            current_phase: phase("zz.one"),
+            created_at: now(),
+        })
+        .expect("the workflow is created");
+
+    // The re-proof runs on a *terminal* transition, so the refusal is proved
+    // first: it leaves the task alive for the acceptance below, and the two
+    // cannot then be confused for one another.
+    let closure = |digest: ContentHash, revision: AggregateRevision| TaskTransitionRequest {
+        project_id: project,
+        task_id: fixture.fixture.task,
+        expected_revision: revision,
+        to: TaskState::Failed,
+        resume_receipt: None,
+        run_outcome: Some(TerminalOutcome::Failed),
+        produced_artifacts: Default::default(),
+        completed_phases: Default::default(),
+        team_closure: TaskTeamClosure::Certified {
+            team_run_id: fixture.team_run,
+            policy_digest: digest,
+        },
+        occurred_at: now(),
+    };
+    let started = fixture
+        .fixture
+        .store
+        .transition_task(&TaskTransitionRequest {
+            to: TaskState::InProgress,
+            run_outcome: None,
+            team_closure: TaskTeamClosure::NoTeam,
+            ..closure(digest.clone(), AggregateRevision::INITIAL)
+        })
+        .expect("the task starts");
+
+    // A cited digest that is not the one this team closed with is refused, which
+    // is the check the store did not previously make at all.
+    let refusal = fixture
+        .fixture
+        .store
+        .transition_task(&closure(
+            ContentHash::of(b"some other digest"),
+            started.revision,
+        ))
+        .expect_err("a fabricated policy digest must be refused");
+    assert!(
+        refusal.to_string().contains("cited policy digest"),
+        "{refusal:?}"
+    );
+
+    // The real one is accepted.
+    fixture
+        .fixture
+        .store
+        .transition_task(&closure(digest, started.revision))
+        .expect("every declared slot is disposed of exactly once");
+}
+
+/// The exactly-one-source rule, on the state only corruption can produce.
+///
+/// The triggers make a slot that both settled a turn and was waived
+/// unrepresentable through any supported path, which is exactly why the closure
+/// re-proof must still refuse it: the rule has to be true of the *data*, not of
+/// the code that happened to write it. Direct SQL, with the guard lifted.
+#[test]
+fn a_slot_that_both_settled_and_was_waived_is_refused_by_the_store() {
+    let fixture = waiver_fixture();
+    let project = fixture.fixture.project;
+    fixture
+        .fixture
+        .store
+        .waive_role_slot(&waiver_request(&fixture, "w-1"))
+        .expect("the checker is waived");
+
+    {
+        let raw = rusqlite::Connection::open(&fixture.fixture.path).expect("the file reopens");
+        raw.execute_batch(
+            "DROP TRIGGER role_turns_refuse_waived_slot;
+             DROP TRIGGER role_turns_are_permanent;",
+        )
+        .expect("the guards are lifted");
+        for (id, slot, key) in [
+            (
+                "aaaaaaaa-0000-4000-8000-000000000001",
+                "zz.maker",
+                "t-maker",
+            ),
+            (
+                "aaaaaaaa-0000-4000-8000-000000000002",
+                "zz.checker",
+                "t-checker",
+            ),
+        ] {
+            raw.execute(
+                "INSERT INTO role_turns (id, project_id, task_id, team_run_id, agent_run_id,
+                     role_slot_id, turn_ordinal, idempotency_key, task_revision,
+                     binding_generation, authority_tier, artifacts, evidence_hash, settled_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 1, 1, 'operator', '[]',
+                         '0000000000000000000000000000000000000000000000000000000000000000',
+                         '2026-08-09T10:00:00Z')",
+                rusqlite::params![
+                    id,
+                    project.to_string(),
+                    fixture.fixture.task.to_string(),
+                    fixture.team_run.to_string(),
+                    fixture.maker_run.to_string(),
+                    slot,
+                    key
+                ],
+            )
+            .expect("the row is written");
+        }
+    }
+
+    // `zz.checker` now carries both sources. The re-proof must say so, by name,
+    // rather than silently preferring one.
+    let refusal = ensure_disposed_refusal(&fixture);
+    assert!(
+        refusal.contains("both settled a turn and was waived"),
+        "the contradiction is named, not resolved: {refusal}"
+    );
+}
+
+/// Drive the disposition re-proof and return the refusal it produces.
+fn ensure_disposed_refusal(fixture: &WaiverFixture) -> String {
+    let project = fixture.fixture.project;
+    // Close the team on dispositions with whatever digest, then transition: the
+    // digest check runs after the one-source walk, so the walk answers first.
+    let raw = rusqlite::Connection::open(&fixture.fixture.path).expect("the file reopens");
+    raw.execute(
+        "UPDATE team_runs SET lifecycle = 'succeeded', terminal_outcome = 'succeeded',
+             terminal_source_kind = 'role_slot_dispositions',
+             terminal_evidence_hash =
+                 '1111111111111111111111111111111111111111111111111111111111111111',
+             closed_at = '2026-08-09T10:00:00Z'
+         WHERE project_id = ?1 AND id = ?2",
+        rusqlite::params![project.to_string(), fixture.team_run.to_string()],
+    )
+    .expect("the team is marked closed");
+    drop(raw);
+
+    let mut profile = work_profile();
+    profile.id = kontor_core::id::WorkProfileKey::parse("zz.teamed2").expect("a profile key");
+    profile.team_template = Some(kontor_core::spec::TeamTemplateRef {
+        template_id: fixture.template,
+        version: SpecVersion::FIRST,
+    });
+    fixture
+        .fixture
+        .store
+        .insert_work_profile(project, &profile)
+        .expect("the profile is stored");
+    fixture
+        .fixture
+        .store
+        .create_task_workflow(&NewTaskWorkflow {
+            id: TaskWorkflowId::generate(),
+            project_id: project,
+            task_id: fixture.fixture.task,
+            snapshot: ResolvedWorkProfileSnapshot::resolve(&profile, now())
+                .expect("the profile resolves"),
+            current_phase: phase("zz.one"),
+            created_at: now(),
+        })
+        .expect("the workflow is created");
+    let started = fixture
+        .fixture
+        .store
+        .transition_task(&TaskTransitionRequest {
+            project_id: project,
+            task_id: fixture.fixture.task,
+            expected_revision: AggregateRevision::INITIAL,
+            to: TaskState::InProgress,
+            resume_receipt: None,
+            run_outcome: None,
+            produced_artifacts: Default::default(),
+            completed_phases: Default::default(),
+            team_closure: TaskTeamClosure::NoTeam,
+            occurred_at: now(),
+        })
+        .expect("the task starts");
+    fixture
+        .fixture
+        .store
+        .transition_task(&TaskTransitionRequest {
+            project_id: project,
+            task_id: fixture.fixture.task,
+            expected_revision: started.revision,
+            to: TaskState::Failed,
+            resume_receipt: None,
+            run_outcome: Some(TerminalOutcome::Failed),
+            produced_artifacts: Default::default(),
+            completed_phases: Default::default(),
+            team_closure: TaskTeamClosure::Certified {
+                team_run_id: fixture.team_run,
+                policy_digest: ContentHash::of(b"whatever"),
+            },
+            occurred_at: now(),
+        })
+        .expect_err("the contradiction must be refused")
+        .to_string()
 }

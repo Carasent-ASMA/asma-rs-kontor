@@ -56,6 +56,14 @@ closed_enum! {
         /// tell the two apart re-reads and retries against a fresh revision,
         /// which is exactly the one thing that never clears this.
         CapacityExhausted => "capacity_exhausted",
+        /// A declared role slot was never bound to a session, and nothing has
+        /// excused it.
+        ///
+        /// An explicit refusal, never a persisted negative disposition: the slot
+        /// stays outstanding until it is either bound and settled, or waived
+        /// under the frozen template's own policy. Recording "could not" as an
+        /// accounting source is exactly what this code exists to avoid.
+        RoleSlotUnbound => "role_slot_unbound",
         /// A dependency could not be reached. A fact about the channel only.
         Unavailable => "unavailable",
         /// The addressed thing does not exist in this Realm.
@@ -89,6 +97,10 @@ impl ApiErrorCode {
             Self::UnsupportedCapability => StatusCode::UNPROCESSABLE_ENTITY,
             // The position the caller wants is genuinely gone.
             Self::ResnapshotRequired => StatusCode::GONE,
+            // The request is well formed and the state it presented is current;
+            // what is missing is an accounting the caller must supply or excuse.
+            // Same reasoning as `UnsupportedCapability`: not a server defect.
+            Self::RoleSlotUnbound => StatusCode::UNPROCESSABLE_ENTITY,
             // Nothing is wrong with the request or the state it presented, so a
             // 4xx that blames either would misdirect. "Too many requests" is
             // what a spent ceiling is, and it is the status a client already

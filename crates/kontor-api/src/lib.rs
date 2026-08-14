@@ -291,6 +291,12 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle",
             post(applications::settle_turn),
         )
+        // A declared slot that never got a seat is accounted for by an explicit,
+        // authorized waiver — and by nothing else.
+        .route(
+            "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/waivers",
+            post(applications::waive_role_slot),
+        )
         // Profile detail and validation. Workspace-level, like the catalog they
         // extend: a category resolves to the same bundle in every Realm running
         // this build, so there is no project in the address.

@@ -32,7 +32,7 @@ use kontor_core::repository::{
 };
 use kontor_core::spec::TeamRunSnapshot;
 use kontor_core::state::{NativeRuntimeIdentity, TaskState};
-use kontor_daemon::{Daemon, DaemonConfig};
+use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_profiles::pack::{PackAvailability, resolve_profile};
 use kontor_profiles::seeds::bundled_pack;
 use kontor_runtime::adapter::RuntimeAdapter;
@@ -43,6 +43,7 @@ use kontor_runtime::capability::{
 use kontor_runtime::fake::{RuntimeScript, ScriptedFakeRuntime};
 use kontor_runtime::request::LaunchParts;
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
+use kontor_scheduler::model::CapacityConfig;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -119,7 +120,7 @@ impl World {
     /// persisted — a test that reaches for one in this mode is asking about a row
     /// that does not exist, which is what it should find.
     pub(crate) async fn open_empty() -> Self {
-        Self::compose_with(every_capability(), true, false, false).await
+        Self::compose_with(every_capability(), true, false, false, DEFAULT_CAPACITY).await
     }
 
     /// Start an empty Realm whose runtime holds a **plane-level container**.
@@ -130,7 +131,16 @@ impl World {
     /// daemon has asked for it. A realm composed this way can only reach a seat
     /// if the composition root actually prepares the plane.
     pub(crate) async fn open_empty_with_a_plane() -> Self {
-        Self::compose_with(every_capability(), true, false, true).await
+        Self::compose_with(every_capability(), true, false, true, DEFAULT_CAPACITY).await
+    }
+
+    /// The same Realm, admitting work under ceilings the operator configured.
+    ///
+    /// The only way to observe that the ceilings are *configuration* and not a
+    /// compiled constant: two worlds built from the same fixture admit different
+    /// amounts of work.
+    pub(crate) async fn open_empty_with_a_plane_and_capacity(capacity: CapacityConfig) -> Self {
+        Self::compose_with(every_capability(), true, false, true, capacity).await
     }
 
     /// Start a Realm holding *no* adapter at all.
@@ -187,17 +197,18 @@ impl World {
 
     /// Start a Realm, registering the fake only when `configured`.
     async fn compose(capabilities: RuntimeCapabilities, configured: bool) -> Self {
-        Self::compose_with(capabilities, configured, true, false).await
+        Self::compose_with(capabilities, configured, true, false, DEFAULT_CAPACITY).await
     }
 
     /// Start a Realm, registering the fake only when `configured`, seeding the
-    /// fixture work graph only when `seeded`, and giving the runtime a
-    /// plane-level container only when `planed`.
+    /// fixture work graph only when `seeded`, giving the runtime a plane-level
+    /// container only when `planed`, and admitting work under `capacity`.
     async fn compose_with(
         capabilities: RuntimeCapabilities,
         configured: bool,
         seeded: bool,
         planed: bool,
+        capacity: CapacityConfig,
     ) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
         let fake = Arc::new(if planed {
@@ -210,8 +221,13 @@ impl World {
         } else {
             RuntimeRegistry::new()
         };
-        let daemon = Daemon::start(DaemonConfig::at(directory.path()).with_port(0), registry)
-            .expect("the realm starts");
+        let daemon = Daemon::start(
+            DaemonConfig::at(directory.path())
+                .with_port(0)
+                .with_capacity(capacity),
+            registry,
+        )
+        .expect("the realm starts");
         let router = daemon.router();
 
         let project = ProjectId::generate();

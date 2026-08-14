@@ -1491,3 +1491,55 @@ fn a_pack_cannot_seed_an_explicit_only_class() {
         "a seeded explicit-only class is refused"
     );
 }
+
+const CUSTOM_W: &str = include_str!("fixtures/custom-pack-w.json");
+
+/// The waiver fixture pack is a valid immutable template in its own right.
+///
+/// It exists so KON-15's waiver journeys have a template whose *last* declared
+/// slot may be excused — the bundled v1 deliberately permits none, and editing
+/// it would change what every existing run is allowed to do.
+#[test]
+fn the_waiver_fixture_pack_loads_and_validates() {
+    let pack = parse_pack(CUSTOM_W).expect("custom pack W loads and validates");
+    for team in &pack.teams {
+        let last = team.slots.last().expect("the team declares slots");
+        assert!(
+            last.waiver_policy.is_some(),
+            "team `{}`: the waivable slot must be the last one, or seating stops \
+             before it exists",
+            team.name.as_str()
+        );
+    }
+
+    // The second team exists for exactly one reason: its handoff to the waivable
+    // slot is *unconditional*. With a phase or artifact condition on it, the
+    // derivation short-circuits before the waived-slot guard is ever consulted,
+    // and the guard becomes unfalsifiable — which is precisely the survivor the
+    // waiver mutation ledger recorded. Asserted here so the property cannot be
+    // edited away without a test saying so.
+    let unconditional = pack
+        .teams
+        .iter()
+        .find(|team| team.template_id != pack.teams[0].template_id)
+        .expect("the pack declares the unconditional-handoff team");
+    let waivable = unconditional
+        .slots
+        .last()
+        .expect("the team declares slots")
+        .id
+        .clone();
+    let handoff = unconditional
+        .handoffs
+        .iter()
+        .find(|handoff| handoff.to_slot == waivable)
+        .expect("something hands off to the waivable slot");
+    assert!(
+        handoff.after_phase.is_none(),
+        "a phase condition would short-circuit before the waived-slot guard"
+    );
+    assert!(
+        handoff.required_artifacts.is_empty(),
+        "an artifact condition would short-circuit before the waived-slot guard"
+    );
+}

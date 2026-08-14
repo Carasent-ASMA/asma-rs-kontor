@@ -2167,6 +2167,62 @@ impl SqliteStore {
 /// It attests that *Kontor's* turn finished, under a named actor's authority,
 /// against a named task revision and native binding generation. It is not, and
 /// must never be read as, evidence that the runtime ended anything: the seat is
+/// A waiver about to be recorded for a declared, never-bound role slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewRoleSlotWaiver {
+    /// The waiver.
+    pub id: kontor_core::id::RoleSlotWaiverId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The task the team serves.
+    pub task_id: TaskId,
+    /// The team run whose slot is excused.
+    pub team_run_id: TeamRunId,
+    /// The slot being excused.
+    pub role_slot_id: RoleSlotId,
+    /// The caller's stable key.
+    pub idempotency_key: String,
+    /// The team revision the caller presented. Checked, never trusted.
+    pub expected_team_revision: AggregateRevision,
+    /// The role the waiver is attributed to. Policy attribution, not a person.
+    pub authorized_role: String,
+    /// The evidence the waiver cites.
+    pub evidence: Vec<String>,
+    /// The canonical digest of everything above that is not incidental.
+    pub evidence_hash: ContentHash,
+    /// When it was recorded.
+    pub recorded_at: Timestamp,
+}
+
+/// One recorded waiver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredWaiver {
+    /// The waiver.
+    pub id: kontor_core::id::RoleSlotWaiverId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The task the team serves.
+    pub task_id: TaskId,
+    /// The team run whose slot was excused.
+    pub team_run_id: TeamRunId,
+    /// The excused slot.
+    pub role_slot_id: RoleSlotId,
+    /// The key it was recorded under.
+    pub idempotency_key: String,
+    /// The team revision it was taken against.
+    pub team_run_revision: AggregateRevision,
+    /// The role it is attributed to.
+    pub authorized_role: String,
+    /// The tier the credential proved. Always `admin`.
+    pub authority_tier: String,
+    /// The evidence cited.
+    pub evidence: Vec<String>,
+    /// The canonical digest.
+    pub evidence_hash: ContentHash,
+    /// When it was recorded.
+    pub recorded_at: Timestamp,
+}
+
 /// expected to still be sitting there, ready for the next turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewRoleTurn {
@@ -2467,6 +2523,316 @@ impl SqliteStore {
         }
         Ok(found)
     }
+
+    // -----------------------------------------------------------------------
+    // Role slot waivers
+    // -----------------------------------------------------------------------
+
+    /// Record an authorized waiver for a declared slot that was never bound, and
+    /// advance the team run's revision in the same transaction.
+    ///
+    /// Everything that makes the waiver legal is proved *here*, with the write
+    /// lock held, and against the run's own frozen snapshot: the slot is
+    /// declared, its frozen policy allows waiving, the citing role is one the
+    /// policy authorizes and is not the slot's own role, every required evidence
+    /// key is cited, the caller's revision is current, the team is not terminal,
+    /// and the slot was never bound. Proving any of it earlier would prove it
+    /// about a state that could have moved before the row landed.
+    ///
+    /// The never-bound predicate is re-checked here *and* enforced by trigger.
+    /// The trigger is what makes it true of the data; this check is what makes
+    /// the refusal say which rule refused.
+    ///
+    /// # Errors
+    /// * [`RepositoryError::NotFound`] for an unknown team run.
+    /// * [`RepositoryError::Conflict`] for a stale revision, a terminal team, a
+    ///   slot already accounted for, or a slot that was ever bound.
+    /// * [`DomainError`] for an undeclared slot, a slot the template does not
+    ///   allow waiving, an unauthorized role, or missing evidence.
+    pub fn waive_role_slot(
+        &self,
+        waiver: &NewRoleSlotWaiver,
+    ) -> RepositoryResult<(StoredWaiver, Applied, AggregateRevision)> {
+        let transaction = self.begin()?;
+        let project = waiver.project_id.to_string();
+        let team = waiver.team_run_id.to_string();
+        let slot = waiver.role_slot_id.as_role_key().as_str();
+
+        // A replay of the same waiver is the original answer. The same key with
+        // different content is a conflict, never a second excuse.
+        let existing: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT id, evidence_hash FROM role_slot_waivers WHERE idempotency_key = ?1",
+                params![waiver.idempotency_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((id, evidence)) = existing {
+            if evidence != waiver.evidence_hash.as_str() {
+                return Err(conflict(
+                    "role slot waiver",
+                    "this key already waived a role slot with different content",
+                ));
+            }
+            let stored = read_waiver(&transaction, &id)?.ok_or(RepositoryError::NotFound {
+                subject: "role slot waiver",
+            })?;
+            let current: i64 = transaction
+                .query_row(
+                    "SELECT revision FROM team_runs WHERE project_id = ?1 AND id = ?2",
+                    params![project, team],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            let revision = revision_of(current)?;
+            return Ok((stored, Applied::Unchanged, revision));
+        }
+
+        let (snapshot, lifecycle, terminal, revision) = transaction
+            .query_row(
+                "SELECT snapshot, lifecycle, terminal_source_kind, revision
+                 FROM team_runs WHERE project_id = ?1 AND id = ?2",
+                params![project, team],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "team run",
+            })?;
+        let _ = lifecycle;
+        if terminal.is_some() {
+            return Err(conflict(
+                "role slot waiver",
+                "a closed team run cannot waive a role slot",
+            ));
+        }
+        let stored_revision = AggregateRevision::parse(u64::try_from(revision).unwrap_or(1))?;
+        if stored_revision != waiver.expected_team_revision {
+            return Err(DomainError::RevisionConflict {
+                subject: "team run",
+                expected: waiver.expected_team_revision.get(),
+                found: stored_revision.get(),
+            }
+            .into());
+        }
+
+        // The frozen policy, not the current catalog.
+        let frozen: kontor_core::spec::TeamRunSnapshot = crate::repository::from_json(&snapshot)?;
+        let policy = frozen.waiver_policy_for(&waiver.role_slot_id)?.ok_or(
+            DomainError::MissingAuthority {
+                subject: "role slot waiver",
+                rule: "the frozen template does not allow this role slot to be waived",
+            },
+        )?;
+        let citing = waiver.authorized_role.as_str();
+        if citing == policy.own_role {
+            return Err(DomainError::MissingAuthority {
+                subject: "role slot waiver",
+                rule: "a role slot cannot excuse itself",
+            }
+            .into());
+        }
+        if !policy.authorized_roles.iter().any(|role| role == citing) {
+            return Err(DomainError::MissingAuthority {
+                subject: "role slot waiver",
+                rule: "the waiving role is not authorized for this role slot",
+            }
+            .into());
+        }
+        let cited: BTreeSet<&str> = waiver.evidence.iter().map(String::as_str).collect();
+        if !policy
+            .required_evidence
+            .iter()
+            .all(|required| cited.contains(required.as_str()))
+        {
+            return Err(DomainError::MissingEvidence {
+                subject: "role slot waiver",
+                rule: "a waiver must cite every evidence reference the slot requires",
+            }
+            .into());
+        }
+
+        // Already accounted for, either way round.
+        let settled: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM role_turns
+                 WHERE project_id = ?1 AND team_run_id = ?2 AND role_slot_id = ?3",
+                params![project, team, slot],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if settled > 0 {
+            return Err(conflict(
+                "role slot waiver",
+                "a role slot that settled a turn cannot be waived",
+            ));
+        }
+        let waived: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM role_slot_waivers
+                 WHERE project_id = ?1 AND team_run_id = ?2 AND role_slot_id = ?3",
+                params![project, team, slot],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if waived > 0 {
+            return Err(conflict(
+                "role slot waiver",
+                "this role slot is already waived",
+            ));
+        }
+
+        // The binding *history*, which is the fact "unbound" is defined on. A
+        // lost process or an unreachable runtime is not an unbound slot.
+        let bound: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM runtime_bindings AS binding
+                 JOIN agent_runs AS run
+                   ON run.id = binding.agent_run_id AND run.project_id = binding.project_id
+                 WHERE run.project_id = ?1 AND run.team_run_id = ?2 AND run.role_key = ?3",
+                params![project, team, slot],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if bound > 0 {
+            return Err(conflict(
+                "role slot waiver",
+                "a role slot that was ever bound cannot be waived",
+            ));
+        }
+
+        let evidence = to_json(&waiver.evidence)?;
+        transaction
+            .execute(
+                "INSERT INTO role_slot_waivers
+                     (id, project_id, task_id, team_run_id, role_slot_id, idempotency_key,
+                      team_run_revision, authorized_role, authority_tier, evidence,
+                      evidence_hash, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    waiver.id.to_string(),
+                    project,
+                    waiver.task_id.to_string(),
+                    team,
+                    slot,
+                    waiver.idempotency_key,
+                    revision,
+                    citing,
+                    "admin",
+                    evidence,
+                    waiver.evidence_hash.as_str(),
+                    text(waiver.recorded_at)
+                ],
+            )
+            .map_err(backend)?;
+        // Compare-and-set on the very revision that was validated above, so two
+        // concurrent waivers cannot both believe they were current.
+        let advanced = stored_revision.next()?;
+        let changed = transaction
+            .execute(
+                "UPDATE team_runs SET revision = ?1
+                 WHERE project_id = ?2 AND id = ?3 AND revision = ?4",
+                params![
+                    crate::repository::revision_column(advanced)?,
+                    project,
+                    team,
+                    revision
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "role slot waiver",
+                "the team run moved while the waiver was being recorded",
+            ));
+        }
+        let stored = read_waiver(&transaction, &waiver.id.to_string())?.ok_or(
+            RepositoryError::NotFound {
+                subject: "role slot waiver",
+            },
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok((stored, Applied::Created, advanced))
+    }
+
+    /// Every waiver recorded against one team run, by slot.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Backend`] if the rows cannot be read.
+    pub fn list_role_slot_waivers(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+    ) -> RepositoryResult<Vec<StoredWaiver>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, project_id, task_id, team_run_id, role_slot_id, idempotency_key,
+                        team_run_revision, authorized_role, authority_tier, evidence,
+                        evidence_hash, recorded_at
+                 FROM role_slot_waivers
+                 WHERE project_id = ?1 AND team_run_id = ?2
+                 ORDER BY role_slot_id",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), team_run_id.to_string()])
+            .map_err(backend)?;
+        let mut found = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            found.push(waiver_from_row(row)?);
+        }
+        Ok(found)
+    }
+}
+
+/// One waiver, read by id inside an open transaction.
+fn read_waiver(transaction: &Transaction<'_>, id: &str) -> RepositoryResult<Option<StoredWaiver>> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT id, project_id, task_id, team_run_id, role_slot_id, idempotency_key,
+                    team_run_revision, authorized_role, authority_tier, evidence,
+                    evidence_hash, recorded_at
+             FROM role_slot_waivers WHERE id = ?1",
+        )
+        .map_err(backend)?;
+    let mut rows = statement.query(params![id]).map_err(backend)?;
+    match rows.next().map_err(backend)? {
+        Some(row) => Ok(Some(waiver_from_row(row)?)),
+        None => Ok(None),
+    }
+}
+
+fn waiver_from_row(row: &rusqlite::Row<'_>) -> RepositoryResult<StoredWaiver> {
+    let evidence: Vec<String> = serde_json::from_str(&column_text(row, 9)?).map_err(|_| {
+        DomainError::invalid("role slot waiver", "the cited evidence is unreadable")
+    })?;
+    Ok(StoredWaiver {
+        id: kontor_core::id::RoleSlotWaiverId::parse(&column_text(row, 0)?)?,
+        project_id: ProjectId::parse(&column_text(row, 1)?)?,
+        task_id: TaskId::parse(&column_text(row, 2)?)?,
+        team_run_id: TeamRunId::parse(&column_text(row, 3)?)?,
+        role_slot_id: RoleSlotId::parse(&column_text(row, 4)?)?,
+        idempotency_key: column_text(row, 5)?,
+        team_run_revision: AggregateRevision::parse(
+            u64::try_from(row.get::<_, i64>(6).map_err(backend)?).unwrap_or(1),
+        )?,
+        authorized_role: column_text(row, 7)?,
+        authority_tier: column_text(row, 8)?,
+        evidence,
+        evidence_hash: ContentHash::parse(&column_text(row, 10)?)?,
+        recorded_at: read_timestamp(&column_text(row, 11)?)?,
+    })
 }
 
 /// One settled turn, read by id inside an open transaction.

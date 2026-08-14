@@ -8,6 +8,7 @@
 //! * which database file is opened, and therefore which Realm this process *is*;
 //! * the Realm's bearer secrets, generated on first start into a `0600` file;
 //! * which runtime adapters exist and how to reach them;
+//! * how many simultaneous runs the Realm admits, at every scope;
 //! * whether startup reconciliation finished, and therefore whether scheduling
 //!   may run;
 //! * which loopback address is bound.
@@ -58,6 +59,7 @@ use kontor_api::state::{
 };
 use kontor_core::id::{RealmId, RuntimeBindingId};
 use kontor_runtime::capability::RuntimeBindingSnapshot;
+use kontor_scheduler::model::{AdaptiveWindowConfig, CapacityConfig};
 use kontor_store::{CommandRecovery, SqliteStore};
 use tracing::{info, warn};
 
@@ -74,6 +76,35 @@ pub const DEFAULT_PORT: u16 = 7717;
 /// How old a confirmation may be and still count as fresh, in seconds.
 pub const DEFAULT_EVIDENCE_WINDOW_SECONDS: i64 = 60;
 
+/// How many simultaneous runs a Realm admits before the planner refuses.
+///
+/// These are the numbers a Realm ran under when they were compiled into the
+/// composition root, and they stay the default so a daemon started the way every
+/// existing caller starts one admits exactly what it admitted before. A
+/// deployment that needs other ceilings sets [`DaemonConfig::capacity`]; the
+/// scheduler itself has no default, because the numbers are a deployment's.
+///
+/// ponytail: a public default plus a public field, and no operator flag for each
+/// of the ten knobs. `--global-max-in-flight` and nine siblings is a wider
+/// surface than the one thing that was actually missing — a way to *set* the
+/// ceilings — and the upgrade, if an operator ever has to change them without
+/// recomposing, is to read this whole struct out of the state root next to
+/// `runtimes.json`, not to spread ten numbers across the argument parser.
+pub const DEFAULT_CAPACITY: CapacityConfig = CapacityConfig {
+    global_max_in_flight: 16,
+    project_max_in_flight: 8,
+    mission_max_in_flight: 8,
+    account_max_in_flight: 4,
+    provider_max_in_flight: 4,
+    runtime_max_in_flight: 8,
+    adaptive: AdaptiveWindowConfig {
+        initial: 4,
+        floor: 1,
+        ceiling: 8,
+        growth_step: 1,
+    },
+};
+
 /// Why a daemon could not start.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -89,6 +120,19 @@ pub enum StartupError {
     NotLoopback {
         /// The address that was refused.
         address: SocketAddr,
+    },
+    /// The configured admission ceilings are not a set the domain accepts.
+    ///
+    /// Judged before the state root is touched, for the same reason the bind
+    /// address is: a zero ceiling reads as "no work allowed" in one place and "no
+    /// limit" in another, and a Realm that starts on one would either admit
+    /// nothing or admit everything. Neither is a configuration an operator can
+    /// tell apart from a working one by watching it.
+    #[error("the configured admission capacity is not one a realm may admit work under: {source}")]
+    Capacity {
+        /// The domain's own refusal.
+        #[source]
+        source: kontor_core::DomainError,
     },
     /// The state root does not exist and could not be created.
     #[error("the state root could not be prepared: {source}")]
@@ -137,6 +181,13 @@ pub struct DaemonConfig {
     pub allowed_origins: Vec<String>,
     /// How old a confirmation may be and still count as fresh.
     pub evidence_window_seconds: i64,
+    /// How many simultaneous runs this Realm admits, at every scope.
+    ///
+    /// Defaults to [`DEFAULT_CAPACITY`], which is what the composition root used
+    /// to hold as a compile-time constant. Validated at startup rather than here,
+    /// so setting the field is infallible and a refused set of ceilings refuses
+    /// the *start* — the one moment an operator is watching.
+    pub capacity: CapacityConfig,
 }
 
 impl DaemonConfig {
@@ -148,7 +199,19 @@ impl DaemonConfig {
             bind: SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)),
             allowed_origins: kontor_api::auth::IngressPolicy::default().allowed_origins,
             evidence_window_seconds: DEFAULT_EVIDENCE_WINDOW_SECONDS,
+            capacity: DEFAULT_CAPACITY,
         }
+    }
+
+    /// Admit work under different ceilings than [`DEFAULT_CAPACITY`].
+    ///
+    /// Infallible on purpose: a set the domain refuses is caught by
+    /// [`Daemon::start`], so a caller assembling a configuration never has to
+    /// handle a failure at a point where it cannot yet act on one.
+    #[must_use]
+    pub const fn with_capacity(mut self, capacity: CapacityConfig) -> Self {
+        self.capacity = capacity;
+        self
     }
 
     /// Bind a different loopback port.
@@ -217,14 +280,18 @@ impl Daemon {
     /// that scheduling is blocked until it does.
     ///
     /// # Errors
-    /// Returns [`StartupError`] when the address is not loopback, the state root
-    /// cannot be prepared or claimed, the database cannot be opened, or the
-    /// credentials cannot be established. Every one of them leaves the state root
-    /// exactly as it was.
+    /// Returns [`StartupError`] when the address is not loopback, the configured
+    /// capacity is not a set the domain accepts, the state root cannot be prepared
+    /// or claimed, the database cannot be opened, or the credentials cannot be
+    /// established. Every one of them leaves the state root exactly as it was.
     pub fn start(config: DaemonConfig, runtimes: RuntimeRegistry) -> Result<Self, StartupError> {
-        // The address is judged before anything is created, so a misconfigured
-        // daemon does not leave a lock file and a database behind.
+        // The address and the ceilings are judged before anything is created, so a
+        // misconfigured daemon does not leave a lock file and a database behind.
         config.ensure_loopback()?;
+        config
+            .capacity
+            .validate()
+            .map_err(|source| StartupError::Capacity { source })?;
         std::fs::create_dir_all(&config.state_root)
             .map_err(|source| StartupError::StateRoot { source })?;
         let lock = StateRootLock::acquire(&config.state_root)?;
@@ -237,7 +304,7 @@ impl Daemon {
         // holds — so the services are built first, handed in, and given the state
         // immediately afterwards. Nothing can serve a request in between: the
         // router does not exist yet.
-        let applications = applications::Services::new(realm_id)
+        let applications = applications::Services::new(realm_id, config.capacity)
             .map_err(|source| StartupError::Applications { source })?;
 
         let state = ApiState::new(ApiParts {
@@ -258,6 +325,9 @@ impl Daemon {
             realm_id = %realm_id,
             state_root = %config.state_root.display(),
             bind = %config.bind,
+            // The ceilings in force, because there is otherwise nowhere an operator
+            // can read back which set a serving Realm was composed with.
+            capacity = ?config.capacity,
             "realm claimed; scheduling is shut until reconciliation finishes"
         );
         Ok(Self {
@@ -681,5 +751,62 @@ mod tests {
                 .with_bind(address.parse().expect("a socket address"));
             config.ensure_loopback().expect("loopback is admitted");
         }
+    }
+
+    /// The ceilings are configuration now, and the default is the set the
+    /// composition root used to compile in. Written out as literals rather than
+    /// compared against `DEFAULT_CAPACITY` itself, because a test that read the
+    /// constant would agree with any edit to it — including the one that silently
+    /// changes what every existing deployment admits.
+    #[test]
+    fn the_default_capacity_is_the_set_that_used_to_be_compiled_in() {
+        assert_eq!(DEFAULT_CAPACITY.global_max_in_flight, 16);
+        assert_eq!(DEFAULT_CAPACITY.project_max_in_flight, 8);
+        assert_eq!(DEFAULT_CAPACITY.mission_max_in_flight, 8);
+        assert_eq!(DEFAULT_CAPACITY.account_max_in_flight, 4);
+        assert_eq!(DEFAULT_CAPACITY.provider_max_in_flight, 4);
+        assert_eq!(DEFAULT_CAPACITY.runtime_max_in_flight, 8);
+        assert_eq!(DEFAULT_CAPACITY.adaptive.initial, 4);
+        assert_eq!(DEFAULT_CAPACITY.adaptive.floor, 1);
+        assert_eq!(DEFAULT_CAPACITY.adaptive.ceiling, 8);
+        assert_eq!(DEFAULT_CAPACITY.adaptive.growth_step, 1);
+        DEFAULT_CAPACITY
+            .validate()
+            .expect("the shipped default is a set the domain accepts");
+        assert_eq!(
+            DaemonConfig::at("/tmp/kontor-not-created").capacity,
+            DEFAULT_CAPACITY,
+            "a daemon configured the ordinary way admits what it always admitted"
+        );
+    }
+
+    /// A start under ceilings the domain refuses stops before the state root is
+    /// touched. The whole point of the check being in `start` and not in the
+    /// builder: the operator finds out at the moment they are watching, and the
+    /// directory is not left holding a lock and a database.
+    #[test]
+    fn a_capacity_the_domain_refuses_refuses_the_start_and_creates_nothing() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let state_root = directory.path().join("realm");
+        let refused = DEFAULT_CAPACITY;
+        let refused = CapacityConfig {
+            account_max_in_flight: 0,
+            ..refused
+        };
+        let error = Daemon::start(
+            DaemonConfig::at(&state_root)
+                .with_port(0)
+                .with_capacity(refused),
+            RuntimeRegistry::new(),
+        )
+        .expect_err("a zero ceiling is not a set a realm may admit work under");
+        assert!(
+            matches!(error, StartupError::Capacity { .. }),
+            "the refusal names the capacity and not the pack: {error}"
+        );
+        assert!(
+            !state_root.exists(),
+            "a refused start leaves no state root behind"
+        );
     }
 }

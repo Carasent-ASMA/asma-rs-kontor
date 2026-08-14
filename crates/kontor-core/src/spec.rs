@@ -1689,6 +1689,22 @@ pub struct RoleAuthority {
     pub may_waive: Vec<GateKey>,
 }
 
+/// What one frozen role slot says about being excused.
+///
+/// Carried out of the snapshot rather than out of `kontor-teams`, because the
+/// store must be able to prove a waiver legal inside the write transaction and
+/// it cannot depend on that crate. The same reason [`TeamRunSnapshot::declared_role_slots`]
+/// lives here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenWaiverPolicy {
+    /// The slot's own logical role, which may never waive itself.
+    pub own_role: String,
+    /// The roles the template allows to excuse this slot.
+    pub authorized_roles: BTreeSet<String>,
+    /// Every evidence key a waiver of this slot must cite.
+    pub required_evidence: BTreeSet<String>,
+}
+
 /// The frozen copy of a team template that a run actually used.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamRunSnapshot {
@@ -1750,6 +1766,115 @@ impl TeamRunSnapshot {
                     .and_then(crate::id::RoleSlotId::parse)
             })
             .collect()
+    }
+
+    /// The ordered declared role slots, as the frozen definition lists them.
+    ///
+    /// Order is the digest's order, so it is the definition's order and not a
+    /// set's. Callers that only need membership want
+    /// [`TeamRunSnapshot::declared_role_slots`].
+    ///
+    /// # Errors
+    /// As [`TeamRunSnapshot::declared_role_slots`].
+    pub fn ordered_role_slots(&self) -> DomainResult<Vec<crate::id::RoleSlotId>> {
+        let value: serde_json::Value =
+            serde_json::from_str(self.definition.json()).map_err(|_| {
+                DomainError::invalid("TeamRunSnapshot", "the frozen definition is not valid JSON")
+            })?;
+        let slots = value
+            .get("slots")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(DomainError::Invalid {
+                subject: "TeamRunSnapshot",
+                rule: "the frozen definition declares no role slots",
+            })?;
+        slots
+            .iter()
+            .map(|slot| {
+                slot.get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(DomainError::Invalid {
+                        subject: "TeamRunSnapshot",
+                        rule: "a frozen role slot carries no id",
+                    })
+                    .and_then(crate::id::RoleSlotId::parse)
+            })
+            .collect()
+    }
+
+    /// The waiver policy one frozen slot declares, if it declares one at all.
+    ///
+    /// Read from the *frozen* definition rather than from any catalog: whether a
+    /// slot may be excused is a property of the template revision the run was
+    /// pinned to, and a template edited afterwards must not change what an
+    /// in-flight team is allowed to do.
+    ///
+    /// `Ok(None)` means the slot exists and may **not** be waived, which is a
+    /// different answer from the slot not existing at all — hence the outer
+    /// error for an unknown slot.
+    ///
+    /// # Errors
+    /// [`DomainError::Invalid`] when the definition is unreadable or declares no
+    /// such slot.
+    pub fn waiver_policy_for(
+        &self,
+        slot: &crate::id::RoleSlotId,
+    ) -> DomainResult<Option<FrozenWaiverPolicy>> {
+        let value: serde_json::Value =
+            serde_json::from_str(self.definition.json()).map_err(|_| {
+                DomainError::invalid("TeamRunSnapshot", "the frozen definition is not valid JSON")
+            })?;
+        let declared = value
+            .get("slots")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|candidate| {
+                candidate.get("id").and_then(serde_json::Value::as_str) == Some(slot.as_str())
+            })
+            .ok_or(DomainError::Invalid {
+                subject: "TeamRunSnapshot",
+                rule: "the frozen definition declares no such role slot",
+            })?;
+        let own_role = declared
+            .get("role")
+            .and_then(|role| role.get("role"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or(DomainError::Invalid {
+                subject: "TeamRunSnapshot",
+                rule: "a frozen role slot carries no role",
+            })?
+            .to_owned();
+        let Some(policy) = declared
+            .get("waiver_policy")
+            .filter(|policy| !policy.is_null())
+        else {
+            return Ok(None);
+        };
+        let strings = |field: &str| -> DomainResult<BTreeSet<String>> {
+            policy
+                .get(field)
+                .and_then(serde_json::Value::as_array)
+                .ok_or(DomainError::Invalid {
+                    subject: "TeamRunSnapshot",
+                    rule: "a frozen waiver policy is incomplete",
+                })?
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .ok_or(DomainError::Invalid {
+                            subject: "TeamRunSnapshot",
+                            rule: "a frozen waiver policy carries a non-string entry",
+                        })
+                })
+                .collect()
+        };
+        Ok(Some(FrozenWaiverPolicy {
+            own_role,
+            authorized_roles: strings("authorized_roles")?,
+            required_evidence: strings("required_evidence")?,
+        }))
     }
 
     /// Freeze a template revision into a run.

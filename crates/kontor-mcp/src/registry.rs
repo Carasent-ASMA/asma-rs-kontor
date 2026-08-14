@@ -66,6 +66,8 @@ pub enum ArgType {
     MiniProjectId,
     /// A canonical v7 UUID naming a task.
     TaskId,
+    /// A canonical v7 UUID naming one run of a team.
+    TeamRunId,
     /// A canonical v7 UUID naming one agent run.
     AgentRunId,
     /// A canonical v7 UUID naming an account profile.
@@ -119,6 +121,7 @@ impl ArgType {
             Self::ProjectId
             | Self::MiniProjectId
             | Self::TaskId
+            | Self::TeamRunId
             | Self::AgentRunId
             | Self::AccountProfileId
             | Self::IntakeReceiptId
@@ -1424,6 +1427,65 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Answer one permission request raised inside a session.",
+    },
+    // ---- Role-slot accounting ---------------------------------------------------
+    ToolSpec {
+        name: "kontor_role_slot_waive",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/waivers",
+        kind: OpKind::Write,
+        // Admin for the same reason a gate waiver is: it discharges an obligation
+        // the frozen template imposed. Unlike `kontor_gate_record` the authority
+        // does not vary with the arguments — there is no second disposition to
+        // select, so no argument could lower it.
+        //
+        // No agent-run, binding or session argument exists, and that is the
+        // contract rather than an omission: a slot that was never bound has no run
+        // to name, and a caller that could name one could invent the very
+        // settlement the waiver exists to avoid fabricating.
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "team_run_id",
+                Place::Path,
+                ArgType::TeamRunId,
+                "The team run whose slot is being excused.",
+            ),
+            req(
+                "role_slot_id",
+                Place::Path,
+                ArgType::OpenKey,
+                "The declared slot, as the frozen template spells it.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_team_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The team revision the caller read the run at.",
+            ),
+            req(
+                "authorized_by_role",
+                Place::Body,
+                ArgType::OpenKey,
+                "The role the waiver is attributed to, checked against the frozen slot's own \
+                 policy. Never a person, and never the caller.",
+            ),
+            req(
+                "evidence",
+                Place::Body,
+                ArgType::TextArray,
+                "Every evidence reference the frozen policy demands, at least.",
+            ),
+        ],
+        about: "Waive one declared role slot that has never held a native binding, under the \
+                frozen template's authority and evidence policy.",
     },
 ];
 

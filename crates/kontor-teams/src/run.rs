@@ -66,8 +66,8 @@ use kontor_core::spec::{
     TeamRunSnapshot,
 };
 use kontor_core::state::{
-    RunLifecycle, TaskTeamClosure, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence,
-    TerminalOutcome, reduce_team_outcome, team_child_evidence_digest,
+    RunLifecycle, SlotDisposition, TaskTeamClosure, TeamChildEvidence, TeamEvidenceSource,
+    TeamTerminalEvidence, TerminalOutcome, reduce_team_outcome, team_child_evidence_digest,
 };
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::admission::{AdmissionRequest, LaunchAuthority, ReplacedBinding, RoleSlotKey};
@@ -627,6 +627,13 @@ pub enum TeamClosureBasis {
     /// Every declared slot settled its final bounded Kontor turn. The native
     /// sessions may still be live, and normally are.
     SettledTurns,
+    /// Every declared slot carries exactly one disposition: a settled turn, or
+    /// an authorized waiver of a slot that was never bound.
+    ///
+    /// The basis a team needs when a declared slot never got a seat at all.
+    /// [`Self::SettledTurns`] cannot speak for such a slot, because there is no
+    /// turn to speak with.
+    RoleSlotDispositions,
 }
 
 impl TeamClosureCertificate {
@@ -669,6 +676,33 @@ impl TeamClosureCertificate {
             // The declared-slot policy digest *is* the evidence here: it covers
             // the template, every declared slot and the turn digest that
             // accounted for it, so the store can re-derive what was proved.
+            evidence_hash: self.policy_digest,
+            closed_at,
+        })
+    }
+
+    /// Turn this certificate into the immutable evidence that closes the team,
+    /// for a closure proved from role-slot dispositions.
+    ///
+    /// # Errors
+    /// [`DomainError::Invalid`] when the certificate was proved some other way.
+    /// The two are not interchangeable: they cite different rows and the store
+    /// re-proves them differently.
+    pub fn into_disposition_evidence(
+        self,
+        closed_at: Timestamp,
+    ) -> DomainResult<TeamTerminalEvidence> {
+        if self.basis != TeamClosureBasis::RoleSlotDispositions {
+            return Err(DomainError::invalid(
+                "team closure",
+                "this certificate was not proved from role slot dispositions",
+            ));
+        }
+        Ok(TeamTerminalEvidence {
+            outcome: self.outcome,
+            source: TeamEvidenceSource::RoleSlotDispositions {
+                team_run_id: self.team_run_id,
+            },
             evidence_hash: self.policy_digest,
             closed_at,
         })
@@ -1649,6 +1683,101 @@ impl TeamRunSlots {
             children: Vec::new(),
             outcome: TerminalOutcome::Succeeded,
             basis: TeamClosureBasis::SettledTurns,
+        })
+    }
+
+    /// Certify a team whose declared slots are each accounted for by exactly one
+    /// disposition — a settled turn, or an authorized waiver of a slot that was
+    /// never bound.
+    ///
+    /// The rule this enforces, and that nothing else can, is *exactly one*. A
+    /// slot with both a settled turn and a waiver is a contradiction: the seat
+    /// did work and was simultaneously excused for never existing. A slot with
+    /// neither is the gap the whole design exists to name. Both are refused
+    /// here, before a certificate exists to be acted on.
+    ///
+    /// A `WaivedUnbound` disposition is only honoured when a *validated* waiver
+    /// backs it, so an unauthorized or absent waiver never reaches certificate
+    /// construction — the caller cannot hand in a disposition that excuses a slot
+    /// the template never allowed excusing.
+    ///
+    /// The outcome is `Succeeded`: an authorized waiver is the template's own
+    /// statement that the slot's obligation is discharged, so a team all of whose
+    /// slots are disposed of has nothing outstanding. As with
+    /// [`TeamRunSlots::certify_from_settled_turns`], no child evidence is cited
+    /// and the children are expected to still be live.
+    ///
+    /// # Errors
+    /// * [`DomainError::MissingEvidence`] when a declared slot has no
+    ///   disposition, or a `WaivedUnbound` disposition has no validated waiver.
+    /// * [`DomainError::Invalid`] when a slot carries both sources, when a
+    ///   disposition names an undeclared slot, or when a waiver is recorded for
+    ///   a slot whose disposition is a settled turn.
+    /// * As [`TeamRunSlots::certify_team_closure`] for waiver validation.
+    pub fn certify_from_dispositions(
+        &self,
+        dispositions: &BTreeMap<RoleSlotId, SlotDisposition>,
+        waivers: &[RoleSlotWaiver],
+    ) -> DomainResult<TeamClosureCertificate> {
+        let by_slot = self.validated_waivers(waivers)?;
+        for slot in dispositions.keys() {
+            if self.template.slot(slot).is_none() {
+                return Err(DomainError::invalid(
+                    "team closure",
+                    "a disposition names a role slot the template does not declare",
+                ));
+            }
+        }
+        let mut digest_slots: Vec<(RoleSlotId, SlotDisposition)> = Vec::new();
+        for declared in &self.template.slots {
+            let waiver = by_slot.get(&declared.id).copied();
+            let disposition =
+                dispositions
+                    .get(&declared.id)
+                    .ok_or(DomainError::MissingEvidence {
+                        subject: "team closure",
+                        rule: "a declared role slot is neither settled nor waived",
+                    })?;
+            match disposition {
+                SlotDisposition::SettledTurn { .. } => {
+                    if waiver.is_some() {
+                        return Err(DomainError::invalid(
+                            "team closure",
+                            "a role slot that settled a turn is also waived",
+                        ));
+                    }
+                }
+                SlotDisposition::WaivedUnbound { .. } => {
+                    // The disposition alone proves nothing. Only a waiver that
+                    // passed the template's own authority and evidence rules can
+                    // support one, which is what keeps an unauthorized excuse
+                    // out of a certificate.
+                    if waiver.is_none() {
+                        return Err(DomainError::MissingEvidence {
+                            subject: "team closure",
+                            rule: "a waived role slot has no authorized waiver",
+                        });
+                    }
+                }
+            }
+            digest_slots.push((declared.id.clone(), disposition.clone()));
+        }
+        // One canonical form, computed by `kontor-core` for both the certificate
+        // and the store's re-proof. Two implementations would be the defect.
+        let policy_digest = kontor_core::state::role_slot_disposition_digest(
+            kontor_core::id::SCHEMA_VERSION,
+            self.team_run_id(),
+            self.template.template_id,
+            self.template.version,
+            &self.template_hash,
+            &digest_slots,
+        )?;
+        Ok(TeamClosureCertificate {
+            team_run_id: self.team_run_id(),
+            policy_digest,
+            children: Vec::new(),
+            outcome: TerminalOutcome::Succeeded,
+            basis: TeamClosureBasis::RoleSlotDispositions,
         })
     }
 }

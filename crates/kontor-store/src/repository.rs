@@ -2106,7 +2106,10 @@ impl RunRepository for SqliteStore {
             // A settled-turn closure cites no receipt: its evidence is the team's
             // own immutable `role_turns` rows, which the transition check
             // re-proves rather than a receipt attesting.
-            | TeamEvidenceSource::SettledTurns { .. } => None,
+            | TeamEvidenceSource::SettledTurns { .. }
+            // Nor does a disposition closure: its evidence is this team's own
+            // `role_turns` and `role_slot_waivers` rows.
+            | TeamEvidenceSource::RoleSlotDispositions { .. } => None,
             TeamEvidenceSource::OperatorAbandon { receipt_id } => Some(receipt_id),
         };
         let receipt = receipt_column
@@ -2146,6 +2149,7 @@ impl RunRepository for SqliteStore {
                         TeamEvidenceSource::ChildEvidence { .. } => "child_evidence",
                         TeamEvidenceSource::OperatorAbandon { .. } => "operator_abandon",
                         TeamEvidenceSource::SettledTurns { .. } => "settled_turns",
+                        TeamEvidenceSource::RoleSlotDispositions { .. } => "role_slot_dispositions",
                     },
                     receipt_column,
                     request.evidence.evidence_hash.as_str(),
@@ -2312,11 +2316,16 @@ impl RunRepository for SqliteStore {
                                             "settled_turns" => {
                                                 TeamEvidenceSource::SettledTurns { team_run_id: id }
                                             }
+                                            "role_slot_dispositions" => {
+                                                TeamEvidenceSource::RoleSlotDispositions {
+                                                    team_run_id: id,
+                                                }
+                                            }
                                             "child_evidence" => TeamEvidenceSource::ChildEvidence {
                                                 team_run_id: id,
                                             },
                                             // The column's `CHECK` admits exactly
-                                            // three values, so anything else is a
+                                            // four values, so anything else is a
                                             // row this binary cannot read — and
                                             // guessing which closure it meant is
                                             // how the defect above happened.
@@ -4414,7 +4423,10 @@ fn ensure_team_accounted_for(
 
     let TaskTeamClosure::Certified {
         team_run_id,
-        policy_digest: _,
+        // Load-bearing for a disposition closure, which re-proves the caller is
+        // citing the digest this team actually closed with. The other sources
+        // prove themselves from rows and ignore it.
+        ref policy_digest,
     } = request.team_closure
     else {
         return Err(DomainError::MissingEvidence {
@@ -4471,6 +4483,14 @@ fn ensure_team_accounted_for(
     if source_kind.as_deref() == Some("settled_turns") {
         return ensure_declared_slots_settled(transaction, request.project_id, team_run_id);
     }
+    if source_kind.as_deref() == Some("role_slot_dispositions") {
+        return ensure_declared_slots_disposed(
+            transaction,
+            request.project_id,
+            team_run_id,
+            policy_digest,
+        );
+    }
 
     // The open-slot check, decided from the rows rather than from the citation.
     let children = read_team_child_evidence(transaction, request.project_id, team_run_id)?;
@@ -4494,6 +4514,126 @@ fn ensure_team_accounted_for(
 ///
 /// A live seat is *not* a failure here. That is the entire difference from the
 /// child-evidence path: the seat is expected to outlive the turn taken in it.
+/// Re-prove a disposition closure: every declared slot carries exactly one
+/// source, and the digest they hash to is the one the closure was recorded with
+/// *and* the one the caller cited.
+///
+/// The two digest comparisons are not redundant. `terminal_evidence_hash` is
+/// what the team was closed with, so matching it proves the rows still say what
+/// they said at closure. `TaskTeamClosure::Certified.policy_digest` is what the
+/// *caller* is citing right now, so matching it proves the caller is closing the
+/// task against the team it thinks it is. Checking only the first would let a
+/// caller cite any digest at all; checking only the second would let the rows
+/// drift away from the closure.
+fn ensure_declared_slots_disposed(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    team_run_id: TeamRunId,
+    cited_digest: &ContentHash,
+) -> RepositoryResult<()> {
+    use crate::query::column_text;
+    use kontor_core::state::SlotDisposition;
+
+    let (snapshot, recorded): (String, Option<String>) = transaction
+        .query_row(
+            "SELECT snapshot, terminal_evidence_hash FROM team_runs
+             WHERE project_id = ?1 AND id = ?2",
+            params![project_id.to_string(), team_run_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(backend)?;
+    let snapshot: TeamRunSnapshot = from_json(&snapshot)?;
+    let declared = snapshot.ordered_role_slots()?;
+
+    // The *final* turn per slot, which is the one the digest is taken over: a
+    // slot may take many bounded turns and only the last one accounts for it.
+    let mut settled: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut statement = transaction
+        .prepare(
+            "SELECT role_slot_id, evidence_hash FROM role_turns
+             WHERE project_id = ?1 AND team_run_id = ?2
+             ORDER BY role_slot_id, turn_ordinal",
+        )
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![project_id.to_string(), team_run_id.to_string()])
+        .map_err(backend)?;
+    while let Some(row) = rows.next().map_err(backend)? {
+        settled.insert(column_text(row, 0)?, column_text(row, 1)?);
+    }
+
+    let mut waived: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut statement = transaction
+        .prepare(
+            "SELECT role_slot_id, evidence_hash FROM role_slot_waivers
+             WHERE project_id = ?1 AND team_run_id = ?2",
+        )
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![project_id.to_string(), team_run_id.to_string()])
+        .map_err(backend)?;
+    while let Some(row) = rows.next().map_err(backend)? {
+        waived.insert(column_text(row, 0)?, column_text(row, 1)?);
+    }
+
+    let mut dispositions: Vec<(kontor_core::id::RoleSlotId, SlotDisposition)> = Vec::new();
+    for slot in &declared {
+        let key = slot.as_role_key().as_str();
+        match (settled.get(key), waived.get(key)) {
+            (Some(_), Some(_)) => {
+                return Err(DomainError::invalid(
+                    "task transition",
+                    "a declared role slot both settled a turn and was waived",
+                )
+                .into());
+            }
+            (None, None) => {
+                return Err(DomainError::MissingEvidence {
+                    subject: "task transition",
+                    rule: "a declared role slot of the cited team run is neither settled nor waived",
+                }
+                .into());
+            }
+            (Some(hash), None) => dispositions.push((
+                slot.clone(),
+                SlotDisposition::SettledTurn {
+                    evidence_hash: ContentHash::parse(hash)?,
+                },
+            )),
+            (None, Some(hash)) => dispositions.push((
+                slot.clone(),
+                SlotDisposition::WaivedUnbound {
+                    evidence_hash: ContentHash::parse(hash)?,
+                },
+            )),
+        }
+    }
+
+    let digest = kontor_core::state::role_slot_disposition_digest(
+        kontor_core::id::SCHEMA_VERSION,
+        team_run_id,
+        snapshot.template_id,
+        snapshot.template_version,
+        snapshot.definition.hash(),
+        &dispositions,
+    )?;
+    if recorded.as_deref() != Some(digest.as_str()) {
+        return Err(DomainError::MissingEvidence {
+            subject: "task transition",
+            rule: "the cited team run's dispositions no longer hash to its closure evidence",
+        }
+        .into());
+    }
+    if cited_digest != &digest {
+        return Err(DomainError::MissingEvidence {
+            subject: "task transition",
+            rule: "the cited policy digest is not the one this team run closed with",
+        }
+        .into());
+    }
+    Ok(())
+}
+
 fn ensure_declared_slots_settled(
     transaction: &Transaction<'_>,
     project_id: ProjectId,

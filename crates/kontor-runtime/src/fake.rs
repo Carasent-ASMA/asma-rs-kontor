@@ -405,6 +405,8 @@ struct FakeState {
     plane: PlaneRequirement,
     /// The one root this runtime will work in, when it verifies placement.
     canonical_root: Option<WorkspaceRoot>,
+    /// Role slots this runtime will not launch, by slot id.
+    unlaunchable: BTreeSet<String>,
     /// Every seat whose *placement* this runtime can currently prove.
     ///
     /// Separate from `bindings` because the two are lost and recovered
@@ -751,6 +753,7 @@ impl ScriptedFakeRuntime {
             state: Mutex::new(FakeState {
                 plane: PlaneRequirement::NotRequired,
                 canonical_root: None,
+                unlaunchable: BTreeSet::new(),
                 placements: BTreeSet::new(),
                 runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("valid runtime kind"),
                 host: ExternalName::parse("fake-host").expect("valid host name"),
@@ -797,6 +800,18 @@ impl ScriptedFakeRuntime {
     /// could synthesize a placeholder path and no in-process test noticed.
     pub fn verifying_placement_at(&self, root: WorkspaceRoot) {
         self.lock().canonical_root = Some(root);
+    }
+
+    /// Refuse to launch one declared role slot, as a real runtime with no
+    /// capacity for it would.
+    ///
+    /// Opt-in, like [`ScriptedFakeRuntime::verifying_placement_at`]. It exists
+    /// because "declared but never bound" is otherwise unreachable through the
+    /// public surface — every declared slot is seated at start — and a slot that
+    /// cannot occur cannot be tested. The refusal is a transport fact: no
+    /// session, no binding, and the seat's reservation given back.
+    pub fn refusing_launch_of(&self, slot: &kontor_core::id::RoleSlotId) {
+        self.lock().unlaunchable.insert(slot.as_str().to_owned());
     }
 
     /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
@@ -1376,6 +1391,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         // key. Taking the reservation is part of the same call, so no second
         // launch can pass this line on the strength of a reservation the first is
         // already spending.
+        if state.unlaunchable.contains(request.role_slot_id().as_str()) {
+            return Err(RuntimeError::Transport {
+                rule: "this runtime will not launch that role slot",
+            });
+        }
         state.admissions.claim(request)?;
 
         // From here the reservation is claimed, so every remaining refusal has to

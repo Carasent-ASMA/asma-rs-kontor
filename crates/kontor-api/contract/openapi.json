@@ -2144,6 +2144,91 @@
         }
       }
     },
+    "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/waivers": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Excuse one declared role slot that was never bound to a session.",
+        "description": "Admin, because it is the same kind of act as waiving a gate: it discharges an\nobligation the template imposed, on the template's own terms.",
+        "operationId": "waive_role_slot",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_run_id",
+            "in": "path",
+            "description": "The team run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "role_slot_id",
+            "in": "path",
+            "description": "The declared slot being excused",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaiveRoleSlotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded, or replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleSlotWaiverDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": "No such team run, or the template declares no such slot"
+          },
+          "409": {
+            "description": "Stale revision, already accounted for, or ever bound"
+          },
+          "422": {
+            "description": "The slot cannot be waived on this template's terms"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/triggers/{trigger}/{version}": {
       "get": {
         "tags": [
@@ -5072,6 +5157,89 @@
           }
         }
       },
+      "RoleSlotWaiverDto": {
+        "type": "object",
+        "description": "One recorded waiver.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "task_id",
+          "team_run_id",
+          "role_slot",
+          "waiver_id",
+          "disposition",
+          "authorized_by_role",
+          "authority_tier",
+          "evidence",
+          "evidence_hash",
+          "recorded_at",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call recorded it or replayed one."
+          },
+          "authority_tier": {
+            "type": "string",
+            "description": "The tier the credential proved."
+          },
+          "authorized_by_role": {
+            "type": "string",
+            "description": "The role it is attributed to."
+          },
+          "disposition": {
+            "type": "string",
+            "description": "Always `waived`. Spelled out rather than implied, and closed: there is no\nsecond disposition a caller may select."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The evidence cited."
+          },
+          "evidence_hash": {
+            "type": "string",
+            "description": "The canonical digest the closure re-derives."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was recorded in."
+          },
+          "recorded_at": {
+            "type": "string",
+            "description": "When it was recorded."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "The excused slot."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task the team serves."
+          },
+          "team_run_closed": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team run this waiver closed, when it was the last slot outstanding.\n`null` while any other declared slot is still unaccounted for."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "The team run whose slot was excused."
+          },
+          "waiver_id": {
+            "type": "string",
+            "description": "The waiver."
+          }
+        }
+      },
       "RunDto": {
         "type": "object",
         "description": "One agent run, as a cross-boundary reader sees it.",
@@ -6626,6 +6794,34 @@
           "to_role_slot": {
             "type": "string",
             "description": "The slot the work was handed to."
+          }
+        }
+      },
+      "WaiveRoleSlotRequest": {
+        "type": "object",
+        "description": "Excuse one declared role slot that was never bound to a session.\n\nWhat this body deliberately does **not** carry is the design: no\n`agent_run_id`, no binding or runtime identity, no outcome or lifecycle, no\n`terminal: true`, no generic disposition kind, no caller credential. A waiver\nis a statement about a *slot* and the template's own permission to omit it —\nevery one of those omitted fields would turn it into a statement about a\nsession or a run that nothing observed.",
+        "required": [
+          "expected_team_revision",
+          "authorized_by_role",
+          "evidence"
+        ],
+        "properties": {
+          "authorized_by_role": {
+            "type": "string",
+            "description": "The role the waiver is attributed to. Policy attribution, checked against\nthe frozen slot's own policy — never a person, never the caller."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every evidence reference the frozen policy demands, at least."
+          },
+          "expected_team_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The team revision the caller believes is current.",
+            "minimum": 0
           }
         }
       },
