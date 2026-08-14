@@ -37,9 +37,44 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
-use harness::{World, secret};
+use harness::{World, at, secret};
+use kontor_core::id::AgentRunId;
+use kontor_core::repository::RealmRepository as _;
 use kontor_mcp::{CallerTier, Dispatcher, FrameBudget, Method, Reply, Transport, TransportFailure};
+use kontor_runtime::RuntimeAdapter as _;
 use tower::ServiceExt as _;
+
+/// A session with history and a live tail, so a launched seat has something to be.
+///
+/// The declared ceiling is raised above the harness default of eight because this
+/// journey seats a five-slot team twice. The scripted runtime counts a session
+/// against its concurrency ceiling for as long as it exists, and settling a run
+/// does not delete the native session it settled — a terminal session is still a
+/// session. Ten seats therefore need a runtime that declares room for ten. This
+/// is the fixture describing a bigger runtime, not the journey being given a
+/// larger allowance: Kontor's own `max_concurrency` stays at 1 throughout.
+const HISTORY_LIVE: &str = r#"{
+  "limits": {
+    "max_message_bytes": 4096,
+    "max_history_page": 64,
+    "max_concurrent_sessions": 32
+  },
+  "history": [
+    {"kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:01:00Z", "body": "one"},
+    {"kind": "tool_call", "sequence": 2, "emitted_at": "2026-08-10T09:02:00Z", "body": "two"}
+  ],
+  "live": [
+    {"kind": "message", "sequence": 3, "emitted_at": "2026-08-10T09:03:00Z", "body": "three"}
+  ]
+}"#;
+
+/// The step that lets the scripted runtime observe its own termination.
+const OBSERVED_TERMINAL: &str = r#"{
+  "history": [
+    {"kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:01:00Z", "body": "working"}
+  ],
+  "steps": [{"step": "cancel_observed_terminal"}]
+}"#;
 
 /// The transport seam, bound to a real router instead of a real socket.
 struct RouterTransport {
@@ -188,9 +223,72 @@ async fn ok(
     envelope.body
 }
 
+/// One task's row in an `kontor_epic_get` projection, found by id rather than by
+/// position — the projection is free to order tasks however it likes.
+fn task_view<'a>(projection: &'a serde_json::Value, task: &str) -> &'a serde_json::Value {
+    projection["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .find(|row| row["task_id"].as_str() == Some(task))
+        .unwrap_or_else(|| panic!("task {task} is missing from the projection: {projection}"))
+}
+
+/// Drive the scripted runtime's session for `run` to a terminal state.
+///
+/// This is the *agent finishing its work*, which happens outside Kontor. It is
+/// not a Kontor operation and deliberately not an MCP call: the journey's claim
+/// is that every instruction **to Kontor** goes through the tool surface, not
+/// that the outside world is also made of tool calls. Settlement would be a lie
+/// if the runtime had not actually reached a terminal state first, so this makes
+/// it true rather than asserting it.
+///
+/// The step is queued immediately before the cancel rather than at the top of the
+/// test: the fake matches its queue strictly by operation, so a cancel step loaded
+/// earlier would be consumed by whichever of `prepare_workspace`, `admit_launch`
+/// or `launch` reached the runtime first.
+async fn finish_natively(world: &World, run: &str) {
+    world.script(OBSERVED_TERMINAL);
+    let agent_run_id = AgentRunId::parse(run).expect("an agent run id");
+    let binding = world.daemon.state().with_store(|store| {
+        store
+            .snapshot_run_inspection(agent_run_id)
+            .expect("readable")
+            .open(world.realm_id())
+            .expect("our own realm")
+            .expect("the run exists")
+            .run
+            .binding
+            .expect("the run is bound")
+    });
+    let snapshot = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("this process holds the frozen snapshot");
+    world
+        .fake
+        .cancel(&kontor_runtime::request::CancelRequest {
+            binding: snapshot,
+            requested_at: at("2026-08-10T09:30:00Z"),
+        })
+        .await
+        .expect("the runtime observes its own termination");
+}
+
+/// The whole journey: an installed, never-used `kontord` reaches a closed epic
+/// without a single call that is not one of the Lead seat's own MCP tools.
+///
+/// This is deliberately one test rather than two. A bootstrap proved through the
+/// tool surface and a completion proved through HTTP would demonstrate that each
+/// half works for *some* caller; it would not demonstrate that one caller can
+/// walk the whole path, which is the thing the ticket asks for. The seam between
+/// two callers is exactly where an authority gap hides.
 #[tokio::test]
 async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
     world.daemon.reconcile().await;
     let (lead, transport) = lead_seat(&world);
 
@@ -280,11 +378,16 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "name": "Bootstrap epic",
             "work_profile_category": category,
             "runtime_family": "fake.runtime",
+            // A task with no declared worktree cannot be seated — there is
+            // nowhere to prepare its workspace — and the two differ so the
+            // scheduler is refusing on the dependency edge rather than on a
+            // worktree collision.
             "tasks": [
-                {"title": "Design the thing", "ticket_links": [
+                {"title": "Design the thing", "worktree": "/w/journey/0", "ticket_links": [
                     {"connector": "jira", "external_issue_key": "ASMA-1"}
                 ]},
-                {"title": "Build the thing", "depends_on": ["Design the thing"]}
+                {"title": "Build the thing", "worktree": "/w/journey/1",
+                 "depends_on": ["Design the thing"]}
             ],
         }),
     )
@@ -316,53 +419,45 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
 
     // 6. Arming, then the plan it makes possible. A plan commits nothing, which is
     //    why it takes no key.
-    let armed = lead
-        .call(
-            "kontor_execution_arm",
-            &serde_json::json!({
-                "project_id": project,
-                "epic_id": epic,
-                "idempotency_key": "journey-arm-1",
-                "expected_revision": epic_revision,
-                "allowed_start": "2026-08-13T00:00:00Z",
-                "allowed_end": "2026-08-14T00:00:00Z",
-                "max_concurrency": 1,
-                "budget": {
-                    "max_tokens": 100_000,
-                    "max_commands": 100,
-                    "max_duration_seconds": 3_600,
-                    "max_cost_minor_units": 1_000,
-                    "cost_currency": "NOK",
-                },
-                "granted_by": account["account_profile_id"],
-                "reason": "the journey is authorized",
-            }),
-        )
-        .await
-        .expect("arming reaches the daemon");
-    assert!(
-        armed.is_success() || armed.status == 409,
-        "arming either grants or refuses on the domain's own terms: {} {}",
-        armed.status,
-        armed.body
-    );
+    //
+    // The window is deliberately wide. A window pinned to the day this test was
+    // written would make the journey pass or fail on the wall clock, and an
+    // authorization that has silently expired refuses with `authorization_missing`
+    // — which looks exactly like a scheduler that cannot admit.
+    ok(
+        &lead,
+        "kontor_execution_arm",
+        serde_json::json!({
+            "project_id": project,
+            "epic_id": epic,
+            "idempotency_key": "journey-arm-1",
+            "expected_revision": epic_revision,
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {
+                "max_tokens": 100_000,
+                "max_commands": 100,
+                "max_duration_seconds": 3_600,
+                "max_cost_minor_units": 1_000,
+                "cost_currency": "NOK",
+            },
+            "granted_by": account["account_profile_id"],
+            "reason": "the journey is authorized",
+        }),
+    )
+    .await;
 
-    let planned = lead
-        .call(
-            "kontor_scheduler_plan",
-            &serde_json::json!({ "project_id": project, "epic_id": epic }),
-        )
-        .await
-        .expect("planning reaches the daemon");
-    assert!(
-        planned.is_success(),
-        "a plan is a read the operator tier may always take: {} {}",
-        planned.status,
-        planned.body
-    );
+    ok(
+        &lead,
+        "kontor_scheduler_plan",
+        serde_json::json!({ "project_id": project, "epic_id": epic }),
+    )
+    .await;
 
-    // Every step above was one tool call and one HTTP operation. Nothing composed
-    // two requests, and nothing retried.
+    // Everything to here was one tool call and one HTTP operation. Nothing composed
+    // two requests, and nothing retried. This is the cardinality checkpoint the
+    // bootstrap half has always carried; the journey continues past it below.
     let routes = transport.routes();
     assert_eq!(
         transport.calls(),
@@ -373,6 +468,227 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         transport.calls(),
         11,
         "eleven tool invocations made eleven requests: {routes:#?}"
+    );
+
+    // ---- 7. From the planning point to a closed epic, through the same seat ----
+    //
+    // The graph has two tasks and a dependency edge, so this is two admission
+    // rounds: the successor is not eligible until its predecessor is `done`. Each
+    // round re-plans, starts whatever the scheduler admits, settles every seat it
+    // created, discharges the gates the pinned profile declares, and completes the
+    // task. Nothing below names a task, a slot, a gate or an artifact that did not
+    // come out of a tool answer.
+    let mut completed_tasks = Vec::new();
+    for round in 1..=2u32 {
+        // The previous round's `finish_natively` left the runtime holding a
+        // cancel script. Re-arm it with a launchable session before asking the
+        // scheduler to seat anyone, or the next launch is refused by the fake
+        // rather than by Kontor.
+        world.script(HISTORY_LIVE);
+        let plan = ok(
+            &lead,
+            "kontor_scheduler_plan",
+            serde_json::json!({ "project_id": project, "epic_id": epic }),
+        )
+        .await;
+        let plan_hash = plan["plan_hash"]
+            .as_str()
+            .expect("a plan names its hash")
+            .to_owned();
+
+        // Seats exist only because the scheduler admitted them. Nothing here
+        // creates a session, and no test-only administration stands in for
+        // admission.
+        let started = ok(
+            &lead,
+            "kontor_scheduler_start",
+            serde_json::json!({
+                "project_id": project,
+                "epic_id": epic,
+                "idempotency_key": format!("journey-start-{round}"),
+                "plan_hash": plan_hash,
+            }),
+        )
+        .await;
+        let seats = started["started"].as_array().expect("seats").clone();
+        assert!(
+            !seats.is_empty(),
+            "round {round}: admission seated nobody, so there is no journey to \
+             continue: {started}"
+        );
+
+        // The task under work is the one the scheduler chose, read back from the
+        // seat rather than assumed by position.
+        let task = seats[0]["task_id"]
+            .as_str()
+            .expect("a seat names its task")
+            .to_owned();
+        // One task per round. Two things independently force this — the
+        // dependency edge and `max_concurrency: 1` — so this assertion does not
+        // isolate either, and a mutant that removes only the dependency gate
+        // still passes here. That gate is proved on its own in the scheduler's
+        // readiness suite; what this line is for is keeping the round loop
+        // honest about which task it is settling.
+        assert!(
+            seats
+                .iter()
+                .all(|seat| seat["task_id"].as_str() == Some(task.as_str())),
+            "one task is admitted at a time: {started}"
+        );
+        assert!(
+            !completed_tasks.contains(&task),
+            "round {round}: the scheduler re-admitted a task it already closed: {task}"
+        );
+
+        // 8. Every seat settles. The runtime reaches its own terminal state first —
+        //    that is the agent finishing, outside Kontor — and only then is the
+        //    settlement asked for through the tool.
+        for (index, seat) in seats.iter().enumerate() {
+            let run = seat["agent_run_id"].as_str().expect("an agent run id");
+            finish_natively(&world, run).await;
+            let settled = ok(
+                &lead,
+                "kontor_runtime_settle",
+                serde_json::json!({
+                    "project_id": project,
+                    "agent_run_id": run,
+                    "idempotency_key": format!("journey-settle-{round}-{index}"),
+                }),
+            )
+            .await;
+            assert_eq!(
+                settled["agent_run_id"], *run,
+                "the settlement answered about the seat it was asked about: {settled}"
+            );
+        }
+
+        // 9. The gates the pinned profile declares, discharged through the public
+        //    tool by a role the profile itself authorizes, citing the evidence it
+        //    itself requires.
+        let projection = ok(
+            &lead,
+            "kontor_epic_get",
+            serde_json::json!({ "project_id": project, "epic_id": epic }),
+        )
+        .await;
+        let view = task_view(&projection, &task);
+        let workflow_revision = view["workflow_revision"]
+            .as_u64()
+            .expect("a task with an active workflow reports its revision");
+        let gates = view["gates"].as_array().expect("a gate list").clone();
+        assert!(
+            !gates.is_empty(),
+            "the pinned profile declares gates to discharge: {projection}"
+        );
+        for (index, gate) in gates.iter().enumerate() {
+            let name = gate["gate"].as_str().expect("a gate");
+            let evaluator = gate["evaluator_roles"]
+                .as_array()
+                .expect("declared evaluators")
+                .first()
+                .and_then(serde_json::Value::as_str)
+                .expect("the profile authorizes a role for every gate it declares");
+            let evidence: Vec<&str> = gate["required_evidence"]
+                .as_array()
+                .expect("declared evidence")
+                .iter()
+                .map(|artifact| artifact.as_str().expect("an artifact"))
+                .collect();
+            let recorded = ok(
+                &lead,
+                "kontor_gate_record",
+                serde_json::json!({
+                    "project_id": project,
+                    "task_id": task,
+                    "gate_id": name,
+                    "idempotency_key": format!("journey-gate-{round}-{index}"),
+                    "expected_revision": workflow_revision,
+                    "verdict": "passed",
+                    "evaluator_role": evaluator,
+                    "evaluator_account": account["account_profile_id"],
+                    "evidence": evidence,
+                }),
+            )
+            .await;
+            assert_eq!(recorded["state"], "passed", "gate `{name}` reduced");
+        }
+
+        // 10. The task closes, citing the artifacts its own profile requires.
+        let after_gates = ok(
+            &lead,
+            "kontor_epic_get",
+            serde_json::json!({ "project_id": project, "epic_id": epic }),
+        )
+        .await;
+        let view = task_view(&after_gates, &task);
+        for gate in view["gates"].as_array().expect("a gate list") {
+            assert_eq!(
+                gate["state"], "passed",
+                "gate `{}` is discharged: {after_gates}",
+                gate["gate"]
+            );
+        }
+        let artifacts: Vec<&str> = view["required_artifacts"]
+            .as_array()
+            .expect("required artifacts")
+            .iter()
+            .map(|artifact| artifact.as_str().expect("an artifact"))
+            .collect();
+        let task_revision = view["revision"].as_u64().expect("a revision");
+        let done = ok(
+            &lead,
+            "kontor_lifecycle_transition",
+            serde_json::json!({
+                "project_id": project,
+                "epic_id": epic,
+                "idempotency_key": format!("journey-complete-{round}"),
+                "action": "complete_task",
+                "task_id": task,
+                "expected_revision": task_revision,
+                "reason": "The work is done",
+                "evidence": artifacts,
+            }),
+        )
+        .await;
+        assert_eq!(done["state"], "done", "task {task} completed: {done}");
+        completed_tasks.push(task);
+    }
+    assert_eq!(
+        completed_tasks.len(),
+        2,
+        "both declared tasks were admitted, settled and closed: {completed_tasks:?}"
+    );
+
+    // 11. And with every task terminal and every team run closed, the epic closes.
+    let final_view = ok(
+        &lead,
+        "kontor_epic_get",
+        serde_json::json!({ "project_id": project, "epic_id": epic }),
+    )
+    .await;
+    let closed = ok(
+        &lead,
+        "kontor_lifecycle_transition",
+        serde_json::json!({
+            "project_id": project,
+            "epic_id": epic,
+            "idempotency_key": "journey-close",
+            "action": "close_epic",
+            "expected_revision": final_view["revision"].as_u64().unwrap_or(1),
+            "reason": "Epic complete",
+        }),
+    )
+    .await;
+    assert_eq!(closed["state"], "closed", "the epic closed: {closed}");
+
+    // The whole journey — empty realm to closed epic — was one caller, one
+    // credential and one tool vocabulary. No HTTP call was composed by hand, and
+    // the one-request-per-tool rule held for every step, not only the first eleven.
+    let routes = transport.routes();
+    assert_eq!(
+        transport.calls(),
+        routes.len(),
+        "the counter and the record agree across the whole journey"
     );
     assert!(
         routes.iter().all(|(_, path)| path.starts_with("/v1/")),
