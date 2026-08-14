@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        47,
+        57,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        49,
+        59,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -536,6 +536,16 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // template imposed, which is the same kind of act as waiving a gate — so
         // the daemon requires admin on the route and the registry says so too.
         ("kontor_role_slot_waive", CallerTier::Admin),
+        ("kontor_memory_search", CallerTier::Observer),
+        ("kontor_memory_history", CallerTier::Observer),
+        ("kontor_memory_propose", CallerTier::Operator),
+        ("kontor_memory_approve", CallerTier::Admin),
+        ("kontor_memory_tombstone", CallerTier::Admin),
+        ("kontor_memory_purge", CallerTier::Admin),
+        ("kontor_memory_import_preview", CallerTier::Admin),
+        ("kontor_memory_import_apply", CallerTier::Admin),
+        ("kontor_memory_cutover_freeze", CallerTier::Admin),
+        ("kontor_memory_cutover_switch", CallerTier::Admin),
     ]);
     for tool in REGISTRY {
         assert_eq!(

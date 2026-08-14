@@ -40,6 +40,7 @@ pub mod auth;
 pub mod control;
 pub mod dto;
 pub mod error;
+pub mod memory;
 pub mod openapi;
 pub mod sessions;
 pub mod state;
@@ -189,6 +190,40 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/v1/health", get(control::health))
         .route("/v1/realm", get(control::realm))
+        .route("/v1/projects/{project_id}/memory", get(memory::list))
+        .route(
+            "/v1/projects/{project_id}/memory/{item_id}/history",
+            get(memory::history),
+        )
+        .route(
+            "/v1/projects/{project_id}/memory/revisions:propose",
+            post(memory::propose),
+        )
+        .route(
+            "/v1/projects/{project_id}/memory/revisions/{revision_id}/approval",
+            post(memory::approve),
+        )
+        .route(
+            "/v1/projects/{project_id}/memory/{item_id}/tombstone",
+            post(memory::tombstone),
+        )
+        .route(
+            "/v1/projects/{project_id}/memory/{item_id}/purge",
+            post(memory::purge),
+        )
+        .route(
+            "/v1/projects/{project_id}/memory/import:preview",
+            post(memory::import_preview),
+        )
+        .route(
+            "/v1/projects/{project_id}/memory/import:apply",
+            post(memory::import_apply),
+        )
+        .route("/v1/memory/cutover:freeze", post(memory::freeze))
+        .route(
+            "/v1/projects/{project_id}/memory/cutover:switch",
+            post(memory::switch),
+        )
         .route("/v1/openapi.json", get(openapi_document))
         .route("/v1/runs/{agent_run_id}", get(control::run_snapshot))
         .route(
