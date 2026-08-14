@@ -25,6 +25,7 @@ use kontor_store::backup::{
     BackupError, RETAINED_SNAPSHOTS, SnapshotManifest, create_snapshot, list_snapshots,
     prune_snapshots, restore_snapshot,
 };
+use kontor_store::memory::{AgentsRoomExport, LegacyMemoryEntry, MemoryProvenance};
 use kontor_store::{SCHEMA_VERSION, SqliteStore};
 use tempfile::TempDir;
 
@@ -71,6 +72,13 @@ fn listing(directory: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+fn memory_document(text: &str) -> kontor_core::id::CanonicalDocument {
+    kontor_core::id::CanonicalDocument::from_value(
+        &serde_json::json!({"schema_version": 1, "text": text}),
+    )
+    .expect("canonical memory")
 }
 
 #[test]
@@ -628,4 +636,113 @@ fn a_restore_reinstates_the_same_realm_and_refuses_a_different_one() {
         vec!["kontor.db".to_owned()],
         "a refused restore leaves no partial, no superseded copy and no residue"
     );
+}
+
+#[test]
+fn memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt() {
+    let home = TempDir::new().expect("a temporary directory");
+    let source = home.path().join("source.db");
+    let store = seeded(&source, 0);
+    let project = ProjectId::generate();
+    store
+        .create_project(&NewProject {
+            id: project,
+            name: name("Memory project"),
+            root_path: name("/tmp/memory-project"),
+            created_at: at("2026-08-10T09:00:00Z"),
+        })
+        .expect("the project is created");
+    let mut export = AgentsRoomExport {
+        schema_version: 1,
+        source: "agentsroom".to_owned(),
+        project_id: project,
+        entries: vec![LegacyMemoryEntry {
+            item_id: "legacy".to_owned(),
+            document: memory_document("legacy provenance"),
+            source_id: Some("legacy-1".to_owned()),
+        }],
+        export_hash: kontor_core::id::ContentHash::of(b"pending"),
+    };
+    export.export_hash = export.calculate_hash().expect("the export hashes");
+    store
+        .freeze_agentsroom_writes()
+        .expect("legacy writes freeze");
+    store
+        .apply_agentsroom_import(&export)
+        .expect("the export imports");
+    store
+        .switch_memory_authority(project, "agentsroom", &export.export_hash)
+        .expect("authority switches");
+    let (proposal, propose_receipt) = store
+        .propose_memory_revision(
+            project,
+            "native",
+            0,
+            &memory_document("native searchable needle"),
+            &MemoryProvenance {
+                source: "operator".to_owned(),
+                source_id: Some("proposal-1".to_owned()),
+                legacy_last_write_wins: false,
+                history_unavailable: false,
+            },
+            "author",
+        )
+        .expect("a native revision is proposed");
+    let approve_receipt = store
+        .approve_memory_revision(project, "native", &proposal.revision_id, 1, "reviewer")
+        .expect("the revision is approved");
+    rusqlite::Connection::open(&source)
+        .expect("a maintenance connection opens")
+        .execute("DELETE FROM memory_fts", [])
+        .expect("the derived index is absent from the backup");
+
+    let snapshot = create_snapshot(
+        &source,
+        &home.path().join("backups"),
+        at("2026-08-10T10:00:00Z"),
+    )
+    .expect("the realm is snapshotted");
+    drop(store);
+    let restored_path = home.path().join("restored.db");
+    restore_snapshot(
+        &snapshot.snapshot,
+        &restored_path,
+        at("2026-08-10T11:00:00Z"),
+    )
+    .expect("the snapshot restores");
+    let restored = SqliteStore::open(&restored_path).expect("the restored realm opens");
+
+    let listed = restored.list_memory(project).expect("current memory lists");
+    assert_eq!(listed.len(), 2, "both imported and native pointers survive");
+    assert_eq!(
+        restored
+            .search_memory(project, "needle", 10)
+            .expect("FTS searches")
+            .len(),
+        1,
+        "restore rebuilds the deliberately absent derived FTS projection"
+    );
+    let legacy = restored
+        .memory_history(project, "legacy")
+        .expect("legacy history");
+    assert!(legacy[0].provenance.history_unavailable);
+    assert!(legacy[0].provenance.legacy_last_write_wins);
+    assert!(
+        restored
+            .preview_agentsroom_import(&export)
+            .expect("manifest reads")
+            .already_imported,
+        "the import manifest survives"
+    );
+    let connection = rusqlite::Connection::open(&restored_path).expect("evidence connection");
+    for receipt in [propose_receipt.receipt_id, approve_receipt.receipt_id] {
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_receipts WHERE id=?1",
+                [receipt],
+                |row| row.get(0),
+            )
+            .expect("receipt count");
+        assert_eq!(count, 1, "the native receipt survives");
+    }
 }

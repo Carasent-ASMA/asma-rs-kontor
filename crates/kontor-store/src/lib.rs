@@ -32,6 +32,7 @@ mod commands;
 mod events;
 mod graph;
 mod intake;
+pub mod memory;
 mod migrations;
 mod policy;
 pub mod query;

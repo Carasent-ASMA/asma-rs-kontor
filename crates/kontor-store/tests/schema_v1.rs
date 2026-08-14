@@ -60,6 +60,21 @@ const EXPECTED_TABLES: &[&str] = &[
     "intake_receipts",
     "jira_links",
     "lease_events",
+    "memory_approvals",
+    "memory_authority",
+    "memory_context_bindings",
+    "memory_fts",
+    "memory_fts_config",
+    "memory_fts_content",
+    "memory_fts_data",
+    "memory_fts_docsize",
+    "memory_fts_idx",
+    "memory_import_manifests",
+    "memory_items",
+    "memory_purges",
+    "memory_receipts",
+    "memory_revisions",
+    "memory_tombstones",
     "mini_projects",
     "persona_scenarios",
     "policy_evaluations",
@@ -201,7 +216,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 20);
+    assert_eq!(SCHEMA_VERSION, 21);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
@@ -906,7 +921,8 @@ fn the_schema_contains_exactly_the_expected_tables_and_they_are_all_strict() {
     let mut statement = connection
         .prepare(
             "SELECT name FROM pragma_table_list
-             WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND strict = 0",
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+               AND name NOT GLOB 'memory_fts*' AND strict = 0",
         )
         .expect("pragma_table_list is available");
     let lax: Vec<String> = statement

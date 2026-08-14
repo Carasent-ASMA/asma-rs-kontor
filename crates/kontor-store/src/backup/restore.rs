@@ -109,6 +109,7 @@ pub fn restore_snapshot(
         let _ = std::fs::remove_file(&temporary);
     }
     let superseded = published?;
+    rebuild_memory_fts(destination)?;
 
     Ok(RestorePlan {
         realm_id: identity.realm_id,
@@ -116,6 +117,30 @@ pub fn restore_snapshot(
         superseded,
         manifest,
         reconciliation_required: true,
+    })
+}
+
+/// Recreate the disposable search projection from approved native revisions.
+fn rebuild_memory_fts(database: &Path) -> Result<(), BackupError> {
+    let connection = Connection::open(database).map_err(|_| BackupError::Verification {
+        detail: "the restored database could not rebuild memory search",
+    })?;
+    let transaction =
+        connection
+            .unchecked_transaction()
+            .map_err(|_| BackupError::Verification {
+                detail: "the restored database could not begin rebuilding memory search",
+            })?;
+    transaction
+        .execute("DELETE FROM memory_fts", [])
+        .map_err(|_| BackupError::Verification {
+            detail: "the restored memory search projection could not be cleared",
+        })?;
+    transaction.execute("INSERT INTO memory_fts(project_id,item_id,revision_id,document) SELECT r.project_id,r.item_id,r.id,r.document FROM memory_revisions r JOIN memory_items i ON i.project_id=r.project_id AND i.id=r.item_id AND i.current_revision_id=r.id JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id LEFT JOIN memory_tombstones t ON t.project_id=r.project_id AND t.item_id=r.item_id WHERE t.item_id IS NULL", []).map_err(|_| BackupError::Verification {
+        detail: "the restored memory search projection could not be rebuilt",
+    })?;
+    transaction.commit().map_err(|_| BackupError::Verification {
+        detail: "the restored memory search projection could not be committed",
     })
 }
 
