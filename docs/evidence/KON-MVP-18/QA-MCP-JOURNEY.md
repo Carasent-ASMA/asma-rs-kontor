@@ -1,11 +1,18 @@
 # KON-18 MCP journey QA
 
-Checkpoint: `a280aaf`  
+Current review checkpoint: `1d3cf8877fe98673056207af27f8d05db568e6a5`  
 Commit under review: `1d3cf8877fe98673056207af27f8d05db568e6a5`  
 TSW archive: `e424212` / `wks_5f1dd03a839f8c04`  
-QA verdict: **READY-FOR-AUDIT**
+QA verdict: **COMPOSITE_PASS**
 
-## Typed claims
+## Superseded preflight history
+
+The initial deterministic-only preflight covered checkpoint `a280aaf` and
+returned **READY-FOR-AUDIT**. That finding is preserved below as historical
+record. It is superseded as the document headline by the composite review at
+`1d3cf887`, which incorporates the separate live-Paseo artifact.
+
+## Superseded preflight typed claims
 
 1. **PASS — journey completeness.** `mcp_journey.rs` drives an empty realm from realm/catalog reads through project/account/epic creation, planning, two scheduler admission rounds, runtime settlement, gate recording, task completion, and epic close-out. The final assertion is `closed["state"] == "closed"`. The journey uses one admin Lead dispatcher and one credential, derives later identifiers from tool replies, records the 11-call checkpoint, and asserts request cardinality and `/v1/` paths across the whole journey. `RouterTransport` is the production MCP transport seam and uses `Router::oneshot`; no hand-composed HTTP request or manual session administration is used.
 

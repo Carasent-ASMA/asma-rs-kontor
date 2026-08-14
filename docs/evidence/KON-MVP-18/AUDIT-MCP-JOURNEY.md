@@ -103,3 +103,18 @@ declared blocks; it does not represent a contradiction or hidden product
 defect. No second live run, new seat, code edit, commit, push, ticket, or board
 mutation was performed by this audit.
 
+## Audit confirmation — 2026-08-14
+
+**CONFIRMED.** The QA correction is internally consistent. Its header and
+composite review both identify commit `1d3cf8877fe98673056207af27f8d05db568e6a5`,
+and the headline is unambiguous: `COMPOSITE_PASS`. The earlier `a280aaf`
+`READY-FOR-AUDIT` preflight remains present under an explicit superseded-history
+section rather than being deleted.
+
+The composite body still matches the audited claims: the deterministic MCP
+journey reaches closed, the separate live Paseo artifact is identified, the
+live result remains `NON_COMPLIANT` at 38/0/4, the omitted waiver invocation is
+the harness-coverage close blocker, and BLK-005 is covered by sealed MUT-008
+deterministic evidence. No code, Cargo.lock, audit content before this note, or
+foreign `run-*` evidence directory was changed by the correction review. The
+underlying **AUDITED_TRUE** verdict stands unchanged.
