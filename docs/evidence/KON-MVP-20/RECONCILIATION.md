@@ -16,6 +16,17 @@ Paseo, git-remote, or process-state mutation.
   `3ae9c7ae345072e909abcbd6f7464af5b8cc06d80d1b7941802d9de207f9572a`;
   archive verifier passed.
 
+### Corrective candidate (not yet shipped at this snapshot)
+
+- Branch `fix/ASMA-7744-kontor-foundation-final-corrections` source anchor =
+  `97791ab1aff72d2dfbaeffaa72b2b631705f4356`.
+- Its source archive SHA-256 =
+  `3b910fd1d09bef8fc27430670d2da4dc650b0b9af0fc7116dc4f1b85b4dbfffa`.
+- Its committed/regenerated `Cargo.lock` SHA-256 =
+  `781ae8a2e7b5c437066a3b76c255d7d097dc439e5a66dc2e7b43b2f1c7074e26`.
+- The corrective archive verifier and all product gates pass; the mutation
+  ledger is 31/31 killed.
+
 ## Twenty-five child dispositions
 
 AgentsRoom truth is complete: KON-01 through KON-11, KON-13 through KON-19,
@@ -39,9 +50,10 @@ terminal transitions remain unapplied:
 | ASMA-7854 / KON-25 | done | Ready for Development -> Closed |
 
 ASMA-7764 also has a description-mirror proposal. Therefore the snapshot is
-truthful but **Jira is not yet fully converged**. The orchestrator must apply
-and read back these normal close-out transitions before the final committee can
-return `COMPLIANT`. The dry-run log SHA-256 is
+truthful but **Jira is not yet fully converged**. These normal close-out
+transitions are intentionally held until the final committee returns typed
+`COMPLIANT`; the Orchestrator then applies and reads them back before epic
+closure. The dry-run log SHA-256 is
 `291784b040bfcbe919ed337f4fc2bbf77f5abd4e302f543b30b19ede013ddec0`.
 
 ## Paseo/runtime/client truth
@@ -89,7 +101,7 @@ successful archive result.
 
 ## Gate disposition
 
-Code/archive validation is ready: 27/27 mutants killed and every gate green.
-Cross-system close-out is **not yet fully converged** solely because the six
-read-only Jira status proposals above have not been applied. No survivor or
-product defect is being waived.
+Corrective code/archive validation is ready: 31/31 mutants killed and every
+gate green. Cross-system close-out still requires the merged archive, a live C4
+route observation, and a typed final-committee `COMPLIANT` verdict. The six
+Jira transitions follow that verdict. No survivor or product defect is waived.
