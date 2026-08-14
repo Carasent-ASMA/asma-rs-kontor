@@ -31,11 +31,11 @@ use kontor_core::id::{CalendarProfileId, SCHEMA_VERSION, WorkCalendarId};
 use kontor_core::spec::{
     ApprovalReceipt, AutoArmPolicy, ContextCapabilityResult, ContextClamp, ContextEnforcement,
     ContextPolicyInputs, ContextPolicySnapshot, ContextPolicySource, ContextWindowBounds,
-    ContextWindowClass, ContextWindowPolicy, DedupExpression, EffectiveContextPolicy,
-    EnvironmentKind, IntakeReceipt, IntakeResult, JsonPointer, PersonaScenarioSnapshot,
-    PersonaScenarioSpec, PhaseEdge, ProposedWorkGraph, RequestedContextPolicy,
-    ResolvedWorkProfileSnapshot, RoleContextSeed, TeamContextPolicySeed, TriggerSpec,
-    WorkProfileSpec, resolve_context_window,
+    ContextWindowClass, ContextWindowPolicy, DedupExpression, EffectiveContextPolicy, EffortLevel,
+    EnvironmentKind, IntakeReceipt, IntakeResult, JsonPointer, ModelChainPolicy, ModelRef,
+    ModelRung, PersonaScenarioSnapshot, PersonaScenarioSpec, PhaseEdge, ProposedWorkGraph,
+    ProviderRef, RequestedContextPolicy, ResolvedWorkProfileSnapshot, RoleContextSeed,
+    TeamContextPolicySeed, TriggerSpec, WorkProfileSpec, resolve_context_window,
 };
 use proptest::prelude::*;
 
@@ -1572,4 +1572,28 @@ fn a_seed_table_refuses_a_duplicate_role_and_an_explicit_only_class() {
             .expect_err("a seed may not select extended"),
         DomainError::MissingAuthority { .. }
     ));
+}
+
+#[test]
+fn a_model_chain_is_closed_and_bounded() {
+    let rung = ModelRung {
+        provider: ProviderRef("codex".to_owned()),
+        model: ModelRef("gpt-5.6-sol".to_owned()),
+        effort: Some(EffortLevel::Xhigh),
+    };
+    assert!(
+        ModelChainPolicy {
+            rungs: vec![rung.clone()]
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(ModelChainPolicy { rungs: vec![] }.validate().is_err());
+    assert!(
+        ModelChainPolicy {
+            rungs: vec![rung; 5]
+        }
+        .validate()
+        .is_err()
+    );
 }

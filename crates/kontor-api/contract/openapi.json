@@ -13,6 +13,33 @@
     "version": "1.0.0"
   },
   "paths": {
+    "/v1/catalog": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "The provider/model catalog discovered for this Realm.",
+        "operationId": "model_catalog",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelCatalogDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/catalog/packs": {
       "get": {
         "tags": [
@@ -383,6 +410,29 @@
             "description": ""
           },
           "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/memory/cutover:freeze": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "freeze",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
             "description": ""
           }
         }
@@ -1197,6 +1247,381 @@
           },
           "409": {
             "description": "The same source identity carries different bytes"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/cutover:switch": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "switch",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Switch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/import:apply": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "import_apply",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/import:preview": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "import_preview",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/revisions/{revision_id}/approval": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "approve",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "revision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Approve"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/revisions:propose": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "propose",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Propose"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/{item_id}/history": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "history",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/{item_id}/purge": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "purge",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Purge"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/{item_id}/tombstone": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "tombstone",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Tombstone"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
           }
         }
       }
@@ -2714,6 +3139,137 @@
           }
         }
       }
+    },
+    "/v1/teams": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Current Teams drafts and immutable published revisions.",
+        "operationId": "teams",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamsProjectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/teams/drafts:save": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Create or replace one Teams draft in this Realm.",
+        "operationId": "save_team_draft",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamsProjectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/teams/{team_id}/publish": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish the next immutable revision of one Teams draft.",
+        "operationId": "publish_team",
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "description": "The logical team-template id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamsProjectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3076,6 +3632,27 @@
           "work_profile_category": {
             "type": "string",
             "description": "The work-profile category to resolve, from `GET /v1/catalog/work-profiles`."
+          }
+        }
+      },
+      "Approve": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "expected_revision",
+          "approved_by"
+        ],
+        "properties": {
+          "approved_by": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "item_id": {
+            "type": "string"
           }
         }
       },
@@ -4253,6 +4830,34 @@
           }
         }
       },
+      "ImportBody": {
+        "type": "object",
+        "required": [
+          "schema_version",
+          "source",
+          "entries",
+          "snapshot_hash"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "snapshot_hash": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
       "IntakeReceiptDto": {
         "type": "object",
         "description": "One recorded intake decision.",
@@ -4442,6 +5047,41 @@
           "body": {
             "type": "string",
             "description": "The message body."
+          }
+        }
+      },
+      "ModelCatalogDto": {
+        "type": "object",
+        "description": "The realm-qualified model catalog consumed by the Teams editor.",
+        "required": [
+          "realm_id",
+          "snapshot_cursor",
+          "providers",
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Model routes, including effort, window and price provenance."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Provider rows, including charging-basis provenance."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that performed discovery."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The control-plane position at which this projection was read."
           }
         }
       },
@@ -4803,6 +5443,35 @@
           }
         }
       },
+      "Propose": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "expected_revision",
+          "document",
+          "provenance",
+          "proposed_by"
+        ],
+        "properties": {
+          "document": {
+            "type": "object"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "proposed_by": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "object"
+          }
+        }
+      },
       "ProvenanceDto": {
         "type": "object",
         "description": "Where one resolved value came from.",
@@ -4830,6 +5499,58 @@
           "source_id": {
             "type": "string",
             "description": "The source inside that layer."
+          }
+        }
+      },
+      "PublishedTeamRevisionDto": {
+        "type": "object",
+        "description": "One immutable published team-template revision.",
+        "required": [
+          "id",
+          "version",
+          "name",
+          "slots",
+          "resolved_policy"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable logical template id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human label frozen at publish."
+          },
+          "resolved_policy": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Server-resolved context policy preview frozen from this revision."
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Slot declarations frozen at publish."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Monotonic version within `id`.",
+            "minimum": 0
+          }
+        }
+      },
+      "Purge": {
+        "type": "object",
+        "required": [
+          "by"
+        ],
+        "properties": {
+          "by": {
+            "type": "string"
           }
         }
       },
@@ -5359,7 +6080,7 @@
         "properties": {
           "account_env": {
             "type": "boolean",
-            "description": "Whether it can prove which coding account a run executes as. Paseo 1.0\nreports `false`, which is why a per-run account pin against it is refused\nrather than silently ignored."
+            "description": "Whether the runtime can prove which coding account a run executes as.\nWhen false, a per-run account pin is refused rather than silently ignored."
           },
           "max_concurrent_sessions": {
             "type": "integer",
@@ -6150,6 +6871,21 @@
           }
         }
       },
+      "Switch": {
+        "type": "object",
+        "required": [
+          "source",
+          "snapshot_hash"
+        ],
+        "properties": {
+          "snapshot_hash": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
       "TaskDto": {
         "type": "object",
         "description": "One task, its active workflow and the gates reduced from its evaluations.",
@@ -6208,6 +6944,66 @@
           }
         }
       },
+      "TeamDraftDto": {
+        "type": "object",
+        "description": "One server-held draft.",
+        "required": [
+          "id",
+          "name",
+          "slots",
+          "resolved_policy"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable logical template id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human label."
+          },
+          "resolved_policy": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Server-resolved context policy preview for every slot."
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Slot declarations in editor wire form."
+          }
+        }
+      },
+      "TeamDraftRequest": {
+        "type": "object",
+        "description": "One mutable draft document accepted by the realm.",
+        "required": [
+          "id",
+          "name",
+          "slots"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable logical template id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human label."
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Slot declarations in editor wire form."
+          }
+        }
+      },
       "TeamRunProjectionDto": {
         "type": "object",
         "description": "One team run and its seats, as the epic projection reports them.",
@@ -6262,6 +7058,41 @@
           "template": {
             "$ref": "#/components/schemas/RevisionRefDto",
             "description": "The template revision."
+          }
+        }
+      },
+      "TeamsProjectionDto": {
+        "type": "object",
+        "description": "Realm-qualified Teams read projection shared by HTTP, CLI and MCP.",
+        "required": [
+          "realm_id",
+          "snapshot_cursor",
+          "drafts",
+          "revisions"
+        ],
+        "properties": {
+          "drafts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamDraftDto"
+            },
+            "description": "Current mutable drafts."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that owns the documents."
+          },
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublishedTeamRevisionDto"
+            },
+            "description": "Immutable published revisions."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Teams projection cursor; every successful write advances it once."
           }
         }
       },
@@ -6701,6 +7532,27 @@
             "format": "int64",
             "description": "Its position inside that epoch.",
             "minimum": 0
+          }
+        }
+      },
+      "Tombstone": {
+        "type": "object",
+        "required": [
+          "expected_revision",
+          "by",
+          "reason"
+        ],
+        "properties": {
+          "by": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
           }
         }
       },

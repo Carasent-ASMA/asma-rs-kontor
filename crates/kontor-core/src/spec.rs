@@ -14,6 +14,80 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// Raw reasoning-effort ids exposed by supported runtimes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortLevel {
+    /// Disable provider reasoning where supported.
+    Off,
+    /// Low reasoning.
+    Low,
+    /// Medium reasoning.
+    Medium,
+    /// High reasoning.
+    High,
+    /// Extra-high reasoning.
+    Xhigh,
+    /// Maximum reasoning.
+    Max,
+    /// Runtime-native ultra reasoning.
+    Ultra,
+    /// Runtime-native ultracode reasoning.
+    Ultracode,
+}
+
+/// A provider id exactly as the runtime catalog spells it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProviderRef(pub String);
+
+/// A model route id exactly as the provider catalog spells it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModelRef(pub String);
+
+/// One provider/model/effort fallback rung.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelRung {
+    /// Provider id.
+    pub provider: ProviderRef,
+    /// Route id within the provider.
+    pub model: ModelRef,
+    /// Raw runtime effort, or none when the route exposes no lever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<EffortLevel>,
+}
+
+/// The ordered, bounded model chain declared by one seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChainPolicy {
+    /// Rungs in reach order, primary first.
+    pub rungs: Vec<ModelRung>,
+}
+
+impl ModelChainPolicy {
+    /// Structural validation independent of a live catalog.
+    pub fn validate(&self) -> crate::DomainResult<()> {
+        if self.rungs.is_empty() || self.rungs.len() > 4 {
+            return Err(crate::DomainError::invalid(
+                "ModelChainPolicy",
+                "a model chain must declare one to four rungs",
+            ));
+        }
+        if self
+            .rungs
+            .iter()
+            .any(|rung| rung.provider.0.trim().is_empty() || rung.model.0.trim().is_empty())
+        {
+            return Err(crate::DomainError::invalid(
+                "ModelChainPolicy",
+                "a model rung must name both provider and model",
+            ));
+        }
+        Ok(())
+    }
+}
+
 use crate::calendar::ExecutionAuthorization;
 use crate::id::{
     AccountProfileId, ArtifactKey, CalendarProfileId, CanonicalDocument, ConnectorKey, ContentHash,

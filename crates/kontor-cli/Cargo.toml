@@ -29,3 +29,11 @@ kontor-mcp = { path = "../kontor-mcp", version = "=0.1.0" }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 serde_json = { workspace = true }
+axum = { workspace = true }
+kontor-api = { path = "../kontor-api", version = "=0.1.0" }
+kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+kontor-daemon = { path = "../kontor-daemon", version = "=0.1.0" }
+kontor-store = { path = "../kontor-store", version = "=0.1.0" }
+reqwest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }

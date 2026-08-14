@@ -54,6 +54,16 @@ export type StreamRefusal = Schemas['StreamRefusalDto']
 export type MessageAck = Schemas['MessageAckDto']
 /** The runtime's answer to one permission response. */
 export type PermissionAck = Schemas['PermissionAckDto']
+/** Realm-qualified model catalog projection. */
+export type ModelCatalogProjection = Schemas['ModelCatalogDto']
+/** One server-held Teams draft. */
+export type TeamDraftProjection = Schemas['TeamDraftDto']
+/** One Teams draft command body. */
+export type TeamDraftRequest = Schemas['TeamDraftRequest']
+/** One immutable published Teams revision. */
+export type PublishedTeamRevision = Schemas['PublishedTeamRevisionDto']
+/** Teams drafts and revisions at one realm cursor. */
+export type TeamsProjection = Schemas['TeamsProjectionDto']
 
 /** The JSON body every refusal is reported with. */
 export type Refusal = Schemas['ApiErrorBody']
