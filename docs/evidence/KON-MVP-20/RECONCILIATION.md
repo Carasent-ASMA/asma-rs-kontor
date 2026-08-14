@@ -67,8 +67,9 @@ The requested untracked files were left byte-identical and uncommitted:
   `c1de6cf7bee4fb0b190f9dd1b6419826c11d3270c4182e30f48e5e6b72c80495`;
 - `crates/kontor-runtime/src/terminal.rs` —
   `21c2974b423f3605fa3797bc528f6ecbf1e86f026b8c35d4391c27c874d8cfa5`;
-- foreign `docs/evidence/KON-MVP-18/run-bcb865f13ce774ed/` aggregate —
-  `eefdf05f9e7931fe8b62870befd2a6d343690e427f9b4a2e931c4ec08b79081e`.
+- foreign `docs/evidence/KON-MVP-18/run-bcb865f13ce774ed/` relative-path
+  SHA-256-manifest aggregate —
+  `a3db84dd0a5efd3dfeee42d0e33ebb90d261caae1e0b41c47549e1af3eb5ca4d`.
 
 Incident input
 `/Users/igor/kon-mvp-20-scratch/evidence/paseo-corrective/incidents/2026-08-14-destructive-reset-dirty-tsw.md`
