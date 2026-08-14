@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        47,
+        51,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        49,
+        53,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -536,6 +536,12 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // template imposed, which is the same kind of act as waiving a gate — so
         // the daemon requires admin on the route and the registry says so too.
         ("kontor_role_slot_waive", CallerTier::Admin),
+        // KON-25: the Realm catalogue and Teams projection are reads; saving a
+        // draft and publishing its next immutable revision are operator acts.
+        ("kontor_model_catalog_get", CallerTier::Observer),
+        ("kontor_teams_get", CallerTier::Observer),
+        ("kontor_team_draft_save", CallerTier::Operator),
+        ("kontor_team_publish", CallerTier::Operator),
     ]);
     for tool in REGISTRY {
         assert_eq!(

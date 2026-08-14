@@ -8,8 +8,8 @@
  * without saying it is unverified, and an editor that silently promotes a seat
  * to a class that covers its need band instead of reporting that nothing does.
  */
-import { fireEvent, render, screen, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TeamsView } from './TeamsView'
 import { setViewport } from '../test/viewport'
 import { UNVERIFIED, unverified } from '../state/teams'
@@ -191,6 +191,69 @@ describe('<TeamsView>', () => {
     expect(banner).toHaveTextContent(/Nothing on this screen came from the realm/)
     expect(banner).toHaveTextContent(/fixture\/needs-verification/)
     expect(banner).toHaveTextContent(/immutable snapshots/i)
+  })
+
+  it('loads the live realm catalog and projection before rendering an editor', async () => {
+    const client = {
+      modelCatalog: vi.fn(async () => ({
+        realm_id: 'realm-live', snapshot_cursor: 8,
+        providers: SOURCED_CATALOG.providers, models: SOURCED_CATALOG.models,
+      })),
+      teams: vi.fn(async () => ({
+        realm_id: 'realm-live', snapshot_cursor: 9,
+        drafts: SOURCED_SEED, revisions: [],
+      })),
+      saveTeamDraft: vi.fn(),
+      publishTeam: vi.fn(),
+    }
+    render(<TeamsView client={client as never} />)
+    expect(screen.getByText(/Loading the realm catalog/)).toBeInTheDocument()
+    const banner = await screen.findByRole('note')
+    expect(banner).toHaveAttribute('data-banner', 'realm-live')
+    expect(banner).toHaveTextContent('cursor 8')
+    expect(screen.getByRole('button', { name: /a sourced draft/ })).toBeInTheDocument()
+  })
+
+  it('kills validateCatalog removal on the live /v1/catalog response', async () => {
+    const unsigned: ModelCatalog = {
+      ...SOURCED_CATALOG,
+      models: SOURCED_CATALOG.models.map((model) => ({
+        ...model,
+        contextWindow: {
+          ...model.contextWindow,
+          provenance: { ...model.contextWindow.provenance, state: 'live', reviewRef: null },
+        },
+      })),
+    }
+    const client = {
+      modelCatalog: vi.fn(async () => ({ realm_id: 'realm-live', snapshot_cursor: 4, ...unsigned })),
+      teams: vi.fn(async () => ({ realm_id: 'realm-live', snapshot_cursor: 4, drafts: SOURCED_SEED, revisions: [] })),
+      saveTeamDraft: vi.fn(), publishTeam: vi.fn(),
+    }
+    render(<TeamsView client={client as never} />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('/v1/catalog')
+    expect(screen.queryByRole('list', { name: 'team templates' })).toBeNull()
+  })
+
+  it('saves then publishes through the live realm and renders its revision cursor', async () => {
+    const published = {
+      realm_id: 'realm-live', snapshot_cursor: 12,
+      drafts: SOURCED_SEED,
+      revisions: [{ ...SOURCED_SEED[0], version: 1 }],
+    }
+    const client = {
+      modelCatalog: vi.fn(async () => ({ realm_id: 'realm-live', snapshot_cursor: 10, ...SOURCED_CATALOG })),
+      teams: vi.fn(async () => ({ realm_id: 'realm-live', snapshot_cursor: 10, drafts: SOURCED_SEED, revisions: [] })),
+      saveTeamDraft: vi.fn(async () => ({ ...published, snapshot_cursor: 11, revisions: [] })),
+      publishTeam: vi.fn(async () => published),
+    }
+    render(<TeamsView client={client as never} />)
+    fireEvent.click(await screen.findByRole('button', { name: /a sourced draft/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Publish next revision' }))
+    await waitFor(() => expect(client.publishTeam).toHaveBeenCalledWith('d-sourced', expect.any(String)))
+    expect(client.saveTeamDraft).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('a sourced draft · v1')).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent('cursor 12')
   })
 
   it('refuses an unsigned promoted catalog at the /v1/catalog trust boundary', () => {
@@ -544,6 +607,47 @@ describe('<TeamsView>', () => {
     render(<TeamsView catalog={BENCH_CATALOG} seed={seed} />)
     const entry = screen.getByRole('button', { name: /a bench draft/ })
     expect(within(entry).getByText('3 blocking')).toBeInTheDocument()
+  })
+
+  it('kills the (code,slot) dedup mutant on a live Teams projection', async () => {
+    const unsigned = {
+      state: 'researched', reviewRef: null, citation: null, observedAt: null,
+    } as const
+    const drafts = benchSeed().map((draft) => ({
+      ...draft,
+      slots: draft.slots.map((slot) => ({
+        ...slot,
+        capabilities: {
+          ...slot.capabilities,
+          need: { ...slot.capabilities.need, provenance: unsigned },
+        },
+      })),
+    }))
+    const client = {
+      modelCatalog: vi.fn(async () => ({ realm_id: 'realm-live', snapshot_cursor: 6, ...BENCH_CATALOG })),
+      teams: vi.fn(async () => ({ realm_id: 'realm-live', snapshot_cursor: 6, drafts, revisions: [] })),
+      saveTeamDraft: vi.fn(), publishTeam: vi.fn(),
+    }
+    render(<TeamsView client={client as never} />)
+    const entry = await screen.findByRole('button', { name: /a bench draft/ })
+    expect(within(entry).getByText('3 blocking')).toBeInTheDocument()
+    expect(within(entry).queryByText('6 blocking')).toBeNull()
+  })
+
+  it('kills the clamp mutant on a live catalog projection', async () => {
+    const drafts = benchSeed()
+    const client = {
+      modelCatalog: vi.fn(async () => ({ realm_id: 'realm-live', snapshot_cursor: 7, ...BENCH_CATALOG })),
+      teams: vi.fn(async () => ({ realm_id: 'realm-live', snapshot_cursor: 7, drafts, revisions: [] })),
+      saveTeamDraft: vi.fn(), publishTeam: vi.fn(),
+    }
+    const { container } = render(<TeamsView client={client as never} />)
+    fireEvent.click(await screen.findByRole('button', { name: /a bench draft/ }))
+    const preview = container.querySelector('[data-resolved-policy]')
+    expect(preview).toHaveTextContent('effective 400000')
+    expect(preview).toHaveTextContent('capability clamped')
+    fireEvent.change(screen.getByLabelText('Enforcement'), { target: { value: 'required' } })
+    expect(container.querySelector('[data-code="context_clamp_refused"]')).toBeTruthy()
   })
 
   it('renames a draft, and refuses one with no name left', () => {

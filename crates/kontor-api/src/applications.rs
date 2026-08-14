@@ -164,6 +164,80 @@ pub struct TeamTemplateCatalogDto {
     pub definition_hash: String,
 }
 
+/// The realm-qualified model catalog consumed by the Teams editor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ModelCatalogDto {
+    /// The Realm that performed discovery.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The control-plane position at which this projection was read.
+    pub snapshot_cursor: i64,
+    /// Provider rows, including charging-basis provenance.
+    #[schema(value_type = Vec<Object>)]
+    pub providers: Vec<serde_json::Value>,
+    /// Model routes, including effort, window and price provenance.
+    #[schema(value_type = Vec<Object>)]
+    pub models: Vec<serde_json::Value>,
+}
+
+/// One mutable draft document accepted by the realm.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TeamDraftRequest {
+    /// Stable logical template id.
+    pub id: String,
+    /// Human label.
+    pub name: String,
+    /// Slot declarations in editor wire form.
+    #[schema(value_type = Vec<Object>)]
+    pub slots: Vec<serde_json::Value>,
+}
+
+/// One server-held draft.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TeamDraftDto {
+    /// Stable logical template id.
+    pub id: String,
+    /// Human label.
+    pub name: String,
+    /// Slot declarations in editor wire form.
+    #[schema(value_type = Vec<Object>)]
+    pub slots: Vec<serde_json::Value>,
+    /// Server-resolved context policy preview for every slot.
+    #[schema(value_type = Vec<Object>)]
+    pub resolved_policy: Vec<serde_json::Value>,
+}
+
+/// One immutable published team-template revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PublishedTeamRevisionDto {
+    /// Stable logical template id.
+    pub id: String,
+    /// Monotonic version within `id`.
+    pub version: u32,
+    /// Human label frozen at publish.
+    pub name: String,
+    /// Slot declarations frozen at publish.
+    #[schema(value_type = Vec<Object>)]
+    pub slots: Vec<serde_json::Value>,
+    /// Server-resolved context policy preview frozen from this revision.
+    #[schema(value_type = Vec<Object>)]
+    pub resolved_policy: Vec<serde_json::Value>,
+}
+
+/// Realm-qualified Teams read projection shared by HTTP, CLI and MCP.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamsProjectionDto {
+    /// The Realm that owns the documents.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The Teams projection cursor; every successful write advances it once.
+    pub snapshot_cursor: i64,
+    /// Current mutable drafts.
+    pub drafts: Vec<TeamDraftDto>,
+    /// Immutable published revisions.
+    pub revisions: Vec<PublishedTeamRevisionDto>,
+}
+
 /// One provider-account profile, with nothing a caller could authenticate with.
 ///
 /// The credential reference is an opaque alias whose meaning lives entirely in
@@ -1589,6 +1663,26 @@ pub trait ApplicationOperations: Send + Sync {
     /// Every team template revision a work profile may pin.
     fn team_templates(&self) -> Result<Vec<TeamTemplateCatalogDto>, ApiError>;
 
+    /// The live model catalog for this Realm.
+    fn model_catalog(&self) -> Result<ModelCatalogDto, ApiError>;
+
+    /// Current Teams drafts and immutable revisions.
+    fn teams(&self) -> Result<TeamsProjectionDto, ApiError>;
+
+    /// Create or replace one server-held draft.
+    async fn save_team_draft(
+        &self,
+        key: &IdempotencyKey,
+        request: &TeamDraftRequest,
+    ) -> Result<TeamsProjectionDto, ApiError>;
+
+    /// Publish the next immutable revision of one draft.
+    async fn publish_team(
+        &self,
+        key: &IdempotencyKey,
+        team_id: &str,
+    ) -> Result<TeamsProjectionDto, ApiError>;
+
     /// Every provider-account profile in a project, with no credential material.
     fn account_profiles(&self, project_id: ProjectId) -> Result<Vec<AccountProfileDto>, ApiError>;
 
@@ -1911,6 +2005,74 @@ pub async fn team_templates(
 ) -> Result<Json<Vec<TeamTemplateCatalogDto>>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     Ok(Json(state.applications().team_templates()?))
+}
+
+/// The provider/model catalog discovered for this Realm.
+#[utoipa::path(
+    get, path = "/v1/catalog", tag = "applications",
+    responses((status = 200, body = ModelCatalogDto), (status = 401), (status = 403))
+)]
+pub async fn model_catalog(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<ModelCatalogDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    Ok(Json(state.applications().model_catalog()?))
+}
+
+/// Current Teams drafts and immutable published revisions.
+#[utoipa::path(
+    get, path = "/v1/teams", tag = "applications",
+    responses((status = 200, body = TeamsProjectionDto), (status = 401), (status = 403))
+)]
+pub async fn teams(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<TeamsProjectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    Ok(Json(state.applications().teams()?))
+}
+
+/// Create or replace one Teams draft in this Realm.
+#[utoipa::path(
+    post, path = "/v1/teams/drafts:save", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = TeamDraftRequest,
+    responses((status = 200, body = TeamsProjectionDto), (status = 401), (status = 403), (status = 409))
+)]
+pub async fn save_team_draft(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<TeamDraftRequest>,
+) -> Result<Json<TeamsProjectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state.applications().save_team_draft(&key, &request).await?,
+    ))
+}
+
+/// Publish the next immutable revision of one Teams draft.
+#[utoipa::path(
+    post, path = "/v1/teams/{team_id}/publish", tag = "applications",
+    params(
+        ("team_id" = String, Path, description = "The logical team-template id"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    responses((status = 200, body = TeamsProjectionDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn publish_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Path(team_id): Path<String>,
+) -> Result<Json<TeamsProjectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state.applications().publish_team(&key, &team_id).await?,
+    ))
 }
 
 /// The provider-account profiles a run may be pinned to.

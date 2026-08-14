@@ -494,6 +494,19 @@ export interface TeamDraft {
   readonly name: string
   /** Its slots. */
   readonly slots: readonly TeamSlot[]
+  /** Realm-resolved preview at the projection cursor, absent while edited locally. */
+  readonly resolvedPolicy?: readonly ResolvedPolicyProjection[]
+}
+
+/** One server-resolved context policy row shared by API, CLI, MCP and console. */
+export interface ResolvedPolicyProjection {
+  readonly slot: string
+  readonly class: ContextClass
+  readonly source: 'role_slot' | 'run_override'
+  readonly effective_threshold: number | null
+  readonly enforcement: ContextEnforcement
+  readonly capability: 'supported' | 'clamped' | 'unsupported'
+  readonly latest_receipt: string | null
 }
 
 /** One immutable published snapshot of a logical team template. */
@@ -1117,10 +1130,9 @@ export function reviewSeat(seat: SeatCapabilities, catalog: ModelCatalog): SeatR
  * says *which* band is claiming more than it can show; `reviewSeat` reports the
  * same defect unqualified, in the slot the operator is already looking at.
  *
- * The four cells that live on the *catalog* have `validateCatalog`, but note it
- * is not wired into any runtime path — see its docstring. The band is therefore
- * the only provenanced cell enforced live today, which is the reverse of the
- * priority a served catalog will need.
+ * The four cells that live on the *catalog* are enforced by `validateCatalog`
+ * immediately after `GET /v1/catalog` and before `TeamsView` renders any editor.
+ * The band remains the draft-owned provenance check at publish time.
  */
 export function validateTeam(draft: TeamDraft): readonly Issue[] {
   const issues: Issue[] = []
@@ -1215,7 +1227,7 @@ function liveEfforts(values: readonly EffortLevel[], call: string): Sourced<read
 }
 
 /**
- * The catalog the prototype offers, standing in for `GET /v1/catalog`.
+ * The catalog injected by tests and offered only by the explicit offline preview.
  *
  * Route ids and effort ladders are read from this runtime; ceilings and prices
  * are almost entirely unverified and say so per cell. The two exceptions are the

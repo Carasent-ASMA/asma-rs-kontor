@@ -80,6 +80,23 @@ describe('client requests', () => {
     expect(calls[0]?.init?.body).toBe('{"decision":"allow"}')
   })
 
+  it('uses the catalog and Teams API routes with caller-owned command keys', async () => {
+    const { client, calls } = clientWith((url) => json(
+      url.endsWith('/v1/catalog')
+        ? { realm_id: REALM, snapshot_cursor: 3, providers: [], models: [] }
+        : { realm_id: REALM, snapshot_cursor: 4, drafts: [], revisions: [] },
+    ))
+    await client.modelCatalog()
+    await client.teams()
+    await client.saveTeamDraft({ id: 'team-1', name: 'Team', slots: [] }, 'save-1')
+    await client.publishTeam('team-1', 'publish-1')
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/v1/catalog', '/v1/teams', '/v1/teams/drafts:save', '/v1/teams/team-1/publish',
+    ])
+    expect(new Headers(calls[2]?.init?.headers).get('Idempotency-Key')).toBe('save-1')
+    expect(new Headers(calls[3]?.init?.headers).get('Idempotency-Key')).toBe('publish-1')
+  })
+
   it('reports a refusal with the contract code rather than as a channel failure', async () => {
     const { client } = clientWith(() =>
       json(

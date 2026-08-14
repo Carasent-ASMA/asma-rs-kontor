@@ -9,6 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "generate:api": "openapi-typescript ../../crates/kontor-api/contract/openapi.json -o src/api/schema.d.ts",
     "verify:api": "openapi-typescript ../../crates/kontor-api/contract/openapi.json -o /tmp/kontor-schema.d.ts && diff -u src/api/schema.d.ts /tmp/kontor-schema.d.ts"
   },

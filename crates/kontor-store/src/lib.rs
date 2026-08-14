@@ -38,6 +38,7 @@ pub mod query;
 mod reconciliation;
 mod repository;
 mod scheduler;
+mod teams;
 
 use std::path::Path;
 
@@ -74,6 +75,7 @@ pub use scheduler::{
     AdmissionCommit, AdmissionOutcome, LeaseEventKind, LeaseKind, LeaseRelease, LeaseRenewal,
     RecordedRejection, ResourceLease,
 };
+pub use teams::{StoredTeamDraft, StoredTeamRevision, StoredTeamsProjection};
 
 /// Everything the store can refuse.
 #[derive(Debug, thiserror::Error)]

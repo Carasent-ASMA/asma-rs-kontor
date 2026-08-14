@@ -3,14 +3,10 @@
  *
  * # What this view is, and what it is not
  *
- * Every other view in this console renders what `/v1` answered. This one renders
- * a draft held in this tab, against a fixture catalog, because the contract
- * serves neither team-template writes nor a model catalog yet. That is a
- * different kind of screen from the rest of the console, so it says so in a
- * banner rather than looking like the others and quietly meaning something else.
- *
- * Nothing here is saved, nothing is published, and no number below has been
- * verified against a provider.
+ * Production loads `/v1/catalog` and `/v1/teams` from the attached realm, then
+ * saves and publishes through that same client's commands. Tests may inject a
+ * catalog directly; a failed live read offers an explicit offline preview and
+ * never silently turns the fixture into the editing source.
  *
  * # Why the editor constrains rather than warns
  *
@@ -24,7 +20,8 @@
  *
  * @see ../state/teams.ts for every rule this file renders
  */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { KontorClient } from '../api/client'
 import { MasterDetail } from '../shell/MasterDetail'
 import { StateBadge } from '../components/primitives'
 import {
@@ -50,6 +47,7 @@ import {
   type ModelRung,
   type Provenance,
   type RankedClassCost,
+  type ResolvedPolicyProjection,
   type RungEffort,
   type SeatCapabilities,
   type TeamDraft,
@@ -59,18 +57,74 @@ import {
 
 /** Render the Teams section. */
 export function TeamsView({
-  catalog = FIXTURE_CATALOG,
-  seed = SEED_TEAMS,
+  client,
+  catalog: injectedCatalog,
+  seed,
 }: {
+  /** The attached realm client. Present on the production path. */
+  client?: Pick<KontorClient, 'modelCatalog' | 'teams' | 'saveTeamDraft' | 'publishTeam'>
   /** The catalog every control is constrained against. */
   catalog?: ModelCatalog
   /** The drafts the section opens with. */
   seed?: readonly TeamDraft[]
 }) {
-  const catalogIssues = validateCatalog(catalog)
-  const [drafts, setDrafts] = useState<readonly TeamDraft[]>(seed)
+  const injected = injectedCatalog !== undefined
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(injectedCatalog ?? null)
+  const [drafts, setDrafts] = useState<readonly TeamDraft[]>(seed ?? (injected ? SEED_TEAMS : []))
   const [selected, setSelected] = useState<string | null>(null)
   const [revisions, setRevisions] = useState<readonly TeamRevision[]>([])
+  const [cursor, setCursor] = useState<number | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [offline, setOffline] = useState(client === undefined)
+
+  useEffect(() => {
+    if (!client || injected) {
+      if (!injected) {
+        setCatalog(FIXTURE_CATALOG)
+        setDrafts(seed ?? SEED_TEAMS)
+      }
+      return
+    }
+    let current = true
+    void Promise.all([client.modelCatalog(), client.teams()])
+      .then(([catalogProjection, teamsProjection]) => {
+        if (!current) return
+        setCatalog({
+          providers: catalogProjection.providers,
+          models: catalogProjection.models,
+        } as unknown as ModelCatalog)
+        setDrafts(teamsProjection.drafts.map(wireDraft))
+        setRevisions(teamsProjection.revisions as unknown as readonly TeamRevision[])
+        setCursor(Math.min(catalogProjection.snapshot_cursor, teamsProjection.snapshot_cursor))
+        setOffline(false)
+      })
+      .catch(() => {
+        if (current) setLoadError('The realm catalog and Teams projection could not be loaded.')
+      })
+    return () => {
+      current = false
+    }
+  }, [client, injected, seed])
+
+  if (catalog === null) {
+    return (
+      <section className="view" aria-label="teams">
+        <h2>Teams</h2>
+        {loadError ? (
+          <>
+            <p className="banner" role="alert">{loadError}</p>
+            <button type="button" onClick={() => {
+              setCatalog(FIXTURE_CATALOG)
+              setDrafts(SEED_TEAMS)
+              setOffline(true)
+            }}>Open clearly-labelled offline preview</button>
+          </>
+        ) : <p className="empty">Loading the realm catalog…</p>}
+      </section>
+    )
+  }
+
+  const catalogIssues = validateCatalog(catalog)
   if (blocks(catalogIssues)) {
     return (
       <section className="view" aria-label="teams">
@@ -86,17 +140,18 @@ export function TeamsView({
 
   /** Replace one draft with an edited copy of itself. */
   const edit = (id: string, change: (draft: TeamDraft) => TeamDraft): void => {
-    setDrafts((current) =>
-      current.map((candidate) => (candidate.id === id ? change(candidate) : candidate)),
-    )
+    setDrafts((current) => current.map((candidate) =>
+      candidate.id === id ? { ...change(candidate), resolvedPolicy: undefined } : candidate,
+    ))
   }
 
   return (
     <section className="view" aria-label="teams">
       <h2>Teams</h2>
-      <p className="banner" role="note" data-banner="fixture">
-        Nothing on this screen came from the realm. This is a prototype over a
-        fixture catalog, and <strong>every cell states its own provenance</strong>{' '}
+      <p className="banner" role="note" data-banner={offline ? 'offline-preview' : 'realm-live'}>
+        {offline ? 'Offline preview. Nothing on this screen came from the realm. ' :
+          `Live realm catalog and Teams projection at cursor ${cursor ?? 0}. `}
+        <strong>Every cell states its own provenance</strong>{' '}
         rather than the banner claiming one for all of them: a context ceiling, an
         effort ladder, a charging basis, a price and a need band each read{' '}
         <code>live</code> only where a runtime call returned that value under a
@@ -104,7 +159,7 @@ export function TeamsView({
         everywhere else — which is almost everywhere. No price is established, so
         cost figures are withheld rather than printed, and the class
         recommendation rests on coverage instead. Published revisions are
-        immutable snapshots; realm persistence is supplied by the API adapter.
+        immutable snapshots; production drafts and revisions are owned by this realm.
       </p>
 
       <MasterDetail
@@ -117,6 +172,11 @@ export function TeamsView({
             catalog={catalog}
             selected={selected}
             onSelect={setSelected}
+            onNew={() => {
+              const draft = blankDraft(catalog)
+              setDrafts((current) => [...current, draft])
+              setSelected(draft.id)
+            }}
           />
         }
         detail={
@@ -133,9 +193,27 @@ export function TeamsView({
                   ),
                 }))
               }
-              onPublish={() =>
-                setRevisions((current) => [...current, publishTeamRevision(current, draft)])
-              }
+              onSave={() => {
+                if (!client || offline) return
+                void client.saveTeamDraft(draft as never, commandId()).then((projection) => {
+                  setDrafts(projection.drafts.map(wireDraft))
+                  setRevisions(projection.revisions as unknown as readonly TeamRevision[])
+                  setCursor(projection.snapshot_cursor)
+                })
+              }}
+              onPublish={() => {
+                if (!client || offline) {
+                  setRevisions((current) => [...current, publishTeamRevision(current, draft)])
+                  return
+                }
+                void client.saveTeamDraft(draft as never, commandId())
+                  .then(() => client.publishTeam(draft.id, commandId()))
+                  .then((projection) => {
+                    setDrafts(projection.drafts.map(wireDraft))
+                    setRevisions(projection.revisions as unknown as readonly TeamRevision[])
+                    setCursor(projection.snapshot_cursor)
+                  })
+              }}
             />
           ) : (
             <p className="empty">Select a team template.</p>
@@ -166,11 +244,13 @@ function TeamList({
   catalog,
   selected,
   onSelect,
+  onNew,
 }: {
   drafts: readonly TeamDraft[]
   catalog: ModelCatalog
   selected: string | null
   onSelect: (id: string) => void
+  onNew: () => void
 }) {
   const list = useRef<HTMLUListElement>(null)
 
@@ -194,10 +274,9 @@ function TeamList({
     <div className="team-list">
       <h3>Team templates</h3>
       <p className="caveat">
-        Prototype drafts, not revisions this realm has published. The contract
-        serves no template list, so these are seeded fixtures mirroring the
-        chains the fleet runs today.
+        Drafts are mutable; published revisions below are immutable realm projections.
       </p>
+      <button type="button" onClick={onNew}>New team template</button>
       {drafts.length === 0 ? (
         <p className="empty">No drafts.</p>
       ) : (
@@ -242,12 +321,14 @@ function TeamEditor({
   onRename,
   onSlotChange,
   onPublish,
+  onSave,
 }: {
   draft: TeamDraft
   catalog: ModelCatalog
   onRename: (name: string) => void
   onSlotChange: (slotId: string, capabilities: SeatCapabilities) => void
   onPublish: () => void
+  onSave: () => void
 }) {
   const nameId = `team-name-${slug(draft.id)}`
   return (
@@ -266,6 +347,14 @@ function TeamEditor({
       <button
         type="button"
         disabled={blockingCount(draft, catalog) > 0}
+        onClick={onSave}
+      >
+        Save draft
+      </button>
+
+      <button
+        type="button"
+        disabled={blockingCount(draft, catalog) > 0}
         onClick={onPublish}
       >
         Publish next revision
@@ -280,6 +369,7 @@ function TeamEditor({
             key={slot.id}
             slot={slot}
             catalog={catalog}
+            resolved={draft.resolvedPolicy?.find((policy) => policy.slot === slot.id)}
             onChange={(capabilities) => onSlotChange(slot.id, capabilities)}
           />
         ))
@@ -292,12 +382,15 @@ function TeamEditor({
 export function SeatCapabilityEditor({
   slot,
   catalog,
+  resolved,
   onChange,
 }: {
   /** The slot being edited. */
   slot: TeamSlot
   /** What the controls may offer. */
   catalog: ModelCatalog
+  /** Server-resolved preview at this realm cursor, when the draft is unedited. */
+  resolved?: ResolvedPolicyProjection
   /** Hand back the edited capabilities. */
   onChange: (capabilities: SeatCapabilities) => void
 }) {
@@ -437,9 +530,12 @@ export function SeatCapabilityEditor({
           </p>
         )}
         <p className="hint" data-resolved-policy>
-          Resolved policy: class {seat.context.class}; source role_slot; effective{' '}
-          {review.resolution?.effective ?? 'native'}; enforcement {seat.context.enforcement}; capability{' '}
-          {review.resolution?.capability ?? 'unknown'}; latest receipt {seat.latestReceipt ?? 'none'}.
+          Resolved policy: class {resolved?.class ?? seat.context.class}; source{' '}
+          {resolved?.source ?? review.needSource}; effective{' '}
+          {resolved?.effective_threshold ?? review.resolution?.effective ?? 'native'}; enforcement{' '}
+          {resolved?.enforcement ?? seat.context.enforcement}; capability{' '}
+          {resolved?.capability ?? review.resolution?.capability ?? 'unknown'}; latest receipt{' '}
+          {resolved?.latest_receipt ?? seat.latestReceipt ?? 'none'}.
         </p>
       </section>
 
@@ -878,6 +974,50 @@ function blockingCount(draft: TeamDraft, catalog: ModelCatalog): number {
       .filter((issue) => issue.severity === 'blocking')
       .map((issue) => `${issue.code}\u0000${issue.slot ?? ''}`),
   ).size
+}
+
+/** The smallest editable draft the live realm can own. */
+function blankDraft(catalog: ModelCatalog): TeamDraft {
+  const model = catalog.models[0]
+  return {
+    id: `team-${Date.now()}`,
+    name: 'New team template',
+    slots: model ? [{
+      id: 'implementer',
+      capabilities: {
+        chain: [{
+          provider: model.provider,
+          model: model.id,
+          effort: reconcileEffort('unset', model),
+        }],
+        context: { class: 'standard', enforcement: 'best_effort' },
+        need: { minTokens: 0, rationale: null, provenance: UNVERIFIED },
+        skills: [],
+        mayEvaluate: [],
+        mayWaive: [],
+      },
+    }] : [],
+  }
+}
+
+/** Adopt the generated wire projection without inventing a second schema. */
+function wireDraft(draft: {
+  id: string
+  name: string
+  slots: readonly unknown[]
+  resolved_policy: readonly unknown[]
+}): TeamDraft {
+  return {
+    id: draft.id,
+    name: draft.name,
+    slots: draft.slots as readonly TeamSlot[],
+    resolvedPolicy: draft.resolved_policy as readonly ResolvedPolicyProjection[],
+  }
+}
+
+/** One stable key per attempted realm command. */
+function commandId(): string {
+  return globalThis.crypto.randomUUID()
 }
 
 /** A stable id fragment for one control. */

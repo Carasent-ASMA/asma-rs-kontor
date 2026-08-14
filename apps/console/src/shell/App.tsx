@@ -110,9 +110,8 @@ export function App({ store }: { store?: CredentialStore }) {
             {view === 'intake' ? <IntakeView /> : null}
             {view === 'workflow' ? <WorkflowView /> : null}
             {view === 'schedule' ? <ScheduleView /> : null}
-            {/* Teams owns draft editing; its catalog is refused before render
-                unless every promoted cell carries complete provenance. */}
-            {view === 'teams' ? <TeamsView /> : null}
+            {/* Teams reads and writes through the same attached realm client. */}
+            {view === 'teams' && realm.client ? <TeamsView client={realm.client} /> : null}
           </>
         )}
       </main>
