@@ -762,6 +762,166 @@ mod tests {
     }
 
     #[test]
+    fn reproposal_never_resets_the_aggregate_revision() {
+        let (_dir, store, project, _) = fixture();
+        native(&store);
+        store
+            .propose_memory_revision(
+                project,
+                "integrity",
+                0,
+                &document("revision one"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        store
+            .propose_memory_revision(
+                project,
+                "integrity",
+                1,
+                &document("revision two"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        let (aggregate, maximum): (i64, i64) = store
+            .connection
+            .query_row(
+                "SELECT i.aggregate_revision, MAX(r.revision)
+                 FROM memory_items i JOIN memory_revisions r
+                   ON r.project_id=i.project_id AND r.item_id=i.id
+                 WHERE i.project_id=?1 AND i.id='integrity'",
+                [project.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((aggregate, maximum), (2, 2));
+    }
+
+    #[test]
+    fn two_approvals_leave_exactly_one_current_revision() {
+        let (_dir, store, project, _) = fixture();
+        native(&store);
+        let (first, _) = store
+            .propose_memory_revision(
+                project,
+                "single-current",
+                0,
+                &document("first"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        store
+            .approve_memory_revision(project, "single-current", &first.revision_id, 1, "reviewer")
+            .unwrap();
+        let (second, _) = store
+            .propose_memory_revision(
+                project,
+                "single-current",
+                2,
+                &document("second"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        store
+            .approve_memory_revision(
+                project,
+                "single-current",
+                &second.revision_id,
+                3,
+                "reviewer",
+            )
+            .unwrap();
+
+        let history = store.memory_history(project, "single-current").unwrap();
+        assert_eq!(
+            history.iter().filter(|revision| revision.approved).count(),
+            2
+        );
+        assert_eq!(
+            history.iter().filter(|revision| revision.current).count(),
+            1
+        );
+        assert!(
+            history
+                .iter()
+                .any(|revision| { revision.revision_id == second.revision_id && revision.current })
+        );
+    }
+
+    #[test]
+    fn frozen_revision_hash_is_the_approved_stored_hash() {
+        let (_dir, store, project, _) = fixture();
+        native(&store);
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project,
+                "frozen-hash",
+                0,
+                &document("freeze exact bytes"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        store
+            .approve_memory_revision(project, "frozen-hash", &proposal.revision_id, 1, "reviewer")
+            .unwrap();
+        let binding = store
+            .freeze_memory_binding(
+                project,
+                "hash-run",
+                &document("selection"),
+                std::slice::from_ref(&proposal.revision_id),
+            )
+            .unwrap();
+        let stored = store.memory_history(project, "frozen-hash").unwrap();
+        assert_eq!(binding.ordered_revisions.len(), 1);
+        assert_eq!(
+            binding.ordered_revisions[0].content_hash,
+            *stored[0].document.hash()
+        );
+        assert_eq!(
+            binding.ordered_revisions[0].content_hash,
+            *proposal.document.hash()
+        );
+    }
+
+    #[test]
+    fn proposal_never_enters_fts_before_approval() {
+        let (_dir, store, project, _) = fixture();
+        native(&store);
+        store
+            .propose_memory_revision(
+                project,
+                "draft-index",
+                0,
+                &document("unapproved draft phrase"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        let unapproved: i64 = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts f
+                 LEFT JOIN memory_approvals a
+                   ON a.project_id=f.project_id AND a.revision_id=f.revision_id
+                 WHERE f.project_id=?1 AND f.item_id='draft-index'
+                   AND a.revision_id IS NULL",
+                [project.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            unapproved, 0,
+            "a proposal is scanned and stored, never indexed"
+        );
+    }
+
+    #[test]
     fn concurrent_approvers_get_one_commit_and_one_typed_conflict() {
         let (dir, store, project, _) = fixture();
         native(&store);
