@@ -48,6 +48,7 @@ pub mod lock;
 pub mod logging;
 pub mod recovery;
 pub mod runtimes;
+pub mod supervision;
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
@@ -66,6 +67,7 @@ use tracing::{info, warn};
 use crate::credentials::CredentialError;
 use crate::lock::{LockError, StateRootLock};
 use crate::runtimes::FleetError;
+use crate::supervision::{SupervisionError, SupervisionPolicy};
 
 /// The database file's name inside a state root.
 pub const DATABASE_FILE: &str = "kontor.db";
@@ -168,6 +170,9 @@ pub enum StartupError {
         #[source]
         source: kontor_core::DomainError,
     },
+    /// The configured seat-supervision policy could not be loaded.
+    #[error(transparent)]
+    Supervision(#[from] SupervisionError),
 }
 
 /// Everything a daemon is configured with.
@@ -256,6 +261,7 @@ impl DaemonConfig {
 pub struct Daemon {
     state: ApiState,
     config: DaemonConfig,
+    supervision: Option<SupervisionPolicy>,
     /// Held for its `Drop`. The claim on the state root lasts exactly as long as
     /// this value does.
     lock: StateRootLock,
@@ -285,6 +291,14 @@ impl Daemon {
     /// or claimed, the database cannot be opened, or the credentials cannot be
     /// established. Every one of them leaves the state root exactly as it was.
     pub fn start(config: DaemonConfig, runtimes: RuntimeRegistry) -> Result<Self, StartupError> {
+        Self::start_with_supervision(config, runtimes, None)
+    }
+
+    fn start_with_supervision(
+        config: DaemonConfig,
+        runtimes: RuntimeRegistry,
+        supervision: Option<SupervisionPolicy>,
+    ) -> Result<Self, StartupError> {
         // The address and the ceilings are judged before anything is created, so a
         // misconfigured daemon does not leave a lock file and a database behind.
         config.ensure_loopback()?;
@@ -333,6 +347,7 @@ impl Daemon {
         Ok(Self {
             state,
             config,
+            supervision,
             lock,
         })
     }
@@ -357,9 +372,10 @@ impl Daemon {
         // The address is judged before the filesystem is touched, exactly as in
         // `start`, so a misconfigured bind does not read a fleet it will not use.
         config.ensure_loopback()?;
+        let supervision = supervision::read(&config.state_root)?;
         let settings = runtimes::read(&config.state_root)?;
         let registry = runtimes::build_registry(&settings)?;
-        Self::start(config, registry)
+        Self::start_with_supervision(config, registry, supervision)
     }
 
     /// This Realm's identity.
@@ -378,6 +394,15 @@ impl Daemon {
     #[must_use]
     pub const fn config(&self) -> &DaemonConfig {
         &self.config
+    }
+
+    /// The versioned seat-supervision policy loaded from this Realm, if any.
+    ///
+    /// Absence means Kontor does not supervise turn liveness. It never invents
+    /// timeout behavior when the operator supplied no policy.
+    #[must_use]
+    pub const fn supervision_policy(&self) -> Option<&SupervisionPolicy> {
+        self.supervision.as_ref()
     }
 
     /// The lock file proving this process owns the state root.

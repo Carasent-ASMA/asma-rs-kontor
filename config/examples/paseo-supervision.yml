@@ -1,0 +1,32 @@
+schema_version: 1
+
+completion:
+  mode: notification_first
+  background: true
+  notify_on_finish: true
+
+watchdog:
+  enabled: true
+  lifecycle: while_team_runs_active
+  cadence_seconds: 300
+  stale_after_seconds: 1200
+  required_evidence:
+    - active_turn_age
+    - no_progress
+  wake_on:
+    - pending_permission
+    - runtime_error
+
+recovery:
+  first_action: reconcile_same_seat
+  replace_only_when: retired_or_unusable
+  allow_duplicate_seat: false
+  cancel_running_work: false
+
+prompts:
+  watchdog: config/prompts/seat-watchdog.md
+  recovery: config/prompts/same-seat-recovery.md
+
+skills:
+  - paseo
+  - epic-orchestration
