@@ -75,4 +75,48 @@ Still not run in this bounded correction:
 1. Add focused backup/restore, purge, true concurrent stale-writer, transactional import rollback and HTTP/CLI checks.
 2. Run full store/API/MCP/CLI/contract gates and clippy. Inspect `Cargo.lock` immediately afterward and restore it if Cargo rewrites it without a manifest change.
 
-Do not treat this handoff as acceptance evidence EVD-027. It is an honest IMPLEMENT checkpoint with known red gates.
+The original checkpoint above is retained as history; the QA correction ledger below supersedes its red-gate status.
+
+## QA blocker correction — 2026-08-14
+
+Applied on top of `53a2eb99ca710931b47a15a4eefdd7e972b42bec` on
+`feat/ASMA-7821-kon-mvp-23`:
+
+- Regenerated `crates/kontor-api/contract/openapi.json` with the documented
+  `KONTOR_UPDATE_CONTRACT=1 cargo test -p kontor-api --test openapi_contract` generator.
+- Renamed the external memory ingestion vocabulary to `snapshot_hash` and
+  `kontor_memory_ingest_{preview,apply}`; the internal domain continues to model the
+  final AgentsRoom export hash.
+- Added a file-backed two-connection concurrent approval race: one commit and one
+  typed `RevisionConflict { expected: 1, current: 2 }`.
+- Added transactional import fault injection after manifest insertion, rollback
+  assertions across manifest/item/revision rows, idempotent retry, and the
+  pre-/post-authority first-native-write proof.
+- Added a memory-specific snapshot/restore round trip covering current pointers,
+  revisions, provenance, receipts, import manifest and rebuilding an intentionally
+  absent FTS projection.
+- Added purge payload/approval/index deletion assertions with durable receipt
+  retention, and stale-index tombstone exclusion.
+- Added a real loopback daemon + CLI subprocess parity test comparing realm,
+  revision id/revision and memory cursor between HTTP and stable-JSON CLI reads.
+
+Green gates:
+
+- `cargo test --workspace` — 102 suites, 1231 passed, 0 failed, 7 ignored
+- `cargo test -p kontor-api` — 20 passed, including 3/3 OpenAPI contract tests
+- `cargo test -p kontor-tests-contract --test mcp_mutants` — 11 passed
+- `cargo test -p kontor-tests-contract --test mcp_parity` — 11 passed
+- `cargo test -p kontor-store` — 250 passed
+- `cargo test -p kontor-store memory::tests` — 4 passed
+- memory backup/restore proof — 1 passed
+- HTTP/CLI native-memory parity proof — 1 passed
+- `cargo clippy -p kontor-store -p kontor-api -p kontor-mcp -p kontor-cli --all-targets -- -D warnings` — passed
+- `cargo fmt --all -- --check` — passed
+- `Cargo.lock` restored and verified byte-identical to `HEAD` after Cargo rewrites.
+
+Mutation ledger:
+
+- Remove `!r.tombstoned` from stale-index search selection — killed by
+  `ledger_conflicts_filters_rebuilds_and_freezes_context`.
+- Skip `DELETE FROM memory_revisions` during purge — killed by
+  `purge_removes_payload_approval_and_index_but_keeps_receipts`.

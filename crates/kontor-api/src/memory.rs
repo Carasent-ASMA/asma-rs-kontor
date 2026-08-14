@@ -52,7 +52,7 @@ pub struct Purge {
 pub struct Switch {
     pub source: String,
     #[schema(value_type = String)]
-    pub export_hash: ContentHash,
+    pub snapshot_hash: ContentHash,
 }
 #[derive(Deserialize, ToSchema)]
 pub struct ImportBody {
@@ -61,7 +61,7 @@ pub struct ImportBody {
     #[schema(value_type = Vec<Object>)]
     pub entries: Vec<LegacyMemoryEntry>,
     #[schema(value_type = String)]
-    pub export_hash: ContentHash,
+    pub snapshot_hash: ContentHash,
 }
 
 #[utoipa::path(
@@ -83,14 +83,17 @@ pub async fn list(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     let project = parse_project(&state, &project)?;
-    let rows = state
-        .with_store(|s| match search.q {
-            Some(ref q) => s.search_memory(project, q, search.limit.unwrap_or(20)),
-            None => s.list_memory(project),
+    let (rows, cursor) = state
+        .with_store(|s| {
+            let rows = match search.q {
+                Some(ref q) => s.search_memory(project, q, search.limit.unwrap_or(20)),
+                None => s.list_memory(project),
+            }?;
+            Ok((rows, s.memory_cursor()?))
         })
         .map_err(|e| map(&state, e))?;
     Ok(Json(
-        serde_json::json!({"realm_id":state.realm_id(),"project_id":project,"revisions":rows}),
+        serde_json::json!({"realm_id":state.realm_id(),"project_id":project,"cursor":cursor,"revisions":rows}),
     ))
 }
 #[utoipa::path(
@@ -107,11 +110,11 @@ pub async fn history(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     let project = parse_project(&state, &project)?;
-    let rows = state
-        .with_store(|s| s.memory_history(project, &item))
+    let (rows, cursor) = state
+        .with_store(|s| Ok((s.memory_history(project, &item)?, s.memory_cursor()?)))
         .map_err(|e| map(&state, e))?;
     Ok(Json(
-        serde_json::json!({"realm_id":state.realm_id(),"project_id":project,"item_id":item,"revisions":rows}),
+        serde_json::json!({"realm_id":state.realm_id(),"project_id":project,"item_id":item,"cursor":cursor,"revisions":rows}),
     ))
 }
 #[utoipa::path(
@@ -267,7 +270,7 @@ pub async fn import_preview(
         source: body.source,
         project_id: project,
         entries: body.entries,
-        export_hash: body.export_hash,
+        export_hash: body.snapshot_hash,
     };
     let preview = state
         .with_store(|s| s.preview_agentsroom_import(&export))
@@ -300,7 +303,7 @@ pub async fn import_apply(
         source: body.source,
         project_id: project,
         entries: body.entries,
-        export_hash: body.export_hash,
+        export_hash: body.snapshot_hash,
     };
     let preview = state
         .with_store(|s| s.apply_agentsroom_import(&export))
@@ -348,7 +351,7 @@ pub async fn switch(
     caller.require(&state, CallerCapability::Admin)?;
     let project = parse_project(&state, &project)?;
     state
-        .with_store(|s| s.switch_memory_authority(project, &body.source, &body.export_hash))
+        .with_store(|s| s.switch_memory_authority(project, &body.source, &body.snapshot_hash))
         .map_err(|e| map(&state, e))?;
     Ok(Json(
         serde_json::json!({"realm_id":state.realm_id(),"memory_authority":"kontor"}),

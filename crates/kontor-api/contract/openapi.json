@@ -388,6 +388,29 @@
         }
       }
     },
+    "/v1/memory/cutover:freeze": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "freeze",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle": {
       "post": {
         "tags": [
@@ -1197,6 +1220,381 @@
           },
           "409": {
             "description": "The same source identity carries different bytes"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/cutover:switch": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "switch",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Switch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/import:apply": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "import_apply",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/import:preview": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "import_preview",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/revisions/{revision_id}/approval": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "approve",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "revision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Approve"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/revisions:propose": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "propose",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Propose"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/{item_id}/history": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "history",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/{item_id}/purge": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "purge",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Purge"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/{item_id}/tombstone": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "tombstone",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Tombstone"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
           }
         }
       }
@@ -3079,6 +3477,27 @@
           }
         }
       },
+      "Approve": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "expected_revision",
+          "approved_by"
+        ],
+        "properties": {
+          "approved_by": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "item_id": {
+            "type": "string"
+          }
+        }
+      },
       "ArmRequest": {
         "type": "object",
         "description": "What `execution:arm` is asked for.",
@@ -4253,6 +4672,34 @@
           }
         }
       },
+      "ImportBody": {
+        "type": "object",
+        "required": [
+          "schema_version",
+          "source",
+          "entries",
+          "snapshot_hash"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "snapshot_hash": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
       "IntakeReceiptDto": {
         "type": "object",
         "description": "One recorded intake decision.",
@@ -4803,6 +5250,35 @@
           }
         }
       },
+      "Propose": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "expected_revision",
+          "document",
+          "provenance",
+          "proposed_by"
+        ],
+        "properties": {
+          "document": {
+            "type": "object"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "proposed_by": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "object"
+          }
+        }
+      },
       "ProvenanceDto": {
         "type": "object",
         "description": "Where one resolved value came from.",
@@ -4830,6 +5306,17 @@
           "source_id": {
             "type": "string",
             "description": "The source inside that layer."
+          }
+        }
+      },
+      "Purge": {
+        "type": "object",
+        "required": [
+          "by"
+        ],
+        "properties": {
+          "by": {
+            "type": "string"
           }
         }
       },
@@ -6150,6 +6637,21 @@
           }
         }
       },
+      "Switch": {
+        "type": "object",
+        "required": [
+          "source",
+          "snapshot_hash"
+        ],
+        "properties": {
+          "snapshot_hash": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
       "TaskDto": {
         "type": "object",
         "description": "One task, its active workflow and the gates reduced from its evaluations.",
@@ -6701,6 +7203,27 @@
             "format": "int64",
             "description": "Its position inside that epoch.",
             "minimum": 0
+          }
+        }
+      },
+      "Tombstone": {
+        "type": "object",
+        "required": [
+          "expected_revision",
+          "by",
+          "reason"
+        ],
+        "properties": {
+          "by": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
           }
         }
       },

@@ -1555,7 +1555,7 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "expected_revision",
                 Place::Body,
-                ArgType::Revision,
+                ArgType::U64,
                 "The aggregate revision read by the caller.",
             ),
             req(
@@ -1691,7 +1691,7 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Purge revision payloads while retaining a hashed purge receipt.",
     },
     ToolSpec {
-        name: "kontor_memory_import_preview",
+        name: "kontor_memory_ingest_preview",
         tier: CallerTier::Admin,
         method: Method::Post,
         path: "/v1/projects/{project_id}/memory/import:preview",
@@ -1717,7 +1717,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "Legacy current values.",
             ),
             req(
-                "export_hash",
+                "snapshot_hash",
                 Place::Body,
                 ArgType::Text,
                 "Final export hash.",
@@ -1726,7 +1726,7 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Validate a final AgentsRoom export without writing.",
     },
     ToolSpec {
-        name: "kontor_memory_import_apply",
+        name: "kontor_memory_ingest_apply",
         tier: CallerTier::Admin,
         method: Method::Post,
         path: "/v1/projects/{project_id}/memory/import:apply",
@@ -1753,7 +1753,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "Legacy current values.",
             ),
             req(
-                "export_hash",
+                "snapshot_hash",
                 Place::Body,
                 ArgType::Text,
                 "Final export hash.",
@@ -1791,7 +1791,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The legacy authority.",
             ),
             req(
-                "export_hash",
+                "snapshot_hash",
                 Place::Body,
                 ArgType::Text,
                 "The verified final export hash.",

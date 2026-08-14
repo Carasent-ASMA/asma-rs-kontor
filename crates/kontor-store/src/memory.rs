@@ -2,7 +2,7 @@
 #![allow(missing_docs)]
 
 use kontor_core::id::{CanonicalDocument, ContentHash, ProjectId, Timestamp, parse_utc_timestamp};
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -120,6 +120,14 @@ impl AgentsRoomExport {
 }
 
 impl SqliteStore {
+    pub fn memory_cursor(&self) -> Result<i64, MemoryError> {
+        Ok(self.connection.query_row(
+            "SELECT COALESCE(MAX(rowid),0) FROM memory_receipts",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn propose_memory_revision(
         &self,
         project_id: ProjectId,
@@ -131,7 +139,7 @@ impl SqliteStore {
     ) -> Result<(MemoryRevision, MemoryReceipt), MemoryError> {
         kontor_core::id::reject_sensitive_text("memory.item_id", item_id)?;
         kontor_core::id::reject_sensitive_text("memory.proposed_by", proposed_by)?;
-        let tx = self.connection.unchecked_transaction()?;
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
         require_authority(&tx, "kontor")?;
         let current = aggregate_revision(&tx, project_id, item_id)?.unwrap_or(0);
         if current != expected_revision {
@@ -198,7 +206,7 @@ impl SqliteStore {
         approved_by: &str,
     ) -> Result<MemoryReceipt, MemoryError> {
         kontor_core::id::reject_sensitive_text("memory.approved_by", approved_by)?;
-        let tx = self.connection.unchecked_transaction()?;
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
         require_authority(&tx, "kontor")?;
         let current = aggregate_revision(&tx, project_id, item_id)?.ok_or(MemoryError::NotFound)?;
         if current != expected_revision {
@@ -310,14 +318,17 @@ impl SqliteStore {
                 |row| row.get::<_, String>(0),
             )?
             .collect::<Result<Vec<_>, _>>()?;
-        ids.into_iter()
-            .map(|id| {
-                self.memory_history(project_id, &id)?
-                    .into_iter()
-                    .find(|r| r.current && r.approved && !r.tombstoned)
-                    .ok_or(MemoryError::NotFound)
-            })
-            .collect()
+        let mut revisions = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(revision) = self
+                .memory_history(project_id, &id)?
+                .into_iter()
+                .find(|r| r.current && r.approved && !r.tombstoned)
+            {
+                revisions.push(revision);
+            }
+        }
+        Ok(revisions)
     }
 
     pub fn list_memory(&self, project_id: ProjectId) -> Result<Vec<MemoryRevision>, MemoryError> {
@@ -504,6 +515,8 @@ impl SqliteStore {
                 "AgentsRoom writes must be frozen before import",
             ));
         }
+        let manifest = serde_json::to_string(export)?;
+        tx.execute("INSERT INTO memory_import_manifests(project_id,source,export_hash,manifest,imported_count,imported_at) VALUES (?1,?2,?3,?4,?5,?6)",params![export.project_id.to_string(),export.source,export.export_hash.as_str(),manifest,i64::try_from(export.entries.len()).map_err(|_|MemoryError::Rule("too many import entries"))?,Timestamp::now().to_string()])?;
         for entry in &export.entries {
             tx.execute(
                 "INSERT INTO memory_items(project_id,id,aggregate_revision) VALUES (?1,?2,2)",
@@ -523,8 +536,6 @@ impl SqliteStore {
                 params![export.project_id.to_string(), entry.item_id, id],
             )?;
         }
-        let manifest = serde_json::to_string(export)?;
-        tx.execute("INSERT INTO memory_import_manifests(project_id,source,export_hash,manifest,imported_count,imported_at) VALUES (?1,?2,?3,?4,?5,?6)",params![export.project_id.to_string(),export.source,export.export_hash.as_str(),manifest,i64::try_from(export.entries.len()).map_err(|_|MemoryError::Rule("too many import entries"))?,Timestamp::now().to_string()])?;
         tx.commit()?;
         Ok(preview)
     }
@@ -739,8 +750,115 @@ mod tests {
         store
             .tombstone_memory(a, "policy", 2, "reviewer", "obsolete")
             .unwrap();
+        store.connection.execute(
+            "INSERT INTO memory_fts(project_id,item_id,revision_id,document) VALUES (?1,'policy',?2,?3)",
+            params![a.to_string(), proposal.revision_id, document("approved searchable alpha").json()],
+        ).unwrap();
         assert!(store.list_memory(a).unwrap().is_empty());
-        assert!(store.search_memory(a, "alpha", 10).unwrap().is_empty());
+        assert!(
+            store.search_memory(a, "alpha", 10).unwrap().is_empty(),
+            "a tombstone remains excluded even if its derived index is stale"
+        );
+    }
+
+    #[test]
+    fn concurrent_approvers_get_one_commit_and_one_typed_conflict() {
+        let (dir, store, project, _) = fixture();
+        native(&store);
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project,
+                "race",
+                0,
+                &document("one winner"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        drop(store);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut threads = Vec::new();
+        for reviewer in ["reviewer-a", "reviewer-b"] {
+            let database = dir.path().join("realm.db");
+            let barrier = std::sync::Arc::clone(&barrier);
+            let revision_id = proposal.revision_id.clone();
+            threads.push(std::thread::spawn(move || {
+                let store = SqliteStore::open(&database).unwrap();
+                barrier.wait();
+                store.approve_memory_revision(project, "race", &revision_id, 1, reviewer)
+            }));
+        }
+        barrier.wait();
+        let outcomes: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(
+                    outcome,
+                    Err(MemoryError::RevisionConflict {
+                        expected: 1,
+                        current: 2
+                    })
+                ))
+                .count(),
+            1,
+            "the stale concurrent writer receives the typed current revision"
+        );
+    }
+
+    #[test]
+    fn purge_removes_payload_approval_and_index_but_keeps_receipts() {
+        let (_dir, store, project, _) = fixture();
+        native(&store);
+        let (proposal, propose_receipt) = store
+            .propose_memory_revision(
+                project,
+                "purged",
+                0,
+                &document("erase this phrase"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        store
+            .approve_memory_revision(project, "purged", &proposal.revision_id, 1, "reviewer")
+            .unwrap();
+        let purge_receipt = store
+            .purge_memory(project, "purged", "privacy-admin")
+            .unwrap();
+
+        assert!(store.memory_history(project, "purged").unwrap().is_empty());
+        assert!(
+            store
+                .search_memory(project, "erase", 10)
+                .unwrap()
+                .is_empty()
+        );
+        for table in ["memory_revisions", "memory_approvals", "memory_fts"] {
+            let count: i64 = store
+                .connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE project_id=?1"),
+                    [project.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "purge leaves no row in {table}");
+        }
+        let receipt_count: i64 = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_receipts WHERE id IN (?1,?2)",
+                params![propose_receipt.receipt_id, purge_receipt.receipt_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipt_count, 2, "hashed operation receipts survive purge");
     }
 
     #[test]
@@ -762,6 +880,17 @@ mod tests {
             store.apply_agentsroom_import(&export),
             Err(MemoryError::Rule(_))
         ));
+        assert!(matches!(
+            store.propose_memory_revision(
+                project,
+                "native-too-early",
+                0,
+                &document("not yet"),
+                &provenance(),
+                "author"
+            ),
+            Err(MemoryError::Authority { .. })
+        ));
         store.freeze_agentsroom_writes().unwrap();
         assert!(
             !store
@@ -769,6 +898,36 @@ mod tests {
                 .unwrap()
                 .already_imported
         );
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER fail_memory_import BEFORE INSERT ON memory_items
+             WHEN NEW.id = 'legacy' BEGIN SELECT RAISE(ABORT, 'injected import failure'); END;",
+            )
+            .unwrap();
+        assert!(matches!(
+            store.apply_agentsroom_import(&export),
+            Err(MemoryError::Sqlite(_))
+        ));
+        for table in [
+            "memory_import_manifests",
+            "memory_items",
+            "memory_revisions",
+        ] {
+            let count: i64 = store
+                .connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE project_id=?1"),
+                    [project.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "the injected failure rolls back {table}");
+        }
+        store
+            .connection
+            .execute("DROP TRIGGER fail_memory_import", [])
+            .unwrap();
         store.apply_agentsroom_import(&export).unwrap();
         assert!(
             store
@@ -779,6 +938,20 @@ mod tests {
         store
             .switch_memory_authority(project, "agentsroom", &export.export_hash)
             .unwrap();
+        let (native_revision, _) = store
+            .propose_memory_revision(
+                project,
+                "first-native",
+                0,
+                &document("after cutover"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        assert_eq!(
+            native_revision.revision, 1,
+            "the first native write begins only after switch"
+        );
         let history = store.memory_history(project, "legacy").unwrap();
         assert!(history[0].provenance.history_unavailable);
         assert!(history[0].provenance.legacy_last_write_wins);

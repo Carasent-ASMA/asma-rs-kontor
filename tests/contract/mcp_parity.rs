@@ -542,8 +542,8 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_memory_approve", CallerTier::Admin),
         ("kontor_memory_tombstone", CallerTier::Admin),
         ("kontor_memory_purge", CallerTier::Admin),
-        ("kontor_memory_import_preview", CallerTier::Admin),
-        ("kontor_memory_import_apply", CallerTier::Admin),
+        ("kontor_memory_ingest_preview", CallerTier::Admin),
+        ("kontor_memory_ingest_apply", CallerTier::Admin),
         ("kontor_memory_cutover_freeze", CallerTier::Admin),
         ("kontor_memory_cutover_switch", CallerTier::Admin),
     ]);
