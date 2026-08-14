@@ -317,9 +317,7 @@ fn any_agent_run() -> PaseoCommand {
     PaseoCommand::agent_run(
         WORKSPACE_ID,
         CWD,
-        "claude",
-        "claude-opus-5",
-        None,
+        &model_rung(),
         "t",
         &BTreeMap::new(),
         ORCHESTRATOR,

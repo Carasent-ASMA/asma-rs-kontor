@@ -57,6 +57,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use kontor_core::DomainError;
+use kontor_core::spec::ModelRung;
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::net::TcpStream;
@@ -163,9 +164,7 @@ impl PaseoCommand {
     pub fn agent_run(
         workspace_id: &str,
         canonical_cwd: &str,
-        provider: &str,
-        model: &str,
-        thinking: Option<&str>,
+        model_rung: &ModelRung,
         title: &str,
         labels: &BTreeMap<String, String>,
         parent_agent_id: &str,
@@ -174,10 +173,10 @@ impl PaseoCommand {
         let mut argv = Argv::new(&["agent", "run", "--background"])
             .option("--workspace", workspace_id)
             .option("--cwd", canonical_cwd)
-            .option("--provider", provider)
-            .option("--model", model);
-        if let Some(thinking) = thinking {
-            argv = argv.option("--thinking", thinking);
+            .option("--provider", &model_rung.provider.0)
+            .option("--model", &model_rung.model.0);
+        if let Some(effort) = model_rung.effort {
+            argv = argv.option("--thinking", effort.as_str());
         }
         let mut argv = argv.option("--title", title);
         for (key, value) in labels {
@@ -1314,11 +1313,20 @@ pub fn ensure_frame_bounded(raw: &serde_json::Value) -> RuntimeResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kontor_core::spec::{EffortLevel, ModelRef, ProviderRef};
 
     fn labels() -> BTreeMap<String, String> {
         [("kontor.role".to_owned(), "implement".to_owned())]
             .into_iter()
             .collect()
+    }
+
+    fn route(provider: &str, model: &str, effort: Option<EffortLevel>) -> ModelRung {
+        ModelRung {
+            provider: ProviderRef(provider.to_owned()),
+            model: ModelRef(model.to_owned()),
+            effort,
+        }
     }
 
     #[test]
@@ -1330,9 +1338,7 @@ mod tests {
             PaseoCommand::agent_run(
                 "wks_1",
                 "/w/task-1",
-                "codex",
-                "gpt-5.6-sol",
-                Some("xhigh"),
+                &route("codex", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
                 "KON-MVP-11 Implement",
                 &labels(),
                 "agt_orchestrator",
@@ -1365,9 +1371,7 @@ mod tests {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/w/task-1",
-            "codex",
-            "gpt-5.6-sol",
-            None,
+            &route("codex", "gpt-5.6-sol", None),
             "t",
             &labels(),
             "agt_p",
@@ -1392,9 +1396,7 @@ mod tests {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/w/task-1",
-            "claude",
-            "claude-opus-5",
-            Some("xhigh"),
+            &route("claude", "claude-opus-5", Some(EffortLevel::Xhigh)),
             "t",
             &labels(),
             "agt_p",
@@ -1414,9 +1416,7 @@ mod tests {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/private/worktrees/secret-project",
-            "codex",
-            "gpt-5.6-sol",
-            None,
+            &route("codex", "gpt-5.6-sol", None),
             "KON-MVP-11 Implement",
             &labels(),
             "agt_orchestrator",
@@ -1440,9 +1440,7 @@ mod tests {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/w/task-1",
-            "codex",
-            "gpt-5.6-sol",
-            None,
+            &route("codex", "gpt-5.6-sol", None),
             "t",
             &labels(),
             "agt_orchestrator",
@@ -1473,9 +1471,7 @@ mod tests {
         PaseoCommand::agent_run(
             "wks_1",
             "/w/task-1",
-            "codex",
-            "gpt-5.6-sol",
-            None,
+            &route("codex", "gpt-5.6-sol", None),
             "t",
             &labels(),
             "agt_p",
@@ -1495,9 +1491,7 @@ mod tests {
             PaseoCommand::agent_run(
                 "w",
                 "/w/t",
-                "codex",
-                "gpt-5.6-sol",
-                None,
+                &route("codex", "gpt-5.6-sol", None),
                 "t",
                 &labels(),
                 "agt_p",

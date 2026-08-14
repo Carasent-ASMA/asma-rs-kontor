@@ -2157,9 +2157,7 @@ impl PaseoAdapter {
         let command = PaseoCommand::agent_run(
             &workspace_id,
             self.config.scope.canonical_worktree_cwd.as_str(),
-            &request.model_rung().provider.0,
-            &request.model_rung().model.0,
-            request.model_rung().effort.map(|effort| effort.as_str()),
+            request.model_rung(),
             &self.config.scope.agent_display_name(request.role_slot_id()),
             &labels,
             self.config.scope.orchestrator_agent_id.as_str(),
