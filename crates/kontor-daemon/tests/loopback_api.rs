@@ -4820,6 +4820,48 @@ async fn a_compact_command_enforces_its_guards_before_any_runtime_effect() {
     assert_eq!(world.fake.calls().len(), before);
 }
 
+#[tokio::test]
+async fn best_effort_compaction_records_not_enforced_when_the_runtime_cannot_compact() {
+    let world = World::open_with(capabilities_without(&[RuntimeCapability::Compact])).await;
+    let (run, _) = world.launch().await;
+    let policy = kontor_core::spec::ContextPolicySnapshot::standard(
+        &kontor_core::spec::ContextWindowBounds::unknown(),
+        false,
+        kontor_core::id::SCHEMA_VERSION,
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("best effort freezes against an incapable runtime");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_run_context_policy(world.project, run, &policy)
+            .expect("the launch policy is durable");
+    });
+    let before = world.fake.calls().len();
+
+    let answer = Call::post(
+        format!("/v1/sessions/{run}/compact"),
+        &serde_json::json!({
+            "trigger": "scope_boundary",
+            "context_pack_hash": kontor_core::id::ContentHash::of(b"pack").as_str(),
+            "handoff_hash": kontor_core::id::ContentHash::of(b"handoff").as_str(),
+            "active_tool": false,
+            "unresolved_permission": false,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(kontor_core::id::CompactionReceiptId::generate().to_string())
+    .send(&world)
+    .await;
+
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.json()["value"]["status"], "not_enforced");
+    assert_eq!(
+        world.fake.calls().len(),
+        before,
+        "reporting best-effort non-enforcement must have zero runtime effect"
+    );
+}
+
 /// An observer may preview a policy; only an operator may compact.
 #[tokio::test]
 async fn the_preview_reads_and_the_compact_command_requires_an_operator() {

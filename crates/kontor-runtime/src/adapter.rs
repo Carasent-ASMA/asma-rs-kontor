@@ -524,9 +524,10 @@ pub trait RuntimeAdapter: Send + Sync {
     ///   afterwards. Identity that moved is
     ///   [`kontor_core::compaction::CompactionStatus::Failed`] — never an adoption, never a successor,
     ///   and never a replacement dressed up as a compaction.
-    /// * **Unsupported is said out loud.** A runtime without
+    /// * **Non-enforcement is said out loud.** A runtime without
     ///   [`RuntimeCapability::Compact`] returns a
-    ///   [`kontor_core::compaction::CompactionStatus::Unsupported`] receipt having touched nothing, or
+    ///   [`kontor_core::compaction::CompactionStatus::NotEnforced`] receipt for
+    ///   best-effort policy having touched nothing, or
     ///   refuses outright when the policy required enforcement. It never
     ///   substitutes a reload, an archive, a restart or a prompt that asks the
     ///   model nicely, and it never reports success it cannot attest.

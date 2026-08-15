@@ -573,7 +573,7 @@ fn compaction_identifier(
     responses(
         (status = 200, body = CompactionReceiptDto, description = "The outcome, or the original receipt replayed"),
         (status = 409, description = "The id already recorded a different attempt"),
-        (status = 422, description = "An unsafe trigger, a missing handoff, or a runtime that cannot compact")
+        (status = 422, description = "An unsafe trigger or a missing handoff")
     )
 )]
 pub async fn compact(
@@ -586,10 +586,6 @@ pub async fn compact(
     let session = resolve(&state, &agent_run_id, CallerCapability::Operator, caller).await?;
     let realm_id = state.realm_id();
     let domain = |error: &kontor_core::DomainError| ApiError::from_domain(realm_id, error);
-
-    // Capability first: a runtime that cannot compact is refused before any of
-    // the request is interpreted, and certainly before it is dispatched.
-    session.preflight(realm_id, RuntimeCapability::Compact, None)?;
 
     let trigger: CompactionTrigger = serde_json::from_value(serde_json::Value::String(
         request.trigger.clone(),

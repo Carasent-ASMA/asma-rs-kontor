@@ -2911,7 +2911,7 @@
             "description": "The id already recorded a different attempt"
           },
           "422": {
-            "description": "An unsafe trigger, a missing handoff, or a runtime that cannot compact"
+            "description": "An unsafe trigger or a missing handoff"
           }
         }
       }

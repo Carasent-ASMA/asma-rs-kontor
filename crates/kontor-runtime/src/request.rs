@@ -474,7 +474,7 @@ impl CompactRequest {
     /// two outcomes differ in what they permit afterwards —
     /// [`CompactionStatus::Pending`] for a `required` policy, which blocks reuse
     /// until somebody attests enforcement, and
-    /// [`CompactionStatus::Unsupported`] for `best_effort`, which is visible and
+    /// [`CompactionStatus::NotEnforced`] for `best_effort`, which is visible and
     /// lets the work continue.
     ///
     /// Neither touches the runtime, and neither is ever success. There is no
@@ -490,7 +490,7 @@ impl CompactRequest {
     ) -> DomainResult<CompactionReceipt> {
         let status = match self.policy.requested.policy.enforcement {
             ContextEnforcement::Required => CompactionStatus::Pending,
-            ContextEnforcement::BestEffort => CompactionStatus::Unsupported,
+            ContextEnforcement::BestEffort => CompactionStatus::NotEnforced,
         };
         Ok(CompactionReceipt {
             schema_version: self.policy.schema_version,
