@@ -41,9 +41,11 @@ Audited 2026-08-14 against submodule commit
 
 ## Boundary
 
-This audit does not close Jira or convene the final committee. The six listed
-Jira transitions must be applied and read back before cross-system status can
-become `COMPLIANT`.
+This audit does not close Jira or convene the final committee. The committee's
+typed `COMPLIANT` verdict on the archived tree and its proofs authorizes the six
+listed Jira terminal transitions; only after they are applied and read back can
+*cross-system* status be recorded as `COMPLIANT` (two-phase closeout, per
+QA-FINAL). `ASMA-7756` remains the accepted deferral.
 
 No code, preserved residue, Jira, AgentsRoom, Paseo state, or remote was
 modified by this audit. This record is the sole requested file written.
