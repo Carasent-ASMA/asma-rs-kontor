@@ -201,6 +201,11 @@ impl Team {
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: text("do the work"),
+            model_rung: kontor_core::spec::ModelRung {
+                provider: kontor_core::spec::ProviderRef("test".to_owned()),
+                model: kontor_core::spec::ModelRef("test".to_owned()),
+                effort: None,
+            },
             context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
                 &kontor_core::spec::ContextWindowBounds::unknown(),
                 true,
@@ -339,6 +344,11 @@ async fn grade_c_cannot_autonomously_dispatch() {
             cwd: root("/w/task-1"),
             account_profile_id: None,
             prompt: text("do the work"),
+            model_rung: kontor_core::spec::ModelRung {
+                provider: kontor_core::spec::ProviderRef("test".to_owned()),
+                model: kontor_core::spec::ModelRef("test".to_owned()),
+                effort: None,
+            },
             context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
                 &kontor_core::spec::ContextWindowBounds::unknown(),
                 true,
@@ -674,6 +684,11 @@ async fn team_run_roles_share_one_verified_workspace_binding() {
             cwd: team.workspace.root().clone(),
             account_profile_id: None,
             prompt: text("do the work"),
+            model_rung: kontor_core::spec::ModelRung {
+                provider: kontor_core::spec::ProviderRef("test".to_owned()),
+                model: kontor_core::spec::ModelRef("test".to_owned()),
+                effort: None,
+            },
             context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
                 &kontor_core::spec::ContextWindowBounds::unknown(),
                 true,

@@ -40,6 +40,7 @@
         {
           "id": "alpha-k1",
           "role": { "role": "alpha-r1", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
           "skills": [{ "skill": "alpha-s1", "version": 1 }],
           "context": null,
           "may_evaluate": [],
@@ -49,6 +50,7 @@
         {
           "id": "alpha-k2",
           "role": { "role": "alpha-r1", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
           "skills": [{ "skill": "alpha-s1", "version": 1 }],
           "context": null,
           "may_evaluate": [],
@@ -61,6 +63,7 @@
         {
           "id": "alpha-k3",
           "role": { "role": "alpha-r2", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
           "skills": [],
           "context": null,
           "may_evaluate": ["alpha-g1"],
@@ -70,6 +73,7 @@
         {
           "id": "alpha-k4",
           "role": { "role": "alpha-r3", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
           "skills": [],
           "context": null,
           "may_evaluate": ["alpha-g2"],

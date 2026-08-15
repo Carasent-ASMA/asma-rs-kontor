@@ -82,10 +82,10 @@
       "sessionId": "prov_sess_1",
       "nativeHandle": "synthetic nativeHandle"
     },
-    "title": "KON-MVP-11 qa-a",
+    "title": "QA · KON-11",
     "labels": {
       "kontor.agent-run": "kontor-run-01890000-0000-7000-8000-000000000002",
-      "jira.issue": "KON-MVP-11",
+      "jira.issue": "ASMA-7755",
       "jira.epic": "ASMA-7744",
       "kontor.project_id": "kon-mini-1",
       "kontor.ticket": "01890000-0000-7000-8000-0000000000b1",
@@ -107,8 +107,8 @@
   },
   "project": {
     "projectKey": "github.com/kontor/epic",
-    "projectName": "Epic ASMA-7744 Kontor MVP",
-    "workspaceName": "KON-MVP-11 Paseo adapter",
+    "projectName": "Epic · ASMA-7744 · Kontor MVP",
+    "workspaceName": "TSW · ASMA-7755 · KON-11",
     "checkout": {
       "cwd": "/w/epic/task-11",
       "currentBranch": "feat/kontor-fixture",

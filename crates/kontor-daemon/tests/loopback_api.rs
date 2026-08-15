@@ -1238,23 +1238,30 @@ async fn a_permission_answer_is_applied_once_and_a_foreign_request_is_refused() 
 
 /// A fleet description naming one Paseo plane and one AO lane.
 ///
-/// Both compose without reaching anything: a Paseo transport validates two
-/// strings and an AO transport builds an HTTP client. Neither connects until a
-/// route asks it to.
+/// It composes without reaching anything: a Paseo transport validates two
+/// strings and connects to nothing until a route asks it to.
+///
+/// Paseo only. The `ao` family was withdrawn — see
+/// `kontor_daemon::runtimes::DEFERRED_FAMILIES` — and a fixture that still
+/// carried one would be asserting that a boundary this build enforces does not
+/// exist.
 fn fleet_settings() -> serde_json::Value {
     serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 4,
         "runtimes": [
             {
                 "family": "paseo",
                 "runtime_kind": "paseo.agent",
                 "host_key": "paseo-host",
                 "mini_project_id": "mini-1",
-                "provider": "codex",
                 "jira_epic_key": "ASMA-7759",
                 "mini_project_short_title": "Kontor MVP",
                 "plan_item_key": "KON-MVP-15",
-                "task_short_title": "Loopback seat",
+                "jira_issue_key": "ASMA-7759",
+                "ticket_short_code": "KON-15",
+                "seat_display_roles": {
+                    "implement": { "role": "Implement" }
+                },
                 "project_root_cwd": "/w/kontor",
                 "canonical_worktree_cwd": "/w/kontor-task",
                 "orchestrator_agent_id": "orchestrator-1",
@@ -1264,18 +1271,6 @@ fn fleet_settings() -> serde_json::Value {
                 "endpoint": "ws://127.0.0.1:6767/ws",
                 "client_id": "kontor-mini-1",
                 "timeout_seconds": 30
-            },
-            {
-                "family": "ao",
-                "runtime_kind": "ao.claude-code",
-                "host": "ao-host",
-                "project_id": "proj-1",
-                "project_path": "/w/ao-project",
-                "kind": "worker",
-                "harness": "claude-code",
-                "max_concurrent_sessions": 8,
-                "endpoint": "http://127.0.0.1:1/",
-                "timeout_seconds": 10
             }
         ]
     })
@@ -1303,8 +1298,8 @@ async fn the_shipped_startup_path_composes_the_configured_fleet() {
         .collect();
     assert_eq!(
         families,
-        vec!["ao.claude-code".to_owned(), "paseo.agent".to_owned()],
-        "both configured families are live adapters in the registry"
+        vec!["paseo.agent".to_owned()],
+        "the configured family is a live adapter in the registry"
     );
 
     let observer = secret_from(directory.path(), "observer");
@@ -1316,7 +1311,7 @@ async fn the_shipped_startup_path_composes_the_configured_fleet() {
     assert_eq!(health.status, 200, "{}", health.body);
     assert_eq!(
         health.json()["runtimes"],
-        serde_json::json!(["ao.claude-code", "paseo.agent"]),
+        serde_json::json!(["paseo.agent"]),
         "and the realm reports the fleet it is actually holding"
     );
     assert!(
@@ -1344,7 +1339,7 @@ async fn a_realm_with_no_fleet_still_starts_and_says_so() {
 async fn a_misconfigured_fleet_refuses_the_start() {
     let directory = tempfile::TempDir::new().expect("a temporary directory");
     let mut broken = fleet_settings();
-    broken["runtimes"][1]["endpoint"] = serde_json::json!("not-a-url");
+    broken["runtimes"][0]["canonical_worktree_cwd"] = serde_json::json!("relative/not-a-root");
     std::fs::write(
         kontor_daemon::runtimes::path_in(directory.path()),
         serde_json::to_vec_pretty(&broken).expect("a fleet document"),
@@ -1354,10 +1349,56 @@ async fn a_misconfigured_fleet_refuses_the_start() {
     let refused = Daemon::start_configured(DaemonConfig::at(directory.path()).with_port(0))
         .expect_err("a runtime that cannot be composed is not served around");
     let rendered = refused.to_string();
-    assert!(rendered.contains("endpoint"), "the refusal names the field");
     assert!(
-        !rendered.contains("hunter2") && !rendered.contains("not-a-url"),
+        rendered.contains("canonical_worktree_cwd"),
+        "the refusal names the field"
+    );
+    assert!(
+        !rendered.contains("hunter2") && !rendered.contains("not-a-root"),
         "and never the value: {rendered}"
+    );
+}
+
+/// The AO family is refused at startup, by name, and starts nothing.
+///
+/// The defect this closes: `family: "ao"` was a setting an operator could write,
+/// and the daemon composed a live AO adapter for it. The Paseo-only boundary then
+/// held only by nobody writing that line.
+#[tokio::test]
+async fn an_ao_family_refuses_the_start_and_composes_no_substitute() {
+    let directory = tempfile::TempDir::new().expect("a temporary directory");
+    let mut withdrawn = fleet_settings();
+    withdrawn["runtimes"]
+        .as_array_mut()
+        .expect("the fleet is an array")
+        .push(serde_json::json!({
+            "family": "ao",
+            "runtime_kind": "ao.claude-code",
+            "host": "ao-host",
+            "project_id": "proj-1",
+            "project_path": "/w/ao-project",
+            "kind": "worker",
+            "harness": "claude-code",
+            "max_concurrent_sessions": 8,
+            "endpoint": "http://127.0.0.1:1/",
+            "timeout_seconds": 10
+        }));
+    std::fs::write(
+        kontor_daemon::runtimes::path_in(directory.path()),
+        serde_json::to_vec_pretty(&withdrawn).expect("a fleet document"),
+    )
+    .expect("the fleet description is written");
+
+    let refused = Daemon::start_configured(DaemonConfig::at(directory.path()).with_port(0))
+        .expect_err("this build does not run AO");
+    let rendered = refused.to_string();
+    assert!(
+        rendered.contains("ao"),
+        "the refusal names the family, so an operator knows to stop asking: {rendered}"
+    );
+    assert!(
+        !rendered.contains("hunter2"),
+        "and never the document it refused: {rendered}"
     );
 }
 

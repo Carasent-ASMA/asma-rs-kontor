@@ -581,6 +581,11 @@ async fn a_lost_launch_and_a_restart_still_leave_exactly_one_durable_admission()
         cwd: world.workspace.root().clone(),
         account_profile_id: Some(world.account),
         prompt: BoundedText::parse("do the work").expect("bounded text"),
+        model_rung: kontor_core::spec::ModelRung {
+            provider: kontor_core::spec::ProviderRef("test".to_owned()),
+            model: kontor_core::spec::ModelRef("test".to_owned()),
+            effort: None,
+        },
         context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
             &kontor_core::spec::ContextWindowBounds::unknown(),
             true,

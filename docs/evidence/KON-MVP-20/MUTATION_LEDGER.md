@@ -1,5 +1,26 @@
 # KON-MVP-20 final mutation ledger
 
+## 2026-08-15 corrective delta
+
+Six additional mutants were seeded one at a time against committed source
+anchors `97791ab1aff72d2dfbaeffaa72b2b631705f4356` (C01-C04) and `e3e8617`
+(C05-C06) after the final-TSC corrective
+changes. Each killer passed first on the unmodified source. Each mutant then
+failed by test assertion, not by compilation. Combined result: **33/33 KILLED
+(100%)**, with no survivor, waiver, or equivalent mutant.
+
+| ID | Safety claim and seed | Patch SHA-256 | Deterministic oracle and exact red result | Result |
+|---|---|---|---|---|
+| C01 | A configured AO family is silently ignored and replaced by an empty fleet | `5e3d680fa122f27e66e8ccf7e33073fd0a27cb7455c23acf92c137ea365754ec` | `cargo test -p kontor-daemon runtimes::tests::an_ao_fleet_is_refused_by_name_and_nothing_is_composed --lib --locked`; expected typed refusal, received empty `RuntimeSettings` | KILLED |
+| C02 | An unrecognized Paseo application version is accepted as the pinned protocol baseline | `8f813d1d653b78f6bbbb971a6722ef0f777919671c684c8688612ee0e177c75e` | `cargo test -p kontor-runtime-paseo --test contract transport_an_unrecognized_app_version_refuses_every_driving_operation --locked`; an undeclared capability produced an effect | KILLED |
+| C03 | Per-launch provider selection is ignored and hard-coded to Codex | `b0a8d9de3bb92691f8ed546f574cd2c14a494be65f3cc185a44267a82bf2ab9f` | `cargo test -p kontor-runtime-paseo --lib an_agent_launch_carries_the_selected_route --locked`; expected `--provider claude` | KILLED |
+| C04 | Per-launch model selection is ignored and hard-coded to `gpt-5.6-sol` | `d652d0b36d7e88555f563327073d7d2d46429c429a57eb74d2c4aa186e9b218e` | same route test; expected `--model claude-opus-5` | KILLED |
+| C05 | The native `jira.issue` label uses an internal plan key instead of the configured Jira issue | `920769e723ee79499653fd0fb49079590b7719ee11288a69b1452ef5f13ee612` | `cargo test -p kontor-runtime-paseo --test contract hierarchy_is_one_project_one_workspace_one_agent_per_slot --locked`; launch correlation failed | KILLED |
+| C06 | A seat title ignores its configured visible role and stable suffix | `c902c8ec9e6b2bc0bc8bdda9eb324416a175afa781728f0a80c8cd325167749c` | `cargo test -p kontor-runtime-paseo --test contract hierarchy_names_are_compact_and_derived_from_validated_fields --locked`; received `KON-MVP-11 implement-a` instead of `Implement · KON-11 · A` | KILLED |
+
+The disposable extraction and generated test residue were removed from the
+working area after the run. The integration checkout remained byte-clean.
+
 Validated 2026-08-14 from a disposable `git archive` of submodule commit
 `5cc0e223e8f297f551bb521c580508395620d432` (outer commit
 `f9e341440b140ec4b94fbfeadfe5f52fd8e0ea89`). The source archive SHA-256 was
@@ -7,7 +28,7 @@ Validated 2026-08-14 from a disposable `git archive` of submodule commit
 
 ## Result
 
-- Score: **27/27 KILLED (100%)**.
+- Historical score at that anchor: **27/27 KILLED (100%)**.
 - Survivors: **none**. Equivalent mutants: **none**.
 - Every mutant was seeded alone into a fresh extraction. Its killer passed on
   the unmodified extraction first. Compilation-only failures were not counted.

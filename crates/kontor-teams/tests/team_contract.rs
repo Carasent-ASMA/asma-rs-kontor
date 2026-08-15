@@ -177,6 +177,11 @@ impl Runtime {
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),
+            model_rung: kontor_core::spec::ModelRung {
+                provider: kontor_core::spec::ProviderRef("test".to_owned()),
+                model: kontor_core::spec::ModelRef("test".to_owned()),
+                effort: None,
+            },
             context_policy: standard_context_policy(),
             requested_at: now(),
         }
@@ -209,6 +214,11 @@ impl Runtime {
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),
+            model_rung: kontor_core::spec::ModelRung {
+                provider: kontor_core::spec::ProviderRef("test".to_owned()),
+                model: kontor_core::spec::ModelRef("test".to_owned()),
+                effort: None,
+            },
             context_policy: standard_context_policy(),
             requested_at: now(),
         }

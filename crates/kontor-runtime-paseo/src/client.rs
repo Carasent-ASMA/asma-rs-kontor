@@ -57,6 +57,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use kontor_core::DomainError;
+use kontor_core::spec::ModelRung;
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::net::TcpStream;
@@ -163,7 +164,7 @@ impl PaseoCommand {
     pub fn agent_run(
         workspace_id: &str,
         canonical_cwd: &str,
-        provider: &str,
+        model_rung: &ModelRung,
         title: &str,
         labels: &BTreeMap<String, String>,
         parent_agent_id: &str,
@@ -172,11 +173,12 @@ impl PaseoCommand {
         let mut argv = Argv::new(&["agent", "run", "--background"])
             .option("--workspace", workspace_id)
             .option("--cwd", canonical_cwd)
-            // 0.3.1 refuses a launch with no provider: `MISSING_PROVIDER`,
-            // before it creates anything. It is a plane-level choice, so it
-            // comes from configuration rather than from the run.
-            .option("--provider", provider)
-            .option("--title", title);
+            .option("--provider", &model_rung.provider.0)
+            .option("--model", &model_rung.model.0);
+        if let Some(effort) = model_rung.effort {
+            argv = argv.option("--thinking", effort.as_str());
+        }
+        let mut argv = argv.option("--title", title);
         for (key, value) in labels {
             argv = argv.option("--label", &format!("{key}={value}"));
         }
@@ -1311,6 +1313,7 @@ pub fn ensure_frame_bounded(raw: &serde_json::Value) -> RuntimeResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kontor_core::spec::{EffortLevel, ModelRef, ProviderRef};
 
     fn labels() -> BTreeMap<String, String> {
         [("kontor.role".to_owned(), "implement".to_owned())]
@@ -1318,16 +1321,24 @@ mod tests {
             .collect()
     }
 
+    fn route(provider: &str, model: &str, effort: Option<EffortLevel>) -> ModelRung {
+        ModelRung {
+            provider: ProviderRef(provider.to_owned()),
+            model: ModelRef(model.to_owned()),
+            effort,
+        }
+    }
+
     #[test]
     fn every_lifecycle_command_is_json_and_carries_no_host() {
         let commands = [
             PaseoCommand::version(),
-            PaseoCommand::workspace_create("/w/task-1", "prj_1", "KON-MVP-11 Paseo adapter"),
+            PaseoCommand::workspace_create("/w/task-1", "prj_1", "TSW · ASMA-7755 · KON-11"),
             PaseoCommand::workspace_archive("wks_1"),
             PaseoCommand::agent_run(
                 "wks_1",
                 "/w/task-1",
-                "codex",
+                &route("codex", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
                 "KON-MVP-11 Implement",
                 &labels(),
                 "agt_orchestrator",
@@ -1360,7 +1371,7 @@ mod tests {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/w/task-1",
-            "codex",
+            &route("codex", "gpt-5.6-sol", None),
             "t",
             &labels(),
             "agt_p",
@@ -1381,11 +1392,31 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_launch_carries_the_selected_route() {
+        let command = PaseoCommand::agent_run(
+            "wks_1",
+            "/w/task-1",
+            &route("claude", "claude-opus-5", Some(EffortLevel::Xhigh)),
+            "t",
+            &labels(),
+            "agt_p",
+            "p",
+        );
+        let argv = command.argv();
+        assert!(argv.windows(2).any(|pair| pair == ["--provider", "claude"]));
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair == ["--model", "claude-opus-5"])
+        );
+        assert!(argv.windows(2).any(|pair| pair == ["--thinking", "xhigh"]));
+    }
+
+    #[test]
     fn the_ledger_route_never_quotes_the_operators_work() {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/private/worktrees/secret-project",
-            "codex",
+            &route("codex", "gpt-5.6-sol", None),
             "KON-MVP-11 Implement",
             &labels(),
             "agt_orchestrator",
@@ -1409,7 +1440,7 @@ mod tests {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/w/task-1",
-            "codex",
+            &route("codex", "gpt-5.6-sol", None),
             "t",
             &labels(),
             "agt_orchestrator",
@@ -1437,9 +1468,17 @@ mod tests {
         );
         // …and a command whose own flags sit next to each other is fine, which
         // a whole-argv scan would have refused.
-        PaseoCommand::agent_run("wks_1", "/w/task-1", "codex", "t", &labels(), "agt_p", "p")
-            .ensure_dispatchable()
-            .expect("`--background --workspace wks_1` is an ordinary command");
+        PaseoCommand::agent_run(
+            "wks_1",
+            "/w/task-1",
+            &route("codex", "gpt-5.6-sol", None),
+            "t",
+            &labels(),
+            "agt_p",
+            "p",
+        )
+        .ensure_dispatchable()
+        .expect("`--background --workspace wks_1` is an ordinary command");
         PaseoCommand::agent_stop("agt_1")
             .ensure_dispatchable()
             .expect("an ordinary id dispatches");
@@ -1449,7 +1488,16 @@ mod tests {
     fn only_writes_are_counted_as_mutations() {
         assert!(!PaseoCommand::version().mutates());
         assert!(
-            PaseoCommand::agent_run("w", "/w/t", "codex", "t", &labels(), "agt_p", "p").mutates()
+            PaseoCommand::agent_run(
+                "w",
+                "/w/t",
+                &route("codex", "gpt-5.6-sol", None),
+                "t",
+                &labels(),
+                "agt_p",
+                "p",
+            )
+            .mutates()
         );
         assert!(PaseoCommand::workspace_create("/w/t", "p", "t").mutates());
         assert!(PaseoCommand::agent_update_labels("agt_1", &labels()).mutates());

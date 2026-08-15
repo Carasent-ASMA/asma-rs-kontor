@@ -89,6 +89,7 @@
       "role": "omega-r1",
       "version": 1
      },
+     "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
      "skills": [
       {
        "skill": "omega-s1",
@@ -106,6 +107,7 @@
       "role": "omega-r3",
       "version": 1
      },
+     "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
      "skills": [],
      "context": null,
      "may_evaluate": [
@@ -120,6 +122,7 @@
       "role": "omega-r2",
       "version": 1
      },
+     "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
      "skills": [],
      "context": null,
      "may_evaluate": [
@@ -195,6 +198,7 @@
       "role": "omega-r1",
       "version": 1
      },
+     "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
      "skills": [
       {
        "skill": "omega-s1",
@@ -212,6 +216,7 @@
       "role": "omega-r3",
       "version": 1
      },
+     "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
      "skills": [],
      "context": null,
      "may_evaluate": [
@@ -226,6 +231,7 @@
       "role": "omega-r2",
       "version": 1
      },
+     "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
      "skills": [],
      "context": null,
      "may_evaluate": [

@@ -36,6 +36,23 @@ pub enum EffortLevel {
     Ultracode,
 }
 
+impl EffortLevel {
+    /// The runtime-native spelling used by launch adapters.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
+            Self::Ultracode => "ultracode",
+        }
+    }
+}
+
 /// A provider id exactly as the runtime catalog spells it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]

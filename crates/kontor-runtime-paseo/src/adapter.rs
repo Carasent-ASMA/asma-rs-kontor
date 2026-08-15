@@ -52,6 +52,7 @@ use kontor_core::id::{
     RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId, Timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
+use kontor_core::spec::ModelRung;
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
@@ -143,8 +144,12 @@ pub struct PaseoExecutionScope {
     pub mini_project_short_title: ExternalName,
     /// The Kontor plan item, e.g. `KON-MVP-11`.
     pub plan_item_key: ExternalId,
-    /// The compact task title, e.g. `Paseo adapter`.
-    pub task_short_title: ExternalName,
+    /// The Jira issue for the ticket, e.g. `ASMA-7755`.
+    pub jira_issue_key: ExternalId,
+    /// The runtime-neutral short ticket code, e.g. `KON-11`.
+    pub ticket_short_code: ExternalId,
+    /// The visible role and optional stable suffix for every declared slot.
+    pub seat_display_roles: BTreeMap<RoleSlotId, (ExternalName, Option<ExternalName>)>,
     /// The repository root the **epic's project** is registered from.
     ///
     /// Distinct from [`Self::canonical_worktree_cwd`], and 0.3.1 is why. Its
@@ -175,35 +180,57 @@ pub struct PaseoExecutionScope {
 }
 
 impl PaseoExecutionScope {
-    /// `Epic {jira_epic_key} {mini_project_short_title}`.
+    /// `Epic · {jira_epic_key} · {mini_project_short_title}`.
     #[must_use]
     pub fn project_display_name(&self) -> String {
         format!(
-            "Epic {} {}",
+            "Epic · {} · {}",
             self.jira_epic_key.as_str(),
             self.mini_project_short_title.as_str()
         )
     }
 
-    /// `{plan_item_key} {task_short_title}`.
+    /// `TSW · {jira_issue_key} · {ticket_short_code}`.
     #[must_use]
     pub fn workspace_display_name(&self) -> String {
         format!(
-            "{} {}",
-            self.plan_item_key.as_str(),
-            self.task_short_title.as_str()
+            "TSW · {} · {}",
+            self.jira_issue_key.as_str(),
+            self.ticket_short_code.as_str()
         )
     }
 
-    /// `{plan_item_key} {role_slot_id}`.
+    /// `{role} · {ticket_short_code} [· {stable_slot_suffix}]`.
     ///
-    /// The *slot* rather than the bare role name, deliberately. Two seats of the
-    /// same role are legal and are spelled with two slots, so a title built from
-    /// the role name alone would render them identically in the one place an
-    /// operator looks to tell them apart.
-    #[must_use]
-    pub fn agent_display_name(&self, role_slot_id: &RoleSlotId) -> String {
-        format!("{} {}", self.plan_item_key.as_str(), role_slot_id.as_str())
+    /// # Errors
+    /// Returns [`RuntimeError::LaunchNotAdmitted`] when the configured ticket
+    /// did not provide a visible name for the requested role slot.
+    pub fn agent_display_name(&self, role_slot_id: &RoleSlotId) -> RuntimeResult<String> {
+        let display =
+            self.seat_display_roles
+                .get(role_slot_id)
+                .ok_or(RuntimeError::LaunchNotAdmitted {
+                    rule: "role slot has no canonical seat display name",
+                })?;
+        if self
+            .seat_display_roles
+            .iter()
+            .any(|(other_id, other)| other_id != role_slot_id && other == display)
+        {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "two role slots have the same canonical seat display name",
+            });
+        }
+        let (role, suffix) = display;
+        Ok(match suffix {
+            Some(suffix) => format!(
+                "{} · {} · {}",
+                role.as_str(),
+                self.ticket_short_code.as_str(),
+                suffix.as_str()
+            ),
+            None => format!("{} · {}", role.as_str(), self.ticket_short_code.as_str()),
+        })
     }
 }
 
@@ -223,14 +250,6 @@ pub struct PaseoConfig {
     pub host_key: ExternalName,
     /// The Kontor mini-project this plane serves.
     pub mini_project_id: ExternalId,
-    /// The Paseo provider every seat on this plane runs under, e.g. `codex`.
-    ///
-    /// A property of the plane rather than of a run: 0.3.1's `agent run` refuses
-    /// outright without `--provider`, and picking one per launch would be
-    /// account routing this adapter has explicitly declared it cannot prove
-    /// (`account_env: false`). One plane, one provider, named in configuration
-    /// where an operator can see it.
-    pub provider: ExternalName,
     /// The validated command variables.
     pub scope: PaseoExecutionScope,
     /// The most sessions Kontor will hold open on this plane at once.
@@ -386,6 +405,12 @@ pub struct PaseoSeatRecord {
     pub workspace_id: ExternalId,
     /// The Paseo agent.
     pub agent_id: ExternalId,
+    /// The provider confirmed by Paseo's authoritative readback.
+    pub provider: String,
+    /// The model confirmed by Paseo's authoritative readback.
+    pub model: String,
+    /// The effective reasoning option confirmed by Paseo, if selected.
+    pub thinking: Option<String>,
     /// The provider's own session id, when Paseo exposed one.
     pub provider_session_id: Option<ExternalId>,
     /// The Orchestrator agent this seat was launched under.
@@ -1165,7 +1190,7 @@ impl PaseoAdapter {
                 label::AGENT_RUN,
                 CorrelationLabel::for_run(agent_run_id).to_string(),
             ),
-            (label::JIRA_ISSUE, scope.plan_item_key.as_str().to_owned()),
+            (label::JIRA_ISSUE, scope.jira_issue_key.as_str().to_owned()),
             (label::JIRA_EPIC, scope.jira_epic_key.as_str().to_owned()),
             (
                 label::PROJECT_ID,
@@ -1312,7 +1337,31 @@ impl PaseoAdapter {
         // …and the workspace itself, which is where the project half of the
         // agent's placement is proved on this wire.
         let workspace = self.fetch_workspace(workspace_id.as_str()).await?;
-        self.verify_workspace_placement(&workspace, &project)
+        self.verify_workspace_placement(&workspace, &project)?;
+        // A live launch/adoption owns a full seat record and therefore freezes
+        // its route. Restart restoration deliberately reconstructs only facts
+        // Paseo can re-attest; its launch-time route remains in observation
+        // evidence rather than being fabricated into a new seat record.
+        if let Some(record) = self.seat_record(binding.binding_id())
+            && (agent.provider != record.provider
+                || agent.model != record.model
+                || agent.effective_thinking_option_id != record.thinking)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(())
+    }
+
+    fn verify_agent_route(agent: &PaseoAgent, requested: &ModelRung) -> RuntimeResult<()> {
+        if agent.provider != requested.provider.0 || agent.model != requested.model.0 {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if let Some(effort) = requested.effort
+            && agent.effective_thinking_option_id.as_deref() != Some(effort.as_str())
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(())
     }
 
     // -- Evidence -----------------------------------------------------------
@@ -1374,6 +1423,10 @@ impl PaseoAdapter {
             "raw_digest": ContentHash::of(raw.as_bytes()).as_str(),
             "read": {
                 "agent_id": agent.id,
+                "provider": agent.provider,
+                "model": agent.model,
+                "thinking": agent.thinking_option_id,
+                "effective_thinking": agent.effective_thinking_option_id,
                 "workspace_id": agent.workspace_id,
                 "status": format!("{:?}", agent.status),
                 "archived_at": agent.archived_at,
@@ -2127,11 +2180,15 @@ impl PaseoAdapter {
             });
         }
 
+        let agent_display_name = self
+            .config
+            .scope
+            .agent_display_name(request.role_slot_id())?;
         let command = PaseoCommand::agent_run(
             &workspace_id,
             self.config.scope.canonical_worktree_cwd.as_str(),
-            self.config.provider.as_str(),
-            &self.config.scope.agent_display_name(request.role_slot_id()),
+            request.model_rung(),
+            &agent_display_name,
             &labels,
             self.config.scope.orchestrator_agent_id.as_str(),
             request.prompt().as_str(),
@@ -2154,6 +2211,7 @@ impl PaseoAdapter {
         // trusting the CLI here is a defect the fixtures name explicitly.
         let agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
+        Self::verify_agent_route(&agent, request.model_rung())?;
 
         let snapshot = self.bind(
             request.agent_run_id(),
@@ -2187,6 +2245,9 @@ impl PaseoAdapter {
             project_id: project.project_id.clone(),
             workspace_id: ExternalId::parse(&workspace_id)?,
             agent_id: ExternalId::parse(&agent.id)?,
+            provider: agent.provider.clone(),
+            model: agent.model.clone(),
+            thinking: agent.effective_thinking_option_id.clone(),
             provider_session_id: agent
                 .provider_session_id()
                 .map(ExternalId::parse)
@@ -2860,6 +2921,9 @@ impl RuntimeAdapter for PaseoAdapter {
         // and adopting it would bind a run to a transcript that no longer
         // contains the work the operator wanted kept.
         let after = self.fetch_agent(&native_id).await?;
+        if after.provider.is_empty() || after.model.is_empty() {
+            return Err(RuntimeError::CorrelationFailed);
+        }
         if after.provider_session_id() != before.provider_session_id() {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -2895,6 +2959,9 @@ impl RuntimeAdapter for PaseoAdapter {
             project_id: project.project_id.clone(),
             workspace_id: ExternalId::parse(&workspace_id)?,
             agent_id: ExternalId::parse(&after.id)?,
+            provider: after.provider.clone(),
+            model: after.model.clone(),
+            thinking: after.effective_thinking_option_id.clone(),
             provider_session_id: after
                 .provider_session_id()
                 .map(ExternalId::parse)

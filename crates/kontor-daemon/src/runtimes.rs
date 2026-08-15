@@ -25,17 +25,14 @@
 //! adapter starts empty and learns what exists from reconciliation. An adapter
 //! handed a stale checkpoint would believe in sessions nobody has confirmed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{ExternalId, ExternalName, RuntimeKindKey};
+use kontor_core::id::{ExternalId, ExternalName, RoleSlotId, RuntimeKindKey};
 use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::workspace::WorkspaceRoot;
-use kontor_runtime_ao::adapter::{AoAdapter, AoCheckpoint, AoLane};
-use kontor_runtime_ao::client::AoHttpTransport;
-use kontor_runtime_ao::wire::{AoHarness, AoSessionKind};
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoCheckpoint, PaseoConfig, PaseoExecutionScope,
 };
@@ -47,7 +44,18 @@ use serde::{Deserialize, Serialize};
 pub const RUNTIMES_FILE: &str = "runtimes.json";
 
 /// The document generation this build writes and is willing to read.
-const RUNTIMES_SCHEMA: u32 = 1;
+///
+/// Bumped to 4 when ticket and seat display names became explicit configuration
+/// rather than guesses from internal ids. Generation 3 may compose the right
+/// sessions under misleading names and labels, so it is refused rather than
+/// silently upgraded.
+const RUNTIMES_SCHEMA: u32 = 4;
+
+/// Families this build knows the name of and deliberately cannot compose.
+///
+/// A closed list, and the only strings [`FleetError::UnsupportedFamily`] will
+/// ever quote — so naming the family in a refusal can never echo operator input.
+const DEFERRED_FAMILIES: &[&str] = &["ao", "codex"];
 
 /// The generation every freshly composed adapter starts in.
 ///
@@ -82,6 +90,19 @@ pub enum FleetError {
         /// What was refused. Never the value that was refused.
         rule: &'static str,
     },
+    /// A setting names a family this build deliberately cannot compose.
+    ///
+    /// Distinct from [`Self::Malformed`] on purpose. Malformed says "this is not
+    /// a document I wrote"; this says "the document is well formed and names a
+    /// runtime this build will not run". An operator who cannot tell the two
+    /// apart has no way to know whether to fix their JSON or stop asking for
+    /// that family. There is no fallback to Paseo: composing a different runtime
+    /// than the one asked for would be worse than refusing.
+    #[error("runtime family `{family}` is not supported by this build")]
+    UnsupportedFamily {
+        /// The family named. Always one of [`DEFERRED_FAMILIES`], never free text.
+        family: &'static str,
+    },
     /// Two settings claim the same runtime family.
     #[error("two runtimes are configured under the family `{family}`")]
     DuplicateFamily {
@@ -112,17 +133,21 @@ impl Default for RuntimeSettings {
 
 /// One configured runtime.
 ///
-/// The set is closed, and Codex is deliberately absent — see
-/// [`build_registry`] for what wiring it needs that this daemon cannot yet
-/// supply. A variant that parsed and then failed at startup would be worse than
-/// no variant: it is a configuration an operator can write and never make work.
+/// The set is closed, and both Codex and AO are deliberately absent — see
+/// [`build_registry`] for what wiring Codex needs that this daemon cannot yet
+/// supply, and [`DEFERRED_FAMILIES`] for the refusal both earn. A variant that
+/// parsed and then failed at startup would be worse than no variant: it is a
+/// configuration an operator can write and never make work.
+///
+/// AO was a variant, and its removal is the whole point of this shape. While it
+/// existed an operator could write `family: "ao"`, the daemon would compose a
+/// live `AoAdapter`, and the Paseo-only boundary held only by convention. A
+/// boundary that depends on nobody writing a line of JSON is not a boundary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "family", rename_all = "snake_case")]
 pub enum RuntimeSetting {
     /// One Paseo execution plane, scoped to a mini-project on one host.
     Paseo(PaseoSetting),
-    /// One Agent Orchestrator lane.
-    Ao(AoSetting),
 }
 
 impl RuntimeSetting {
@@ -131,7 +156,6 @@ impl RuntimeSetting {
     pub fn family(&self) -> &str {
         match self {
             Self::Paseo(setting) => &setting.runtime_kind,
-            Self::Ao(setting) => &setting.runtime_kind,
         }
     }
 }
@@ -145,16 +169,18 @@ pub struct PaseoSetting {
     pub host_key: String,
     /// The Kontor mini-project this plane serves.
     pub mini_project_id: String,
-    /// The Paseo provider every seat on this plane runs under.
-    pub provider: String,
     /// The Jira epic the mini-project is tracked as.
     pub jira_epic_key: String,
     /// The compact epic title.
     pub mini_project_short_title: String,
     /// The Kontor plan item.
     pub plan_item_key: String,
-    /// The compact task title.
-    pub task_short_title: String,
+    /// The Jira issue for this ticket.
+    pub jira_issue_key: String,
+    /// The runtime-neutral short ticket code.
+    pub ticket_short_code: String,
+    /// Canonical visible role names for the declared role slots.
+    pub seat_display_roles: BTreeMap<String, PaseoSeatDisplaySetting>,
     /// The repository root registered as the epic's Paseo project.
     pub project_root_cwd: String,
     /// The filesystem-canonical task worktree.
@@ -179,6 +205,16 @@ pub struct PaseoSetting {
     pub timeout_seconds: u64,
 }
 
+/// The visible portion of one canonical Paseo seat title.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaseoSeatDisplaySetting {
+    /// Human-readable role name.
+    pub role: String,
+    /// Stable suffix when several declared slots share the same role.
+    #[serde(default)]
+    pub suffix: Option<String>,
+}
+
 impl std::fmt::Debug for PaseoSetting {
     /// Written out rather than derived: a derived rendering prints the host
     /// target, and this value is reachable from a settings dump.
@@ -194,29 +230,6 @@ impl std::fmt::Debug for PaseoSetting {
     }
 }
 
-/// One Agent Orchestrator lane.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AoSetting {
-    /// The Kontor runtime-kind key, e.g. `ao.claude-code`.
-    pub runtime_kind: String,
-    /// The host label that owns the generation.
-    pub host: String,
-    /// The AO project id every session in this lane belongs to.
-    pub project_id: String,
-    /// The project path AO works in.
-    pub project_path: String,
-    /// `worker` or `orchestrator`.
-    pub kind: String,
-    /// The client this lane drives, in AO's own spelling.
-    pub harness: String,
-    /// The most sessions Kontor holds open in this lane at once.
-    pub max_concurrent_sessions: u32,
-    /// The AO base URL.
-    pub endpoint: String,
-    /// The per-request wall-clock budget, in seconds.
-    pub timeout_seconds: u64,
-}
-
 /// The path the fleet description lives at inside `state_root`.
 #[must_use]
 pub fn path_in(state_root: &Path) -> PathBuf {
@@ -229,8 +242,10 @@ pub fn path_in(state_root: &Path) -> PathBuf {
 /// its whole control plane and answers session routes as unconfigured.
 ///
 /// # Errors
-/// Returns [`FleetError::Io`] when the file exists and cannot be read, and
-/// [`FleetError::Malformed`] when it is not a document this build wrote.
+/// Returns [`FleetError::Io`] when the file exists and cannot be read,
+/// [`FleetError::UnsupportedFamily`] when it names a family this build
+/// deliberately cannot compose, and [`FleetError::Malformed`] when it is not a
+/// document this build wrote.
 pub fn read(state_root: &Path) -> Result<RuntimeSettings, FleetError> {
     let bytes = match std::fs::read(path_in(state_root)) {
         Ok(bytes) => bytes,
@@ -239,12 +254,43 @@ pub fn read(state_root: &Path) -> Result<RuntimeSettings, FleetError> {
         }
         Err(source) => return Err(FleetError::Io { source }),
     };
+    // Named refusals first, and deliberately before the generation check: an
+    // operator who wrote `family: "ao"` needs to be told that this build does not
+    // run AO, not that their document is from another generation. Both are true;
+    // only one tells them what to do.
+    if let Some(family) = deferred_family(&bytes) {
+        return Err(FleetError::UnsupportedFamily { family });
+    }
     let settings: RuntimeSettings =
         serde_json::from_slice(&bytes).map_err(|_| FleetError::Malformed)?;
     if settings.schema_version != RUNTIMES_SCHEMA {
         return Err(FleetError::Malformed);
     }
     Ok(settings)
+}
+
+/// The first deferred family this document names, if it names one.
+///
+/// Read from the raw bytes rather than from a parsed [`RuntimeSetting`], because
+/// the whole point is that a deferred family no longer *has* a variant to parse
+/// into — without this the refusal would be the generic "not a document this
+/// build wrote", and an operator would have no way to tell a withdrawn family
+/// from a typo.
+///
+/// Only names drawn from [`DEFERRED_FAMILIES`] are returned, so a refusal can
+/// quote the family without ever echoing what the operator actually typed.
+fn deferred_family(bytes: &[u8]) -> Option<&'static str> {
+    let document: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let written: BTreeSet<&str> = document
+        .get("runtimes")?
+        .as_array()?
+        .iter()
+        .filter_map(|setting| setting.get("family")?.as_str())
+        .collect();
+    DEFERRED_FAMILIES
+        .iter()
+        .find(|family| written.contains(*family))
+        .copied()
 }
 
 /// Compose one live adapter per configured runtime.
@@ -277,7 +323,6 @@ pub fn build_registry(settings: &RuntimeSettings) -> Result<RuntimeRegistry, Fle
     for setting in &settings.runtimes {
         let (family, adapter) = match setting {
             RuntimeSetting::Paseo(paseo) => compose_paseo(paseo)?,
-            RuntimeSetting::Ao(ao) => compose_ao(ao)?,
         };
         if !claimed.insert(family.clone()) {
             return Err(FleetError::DuplicateFamily {
@@ -300,12 +345,30 @@ fn compose_paseo(
     let runtime_kind =
         RuntimeKindKey::parse(&setting.runtime_kind).map_err(|_| refuse("runtime_kind"))?;
     let host_key = ExternalName::parse(&setting.host_key).map_err(|_| refuse("host_key"))?;
+    let seat_display_roles = setting
+        .seat_display_roles
+        .iter()
+        .map(|(slot, display)| {
+            Ok((
+                RoleSlotId::parse(slot).map_err(|_| refuse("seat_display_roles slot"))?,
+                (
+                    ExternalName::parse(&display.role)
+                        .map_err(|_| refuse("seat_display_roles role"))?,
+                    display
+                        .suffix
+                        .as_deref()
+                        .map(ExternalName::parse)
+                        .transpose()
+                        .map_err(|_| refuse("seat_display_roles suffix"))?,
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, FleetError>>()?;
     let config = PaseoConfig {
         runtime_kind: runtime_kind.clone(),
         host_key: host_key.clone(),
         mini_project_id: ExternalId::parse(&setting.mini_project_id)
             .map_err(|_| refuse("mini_project_id"))?,
-        provider: ExternalName::parse(&setting.provider).map_err(|_| refuse("provider"))?,
         scope: PaseoExecutionScope {
             jira_epic_key: ExternalId::parse(&setting.jira_epic_key)
                 .map_err(|_| refuse("jira_epic_key"))?,
@@ -313,8 +376,11 @@ fn compose_paseo(
                 .map_err(|_| refuse("mini_project_short_title"))?,
             plan_item_key: ExternalId::parse(&setting.plan_item_key)
                 .map_err(|_| refuse("plan_item_key"))?,
-            task_short_title: ExternalName::parse(&setting.task_short_title)
-                .map_err(|_| refuse("task_short_title"))?,
+            jira_issue_key: ExternalId::parse(&setting.jira_issue_key)
+                .map_err(|_| refuse("jira_issue_key"))?,
+            ticket_short_code: ExternalId::parse(&setting.ticket_short_code)
+                .map_err(|_| refuse("ticket_short_code"))?,
+            seat_display_roles,
             project_root_cwd: WorkspaceRoot::parse(&setting.project_root_cwd)
                 .map_err(|_| refuse("project_root_cwd"))?,
             canonical_worktree_cwd: WorkspaceRoot::parse(&setting.canonical_worktree_cwd)
@@ -343,57 +409,48 @@ fn compose_paseo(
     Ok((runtime_kind, Arc::new(adapter)))
 }
 
-/// Build one Agent Orchestrator lane.
-fn compose_ao(
-    setting: &AoSetting,
-) -> Result<(RuntimeKindKey, Arc<dyn RuntimeAdapter>), FleetError> {
-    let refuse = |rule: &'static str| FleetError::Invalid {
-        family: setting.runtime_kind.clone(),
-        rule,
-    };
-    let runtime_kind =
-        RuntimeKindKey::parse(&setting.runtime_kind).map_err(|_| refuse("runtime_kind"))?;
-    let lane = AoLane {
-        runtime_kind: runtime_kind.clone(),
-        host: ExternalName::parse(&setting.host).map_err(|_| refuse("host"))?,
-        project_id: setting.project_id.clone(),
-        project_path: WorkspaceRoot::parse(&setting.project_path)
-            .map_err(|_| refuse("project_path"))?,
-        kind: match setting.kind.as_str() {
-            "worker" => AoSessionKind::Worker,
-            "orchestrator" => AoSessionKind::Orchestrator,
-            _ => return Err(refuse("kind")),
-        },
-        harness: AoHarness::parse(&setting.harness).map_err(|_| refuse("harness"))?,
-        max_concurrent_sessions: setting.max_concurrent_sessions,
-    };
-    let transport = AoHttpTransport::new(&setting.endpoint, setting.timeout_seconds)
-        .map_err(|_| refuse("endpoint"))?;
-    let adapter = AoAdapter::new(
-        lane,
-        Box::new(transport),
-        AoCheckpoint::fresh(INITIAL_GENERATION),
-    );
-    Ok((runtime_kind, Arc::new(adapter)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn ao(runtime_kind: &str) -> RuntimeSetting {
-        RuntimeSetting::Ao(AoSetting {
+    fn paseo(runtime_kind: &str) -> RuntimeSetting {
+        RuntimeSetting::Paseo(PaseoSetting {
             runtime_kind: runtime_kind.to_owned(),
-            host: "ao-host".to_owned(),
-            project_id: "proj-1".to_owned(),
-            project_path: "/w/ao-project".to_owned(),
-            kind: "worker".to_owned(),
-            harness: "claude-code".to_owned(),
-            max_concurrent_sessions: 4,
+            host_key: "paseo-host".to_owned(),
+            mini_project_id: "mini-1".to_owned(),
+            jira_epic_key: "ASMA-1".to_owned(),
+            mini_project_short_title: "Epic".to_owned(),
+            plan_item_key: "KON-MVP-15".to_owned(),
+            jira_issue_key: "ASMA-7759".to_owned(),
+            ticket_short_code: "KON-15".to_owned(),
+            seat_display_roles: BTreeMap::from([(
+                "implement".to_owned(),
+                PaseoSeatDisplaySetting {
+                    role: "Implement".to_owned(),
+                    suffix: None,
+                },
+            )]),
+            project_root_cwd: "/w/epic".to_owned(),
+            canonical_worktree_cwd: "/w/task".to_owned(),
+            orchestrator_agent_id: "agent-1".to_owned(),
+            max_concurrent_sessions: 2,
+            executable: "paseo".to_owned(),
+            host_target: "https://user:hunter2@paseo.example".to_owned(),
             // Composing a transport builds a client; it connects to nothing.
-            endpoint: "http://127.0.0.1:1/".to_owned(),
-            timeout_seconds: 5,
+            endpoint: "ws://127.0.0.1:6767/ws".to_owned(),
+            client_id: "kontor-mini-1".to_owned(),
+            timeout_seconds: 30,
         })
+    }
+
+    /// The fleet document an operator would write for one AO lane.
+    fn ao_document() -> &'static [u8] {
+        br#"{"schema_version": 4, "runtimes": [{"family": "ao",
+             "runtime_kind": "ao.claude-code", "host": "ao-host",
+             "project_id": "proj-1", "project_path": "/w/ao-project",
+             "kind": "worker", "harness": "claude-code",
+             "max_concurrent_sessions": 4, "endpoint": "http://127.0.0.1:1/",
+             "timeout_seconds": 5}]}"#
     }
 
     #[test]
@@ -414,14 +471,14 @@ mod tests {
     fn a_configured_family_is_composed_into_the_registry() {
         let settings = RuntimeSettings {
             schema_version: RUNTIMES_SCHEMA,
-            runtimes: vec![ao("ao.claude-code")],
+            runtimes: vec![paseo("paseo.agent")],
         };
         let registry = build_registry(&settings).expect("the lane composes");
         let families: Vec<String> = registry.families().map(ToString::to_string).collect();
-        assert_eq!(families, vec!["ao.claude-code".to_owned()]);
+        assert_eq!(families, vec!["paseo.agent".to_owned()]);
         assert!(
             registry
-                .get(&RuntimeKindKey::parse("ao.claude-code").expect("a valid key"))
+                .get(&RuntimeKindKey::parse("paseo.agent").expect("a valid key"))
                 .is_some(),
             "the composed adapter answers under the family its own configuration declares"
         );
@@ -431,7 +488,7 @@ mod tests {
     fn two_settings_may_not_claim_one_family() {
         let settings = RuntimeSettings {
             schema_version: RUNTIMES_SCHEMA,
-            runtimes: vec![ao("ao.claude-code"), ao("ao.claude-code")],
+            runtimes: vec![paseo("paseo.agent"), paseo("paseo.agent")],
         };
         assert!(
             matches!(
@@ -446,19 +503,23 @@ mod tests {
     fn a_refused_value_names_the_field_and_never_the_value() {
         let settings = RuntimeSettings {
             schema_version: RUNTIMES_SCHEMA,
-            runtimes: vec![RuntimeSetting::Ao(AoSetting {
-                endpoint: "not-a-url".to_owned(),
-                ..match ao("ao.claude-code") {
-                    RuntimeSetting::Ao(setting) => setting,
-                    RuntimeSetting::Paseo(_) => unreachable!("the fixture is a lane"),
+            runtimes: vec![RuntimeSetting::Paseo(PaseoSetting {
+                // A value that is refused, and that is spelled like something no
+                // log line should ever repeat.
+                canonical_worktree_cwd: "relative/hunter2".to_owned(),
+                ..match paseo("paseo.agent") {
+                    RuntimeSetting::Paseo(setting) => setting,
                 }
             })],
         };
-        let error = build_registry(&settings).expect_err("an endpoint that is not a URL");
+        let error = build_registry(&settings).expect_err("a worktree root that is not absolute");
         let rendered = error.to_string();
-        assert!(rendered.contains("endpoint"), "it names the field");
         assert!(
-            !rendered.contains("not-a-url"),
+            rendered.contains("canonical_worktree_cwd"),
+            "it names the field"
+        );
+        assert!(
+            !rendered.contains("hunter2"),
             "and never the value, which may be a credential-bearing target"
         );
     }
@@ -469,11 +530,18 @@ mod tests {
             runtime_kind: "paseo.agent".to_owned(),
             host_key: "paseo-host".to_owned(),
             mini_project_id: "mini-1".to_owned(),
-            provider: "codex".to_owned(),
             jira_epic_key: "ASMA-1".to_owned(),
             mini_project_short_title: "Epic".to_owned(),
             plan_item_key: "KON-MVP-15".to_owned(),
-            task_short_title: "Seat".to_owned(),
+            jira_issue_key: "ASMA-7759".to_owned(),
+            ticket_short_code: "KON-15".to_owned(),
+            seat_display_roles: BTreeMap::from([(
+                "implement".to_owned(),
+                PaseoSeatDisplaySetting {
+                    role: "Implement".to_owned(),
+                    suffix: None,
+                },
+            )]),
             project_root_cwd: "/w/epic".to_owned(),
             canonical_worktree_cwd: "/w/task".to_owned(),
             orchestrator_agent_id: "agent-1".to_owned(),
@@ -500,6 +568,58 @@ mod tests {
             registry
                 .get(&RuntimeKindKey::parse("paseo.agent").expect("a valid key"))
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn an_ao_fleet_is_refused_by_name_and_nothing_is_composed() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        std::fs::write(path_in(directory.path()), ao_document()).expect("the fixture is written");
+
+        let error = read(directory.path()).expect_err("this build does not run AO");
+        assert!(
+            matches!(error, FleetError::UnsupportedFamily { family: "ao" }),
+            "a withdrawn family earns its own refusal, not a generic one: {error:?}"
+        );
+        // Named, so an operator knows to stop asking rather than to fix their JSON.
+        assert!(error.to_string().contains("ao"), "{error}");
+
+        // And fail *closed*: no fleet is returned, so nothing downstream can
+        // compose a substitute. A refusal that fell back to Paseo would run a
+        // different runtime than the one the operator described.
+        assert!(read(directory.path()).is_err());
+    }
+
+    #[test]
+    fn every_deferred_family_is_refused_the_same_way() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        for family in DEFERRED_FAMILIES {
+            std::fs::write(
+                path_in(directory.path()),
+                format!(r#"{{"schema_version": 4, "runtimes": [{{"family": "{family}"}}]}}"#),
+            )
+            .expect("the fixture is written");
+            let error = read(directory.path()).expect_err("a deferred family is refused");
+            assert!(
+                matches!(error, FleetError::UnsupportedFamily { .. }),
+                "`{family}` must be refused by name: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_family_is_malformed_and_is_never_quoted_back() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        std::fs::write(
+            path_in(directory.path()),
+            br#"{"schema_version": 4, "runtimes": [{"family": "https://user:hunter2@host"}]}"#,
+        )
+        .expect("the fixture is written");
+        let error = read(directory.path()).expect_err("an unknown family is not a fleet");
+        assert!(matches!(error, FleetError::Malformed), "{error:?}");
+        assert!(
+            !error.to_string().contains("hunter2"),
+            "only the closed deferred list is ever quoted back: {error}"
         );
     }
 

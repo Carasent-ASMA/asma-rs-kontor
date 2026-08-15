@@ -3167,7 +3167,6 @@ dependencies = [
  "kontor-mcp",
  "kontor-profiles",
  "kontor-runtime",
- "kontor-runtime-ao",
  "kontor-runtime-paseo",
  "kontor-scheduler",
  "kontor-store",

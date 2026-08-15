@@ -1,19 +1,31 @@
 # KON-MVP-20 reconciliation snapshot
 
-Snapshot time: 2026-08-14 Europe/Oslo. This is a read-only truth record; it made
-no AgentsRoom, Jira, Paseo, git-remote, or process-state mutation.
+Snapshot time: 2026-08-14 Europe/Oslo; R3 evidence-integrity refresh:
+2026-08-15. This is a read-only truth record; it made no AgentsRoom, Jira,
+Paseo, git-remote, or process-state mutation.
 
 ## Git and archive truth
 
-- Outer `HEAD` = `origin/master` =
-  `f9e341440b140ec4b94fbfeadfe5f52fd8e0ea89`.
-- Its gitlink = submodule `HEAD` = submodule `origin/master` =
-  `5cc0e223e8f297f551bb521c580508395620d432` (PR #24 merge).
+- Shipped outer archive commit =
+  `7f3419a1843ff3788f210fe075a9e3caa24ec986`.
+- Its gitlink = shipped submodule archive commit =
+  `e206801af76b3f553fe83c94e8d64ca9118e8faa` (PR #25 merge).
 - Committed/worktree/regenerated `Cargo.lock` SHA-256 =
   `2e89a646b8a4340951a96f4a655adcfafa82922c9943751657929894624f8179`.
 - Source archive SHA-256 =
   `3ae9c7ae345072e909abcbd6f7464af5b8cc06d80d1b7941802d9de207f9572a`;
   archive verifier passed.
+
+### Corrective candidate (not yet shipped at this snapshot)
+
+- Branch `fix/ASMA-7744-kontor-foundation-final-corrections` source anchor =
+  `e3e8617`.
+- Its source archive SHA-256 =
+  `3cf46f8eb4205a4d8712f7ead35242ad54f4a9dc5851b2002611c530958d60e6`.
+- Its committed/regenerated `Cargo.lock` SHA-256 =
+  `781ae8a2e7b5c437066a3b76c255d7d097dc439e5a66dc2e7b43b2f1c7074e26`.
+- The corrective archive verifier and all product gates pass; the mutation
+  ledger is 33/33 killed.
 
 ## Twenty-five child dispositions
 
@@ -38,9 +50,10 @@ terminal transitions remain unapplied:
 | ASMA-7854 / KON-25 | done | Ready for Development -> Closed |
 
 ASMA-7764 also has a description-mirror proposal. Therefore the snapshot is
-truthful but **Jira is not yet fully converged**. The orchestrator must apply
-and read back these normal close-out transitions before the final committee can
-return `COMPLIANT`. The dry-run log SHA-256 is
+truthful but **Jira is not yet fully converged**. These normal close-out
+transitions are intentionally held until the final committee returns typed
+`COMPLIANT`; the Orchestrator then applies and reads them back before epic
+closure. The dry-run log SHA-256 is
 `291784b040bfcbe919ed337f4fc2bbf77f5abd4e302f543b30b19ede013ddec0`.
 
 ## Paseo/runtime/client truth
@@ -70,6 +83,10 @@ The requested untracked files were left byte-identical and uncommitted:
 - foreign `docs/evidence/KON-MVP-18/run-bcb865f13ce774ed/` relative-path
   SHA-256-manifest aggregate —
   `a3db84dd0a5efd3dfeee42d0e33ebb90d261caae1e0b41c47549e1af3eb5ca4d`.
+- `docs/evidence/KON-MVP-20/TSC-SEAT-B.md`, observed untracked beside the
+  shipped `e206801a` checkout, is a final-TSC incident artifact. It is
+  deliberately excluded from the shipped archive and this R3 commit, and is
+  not an acceptance-evidence input.
 
 Incident input
 `/Users/igor/kon-mvp-20-scratch/evidence/paseo-corrective/incidents/2026-08-14-destructive-reset-dirty-tsw.md`
@@ -84,7 +101,7 @@ successful archive result.
 
 ## Gate disposition
 
-Code/archive validation is ready: 27/27 mutants killed and every gate green.
-Cross-system close-out is **not yet fully converged** solely because the six
-read-only Jira status proposals above have not been applied. No survivor or
-product defect is being waived.
+Corrective code/archive validation is ready: 33/33 mutants killed and every
+gate green. Cross-system close-out still requires the merged archive, a live C4
+route observation, and a typed final-committee `COMPLIANT` verdict. The six
+Jira transitions follow that verdict. No survivor or product defect is waived.

@@ -314,6 +314,11 @@ fn launch_parts(agent_run_id: AgentRunId) -> LaunchParts {
         cwd: WorkspaceRoot::parse(PROJECT_PATH).expect("absolute project path"),
         account_profile_id: None,
         prompt: text("do the work"),
+        model_rung: kontor_core::spec::ModelRung {
+            provider: kontor_core::spec::ProviderRef("test".to_owned()),
+            model: kontor_core::spec::ModelRef("test".to_owned()),
+            effort: None,
+        },
         // AO declares no per-seat context configuration, so the effective half
         // of the policy is honestly `not_enforced`.
         context_policy: kontor_core::spec::ContextPolicySnapshot::standard(

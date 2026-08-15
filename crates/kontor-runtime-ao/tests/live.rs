@@ -150,6 +150,11 @@ async fn live_admitted_launch(ao: &AoAdapter, config: &LiveEnv) -> LaunchRequest
              text {agent_run_id}. Do nothing else."
         ))
         .expect("bounded prompt"),
+        model_rung: kontor_core::spec::ModelRung {
+            provider: kontor_core::spec::ProviderRef("test".to_owned()),
+            model: kontor_core::spec::ModelRef("test".to_owned()),
+            effort: None,
+        },
         context_policy: kontor_core::spec::ContextPolicySnapshot::standard(
             &kontor_core::spec::ContextWindowBounds::unknown(),
             false,

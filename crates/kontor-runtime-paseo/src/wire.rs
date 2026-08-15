@@ -500,6 +500,18 @@ pub struct PaseoPersistence {
 pub struct PaseoAgent {
     /// The native agent id — the session identity Kontor correlates against.
     pub id: String,
+    /// The provider Paseo actually selected.
+    #[serde(default)]
+    pub provider: String,
+    /// The model Paseo actually selected.
+    #[serde(default)]
+    pub model: String,
+    /// The requested thinking option, when one was selected.
+    #[serde(default, rename = "thinkingOptionId")]
+    pub thinking_option_id: Option<String>,
+    /// The effective thinking option Paseo actually applied.
+    #[serde(default, rename = "effectiveThinkingOptionId")]
+    pub effective_thinking_option_id: Option<String>,
     /// The workspace it runs in.
     ///
     /// Optional on the wire, and its absence is a refusal rather than a
@@ -1335,6 +1347,10 @@ mod tests {
     fn retirement_is_the_archive_stamp_rather_than_a_status() {
         let mut agent = PaseoAgent {
             id: "agt_1".to_owned(),
+            provider: "claude".to_owned(),
+            model: "claude-opus-5".to_owned(),
+            thinking_option_id: None,
+            effective_thinking_option_id: None,
             workspace_id: Some("wks_1".to_owned()),
             cwd: "/w/task-1".to_owned(),
             title: Some("KON-MVP-11 Implement".to_owned()),
@@ -1364,6 +1380,10 @@ mod tests {
     fn a_label_census_is_exact_and_total() {
         let agent = PaseoAgent {
             id: "agt_1".to_owned(),
+            provider: "claude".to_owned(),
+            model: "claude-opus-5".to_owned(),
+            thinking_option_id: None,
+            effective_thinking_option_id: None,
             workspace_id: Some("wks_1".to_owned()),
             cwd: "/w/task-1".to_owned(),
             title: None,
@@ -1425,12 +1445,12 @@ mod tests {
     fn a_workspace_reports_the_label_kontor_wrote_into_its_title() {
         // 0.3.1 has no workspace labels, so the round trip is through the one
         // string a create can set and a readback returns.
-        let titled = workspace_label_suffix("KON-MVP-11 Paseo adapter", "kontor-team-abc");
-        assert_eq!(titled, "KON-MVP-11 Paseo adapter [kontor-team-abc]");
+        let titled = workspace_label_suffix("TSW · ASMA-7755 · KON-11", "kontor-team-abc");
+        assert_eq!(titled, "TSW · ASMA-7755 · KON-11 [kontor-team-abc]");
         assert_eq!(extract_workspace_label(&titled), Some("kontor-team-abc"));
         // A title Paseo rewrote, or one an operator typed, reports nothing —
         // which fails correlation rather than inventing it.
-        assert_eq!(extract_workspace_label("KON-MVP-11 Paseo adapter"), None);
+        assert_eq!(extract_workspace_label("TSW · ASMA-7755 · KON-11"), None);
         assert_eq!(extract_workspace_label("something []"), None);
     }
 

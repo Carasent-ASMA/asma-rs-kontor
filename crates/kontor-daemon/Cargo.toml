@@ -26,7 +26,6 @@ kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
 # The composition root is where a configured runtime family becomes a live
 # adapter, so it is the one crate that depends on the provider adapters. Nothing
 # below it does: `kontor-api` is stated against the port.
-kontor-runtime-ao = { path = "../kontor-runtime-ao", version = "=0.1.0" }
 kontor-runtime-paseo = { path = "../kontor-runtime-paseo", version = "=0.1.0" }
 kontor-store = { path = "../kontor-store", version = "=0.1.0" }
 # The application services are composed here and nowhere else: this is the one

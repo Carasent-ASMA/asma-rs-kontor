@@ -39,6 +39,7 @@ use kontor_core::id::{
     AgentRunId, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId, RuntimeKindKey, TaskId,
     TeamRunId,
 };
+use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
 use kontor_runtime::adapter::{LaunchOutcome, RuntimeAdapter, RuntimeError, RuntimeResult};
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
@@ -279,7 +280,15 @@ fn scope() -> PaseoExecutionScope {
         jira_epic_key: external("ASMA-7744"),
         mini_project_short_title: name("Kontor MVP"),
         plan_item_key: external("KON-MVP-11"),
-        task_short_title: name("Paseo adapter"),
+        jira_issue_key: external("ASMA-7755"),
+        ticket_short_code: external("KON-11"),
+        seat_display_roles: [
+            (slot("implement-a"), (name("Implement"), Some(name("A")))),
+            (slot("implement-b"), (name("Implement"), Some(name("B")))),
+            (slot("qa-a"), (name("QA"), None)),
+        ]
+        .into_iter()
+        .collect(),
         // The epic's repository root, which is *not* the task worktree: a
         // project registered from the worktree would be one project per task.
         project_root_cwd: WorkspaceRoot::parse("/w/epic").expect("absolute"),
@@ -293,9 +302,16 @@ fn config() -> PaseoConfig {
         runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("a valid runtime key"),
         host_key: name(HOST_KEY),
         mini_project_id: external(MINI_PROJECT),
-        provider: name("codex"),
         scope: scope(),
         max_concurrent_sessions: 8,
+    }
+}
+
+fn model_rung() -> ModelRung {
+    ModelRung {
+        provider: ProviderRef("claude".to_owned()),
+        model: ModelRef("claude-opus-5".to_owned()),
+        effort: None,
     }
 }
 
@@ -309,7 +325,7 @@ fn any_agent_run() -> PaseoCommand {
     PaseoCommand::agent_run(
         WORKSPACE_ID,
         CWD,
-        "codex",
+        &model_rung(),
         "t",
         &BTreeMap::new(),
         ORCHESTRATOR,
@@ -393,6 +409,17 @@ impl Plane {
         slot_id: &RoleSlotId,
         workspace: &WorkspaceBindingSnapshot,
     ) -> RuntimeResult<LaunchRequest> {
+        self.launch_request_for(agent_run_id, slot_id, workspace, model_rung())
+            .await
+    }
+
+    async fn launch_request_for(
+        &self,
+        agent_run_id: AgentRunId,
+        slot_id: &RoleSlotId,
+        workspace: &WorkspaceBindingSnapshot,
+        model_rung: ModelRung,
+    ) -> RuntimeResult<LaunchRequest> {
         let binding_id = RuntimeBindingId::generate();
         let authority = self
             .adapter
@@ -415,6 +442,7 @@ impl Plane {
             cwd: root(),
             account_profile_id: None,
             prompt: text("bootstrap the role"),
+            model_rung,
             context_policy: standard_context_policy(),
             requested_at: at("2026-08-10T09:00:00Z"),
         }))
@@ -522,19 +550,52 @@ async fn hierarchy_is_one_project_one_workspace_one_agent_per_slot() {
 #[tokio::test]
 async fn hierarchy_names_are_compact_and_derived_from_validated_fields() {
     let scope = scope();
-    assert_eq!(scope.project_display_name(), "Epic ASMA-7744 Kontor MVP");
-    assert_eq!(scope.workspace_display_name(), "KON-MVP-11 Paseo adapter");
-    // The slot, not the bare role name: two seats of one role are legal and are
-    // spelled with two slots, so a title built from the role alone would render
-    // them identically.
     assert_eq!(
-        scope.agent_display_name(&slot("implement-a")),
-        "KON-MVP-11 implement-a"
+        scope.project_display_name(),
+        "Epic · ASMA-7744 · Kontor MVP"
     );
-    assert_ne!(
-        scope.agent_display_name(&slot("implement-a")),
-        scope.agent_display_name(&slot("implement-b"))
+    assert_eq!(scope.workspace_display_name(), "TSW · ASMA-7755 · KON-11");
+    assert_eq!(
+        scope
+            .agent_display_name(&slot("implement-a"))
+            .expect("the slot has a canonical display role"),
+        "Implement · KON-11 · A"
     );
+    assert_eq!(
+        scope
+            .agent_display_name(&slot("implement-b"))
+            .expect("the slot has a canonical display role"),
+        "Implement · KON-11 · B"
+    );
+    assert_eq!(
+        scope
+            .agent_display_name(&slot("qa-a"))
+            .expect("the slot has a canonical display role"),
+        "QA · KON-11"
+    );
+}
+
+#[tokio::test]
+async fn hierarchy_refuses_a_slot_without_a_canonical_display_role() {
+    let error = scope()
+        .agent_display_name(&slot("undeclared"))
+        .expect_err("an unknown slot must not get an invented title");
+    assert!(matches!(error, RuntimeError::LaunchNotAdmitted { .. }));
+}
+
+#[tokio::test]
+async fn hierarchy_refuses_duplicate_visible_seat_names() {
+    let mut scope = scope();
+    scope
+        .seat_display_roles
+        .insert(slot("implement-a"), (name("Implement"), None));
+    scope
+        .seat_display_roles
+        .insert(slot("implement-b"), (name("Implement"), None));
+    let error = scope
+        .agent_display_name(&slot("implement-a"))
+        .expect_err("two tabs must not receive the same visible title");
+    assert!(matches!(error, RuntimeError::LaunchNotAdmitted { .. }));
 }
 
 #[tokio::test]
@@ -685,7 +746,7 @@ async fn preparation_reports_rename_pending_and_writes_nothing() {
         mini_project_id: external(MINI_PROJECT),
         host_key: name(HOST_KEY),
         project_id: external(PROJECT_ID),
-        observed_name: "Epic ASMA-7744 Kontor MVP".to_owned(),
+        observed_name: "Epic · ASMA-7744 · Kontor MVP".to_owned(),
     });
     let plane = Plane::build(recorded, checkpoint);
 
@@ -701,7 +762,7 @@ async fn preparation_reports_rename_pending_and_writes_nothing() {
             observed_name,
         } => {
             assert_eq!(binding.project_id.as_str(), PROJECT_ID);
-            assert_eq!(desired_name, "Epic ASMA-7744 Kontor MVP");
+            assert_eq!(desired_name, "Epic · ASMA-7744 · Kontor MVP");
             assert_eq!(observed_name, "kontor mvp (old name)");
         }
         other => panic!("display drift must be reported, got {other:?}"),
@@ -1007,6 +1068,51 @@ async fn prelaunch_trusts_no_cli_answer_without_a_protocol_readback() {
     );
 }
 
+#[tokio::test]
+async fn prelaunch_refuses_a_route_the_readback_did_not_apply() {
+    for (field, value) in [("provider", "codex"), ("model", "claude-fable-5")] {
+        let recorded = daemon();
+        let mut wrong = v(AGENT);
+        wrong["agent"][field] = serde_json::json!(value);
+        recorded.set_answer_rpc("fetch_agent_request", wrong);
+        let (plane, workspace) = Plane::prepared(recorded).await;
+
+        let error = plane
+            .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+            .await
+            .expect_err("a runtime default cannot replace the selected route");
+        assert_eq!(error, RuntimeError::CorrelationFailed, "field: {field}");
+    }
+}
+
+#[tokio::test]
+async fn prelaunch_refuses_an_effort_the_readback_did_not_apply() {
+    let recorded = daemon();
+    let mut wrong = v(AGENT);
+    wrong["agent"]["thinkingOptionId"] = serde_json::json!("high");
+    wrong["agent"]["effectiveThinkingOptionId"] = serde_json::json!("high");
+    recorded.set_answer_rpc("fetch_agent_request", wrong);
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let mut requested = model_rung();
+    requested.effort = Some(EffortLevel::Xhigh);
+    let request = plane
+        .launch_request_for(
+            run(RUN_IMPLEMENT),
+            &slot("implement-a"),
+            &workspace,
+            requested,
+        )
+        .await
+        .expect("the seat is admitted");
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("the effective effort must match the launch");
+    assert_eq!(error, RuntimeError::CorrelationFailed);
+}
+
 // ---------------------------------------------------------------------------
 // role_slot_
 // ---------------------------------------------------------------------------
@@ -1080,6 +1186,7 @@ async fn role_slot_a_same_slot_race_yields_one_permit_and_one_agent() {
             cwd: root(),
             account_profile_id: None,
             prompt: text("bootstrap"),
+            model_rung: model_rung(),
             context_policy: standard_context_policy(),
             requested_at: at("2026-08-10T09:00:00Z"),
         });
