@@ -6,26 +6,48 @@ Paseo, git-remote, or process-state mutation.
 
 ## Git and archive truth
 
+The corrective round is **merged**, so the shipped pair below has moved. Both
+values were re-read from git rather than carried over.
+
 - Shipped outer archive commit =
-  `7f3419a1843ff3788f210fe075a9e3caa24ec986`.
+  `e412211c68017ee397f44f8c4e6d7056284346d6` (PR #2499 merge).
 - Its gitlink = shipped submodule archive commit =
-  `e206801af76b3f553fe83c94e8d64ca9118e8faa` (PR #25 merge).
-- Committed/worktree/regenerated `Cargo.lock` SHA-256 =
-  `2e89a646b8a4340951a96f4a655adcfafa82922c9943751657929894624f8179`.
-- Source archive SHA-256 =
-  `3ae9c7ae345072e909abcbd6f7464af5b8cc06d80d1b7941802d9de207f9572a`;
-  archive verifier passed.
-
-### Corrective candidate (not yet shipped at this snapshot)
-
-- Branch `fix/ASMA-7744-kontor-foundation-final-corrections` source anchor =
-  `e3e8617`.
-- Its source archive SHA-256 =
-  `3cf46f8eb4205a4d8712f7ead35242ad54f4a9dc5851b2002611c530958d60e6`.
-- Its committed/regenerated `Cargo.lock` SHA-256 =
+  `41cd4cc338a1619fcabfd40b6157414d47ab51a0` (PR #26 merge). Verified by
+  `git ls-tree e412211 _tools/asma-rs-kontor`, which reads exactly this
+  commit — the pair is checked, not asserted.
+- Committed/worktree `Cargo.lock` SHA-256 =
   `781ae8a2e7b5c437066a3b76c255d7d097dc439e5a66dc2e7b43b2f1c7074e26`.
 - The corrective archive verifier and all product gates pass; the mutation
   ledger is 33/33 killed.
+
+### Superseded pre-merge snapshot
+
+Kept rather than deleted, so the earlier evidence still resolves:
+
+- Outer archive commit was `7f3419a1843ff3788f210fe075a9e3caa24ec986`, gitlink
+  `e206801af76b3f553fe83c94e8d64ca9118e8faa` (PR #25 merge), `Cargo.lock`
+  SHA-256 `2e89a646b8a4340951a96f4a655adcfafa82922c9943751657929894624f8179`,
+  source archive SHA-256
+  `3ae9c7ae345072e909abcbd6f7464af5b8cc06d80d1b7941802d9de207f9572a`.
+- The corrective candidate was then branch
+  `fix/ASMA-7744-kontor-foundation-final-corrections` at source anchor
+  `e3e8617`, source archive SHA-256
+  `3cf46f8eb4205a4d8712f7ead35242ad54f4a9dc5851b2002611c530958d60e6`.
+
+### Rebase identity: `3c9cc6a1` and `ef807d2` are the same change
+
+The corrective work appears under two commit ids because it was rebased onto the
+merge target. That is a different commit id for identical content, not a second
+change, and `git patch-id` is what says so rather than inspection:
+
+| Commit | `git patch-id --stable` |
+|---|---|
+| `3c9cc6a1` | `cba04faed4442543f2aee345c2cbe18c946b37e0` |
+| `ef807d2` | `cba04faed4442543f2aee345c2cbe18c946b37e0` |
+
+Identical patch-id `cba04fae…`, so the diff each applies is byte-identical.
+Anyone auditing the shipped tree for `3c9cc6a1` will not find it in the merged
+history and should look for `ef807d2`; nothing was dropped in the rebase.
 
 ## Twenty-five child dispositions
 
