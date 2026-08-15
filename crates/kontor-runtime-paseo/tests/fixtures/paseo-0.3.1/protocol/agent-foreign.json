@@ -97,8 +97,8 @@
   },
   "project": {
     "projectKey": "github.com/kontor/epic",
-    "projectName": "Epic ASMA-7744 Kontor MVP",
-    "workspaceName": "KON-MVP-11 Paseo adapter",
+    "projectName": "Epic · ASMA-7744 · Kontor MVP",
+    "workspaceName": "TSW · ASMA-7755 · KON-11",
     "checkout": {
       "cwd": "/w/epic/task-11",
       "currentBranch": "feat/kontor-fixture",

@@ -280,7 +280,15 @@ fn scope() -> PaseoExecutionScope {
         jira_epic_key: external("ASMA-7744"),
         mini_project_short_title: name("Kontor MVP"),
         plan_item_key: external("KON-MVP-11"),
-        task_short_title: name("Paseo adapter"),
+        jira_issue_key: external("ASMA-7755"),
+        ticket_short_code: external("KON-11"),
+        seat_display_roles: [
+            (slot("implement-a"), (name("Implement"), Some(name("A")))),
+            (slot("implement-b"), (name("Implement"), Some(name("B")))),
+            (slot("qa-a"), (name("QA"), None)),
+        ]
+        .into_iter()
+        .collect(),
         // The epic's repository root, which is *not* the task worktree: a
         // project registered from the worktree would be one project per task.
         project_root_cwd: WorkspaceRoot::parse("/w/epic").expect("absolute"),
@@ -542,19 +550,52 @@ async fn hierarchy_is_one_project_one_workspace_one_agent_per_slot() {
 #[tokio::test]
 async fn hierarchy_names_are_compact_and_derived_from_validated_fields() {
     let scope = scope();
-    assert_eq!(scope.project_display_name(), "Epic ASMA-7744 Kontor MVP");
-    assert_eq!(scope.workspace_display_name(), "KON-MVP-11 Paseo adapter");
-    // The slot, not the bare role name: two seats of one role are legal and are
-    // spelled with two slots, so a title built from the role alone would render
-    // them identically.
     assert_eq!(
-        scope.agent_display_name(&slot("implement-a")),
-        "KON-MVP-11 implement-a"
+        scope.project_display_name(),
+        "Epic · ASMA-7744 · Kontor MVP"
     );
-    assert_ne!(
-        scope.agent_display_name(&slot("implement-a")),
-        scope.agent_display_name(&slot("implement-b"))
+    assert_eq!(scope.workspace_display_name(), "TSW · ASMA-7755 · KON-11");
+    assert_eq!(
+        scope
+            .agent_display_name(&slot("implement-a"))
+            .expect("the slot has a canonical display role"),
+        "Implement · KON-11 · A"
     );
+    assert_eq!(
+        scope
+            .agent_display_name(&slot("implement-b"))
+            .expect("the slot has a canonical display role"),
+        "Implement · KON-11 · B"
+    );
+    assert_eq!(
+        scope
+            .agent_display_name(&slot("qa-a"))
+            .expect("the slot has a canonical display role"),
+        "QA · KON-11"
+    );
+}
+
+#[tokio::test]
+async fn hierarchy_refuses_a_slot_without_a_canonical_display_role() {
+    let error = scope()
+        .agent_display_name(&slot("undeclared"))
+        .expect_err("an unknown slot must not get an invented title");
+    assert!(matches!(error, RuntimeError::LaunchNotAdmitted { .. }));
+}
+
+#[tokio::test]
+async fn hierarchy_refuses_duplicate_visible_seat_names() {
+    let mut scope = scope();
+    scope
+        .seat_display_roles
+        .insert(slot("implement-a"), (name("Implement"), None));
+    scope
+        .seat_display_roles
+        .insert(slot("implement-b"), (name("Implement"), None));
+    let error = scope
+        .agent_display_name(&slot("implement-a"))
+        .expect_err("two tabs must not receive the same visible title");
+    assert!(matches!(error, RuntimeError::LaunchNotAdmitted { .. }));
 }
 
 #[tokio::test]
@@ -705,7 +746,7 @@ async fn preparation_reports_rename_pending_and_writes_nothing() {
         mini_project_id: external(MINI_PROJECT),
         host_key: name(HOST_KEY),
         project_id: external(PROJECT_ID),
-        observed_name: "Epic ASMA-7744 Kontor MVP".to_owned(),
+        observed_name: "Epic · ASMA-7744 · Kontor MVP".to_owned(),
     });
     let plane = Plane::build(recorded, checkpoint);
 
@@ -721,7 +762,7 @@ async fn preparation_reports_rename_pending_and_writes_nothing() {
             observed_name,
         } => {
             assert_eq!(binding.project_id.as_str(), PROJECT_ID);
-            assert_eq!(desired_name, "Epic ASMA-7744 Kontor MVP");
+            assert_eq!(desired_name, "Epic · ASMA-7744 · Kontor MVP");
             assert_eq!(observed_name, "kontor mvp (old name)");
         }
         other => panic!("display drift must be reported, got {other:?}"),

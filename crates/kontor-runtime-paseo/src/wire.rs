@@ -1445,12 +1445,12 @@ mod tests {
     fn a_workspace_reports_the_label_kontor_wrote_into_its_title() {
         // 0.3.1 has no workspace labels, so the round trip is through the one
         // string a create can set and a readback returns.
-        let titled = workspace_label_suffix("KON-MVP-11 Paseo adapter", "kontor-team-abc");
-        assert_eq!(titled, "KON-MVP-11 Paseo adapter [kontor-team-abc]");
+        let titled = workspace_label_suffix("TSW · ASMA-7755 · KON-11", "kontor-team-abc");
+        assert_eq!(titled, "TSW · ASMA-7755 · KON-11 [kontor-team-abc]");
         assert_eq!(extract_workspace_label(&titled), Some("kontor-team-abc"));
         // A title Paseo rewrote, or one an operator typed, reports nothing —
         // which fails correlation rather than inventing it.
-        assert_eq!(extract_workspace_label("KON-MVP-11 Paseo adapter"), None);
+        assert_eq!(extract_workspace_label("TSW · ASMA-7755 · KON-11"), None);
         assert_eq!(extract_workspace_label("something []"), None);
     }
 

@@ -1333,7 +1333,7 @@ mod tests {
     fn every_lifecycle_command_is_json_and_carries_no_host() {
         let commands = [
             PaseoCommand::version(),
-            PaseoCommand::workspace_create("/w/task-1", "prj_1", "KON-MVP-11 Paseo adapter"),
+            PaseoCommand::workspace_create("/w/task-1", "prj_1", "TSW · ASMA-7755 · KON-11"),
             PaseoCommand::workspace_archive("wks_1"),
             PaseoCommand::agent_run(
                 "wks_1",

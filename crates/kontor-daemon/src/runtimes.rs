@@ -25,12 +25,12 @@
 //! adapter starts empty and learns what exists from reconciliation. An adapter
 //! handed a stale checkpoint would believe in sessions nobody has confirmed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{ExternalId, ExternalName, RuntimeKindKey};
+use kontor_core::id::{ExternalId, ExternalName, RoleSlotId, RuntimeKindKey};
 use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_runtime_paseo::adapter::{
@@ -45,13 +45,11 @@ pub const RUNTIMES_FILE: &str = "runtimes.json";
 
 /// The document generation this build writes and is willing to read.
 ///
-/// Bumped to 3 when the `ao` family was withdrawn and provider/model routing
-/// moved from a plane default to each frozen role launch. An older document may
-/// legally contain `family: "ao"`, and this build cannot compose one — so it
-/// refuses the whole generation rather than reading the Paseo entries and
-/// quietly ignoring the rest, which would start a fleet the operator did not
-/// describe.
-const RUNTIMES_SCHEMA: u32 = 3;
+/// Bumped to 4 when ticket and seat display names became explicit configuration
+/// rather than guesses from internal ids. Generation 3 may compose the right
+/// sessions under misleading names and labels, so it is refused rather than
+/// silently upgraded.
+const RUNTIMES_SCHEMA: u32 = 4;
 
 /// Families this build knows the name of and deliberately cannot compose.
 ///
@@ -177,8 +175,12 @@ pub struct PaseoSetting {
     pub mini_project_short_title: String,
     /// The Kontor plan item.
     pub plan_item_key: String,
-    /// The compact task title.
-    pub task_short_title: String,
+    /// The Jira issue for this ticket.
+    pub jira_issue_key: String,
+    /// The runtime-neutral short ticket code.
+    pub ticket_short_code: String,
+    /// Canonical visible role names for the declared role slots.
+    pub seat_display_roles: BTreeMap<String, PaseoSeatDisplaySetting>,
     /// The repository root registered as the epic's Paseo project.
     pub project_root_cwd: String,
     /// The filesystem-canonical task worktree.
@@ -201,6 +203,16 @@ pub struct PaseoSetting {
     pub client_id: String,
     /// The per-command wall-clock budget, in seconds.
     pub timeout_seconds: u64,
+}
+
+/// The visible portion of one canonical Paseo seat title.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaseoSeatDisplaySetting {
+    /// Human-readable role name.
+    pub role: String,
+    /// Stable suffix when several declared slots share the same role.
+    #[serde(default)]
+    pub suffix: Option<String>,
 }
 
 impl std::fmt::Debug for PaseoSetting {
@@ -333,6 +345,25 @@ fn compose_paseo(
     let runtime_kind =
         RuntimeKindKey::parse(&setting.runtime_kind).map_err(|_| refuse("runtime_kind"))?;
     let host_key = ExternalName::parse(&setting.host_key).map_err(|_| refuse("host_key"))?;
+    let seat_display_roles = setting
+        .seat_display_roles
+        .iter()
+        .map(|(slot, display)| {
+            Ok((
+                RoleSlotId::parse(slot).map_err(|_| refuse("seat_display_roles slot"))?,
+                (
+                    ExternalName::parse(&display.role)
+                        .map_err(|_| refuse("seat_display_roles role"))?,
+                    display
+                        .suffix
+                        .as_deref()
+                        .map(ExternalName::parse)
+                        .transpose()
+                        .map_err(|_| refuse("seat_display_roles suffix"))?,
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, FleetError>>()?;
     let config = PaseoConfig {
         runtime_kind: runtime_kind.clone(),
         host_key: host_key.clone(),
@@ -345,8 +376,11 @@ fn compose_paseo(
                 .map_err(|_| refuse("mini_project_short_title"))?,
             plan_item_key: ExternalId::parse(&setting.plan_item_key)
                 .map_err(|_| refuse("plan_item_key"))?,
-            task_short_title: ExternalName::parse(&setting.task_short_title)
-                .map_err(|_| refuse("task_short_title"))?,
+            jira_issue_key: ExternalId::parse(&setting.jira_issue_key)
+                .map_err(|_| refuse("jira_issue_key"))?,
+            ticket_short_code: ExternalId::parse(&setting.ticket_short_code)
+                .map_err(|_| refuse("ticket_short_code"))?,
+            seat_display_roles,
             project_root_cwd: WorkspaceRoot::parse(&setting.project_root_cwd)
                 .map_err(|_| refuse("project_root_cwd"))?,
             canonical_worktree_cwd: WorkspaceRoot::parse(&setting.canonical_worktree_cwd)
@@ -387,7 +421,15 @@ mod tests {
             jira_epic_key: "ASMA-1".to_owned(),
             mini_project_short_title: "Epic".to_owned(),
             plan_item_key: "KON-MVP-15".to_owned(),
-            task_short_title: "Seat".to_owned(),
+            jira_issue_key: "ASMA-7759".to_owned(),
+            ticket_short_code: "KON-15".to_owned(),
+            seat_display_roles: BTreeMap::from([(
+                "implement".to_owned(),
+                PaseoSeatDisplaySetting {
+                    role: "Implement".to_owned(),
+                    suffix: None,
+                },
+            )]),
             project_root_cwd: "/w/epic".to_owned(),
             canonical_worktree_cwd: "/w/task".to_owned(),
             orchestrator_agent_id: "agent-1".to_owned(),
@@ -403,7 +445,7 @@ mod tests {
 
     /// The fleet document an operator would write for one AO lane.
     fn ao_document() -> &'static [u8] {
-        br#"{"schema_version": 3, "runtimes": [{"family": "ao",
+        br#"{"schema_version": 4, "runtimes": [{"family": "ao",
              "runtime_kind": "ao.claude-code", "host": "ao-host",
              "project_id": "proj-1", "project_path": "/w/ao-project",
              "kind": "worker", "harness": "claude-code",
@@ -491,7 +533,15 @@ mod tests {
             jira_epic_key: "ASMA-1".to_owned(),
             mini_project_short_title: "Epic".to_owned(),
             plan_item_key: "KON-MVP-15".to_owned(),
-            task_short_title: "Seat".to_owned(),
+            jira_issue_key: "ASMA-7759".to_owned(),
+            ticket_short_code: "KON-15".to_owned(),
+            seat_display_roles: BTreeMap::from([(
+                "implement".to_owned(),
+                PaseoSeatDisplaySetting {
+                    role: "Implement".to_owned(),
+                    suffix: None,
+                },
+            )]),
             project_root_cwd: "/w/epic".to_owned(),
             canonical_worktree_cwd: "/w/task".to_owned(),
             orchestrator_agent_id: "agent-1".to_owned(),
@@ -546,7 +596,7 @@ mod tests {
         for family in DEFERRED_FAMILIES {
             std::fs::write(
                 path_in(directory.path()),
-                format!(r#"{{"schema_version": 3, "runtimes": [{{"family": "{family}"}}]}}"#),
+                format!(r#"{{"schema_version": 4, "runtimes": [{{"family": "{family}"}}]}}"#),
             )
             .expect("the fixture is written");
             let error = read(directory.path()).expect_err("a deferred family is refused");
@@ -562,7 +612,7 @@ mod tests {
         let directory = tempfile::TempDir::new().expect("a temporary directory");
         std::fs::write(
             path_in(directory.path()),
-            br#"{"schema_version": 3, "runtimes": [{"family": "https://user:hunter2@host"}]}"#,
+            br#"{"schema_version": 4, "runtimes": [{"family": "https://user:hunter2@host"}]}"#,
         )
         .expect("the fixture is written");
         let error = read(directory.path()).expect_err("an unknown family is not a fleet");

@@ -1247,7 +1247,7 @@ async fn a_permission_answer_is_applied_once_and_a_foreign_request_is_refused() 
 /// exist.
 fn fleet_settings() -> serde_json::Value {
     serde_json::json!({
-        "schema_version": 3,
+        "schema_version": 4,
         "runtimes": [
             {
                 "family": "paseo",
@@ -1257,7 +1257,11 @@ fn fleet_settings() -> serde_json::Value {
                 "jira_epic_key": "ASMA-7759",
                 "mini_project_short_title": "Kontor MVP",
                 "plan_item_key": "KON-MVP-15",
-                "task_short_title": "Loopback seat",
+                "jira_issue_key": "ASMA-7759",
+                "ticket_short_code": "KON-15",
+                "seat_display_roles": {
+                    "implement": { "role": "Implement" }
+                },
                 "project_root_cwd": "/w/kontor",
                 "canonical_worktree_cwd": "/w/kontor-task",
                 "orchestrator_agent_id": "orchestrator-1",

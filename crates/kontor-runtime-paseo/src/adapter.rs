@@ -144,8 +144,12 @@ pub struct PaseoExecutionScope {
     pub mini_project_short_title: ExternalName,
     /// The Kontor plan item, e.g. `KON-MVP-11`.
     pub plan_item_key: ExternalId,
-    /// The compact task title, e.g. `Paseo adapter`.
-    pub task_short_title: ExternalName,
+    /// The Jira issue for the ticket, e.g. `ASMA-7755`.
+    pub jira_issue_key: ExternalId,
+    /// The runtime-neutral short ticket code, e.g. `KON-11`.
+    pub ticket_short_code: ExternalId,
+    /// The visible role and optional stable suffix for every declared slot.
+    pub seat_display_roles: BTreeMap<RoleSlotId, (ExternalName, Option<ExternalName>)>,
     /// The repository root the **epic's project** is registered from.
     ///
     /// Distinct from [`Self::canonical_worktree_cwd`], and 0.3.1 is why. Its
@@ -176,35 +180,57 @@ pub struct PaseoExecutionScope {
 }
 
 impl PaseoExecutionScope {
-    /// `Epic {jira_epic_key} {mini_project_short_title}`.
+    /// `Epic · {jira_epic_key} · {mini_project_short_title}`.
     #[must_use]
     pub fn project_display_name(&self) -> String {
         format!(
-            "Epic {} {}",
+            "Epic · {} · {}",
             self.jira_epic_key.as_str(),
             self.mini_project_short_title.as_str()
         )
     }
 
-    /// `{plan_item_key} {task_short_title}`.
+    /// `TSW · {jira_issue_key} · {ticket_short_code}`.
     #[must_use]
     pub fn workspace_display_name(&self) -> String {
         format!(
-            "{} {}",
-            self.plan_item_key.as_str(),
-            self.task_short_title.as_str()
+            "TSW · {} · {}",
+            self.jira_issue_key.as_str(),
+            self.ticket_short_code.as_str()
         )
     }
 
-    /// `{plan_item_key} {role_slot_id}`.
+    /// `{role} · {ticket_short_code} [· {stable_slot_suffix}]`.
     ///
-    /// The *slot* rather than the bare role name, deliberately. Two seats of the
-    /// same role are legal and are spelled with two slots, so a title built from
-    /// the role name alone would render them identically in the one place an
-    /// operator looks to tell them apart.
-    #[must_use]
-    pub fn agent_display_name(&self, role_slot_id: &RoleSlotId) -> String {
-        format!("{} {}", self.plan_item_key.as_str(), role_slot_id.as_str())
+    /// # Errors
+    /// Returns [`RuntimeError::LaunchNotAdmitted`] when the configured ticket
+    /// did not provide a visible name for the requested role slot.
+    pub fn agent_display_name(&self, role_slot_id: &RoleSlotId) -> RuntimeResult<String> {
+        let display =
+            self.seat_display_roles
+                .get(role_slot_id)
+                .ok_or(RuntimeError::LaunchNotAdmitted {
+                    rule: "role slot has no canonical seat display name",
+                })?;
+        if self
+            .seat_display_roles
+            .iter()
+            .any(|(other_id, other)| other_id != role_slot_id && other == display)
+        {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "two role slots have the same canonical seat display name",
+            });
+        }
+        let (role, suffix) = display;
+        Ok(match suffix {
+            Some(suffix) => format!(
+                "{} · {} · {}",
+                role.as_str(),
+                self.ticket_short_code.as_str(),
+                suffix.as_str()
+            ),
+            None => format!("{} · {}", role.as_str(), self.ticket_short_code.as_str()),
+        })
     }
 }
 
@@ -1164,7 +1190,7 @@ impl PaseoAdapter {
                 label::AGENT_RUN,
                 CorrelationLabel::for_run(agent_run_id).to_string(),
             ),
-            (label::JIRA_ISSUE, scope.plan_item_key.as_str().to_owned()),
+            (label::JIRA_ISSUE, scope.jira_issue_key.as_str().to_owned()),
             (label::JIRA_EPIC, scope.jira_epic_key.as_str().to_owned()),
             (
                 label::PROJECT_ID,
@@ -2154,11 +2180,15 @@ impl PaseoAdapter {
             });
         }
 
+        let agent_display_name = self
+            .config
+            .scope
+            .agent_display_name(request.role_slot_id())?;
         let command = PaseoCommand::agent_run(
             &workspace_id,
             self.config.scope.canonical_worktree_cwd.as_str(),
             request.model_rung(),
-            &self.config.scope.agent_display_name(request.role_slot_id()),
+            &agent_display_name,
             &labels,
             self.config.scope.orchestrator_agent_id.as_str(),
             request.prompt().as_str(),

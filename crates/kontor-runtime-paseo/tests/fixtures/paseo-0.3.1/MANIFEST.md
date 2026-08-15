@@ -66,7 +66,7 @@ and the values are ours:
 | Key | Replacement |
 |---|---|
 | `serverId`, `hostname`, `version` | `srv_kontor_fixture`, `kontor-fixture-host`, `0.3.1` |
-| `projectId` / `projectKey` / `project*Name` | `prj_epic` / `github.com/kontor/epic` / `Epic ASMA-7744 Kontor MVP` |
+| `projectId` / `projectKey` / `project*Name` | `prj_epic` / `github.com/kontor/epic` / `Epic · ASMA-7744 · Kontor MVP` |
 | `workspaceId`, `id`, `agentId`, `agentIds` | `wks_task11`, `agt_implement` |
 | `sessionId`, `nativeHandle` | `prov_sess_1`, `synthetic nativeHandle` |
 | `cwd`, `projectRootPath`, `workspaceDirectory`, `worktreeRoot`, `mainRepoRoot`, `path` | `/w/epic/task-11` |
