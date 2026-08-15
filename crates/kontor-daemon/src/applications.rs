@@ -5368,28 +5368,6 @@ impl Services {
                 )
             })?;
 
-        let seat_exists = state
-            .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
-            .map_err(|error| self.refuse(&error))?
-            .into_iter()
-            .find(|seat| seat.role == slot.clone().into_role_key());
-        if let Some(seat) = seat_exists
-            && let (Some(kind), Some(native)) = (seat.runtime_kind.clone(), seat.native_id.clone())
-        {
-            // The seat is already filled and bound. A start that replayed, or a
-            // restart that reconciled, converges here rather than launching a
-            // second session for the same `(team run, role slot)`.
-            return Ok(vec![StartedSeatDto {
-                task_id: admitted.task_id,
-                team_run_id: team_run_id.to_string(),
-                agent_run_id: seat.agent_run_id.to_string(),
-                role_slot: seat.role.as_str().to_owned(),
-                runtime_kind: kind,
-                native_id: native.as_str().to_owned(),
-                applied: AppliedDto::Unchanged,
-            }]);
-        }
-
         let intent = CanonicalDocument::from_value(&serde_json::json!({
             "schema_version": 1,
             "operation": "scheduler_start",
