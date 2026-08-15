@@ -3,7 +3,7 @@
 **READY-FOR-MERGE-AND-FINAL-COMMITTEE**
 
 The Lead-integrated corrective candidate at committed source anchor
-`97791ab1aff72d2dfbaeffaa72b2b631705f4356` addresses the prior typed
+`e3e8617` addresses the prior typed
 `NON_COMPLIANT` findings:
 
 - the daemon no longer composes the production AO family; an AO configuration
@@ -13,9 +13,11 @@ The Lead-integrated corrective candidate at committed source anchor
   not match;
 - the runtime requires the pinned Paseo protocol baseline independently of
   provider/model route selection;
+- project, TSW, and seat titles now follow the canonical centered-dot naming
+  contract, while the native `jira.issue` label carries the actual Jira key;
 - the corrected archive and phone screenshot hashes are recorded, and the
   invalid untracked Seat B write remains incident evidence only;
-- the combined mutation result is 31/31 killed, and the committed-source
+- the combined mutation result is 33/33 killed, and the committed-source
   archive verifier, Rust gates, dependency checks, console gates, build, API
   verification, and Playwright 2/2 all pass.
 

@@ -19,13 +19,13 @@ Paseo, git-remote, or process-state mutation.
 ### Corrective candidate (not yet shipped at this snapshot)
 
 - Branch `fix/ASMA-7744-kontor-foundation-final-corrections` source anchor =
-  `97791ab1aff72d2dfbaeffaa72b2b631705f4356`.
+  `e3e8617`.
 - Its source archive SHA-256 =
-  `3b910fd1d09bef8fc27430670d2da4dc650b0b9af0fc7116dc4f1b85b4dbfffa`.
+  `3cf46f8eb4205a4d8712f7ead35242ad54f4a9dc5851b2002611c530958d60e6`.
 - Its committed/regenerated `Cargo.lock` SHA-256 =
   `781ae8a2e7b5c437066a3b76c255d7d097dc439e5a66dc2e7b43b2f1c7074e26`.
 - The corrective archive verifier and all product gates pass; the mutation
-  ledger is 31/31 killed.
+  ledger is 33/33 killed.
 
 ## Twenty-five child dispositions
 
@@ -101,7 +101,7 @@ successful archive result.
 
 ## Gate disposition
 
-Corrective code/archive validation is ready: 31/31 mutants killed and every
+Corrective code/archive validation is ready: 33/33 mutants killed and every
 gate green. Cross-system close-out still requires the merged archive, a live C4
 route observation, and a typed final-committee `COMPLIANT` verdict. The six
 Jira transitions follow that verdict. No survivor or product defect is waived.

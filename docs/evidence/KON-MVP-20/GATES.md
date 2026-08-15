@@ -1,9 +1,9 @@
 # KON-MVP-20 corrective committed-source gates
 
 Validated 2026-08-15 from a disposable `git archive` of committed source
-anchor `97791ab1aff72d2dfbaeffaa72b2b631705f4356`. The evidence-only successor
+anchor `e3e8617`. The evidence-only successor
 changes this directory, not the validated product source. Source archive
-SHA-256: `3b910fd1d09bef8fc27430670d2da4dc650b0b9af0fc7116dc4f1b85b4dbfffa`.
+SHA-256: `3cf46f8eb4205a4d8712f7ead35242ad54f4a9dc5851b2002611c530958d60e6`.
 Committed and regenerated `Cargo.lock` SHA-256:
 `781ae8a2e7b5c437066a3b76c255d7d097dc439e5a66dc2e7b43b2f1c7074e26`.
 
@@ -26,7 +26,7 @@ Toolchain: Rust/Cargo `1.97.1`, Node `24.13.1`, pnpm `11.6.0`, cargo-audit
 | `pnpm --filter kontor-console verify:api` | PASS; generated API is byte-clean |
 | `pnpm -r build` | PASS |
 | `pnpm --filter kontor-console test:e2e` | PASS; Playwright desktop + phone 2/2 |
-| corrective mutation delta C01-C04 | PASS; 4/4 killed, combined ledger 31/31 |
+| corrective mutation delta C01-C06 | PASS; 6/6 killed, combined ledger 33/33 |
 
 Playwright screenshots match the committed artifacts: desktop SHA-256
 `cee018dbb118a6b6914e3f8b53065f831d7d24b3ef9990b4c3a77bc0dd6f6132`,
