@@ -117,6 +117,11 @@ pub const UNSUPPORTED: &[(RuntimeCapability, &str)] = &[
          nothing to enumerate, so Kontor can never claim to know what Codex is running",
     ),
     (
+        RuntimeCapability::PrepareProject,
+        "codex exec has no container above a process: there is no project object to create, \
+         name or read back, so a native root could only be asserted and never verified",
+    ),
+    (
         RuntimeCapability::Resume,
         "codex exec is one shot. A second invocation is a second process with a second \
          session, which is a new launch and must be admitted as one",

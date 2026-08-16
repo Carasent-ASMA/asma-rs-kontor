@@ -35,6 +35,14 @@ pub enum RuntimeCapability {
     Discovery,
     /// Make a team run's task workspace exist and be usable.
     PrepareWorkspace,
+    /// Make a topology node's native root container exist and be usable.
+    ///
+    /// Separate from [`Self::PrepareWorkspace`] because the authority differs: a
+    /// runtime may well be able to make a place *inside* a project it was given
+    /// and have no business creating the project itself. A runtime that cannot
+    /// declare this one is refused before it can invent a root to hang work
+    /// from.
+    PrepareProject,
     /// Start a new native session for an agent run.
     Launch,
     /// Continue an existing native session in place.
@@ -64,6 +72,7 @@ impl RuntimeCapability {
     pub const ALL: &'static [Self] = &[
         Self::Discovery,
         Self::PrepareWorkspace,
+        Self::PrepareProject,
         Self::Launch,
         Self::Resume,
         Self::SendMessage,
@@ -83,6 +92,7 @@ impl RuntimeCapability {
         match self {
             Self::Discovery => "discovery",
             Self::PrepareWorkspace => "prepare_workspace",
+            Self::PrepareProject => "prepare_project",
             Self::Launch => "launch",
             Self::Resume => "resume",
             Self::SendMessage => "send_message",
@@ -107,6 +117,7 @@ impl RuntimeCapability {
         matches!(
             self,
             Self::PrepareWorkspace
+                | Self::PrepareProject
                 | Self::Launch
                 | Self::Resume
                 | Self::SendMessage

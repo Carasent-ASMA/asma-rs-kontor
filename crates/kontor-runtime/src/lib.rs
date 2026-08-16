@@ -39,6 +39,7 @@
 pub mod adapter;
 pub mod admission;
 pub mod capability;
+pub mod container;
 pub mod fake;
 pub mod observation;
 pub mod request;

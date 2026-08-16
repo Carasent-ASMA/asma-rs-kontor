@@ -101,6 +101,12 @@ pub const UNSUPPORTED: &[(RuntimeCapability, &str)] = &[
          canonical path, so Kontor cannot verify a shared task workspace",
     ),
     (
+        RuntimeCapability::PrepareProject,
+        "AO owns no container above a session: there is no project object to create, name \
+         or read back, so a native root a seat could be placed below could only be \
+         asserted and never proven",
+    ),
+    (
         RuntimeCapability::Adopt,
         "AO cannot plant Kontor's full immutable correlation label into a branch that \
          already exists, so an existing session cannot be proven to belong to a run",
