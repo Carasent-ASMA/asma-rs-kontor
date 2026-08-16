@@ -114,39 +114,46 @@ fn operational_state_survives_restart_and_typed_export() {
             created_at,
         })
         .expect("the epic node is created below the project root");
-    let lsa_id = TopologyNodeId::generate();
+    // One ECP under the ESW, hosting the epic's control seats directly
+    // (OP-REQ-040). LSA and TPM are role codes on SeatBindings, never nodes.
+    let ecp_id = TopologyNodeId::generate();
     store
         .create_topology_node(&NewSessionTopologyNode {
-            id: lsa_id,
+            id: ecp_id,
             project_id,
             mini_project_id: Some(mini_project_id),
             topology: snapshot.clone(),
-            kind: TopologyKindKey::parse("LSA").expect("the LSA kind"),
+            kind: TopologyKindKey::parse("ECP").expect("the control-plane kind"),
             parent_id: Some(epic_id),
             created_at,
         })
-        .expect("the LSA node is created");
-    let lsa = catalog
-        .role(&RoleCode::parse("LSA").expect("the LSA role code"))
-        .expect("the catalog has LSA");
-    store
-        .create_seat_binding(&NewSeatBinding {
-            id: SeatBindingId::generate(),
-            project_id,
-            topology_node_id: lsa_id,
-            role_slot_id: RoleSlotId::parse("epic.lsa").expect("a role slot"),
-            role: CatalogRoleRef {
-                catalog_id: catalog.catalog_id,
-                catalog_revision: catalog.version,
-                role_code: lsa.role_code.clone(),
-                standard_title: lsa.standard_title.clone(),
-                custom_display_name: Some(name("Kontor LSA")),
-            },
-            task_id: None,
-            team_run_id: None,
-            created_at,
-        })
-        .expect("the typed seat binding is created");
+        .expect("the ECP node is created below the epic");
+    for (code, slot, label) in [
+        ("LSA", "epic.lsa", "Kontor LSA"),
+        ("TPM", "epic.tpm", "Kontor TPM"),
+    ] {
+        let entry = catalog
+            .role(&RoleCode::parse(code).expect("a standard role code"))
+            .expect("the catalog has the role");
+        store
+            .create_seat_binding(&NewSeatBinding {
+                id: SeatBindingId::generate(),
+                project_id,
+                topology_node_id: ecp_id,
+                role_slot_id: RoleSlotId::parse(slot).expect("a role slot"),
+                role: CatalogRoleRef {
+                    catalog_id: catalog.catalog_id,
+                    catalog_revision: catalog.version,
+                    role_code: entry.role_code.clone(),
+                    standard_title: entry.standard_title.clone(),
+                    custom_display_name: Some(name(label)),
+                },
+                task_id: None,
+                team_run_id: None,
+                created_at,
+            })
+            .expect("the typed seat binding is created");
+    }
 
     let observation = ExternalId::parse("clean-observation-1").expect("an observation id");
     store
@@ -194,10 +201,11 @@ fn operational_state_survives_restart_and_typed_export() {
     );
     assert_eq!(
         reopened
-            .list_seat_bindings(project_id, lsa_id)
+            .list_seat_bindings(project_id, ecp_id)
             .expect("bindings are readable")
             .len(),
-        1
+        2,
+        "one ECP hosts both control seats rather than one workspace each"
     );
     assert_eq!(
         reopened
@@ -219,7 +227,7 @@ fn operational_state_survives_restart_and_typed_export() {
     let export = export_realm(&reopened, at("2026-08-16T02:00:00Z")).expect("the Realm exports");
     assert_eq!(export.records.topology_specs.len(), 1);
     assert_eq!(export.records.topology_nodes.len(), 3);
-    assert_eq!(export.records.seat_bindings.len(), 1);
+    assert_eq!(export.records.seat_bindings.len(), 2);
     assert_eq!(export.records.adaptive_admission_state.len(), 1);
 
     let exported = export

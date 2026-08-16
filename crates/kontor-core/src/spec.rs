@@ -294,6 +294,67 @@ impl Shareability {
 // Shared references and bounds
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Server-owned code help (OP-REQ-041)
+// ---------------------------------------------------------------------------
+
+crate::closed_enum! {
+    /// Whether a controlled code is in use, kept only for reading old data, or
+    /// gone.
+    CodeLifecycle, "CodeLifecycle" {
+        /// New state may use this code.
+        Current => "current",
+        /// Accepted at read/import boundaries only; never emitted by new state.
+        Compatibility => "compatibility",
+        /// Must be neither emitted nor seeded.
+        Retired => "retired",
+    }
+}
+
+crate::closed_enum! {
+    /// Which family of controlled codes an entry belongs to.
+    CodeCategory, "CodeCategory" {
+        /// A session-topology node kind such as `PSW` or `ECP`.
+        SessionTopology => "session_topology",
+        /// A standard role code such as `LSA` or `TPM`.
+        Role => "role",
+    }
+}
+
+/// Server-owned help for one controlled code.
+///
+/// The code itself is the key this hangs off, so it is not repeated here. A
+/// client renders `code — full name` plus the meaning and never keeps its own
+/// dictionary; an unknown code stays visibly unknown rather than being guessed,
+/// which is only possible because the server is the single source of these
+/// words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeHelp {
+    /// Expanded name, for example `Epic Control Plane`.
+    pub full_name: ExternalName,
+    /// One concise sentence saying what the code means.
+    pub meaning: crate::id::BoundedText,
+    /// The family this code belongs to.
+    pub category: CodeCategory,
+    /// Whether new state may use it.
+    pub lifecycle: CodeLifecycle,
+}
+
+/// Help for a topology code this vocabulary explains but never declares as a
+/// usable kind.
+///
+/// `TSC` and `PASE` exist here: a client reading historical state still has to
+/// render them with an honest explanation, and a spec that could only describe
+/// its *current* kinds would force every client to hard-code the rest — exactly
+/// the competing dictionary OP-REQ-041 forbids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoricalTopologyCode {
+    /// The code being explained.
+    pub kind: TopologyKindKey,
+    /// Its server-owned help.
+    pub help: CodeHelp,
+}
+
 /// A pinned reference to one revision of a role definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleRef {
@@ -336,8 +397,12 @@ pub struct RoleCatalogEntry {
     pub standard_title: ExternalName,
     /// Where the role may be selected.
     pub segment: RoleSegment,
-    /// Bounded responsibility summary shown to operators and agents.
+    /// Bounded responsibility summary shown to operators and agents. This is
+    /// the code's concise meaning under OP-REQ-041; `role_code` is the code,
+    /// `standard_title` the full name and `segment` the category.
     pub responsibility_summary: crate::id::BoundedText,
+    /// Whether new seats may select this role.
+    pub lifecycle: CodeLifecycle,
     /// Default skills/capabilities. Deployments may narrow them later.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capability_defaults: Vec<SkillKey>,
@@ -514,7 +579,10 @@ pub struct TopologyNodeKindSpec {
     /// Whether seats hosted by this kind are necessarily read-only.
     pub read_only: bool,
     /// Deterministic display-name template interpreted by the adapter layer.
+    /// This names the *native container*; it is not the code's full name.
     pub name_template: ExternalName,
+    /// Server-owned code help for this kind (OP-REQ-041).
+    pub code_help: CodeHelp,
 }
 
 /// A generic, immutable project session-topology specification revision.
@@ -532,6 +600,10 @@ pub struct ProjectSessionTopologySpec {
     pub root_kind: TopologyKindKey,
     /// Data-defined node-kind vocabulary and rules.
     pub node_kinds: Vec<TopologyNodeKindSpec>,
+    /// Codes this vocabulary explains but never declares as a usable kind, so a
+    /// client reading historical state can still render them honestly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub historical_codes: Vec<HistoricalTopologyCode>,
 }
 
 /// One node address used to validate a complete topology instance.
@@ -557,6 +629,25 @@ pub struct TopologySnapshot {
 }
 
 impl ProjectSessionTopologySpec {
+    /// Resolve server-owned help for one topology code (OP-REQ-041).
+    ///
+    /// Covers declared kinds and the historical codes this vocabulary explains.
+    /// An unrecognized code returns `None` so a client can render it as
+    /// visibly unknown instead of guessing a meaning.
+    #[must_use]
+    pub fn code_help(&self, kind: &TopologyKindKey) -> Option<&CodeHelp> {
+        self.node_kinds
+            .iter()
+            .find(|declared| &declared.kind == kind)
+            .map(|declared| &declared.code_help)
+            .or_else(|| {
+                self.historical_codes
+                    .iter()
+                    .find(|entry| &entry.kind == kind)
+                    .map(|entry| &entry.help)
+            })
+    }
+
     /// Validate the generic kind graph and each projection/cardinality rule.
     ///
     /// # Errors
@@ -585,11 +676,51 @@ impl ProjectSessionTopologySpec {
             }
             declared.cardinality.validate()?;
             Self::validate_capabilities(&declared.projection_capabilities)?;
+            if declared.code_help.category != CodeCategory::SessionTopology {
+                return Err(DomainError::invalid(
+                    "ProjectSessionTopologySpec",
+                    "a node kind's code help must be categorized as session topology",
+                ));
+            }
+            if declared.code_help.lifecycle != CodeLifecycle::Current {
+                return Err(DomainError::invalid(
+                    "ProjectSessionTopologySpec",
+                    "only a current code may be declared as a usable node kind",
+                ));
+            }
             let parents: BTreeSet<&TopologyKindKey> = declared.allowed_parents.iter().collect();
             if parents.len() != declared.allowed_parents.len() {
                 return Err(DomainError::invalid(
                     "ProjectSessionTopologySpec",
                     "declares a duplicate allowed parent",
+                ));
+            }
+        }
+
+        let mut historical = BTreeSet::new();
+        for entry in &self.historical_codes {
+            if kinds.contains_key(&entry.kind) {
+                return Err(DomainError::invalid(
+                    "ProjectSessionTopologySpec",
+                    "a declared node kind cannot also be a historical code",
+                ));
+            }
+            if !historical.insert(&entry.kind) {
+                return Err(DomainError::invalid(
+                    "ProjectSessionTopologySpec",
+                    "declares a duplicate historical code",
+                ));
+            }
+            if entry.help.category != CodeCategory::SessionTopology {
+                return Err(DomainError::invalid(
+                    "ProjectSessionTopologySpec",
+                    "a historical topology code must be categorized as session topology",
+                ));
+            }
+            if entry.help.lifecycle == CodeLifecycle::Current {
+                return Err(DomainError::invalid(
+                    "ProjectSessionTopologySpec",
+                    "a current code must be declared as a node kind rather than explained only",
                 ));
             }
         }
