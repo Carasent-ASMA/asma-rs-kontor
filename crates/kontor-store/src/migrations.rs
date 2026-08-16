@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 26;
+pub const SCHEMA_VERSION: i64 = 27;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -119,6 +119,10 @@ const MIGRATIONS: &[&str] = &[
     // observed *activity*, the owning epic seat, and the runtime's self-report
     // as quotable evidence.
     include_str!("../migrations/0026_operational_liveness.sql"),
+    // Schema v27. The delivery task a task-scoped node serves, so admission can
+    // locate the node before it creates the seat binding that would otherwise
+    // have been the only way to find it.
+    include_str!("../migrations/0027_task_topology_node.sql"),
 ];
 
 const _: () = assert!(

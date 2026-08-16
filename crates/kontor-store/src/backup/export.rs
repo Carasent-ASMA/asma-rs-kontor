@@ -589,6 +589,7 @@ exported_tables! {
         revision: i64,
         created_at: String,
         updated_at: String,
+        task_id: Option<String>,
     }
     seat_bindings: SeatBindingsRow from "seat_bindings" key(id) {
         id: String,

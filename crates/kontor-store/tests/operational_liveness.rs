@@ -40,6 +40,8 @@ struct Fixture {
     epic_id: TopologyNodeId,
     ecp_id: TopologyNodeId,
     tsw_id: TopologyNodeId,
+    snapshot: TopologySnapshot,
+    mini_project_id: MiniProjectId,
     catalog_id: kontor_core::id::RoleCatalogId,
     catalog_version: kontor_core::id::SpecVersion,
 }
@@ -110,6 +112,7 @@ impl Fixture {
                 topology: snapshot.clone(),
                 kind: TopologyKindKey::parse("PSW").expect("the root kind"),
                 parent_id: None,
+                task_id: None,
                 created_at,
             })
             .expect("the project root is created");
@@ -122,6 +125,7 @@ impl Fixture {
                 topology: snapshot.clone(),
                 kind: TopologyKindKey::parse("ESW").expect("the epic kind"),
                 parent_id: Some(root_id),
+                task_id: None,
                 created_at,
             })
             .expect("the epic node is created");
@@ -134,6 +138,7 @@ impl Fixture {
                 topology: snapshot.clone(),
                 kind: TopologyKindKey::parse("ECP").expect("the control-plane kind"),
                 parent_id: Some(epic_id),
+                task_id: None,
                 created_at,
             })
             .expect("the control-plane node is created");
@@ -145,13 +150,13 @@ impl Fixture {
                 id: tsw_id,
                 project_id,
                 mini_project_id: Some(mini_project_id),
-                topology: snapshot,
+                topology: snapshot.clone(),
                 kind: TopologyKindKey::parse("TSW").expect("the task workspace kind"),
                 parent_id: Some(epic_id),
+                task_id: None,
                 created_at,
             })
             .expect("the task workspace node is created");
-
         Self {
             home,
             store,
@@ -159,6 +164,8 @@ impl Fixture {
             epic_id,
             ecp_id,
             tsw_id,
+            snapshot,
+            mini_project_id,
             catalog_id: catalog.catalog_id,
             catalog_version: catalog.version,
         }
@@ -682,4 +689,80 @@ fn seat_liveness_evidence_survives_restart_and_export() {
         Some("2026-08-16T02:00:45Z")
     );
     assert_eq!(row.runtime_reported.as_deref(), Some("running"));
+}
+
+// ---------------------------------------------------------------------------
+// The task a node serves
+// ---------------------------------------------------------------------------
+
+/// Admission locates a task's node before any seat binding exists, and one task
+/// resolves to exactly one node or to none.
+#[test]
+fn a_task_resolves_to_at_most_one_active_topology_node() {
+    let fixture = Fixture::build();
+    let task_id = kontor_core::id::TaskId::generate();
+    fixture
+        .store
+        .create_task(&kontor_core::repository::NewTask {
+            id: task_id,
+            project_id: fixture.project_id,
+            mini_project_id: None,
+            title: name("A delivery"),
+            module: None,
+            state: kontor_core::state::TaskState::Todo,
+            created_at: at("2026-08-16T01:00:00Z"),
+        })
+        .expect("the task is created");
+
+    // Before a node exists, the answer is "none" rather than an error: a
+    // project running no Operational topology is normal, not broken.
+    assert!(
+        fixture
+            .store
+            .get_task_topology_node(fixture.project_id, task_id)
+            .expect("the read succeeds")
+            .is_none()
+    );
+
+    let served = TopologyNodeId::generate();
+    fixture
+        .store
+        .create_topology_node(&NewSessionTopologyNode {
+            id: served,
+            project_id: fixture.project_id,
+            mini_project_id: Some(fixture.mini_project_id),
+            topology: fixture.snapshot.clone(),
+            kind: TopologyKindKey::parse("TSW").expect("the task workspace kind"),
+            parent_id: Some(fixture.epic_id),
+            task_id: Some(task_id),
+            created_at: at("2026-08-16T01:00:00Z"),
+        })
+        .expect("the task's node is created");
+
+    assert_eq!(
+        fixture
+            .store
+            .get_task_topology_node(fixture.project_id, task_id)
+            .expect("the read succeeds")
+            .expect("the task has a node")
+            .id,
+        served
+    );
+
+    // A second active node for the same task would make "the task's workspace"
+    // ambiguous exactly where admission needs one answer.
+    let refusal = fixture
+        .store
+        .create_topology_node(&NewSessionTopologyNode {
+            id: TopologyNodeId::generate(),
+            project_id: fixture.project_id,
+            mini_project_id: Some(fixture.mini_project_id),
+            topology: fixture.snapshot.clone(),
+            kind: TopologyKindKey::parse("TSW").expect("the task workspace kind"),
+            parent_id: Some(fixture.epic_id),
+            task_id: Some(task_id),
+            created_at: at("2026-08-16T01:00:00Z"),
+        })
+        .expect_err("one task cannot have two live workspaces");
+    assert!(refusal.to_string().contains("constraint"), "{refusal:?}");
 }

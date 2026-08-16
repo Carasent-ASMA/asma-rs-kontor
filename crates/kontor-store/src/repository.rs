@@ -802,7 +802,7 @@ impl ProjectRepository for SqliteStore {
 // ---------------------------------------------------------------------------
 
 const TOPOLOGY_NODE_COLUMNS: &str = "id, project_id, mini_project_id, spec_id, spec_version, \
-    spec_hash, kind, parent_id, lifecycle, placement, revision, created_at, updated_at";
+    spec_hash, kind, parent_id, lifecycle, placement, revision, created_at, updated_at, task_id";
 const SEAT_BINDING_COLUMNS: &str = "id, project_id, topology_node_id, role_slot_id, \
     role_catalog_id, role_catalog_version, role_code, standard_title, custom_display_name, \
     task_id, team_run_id, lifecycle, attach_deadline, last_attached_at, last_activity_at, \
@@ -839,6 +839,12 @@ fn read_topology_node(row: &Row<'_>) -> RepositoryResult<SessionTopologyNode> {
         revision: revision_of(row.get::<_, i64>(10).map_err(backend)?)?,
         created_at: read_timestamp(&row.get::<_, String>(11).map_err(backend)?)?,
         updated_at: read_timestamp(&row.get::<_, String>(12).map_err(backend)?)?,
+        task_id: row
+            .get::<_, Option<String>>(13)
+            .map_err(backend)?
+            .as_deref()
+            .map(TaskId::parse)
+            .transpose()?,
     })
 }
 
@@ -1451,8 +1457,9 @@ impl TopologyRepository for SqliteStore {
             .execute(
                 "INSERT INTO topology_nodes
                      (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
-                      kind, parent_id, lifecycle, placement, revision, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', 'unbound', 1, ?9, ?9)",
+                      kind, parent_id, lifecycle, placement, revision, created_at, updated_at,
+                      task_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', 'unbound', 1, ?9, ?9, ?10)",
                 params![
                     request.id.to_string(),
                     request.project_id.to_string(),
@@ -1463,6 +1470,7 @@ impl TopologyRepository for SqliteStore {
                     request.kind.as_str(),
                     request.parent_id.map(|id| id.to_string()),
                     text(request.created_at),
+                    request.task_id.map(|id| id.to_string()),
                 ],
             )
             .map_err(backend)?;
@@ -1636,6 +1644,25 @@ impl TopologyRepository for SqliteStore {
             .map_err(backend)??;
         transaction.commit().map_err(backend)?;
         Ok(binding)
+    }
+
+    fn get_task_topology_node(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<SessionTopologyNode>> {
+        self.connection
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND task_id = ?2 AND lifecycle = 'active'"
+                ),
+                params![project_id.to_string(), task_id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
     }
 
     fn observe_seat_binding(

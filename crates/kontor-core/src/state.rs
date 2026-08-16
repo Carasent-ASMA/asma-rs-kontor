@@ -1603,6 +1603,13 @@ pub struct SessionTopologyNode {
     /// Logical parent; absent only for the root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<TopologyNodeId>,
+    /// The delivery task this node serves, for the task-scoped kinds.
+    ///
+    /// How admission locates the node before any seat binding exists. Absent
+    /// for every node that is not a delivery: a project root, an epic and a
+    /// control plane serve no task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
     /// Logical lifecycle.
     pub lifecycle: TopologyLifecycle,
     /// Derived native-placement state.

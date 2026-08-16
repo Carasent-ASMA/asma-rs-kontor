@@ -99,6 +99,7 @@ fn operational_state_survives_restart_and_typed_export() {
             topology: snapshot.clone(),
             kind: TopologyKindKey::parse("PSW").expect("the root kind"),
             parent_id: None,
+            task_id: None,
             created_at,
         })
         .expect("the project root is created");
@@ -111,6 +112,7 @@ fn operational_state_survives_restart_and_typed_export() {
             topology: snapshot.clone(),
             kind: TopologyKindKey::parse("ESW").expect("the epic kind"),
             parent_id: Some(root_id),
+            task_id: None,
             created_at,
         })
         .expect("the epic node is created below the project root");
@@ -125,6 +127,7 @@ fn operational_state_survives_restart_and_typed_export() {
             topology: snapshot.clone(),
             kind: TopologyKindKey::parse("ECP").expect("the control-plane kind"),
             parent_id: Some(epic_id),
+            task_id: None,
             created_at,
         })
         .expect("the ECP node is created below the epic");

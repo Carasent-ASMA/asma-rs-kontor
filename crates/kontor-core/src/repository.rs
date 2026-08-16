@@ -207,6 +207,8 @@ pub struct NewSessionTopologyNode {
     pub kind: TopologyKindKey,
     /// Logical parent.
     pub parent_id: Option<TopologyNodeId>,
+    /// The delivery task this node serves, for the task-scoped kinds.
+    pub task_id: Option<TaskId>,
     /// Creation instant.
     pub created_at: Timestamp,
 }
@@ -1709,6 +1711,21 @@ pub trait TopologyRepository {
         project_id: ProjectId,
         topology_node_id: TopologyNodeId,
     ) -> RepositoryResult<Vec<SeatBinding>>;
+
+    /// The active topology node serving one delivery task.
+    ///
+    /// The read admission makes before it places anything. `None` means this
+    /// task has no node, which is a refusal for a project running an
+    /// Operational topology and simply normal for one that is not.
+    ///
+    /// # Errors
+    /// Backend failures only. A second active node for one task cannot be
+    /// stored, so this never has to choose between two.
+    fn get_task_topology_node(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<SessionTopologyNode>>;
 
     /// Record what was observed about one seat's attachment.
     ///
