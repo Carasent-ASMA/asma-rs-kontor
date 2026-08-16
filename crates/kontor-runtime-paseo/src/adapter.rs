@@ -49,7 +49,7 @@ use async_trait::async_trait;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{
     AgentRunId, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId, Timestamp,
+    RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId, Timestamp, TopologyNodeId,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::ModelRung;
@@ -65,6 +65,10 @@ use kontor_runtime::admission::{
 use kontor_runtime::capability::{
     IssuedBinding, IssuedBindingRegistry, LimitDemand, OperationContext, RuntimeBindingSnapshot,
     RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
+};
+use kontor_runtime::container::{
+    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerLabel,
+    ContainerOutcome, ContainerProjection, ContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -102,6 +106,10 @@ use crate::wire::{
 const SUPPORTED: &[RuntimeCapability] = &[
     RuntimeCapability::Discovery,
     RuntimeCapability::PrepareWorkspace,
+    // 0.3.1's `project.add` registers a project from a directory and the
+    // project list reads it back by exact id, which is what a native root
+    // needs: something to create and something to prove afterwards.
+    RuntimeCapability::PrepareProject,
     RuntimeCapability::Launch,
     RuntimeCapability::Resume,
     RuntimeCapability::SendMessage,
@@ -312,6 +320,34 @@ pub struct PaseoConfig {
     pub scope: PaseoExecutionScope,
     /// The most sessions Kontor will hold open on this plane at once.
     pub max_concurrent_sessions: u32,
+    /// Native containers this plane **adopts** rather than creates, by the
+    /// topology node each one already belongs to.
+    ///
+    /// Keyed by node id and not by kind, because the kind vocabulary belongs to
+    /// the pinned specification and an adapter holding a copy of it is one no
+    /// specification revision can correct. The configured project workspace is
+    /// simply one row here.
+    ///
+    /// Adoption is by **exact readback of the configured id** and carries no
+    /// authority over the container: it is never renamed, never archived, and
+    /// children of it that carry no Kontor label are left alone as
+    /// [`PaseoChildOwnership::ForeignUnmanaged`] rather than absorbed.
+    pub adopted_containers: BTreeMap<TopologyNodeId, ExternalId>,
+}
+
+/// What a child container inside a bound root belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaseoChildOwnership {
+    /// It carries this node's Kontor label.
+    ThisNode,
+    /// It carries another node's Kontor label.
+    AnotherNode(TopologyNodeId),
+    /// It carries no Kontor label at all.
+    ///
+    /// Somebody else's work living in a container Kontor adopted. It is never
+    /// adopted, never renamed and never archived — Kontor's authority over an
+    /// adopted root does not extend to the things it already contained.
+    ForeignUnmanaged,
 }
 
 impl PaseoConfig {
@@ -712,6 +748,12 @@ struct PaseoState {
     server: Option<PaseoServerInfo>,
     project: Option<PaseoProjectBinding>,
     workspaces: BTreeMap<TeamRunId, WorkspaceBindingSnapshot>,
+    /// One native container per topology node.
+    ///
+    /// Keyed by node rather than by team run: a node outlives every TeamRun
+    /// inside it, so a ledger keyed by the run would make the second run of one
+    /// ticket look like a new place to put things.
+    containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
     bindings: IssuedBindingRegistry,
     admissions: AdmissionLedger,
     records: BTreeMap<RuntimeBindingId, PaseoSeatRecord>,
@@ -882,6 +924,12 @@ impl PaseoAdapter {
                     .iter()
                     .map(|snapshot| (snapshot.binding.team_run_id, snapshot.clone()))
                     .collect(),
+                // Deliberately empty on every build, including a restore: a
+                // rebuilt adapter has no container ledger, and the way back to
+                // a node's container is the id Kontor persisted, not a copy
+                // this process kept. Seeding it from a checkpoint would hide
+                // the one path the restart fixture exists to exercise.
+                containers: BTreeMap::new(),
                 placements: checkpoint.placements.iter().cloned().collect(),
                 bindings: {
                     let mut registry = IssuedBindingRegistry::new();
@@ -975,6 +1023,17 @@ impl PaseoAdapter {
     #[must_use]
     pub fn placement(&self, binding_id: RuntimeBindingId) -> Option<ExternalId> {
         self.lock().placements.get(&binding_id).cloned()
+    }
+
+    /// The container binding this plane currently holds for one topology node.
+    ///
+    /// Absent after a restart even while the container exists, which is the
+    /// distinction the whole reconcile-by-stored-id path rests on: this answers
+    /// "does *this process* know where the node is", never "does the node have
+    /// a container".
+    #[must_use]
+    pub fn container_binding(&self, node: TopologyNodeId) -> Option<ContainerBindingSnapshot> {
+        self.lock().containers.get(&node).cloned()
     }
 
     /// The epic project binding, once preparation has established one.
@@ -1693,6 +1752,238 @@ impl PaseoAdapter {
 
         let project_id = ExternalId::parse(&project.id)?;
         Ok(self.settle_project(project_id, project.display_name, desired))
+    }
+
+    /// Re-attest the container a node is already bound to, by its exact id.
+    ///
+    /// The only question asked is "is *this* container still there". A readback
+    /// that comes back empty is a refusal, never a licence to create a
+    /// replacement: the container may be perfectly alive and merely unreachable,
+    /// and a second one created beside it is not recoverable by observing it
+    /// afterwards.
+    async fn reconcile_container_by_id(
+        &self,
+        request: &ContainerRequest,
+        projection: ContainerProjection,
+        native_id: &ExternalId,
+        scope: Option<&ExternalId>,
+        declared: &RuntimeCapabilities,
+        generation: u64,
+    ) -> RuntimeResult<ContainerBindingSnapshot> {
+        let (identity, correlation) = match projection {
+            ContainerProjection::NativeRoot => {
+                let project = self.read_project_by_id(native_id.as_str()).await?;
+                let identity = self.identity(ExternalId::parse(&project.id)?, generation);
+                // A project carries no label surface, so the readback of the
+                // exact id *is* the correlation. Its display name is compared
+                // nowhere: an operator who renamed it did not move it.
+                (
+                    identity.clone(),
+                    ContainerCorrelationEvidence::by_exact_id(
+                        request.topology_node_id,
+                        identity,
+                        request.requested_at,
+                    ),
+                )
+            }
+            ContainerProjection::NativeChild => {
+                let project_id = scope.ok_or(RuntimeError::WorkspaceMismatch {
+                    rule: "a native_child requires the exact native parent binding",
+                })?;
+                let workspace = self
+                    .fetch_workspaces(project_id.as_str())
+                    .await?
+                    .into_iter()
+                    .find(|workspace| workspace.id == native_id.as_str())
+                    .ok_or(RuntimeError::StaleBinding {
+                        rule: "the bound container is not in the parent this node is placed under",
+                    })?;
+                let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
+                // A child *does* carry a label, so the collision is checkable:
+                // the container Kontor stored for this node now reporting
+                // another node's label is a disagreement, not a rebinding.
+                (
+                    identity.clone(),
+                    ContainerCorrelationEvidence::establish(
+                        request.topology_node_id,
+                        workspace.reported_label().unwrap_or_default(),
+                        identity,
+                        request.requested_at,
+                    )?,
+                )
+            }
+            ContainerProjection::LogicalOnly => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a logical_only node has no native container to reconcile",
+                });
+            }
+        };
+        Ok(ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: request.topology_node_id,
+                projection,
+                identity,
+                root: request.cwd.clone(),
+                bound_at: request.requested_at,
+            },
+            capabilities: declared.clone(),
+            correlation,
+        })
+    }
+
+    /// Bind a node to a native project for the first time.
+    ///
+    /// Adoption happens **only** by configured exact id. There is no
+    /// adopt-by-display-name branch, because a project's name is a mutable
+    /// string: matching on it would let this node take over a project somebody
+    /// else named the same way, and the failure is silent in both directions.
+    async fn bind_native_root(
+        &self,
+        request: &ContainerRequest,
+        declared: &RuntimeCapabilities,
+        generation: u64,
+    ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
+        let _ = declared;
+        if let Some(adopted) = self
+            .config
+            .adopted_containers
+            .get(&request.topology_node_id)
+            .cloned()
+        {
+            // Adopted by exact readback and nothing else. A configured id the
+            // daemon does not hold is a configuration error to report, not a
+            // project to create.
+            let project = self.read_project_by_id(adopted.as_str()).await?;
+            let identity = self.identity(ExternalId::parse(&project.id)?, generation);
+            return Ok((
+                identity.clone(),
+                ContainerCorrelationEvidence::by_exact_id(
+                    request.topology_node_id,
+                    identity,
+                    request.requested_at,
+                ),
+                false,
+            ));
+        }
+
+        let cwd = request
+            .cwd
+            .as_ref()
+            .ok_or(RuntimeError::WorkspaceMismatch {
+                rule: "a native_root must say which directory it is registered from",
+            })?;
+        let command = PaseoRpc::project_add(self.next_request_id(), cwd.as_str());
+        let frame = self.transport.request(&command).await?;
+        let added: PaseoProjectAdded = frame.resolve(&command, "PaseoProjectAdded")?;
+        let added = added.project.ok_or(RuntimeError::Transport {
+            rule: "runtime refused to register this node's project",
+        })?;
+        // The answer to `add` is an acknowledgement. A binding is made from a
+        // readback.
+        let project = self.read_project_by_id(&added.id).await?;
+        let identity = self.identity(ExternalId::parse(&project.id)?, generation);
+        Ok((
+            identity.clone(),
+            ContainerCorrelationEvidence::by_exact_id(
+                request.topology_node_id,
+                identity,
+                request.requested_at,
+            ),
+            true,
+        ))
+    }
+
+    /// Bind a node to a container below the exact bound parent.
+    ///
+    /// Candidates are selected by **this node's label** and by nothing else. A
+    /// workspace at the right path carrying another node's label belongs to that
+    /// node; one carrying no label at all is somebody else's work that happens
+    /// to live in a container Kontor adopted.
+    async fn bind_native_child(
+        &self,
+        request: &ContainerRequest,
+        project_id: &ExternalId,
+        generation: u64,
+    ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
+        let label = request.correlation().to_string();
+        let existing = self.fetch_workspaces(project_id.as_str()).await?;
+        let mut mine = existing
+            .iter()
+            .filter(|workspace| {
+                self.child_ownership(workspace, request) == PaseoChildOwnership::ThisNode
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let (workspace, created) = match mine.len() {
+            // A prior effect of ours whose answer we lost. Adopting it is what
+            // stops a lost acknowledgement from leaving two containers behind.
+            1 => (mine.remove(0), false),
+            0 => {
+                let command = PaseoCommand::workspace_create(
+                    request
+                        .cwd
+                        .as_ref()
+                        .ok_or(RuntimeError::WorkspaceMismatch {
+                            rule: "a native_child must say which directory it works in",
+                        })?
+                        .as_str(),
+                    project_id.as_str(),
+                    &workspace_label_suffix(request.display_name.as_str(), &label),
+                );
+                let output = self.transport.run(&command).await?;
+                let created: PaseoCliWorkspaceCreated = output.parse("PaseoCliWorkspaceCreated")?;
+                // The CLI answer omits `projectId`, so the readback is what says
+                // which project this actually landed in.
+                let workspace = self
+                    .fetch_workspaces(project_id.as_str())
+                    .await?
+                    .into_iter()
+                    .find(|workspace| workspace.id == created.workspace_id)
+                    .ok_or(RuntimeError::CorrelationFailed)?;
+                (workspace, true)
+            }
+            // Two containers carrying one node's label is a hierarchy that has
+            // diverged. Choosing one would put half of a node's seats in each.
+            _ => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "several Paseo workspaces carry this topology node's label",
+                });
+            }
+        };
+
+        if workspace.project_id != project_id.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the container was not created inside the bound parent project",
+            });
+        }
+        let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
+        let correlation = ContainerCorrelationEvidence::establish(
+            request.topology_node_id,
+            workspace.reported_label().unwrap_or_default(),
+            identity.clone(),
+            request.requested_at,
+        )?;
+        Ok((identity, correlation, created))
+    }
+
+    /// Who a child container inside a bound root belongs to.
+    #[must_use]
+    fn child_ownership(
+        &self,
+        workspace: &PaseoWorkspace,
+        request: &ContainerRequest,
+    ) -> PaseoChildOwnership {
+        match workspace.reported_label().map(ContainerLabel::parse) {
+            Some(Ok(label)) if label.topology_node_id() == request.topology_node_id => {
+                PaseoChildOwnership::ThisNode
+            }
+            Some(Ok(label)) => PaseoChildOwnership::AnotherNode(label.topology_node_id()),
+            // No Kontor node label at all — including a workspace carrying the
+            // older team-run label, which names a run and not a place.
+            Some(Err(_)) | None => PaseoChildOwnership::ForeignUnmanaged,
+        }
     }
 
     async fn read_project_by_id(&self, project_id: &str) -> RuntimeResult<PaseoProject> {
@@ -2563,6 +2854,132 @@ impl RuntimeAdapter for PaseoAdapter {
             generation: state.generation,
         };
         state.admissions.admit(request, &facts)
+    }
+
+    async fn prepare_container(
+        &self,
+        request: &ContainerRequest,
+    ) -> RuntimeResult<ContainerOutcome> {
+        // Capabilities decide the shape, and they decide it before anything is
+        // dispatched. Nothing below this line reads the node's kind key.
+        let projection = request.validate()?;
+        let operation = match projection {
+            ContainerProjection::NativeRoot => RuntimeCapability::PrepareProject,
+            ContainerProjection::NativeChild => RuntimeCapability::PrepareWorkspace,
+            ContainerProjection::LogicalOnly => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a logical_only node has no native container to prepare",
+                });
+            }
+        };
+        let declared = self.declared().await?;
+        if !declared.supports(operation) {
+            return Err(self.refuse(operation, &declared));
+        }
+        let generation = self.generation();
+
+        // An in-ledger binding is answered from state, so a retry after a lost
+        // answer never reaches the wire at all.
+        if let Some(existing) = self
+            .lock()
+            .containers
+            .get(&request.topology_node_id)
+            .cloned()
+            && existing.binding.identity.generation == generation
+        {
+            return Ok(ContainerOutcome {
+                snapshot: existing,
+                created: false,
+            });
+        }
+
+        // Everything below reconciles or binds against the *exact* native id,
+        // and never against a display name or a path. A name is validation
+        // evidence: it can disagree and still be the right container, and it
+        // can agree while naming somebody else's.
+        let scope = match projection {
+            ContainerProjection::LogicalOnly => None,
+            ContainerProjection::NativeRoot => None,
+            ContainerProjection::NativeChild => {
+                // The exact bound parent, or nothing. There is deliberately no
+                // branch here that reaches for "the project this plane is
+                // configured with": a child whose root is missing must stop,
+                // because creating one beside the epic is how a task's work
+                // ends up in a project nobody is watching.
+                let parent = request
+                    .parent
+                    .as_ref()
+                    .ok_or(RuntimeError::WorkspaceMismatch {
+                        rule: "a native_child requires the exact native parent binding",
+                    })?;
+                Some(parent.identity.native_id.clone())
+            }
+        };
+
+        // A binding Kontor already holds is reconciled by its stored id, which
+        // is the whole of the restart path: the adapter's ledger is gone, the
+        // container is not.
+        let stored = request.bound_native_id.clone().or_else(|| {
+            self.lock()
+                .containers
+                .get(&request.topology_node_id)
+                .map(|it| it.binding.identity.native_id.clone())
+        });
+        if let Some(native_id) = stored {
+            let snapshot = self
+                .reconcile_container_by_id(
+                    request,
+                    projection,
+                    &native_id,
+                    scope.as_ref(),
+                    &declared,
+                    generation,
+                )
+                .await?;
+            self.lock()
+                .containers
+                .insert(request.topology_node_id, snapshot.clone());
+            return Ok(ContainerOutcome {
+                snapshot,
+                created: false,
+            });
+        }
+
+        let (identity, correlation, created) = match projection {
+            ContainerProjection::LogicalOnly => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a logical_only node has no native container to prepare",
+                });
+            }
+            ContainerProjection::NativeRoot => {
+                self.bind_native_root(request, &declared, generation)
+                    .await?
+            }
+            ContainerProjection::NativeChild => {
+                let project_id = scope.ok_or(RuntimeError::WorkspaceMismatch {
+                    rule: "a native_child requires the exact native parent binding",
+                })?;
+                self.bind_native_child(request, &project_id, generation)
+                    .await?
+            }
+        };
+
+        let snapshot = ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: request.topology_node_id,
+                projection,
+                identity,
+                root: request.cwd.clone(),
+                bound_at: request.requested_at,
+            },
+            capabilities: declared,
+            correlation,
+        };
+        self.lock()
+            .containers
+            .insert(request.topology_node_id, snapshot.clone());
+        Ok(ContainerOutcome { snapshot, created })
     }
 
     async fn prepare_workspace(

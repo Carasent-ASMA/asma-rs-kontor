@@ -23,7 +23,7 @@
 
 use std::fmt;
 
-use kontor_core::id::{ExternalName, TaskId, TeamRunId, Timestamp, TopologyNodeId};
+use kontor_core::id::{ExternalId, ExternalName, TaskId, TeamRunId, Timestamp, TopologyNodeId};
 use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_core::{DomainError, DomainResult};
@@ -148,6 +148,29 @@ impl ContainerCorrelationEvidence {
             established_at,
         })
     }
+
+    /// Correlate a container the runtime gives no way to label.
+    ///
+    /// Some containers have no label surface at all — Paseo's `project.add`
+    /// carries none, and a project's display name is a mutable string an
+    /// operator can change. For those the correlation *is* the exact id: this
+    /// binding was made from a readback of that id and of nothing else.
+    ///
+    /// Only ever built from a readback. Constructing one from a desired id
+    /// rather than an observed one would produce a snapshot that looks
+    /// identical and proves nothing.
+    #[must_use]
+    pub const fn by_exact_id(
+        topology_node_id: TopologyNodeId,
+        native: NativeRuntimeIdentity,
+        established_at: Timestamp,
+    ) -> Self {
+        Self {
+            label: ContainerLabel::for_node(topology_node_id),
+            native,
+            established_at,
+        }
+    }
 }
 
 /// The one native shape a node's declared capabilities require.
@@ -262,6 +285,17 @@ pub struct ContainerRequest {
     pub parent: Option<ContainerBinding>,
     /// The canonical working directory, where the declared shape needs one.
     pub cwd: Option<WorkspaceRoot>,
+    /// The native container Kontor already holds for this node, if any.
+    ///
+    /// This is the whole of the restart contract. A daemon restart destroys the
+    /// adapter's own ledger while the native container carries on existing, so
+    /// the only way back to it is the id Kontor persisted. An adapter that
+    /// re-ran its first-binding search instead would either adopt by name —
+    /// which is not identity — or create a second container beside the live one.
+    ///
+    /// Present means *reconcile*: read this exact id back and refuse if it is
+    /// gone. It never means "prefer this one if you find it".
+    pub bound_native_id: Option<ExternalId>,
     /// Optional delivery task reference. Tracker metadata only.
     pub task_id: Option<TaskId>,
     /// Optional delivery TeamRun reference. Tracker metadata only.
@@ -501,6 +535,7 @@ mod tests {
             display_name: ExternalName::parse("Epic · ASMA-7871").expect("a display name"),
             parent: None,
             cwd: None,
+            bound_native_id: None,
             task_id: None,
             team_run_id: None,
             requested_at: Timestamp::now(),

@@ -425,6 +425,9 @@ fn compose_paseo(
                 .map_err(|_| refuse("orchestrator_agent_id"))?,
         },
         max_concurrent_sessions: setting.max_concurrent_sessions,
+        // Populated by the admission work that resolves topology nodes; an
+        // empty map means this plane adopts nothing and creates what it needs.
+        adopted_containers: std::collections::BTreeMap::new(),
     };
     // The credential leaves the settings document here and goes straight into the
     // transport, which is the only thing that may hold it.
