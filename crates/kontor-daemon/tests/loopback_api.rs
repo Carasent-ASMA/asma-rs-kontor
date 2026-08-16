@@ -37,12 +37,15 @@ use std::sync::Arc;
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{AgentRunId, CanonicalDocument, ProjectId, TaskId};
+use kontor_core::id::{AgentRunId, CanonicalDocument, ContentHash, ProjectId, TaskId};
 use kontor_core::repository::{
-    NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunRepository,
-    WorkflowRepository,
+    NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunClosure,
+    RunRepository, WorkflowRepository,
 };
-use kontor_core::state::{Freshness, ObservedRunState, RuntimeContact};
+use kontor_core::state::{
+    Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
+    TerminalOutcome,
+};
 use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
@@ -6506,6 +6509,208 @@ async fn seated_turns(
     (project, epic, account, seats)
 }
 
+#[tokio::test]
+async fn a_runtime_cancelled_run_accepts_one_guarded_late_handoff_without_reopening() {
+    let world = World::open_with(capabilities_without(&[RuntimeCapability::Compact])).await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (run_id, snapshot) = world.launch().await;
+    let handoff_hash = ContentHash::of(b"late handoff");
+    let policy = kontor_core::spec::ContextPolicySnapshot::standard(
+        &kontor_core::spec::ContextWindowBounds::unknown(),
+        false,
+        kontor_core::id::SCHEMA_VERSION,
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("best effort freezes against an incapable runtime");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_run_context_policy(world.project, run_id, &policy)
+            .expect("the launch policy is durable");
+    });
+
+    let compacted = Call::post(
+        format!("/v1/sessions/{run_id}/compact"),
+        &serde_json::json!({
+            "trigger": "scope_boundary",
+            "context_pack_hash": ContentHash::of(b"context pack").as_str(),
+            "handoff_hash": handoff_hash.as_str(),
+            "active_tool": false,
+            "unresolved_permission": false,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(kontor_core::id::CompactionReceiptId::generate().to_string())
+    .send(&world)
+    .await;
+    assert_eq!(compacted.status, 200, "{}", compacted.body);
+    assert_eq!(compacted.json()["value"]["status"], "not_enforced");
+
+    finish_natively(&world, &run_id.to_string()).await;
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run_id}/runtime:settle",
+            world.project
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("late-handoff-runtime-settle")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    assert_eq!(refused.code(), "handoff_unsettled");
+
+    // Reconstruct the already-observed historical failure: the runtime
+    // cancellation is durable before this new operator surface is called.
+    let payload = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "observed_state": "cancelled",
+        "contact": "reachable",
+        "native_sequence": 1,
+        "observed_at": "2026-08-10T09:10:00Z"
+    }))
+    .expect("control metadata");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let projection = world.daemon.state().with_store(|store| {
+        store
+            .record_observation(&NewObservation {
+                event: NewRuntimeEvent {
+                    project_id: world.project,
+                    agent_run_id: run_id,
+                    identity: snapshot.identity().clone(),
+                    native_event_id: None,
+                    native_sequence: 1,
+                    payload: payload.clone(),
+                    observed_at: at("2026-08-10T09:10:00Z"),
+                },
+                observed: ObservedRunState::Cancelled,
+                contact: RuntimeContact::Reachable,
+                freshness: Freshness::Fresh,
+                expected_revision: run.revision,
+            })
+            .expect("the cancellation observation is durable")
+    });
+    let cursor = projection
+        .last_cursor
+        .expect("the observation has a cursor");
+    let observed = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    world.daemon.state().with_store(|store| {
+        store
+            .close_agent_run(&RunClosure {
+                project_id: world.project,
+                agent_run_id: run_id,
+                expected_revision: observed.revision,
+                evidence: TerminalEvidence {
+                    outcome: TerminalOutcome::Cancelled,
+                    source: TerminalEvidenceSource::RuntimeObservation { cursor },
+                    evidence_hash: payload.hash().clone(),
+                    closed_at: at("2026-08-10T09:11:00Z"),
+                },
+            })
+            .expect("the run is runtime-terminal")
+    });
+    world
+        .daemon
+        .state()
+        .sessions()
+        .forget(snapshot.binding_id());
+
+    let task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(world.project, world.task)
+            .expect("the task reads")
+            .expect("the task exists")
+    });
+    let body = serde_json::json!({
+        "role_slot": "harness-seat",
+        "expected_task_revision": task.revision.get(),
+        "binding_generation": snapshot.identity().generation,
+        "handoff_hash": handoff_hash.as_str(),
+        "artifacts": ["handoff-sha256-deadbeef", "wip-unverified"]
+    });
+    let attested = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run_id}/handoffs:attest-late",
+            world.project
+        ),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("late-handoff-attestation")
+    .send(&world)
+    .await;
+    assert_eq!(attested.status, 200, "{}", attested.body);
+    assert_eq!(attested.json()["terminal_outcome"], "cancelled");
+    assert_eq!(attested.json()["seat_live"], false);
+    assert_eq!(attested.json()["applied"], "created");
+
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    assert_eq!(
+        after.terminal.expect("the run stays terminal").outcome,
+        TerminalOutcome::Cancelled
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(snapshot.binding_id())
+            .is_none()
+    );
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_settled_turns(world.project, world.task))
+            .expect("the disposition reads")
+            .len(),
+        1
+    );
+
+    let replayed = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run_id}/handoffs:attest-late",
+            world.project
+        ),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("late-handoff-attestation")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+
+    let duplicate = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run_id}/handoffs:attest-late",
+            world.project
+        ),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("late-handoff-second-disposition")
+    .send(&world)
+    .await;
+    assert_eq!(duplicate.status, 409, "{}", duplicate.body);
+}
+
 /// BLK-009. A bounded Kontor role turn settles on Kontor's own authority, and
 /// the seat it was taken in stays live: settling a turn is not a claim that the
 /// runtime ended anything, and the persistent Paseo session is expected to still
@@ -6528,6 +6733,25 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     let revision = projection.json()["tasks"][0]["revision"]
         .as_u64()
         .expect("a revision");
+
+    let invalid_artifact = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "artifacts": ["report:_docs/context.md"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-live-invalid-artifact")
+    .send(&world)
+    .await;
+    assert_eq!(invalid_artifact.status, 400, "{}", invalid_artifact.body);
+    assert_eq!(invalid_artifact.code(), "invalid_request");
+    assert_eq!(
+        invalid_artifact.json()["rule"],
+        "artifact keys may contain only lowercase ASCII letters, digits, '.', '_' and '-'"
+    );
 
     let settled = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),

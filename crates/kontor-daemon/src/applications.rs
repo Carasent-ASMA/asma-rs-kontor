@@ -39,11 +39,11 @@ use kontor_api::applications::{
     TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
-    ConnectorSpecDto, IntakeReceiptDto, ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto,
-    ProfilePhaseDto, ProfileValidationDto, RegisterPackRequest, ResolveConflictRequest,
-    RoleSlotWaiverDto, SettleTurnRequest, SettledTurnDto, SubmitIntakeRequest, TicketClaimDto,
-    TicketCommentDto, TicketCommentPullDto, TicketConflictDto, TriggerSpecDto, TurnFollowUpDto,
-    WaiveRoleSlotRequest, WorkProfileDetailDto,
+    AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
+    ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto, ProfilePhaseDto, ProfileValidationDto,
+    RegisterPackRequest, ResolveConflictRequest, RoleSlotWaiverDto, SettleTurnRequest,
+    SettledTurnDto, SubmitIntakeRequest, TicketClaimDto, TicketCommentDto, TicketCommentPullDto,
+    TicketConflictDto, TriggerSpecDto, TurnFollowUpDto, WaiveRoleSlotRequest, WorkProfileDetailDto,
 };
 use kontor_api::applications::{
     GateProjectionDto, GateVerdictDto, ProvenanceDto, RecordGateRequest, RedactionDto,
@@ -54,6 +54,7 @@ use kontor_api::applications::{
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
+use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CanonicalDocument,
     CommandReceiptId, ConnectorKey, ContentHash, CurrencyCode, ExecutionAuthorizationId,
@@ -71,11 +72,13 @@ use kontor_core::repository::{
     TicketRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
-    AutoArmPolicy, CanonicalSourceEvent, ContextPolicySnapshot, EffectiveContextPolicy,
-    IntakeReceipt, IntakeResult, ModelRung, RequestedContextPolicy, SourceIdentity,
-    SourceProcessingState, TeamRunSnapshot, TriggerSpec,
+    AutoArmPolicy, CanonicalSourceEvent, ContextEnforcement, ContextPolicySnapshot,
+    EffectiveContextPolicy, IntakeReceipt, IntakeResult, ModelRung, RequestedContextPolicy,
+    SourceIdentity, SourceProcessingState, TeamRunSnapshot, TriggerSpec,
 };
-use kontor_core::state::{GateVerdict, TaskState, TaskTeamClosure};
+use kontor_core::state::{
+    GateVerdict, TaskState, TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome,
+};
 use kontor_core::ticket::OwnershipAction;
 use kontor_integrations_asma::jira::SpecCatalog;
 use kontor_profiles::pack::{
@@ -201,6 +204,73 @@ impl Services {
     /// A refusal about this Realm with a static rule.
     const fn deny(&self, code: ApiErrorCode, rule: &'static str) -> ApiError {
         ApiError::new(self.realm_id, code, rule)
+    }
+
+    fn artifact_keys(&self, values: &[String]) -> Result<BTreeSet<ArtifactKey>, ApiError> {
+        values
+            .iter()
+            .map(|value| {
+                ArtifactKey::parse(value).map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "artifact keys may contain only lowercase ASCII letters, digits, '.', '_' and '-'",
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn latest_handoff_receipt(
+        &self,
+        project_id: ProjectId,
+        run: &kontor_core::repository::AgentRun,
+    ) -> Result<Option<CompactionReceipt>, ApiError> {
+        let Some(binding) = run.binding.as_ref() else {
+            return Ok(None);
+        };
+        let receipt = self
+            .state()?
+            .with_store(|store| store.latest_compaction_receipt(project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(receipt.filter(|receipt| {
+            receipt.binding_id == binding.id
+                && receipt.native_before == binding.identity
+                && receipt.handoff_hash.is_some()
+        }))
+    }
+
+    fn best_effort_handoff_receipt(
+        &self,
+        project_id: ProjectId,
+        run: &kontor_core::repository::AgentRun,
+    ) -> Result<Option<CompactionReceipt>, ApiError> {
+        Ok(self
+            .latest_handoff_receipt(project_id, run)?
+            .filter(|receipt| {
+                receipt.requested.policy.enforcement == ContextEnforcement::BestEffort
+                    && receipt.status == CompactionStatus::NotEnforced
+            }))
+    }
+
+    fn role_slot_has_disposition(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        run: &kontor_core::repository::AgentRun,
+        role_slot: &RoleSlotId,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        let has_turn = state
+            .with_store(|store| store.list_settled_turns(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .iter()
+            .any(|turn| turn.agent_run_id == run.id && turn.role_slot_id == *role_slot);
+        let has_waiver = state
+            .with_store(|store| store.list_role_slot_waivers(project_id, run.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .iter()
+            .any(|waiver| waiver.role_slot_id == *role_slot);
+        Ok(has_turn || has_waiver)
     }
 
     /// Resolve one advertised profile category into its frozen bundle.
@@ -4235,12 +4305,7 @@ impl ApplicationOperations for Services {
         // attribution. A run with none contributes none; nothing is invented.
         let account_profile = run.account_profile_id;
 
-        let artifacts: BTreeSet<ArtifactKey> = request
-            .artifacts
-            .iter()
-            .map(|key| ArtifactKey::parse(key))
-            .collect::<Result<_, _>>()
-            .map_err(|error| self.refuse_domain(&error))?;
+        let artifacts = self.artifact_keys(&request.artifacts)?;
         // The digest covers exactly what identifies this turn, so a replay under
         // the same key with different content is a conflict and not a second
         // position in the seat's sequence.
@@ -4315,6 +4380,154 @@ impl ApplicationOperations for Services {
         })
     }
 
+    async fn attest_late_handoff(
+        &self,
+        key: &IdempotencyKey,
+        authority: kontor_api::auth::CallerCapability,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &AttestLateHandoffRequest,
+    ) -> Result<LateHandoffAttestationDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such agent run exists in this project",
+                )
+            })?;
+        let binding = run.binding.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the run has no immutable native binding to attest",
+            )
+        })?;
+        let terminal = run.terminal.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::RevisionConflict,
+                "late handoff attestation requires a terminal run",
+            )
+        })?;
+        if terminal.outcome != TerminalOutcome::Cancelled
+            || !matches!(
+                terminal.source,
+                TerminalEvidenceSource::RuntimeObservation { .. }
+            )
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "late handoff attestation is limited to runtime-observed cancellation",
+            ));
+        }
+        if request.binding_generation != binding.identity.generation {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the immutable binding generation differs from the attestation",
+            ));
+        }
+
+        let role_slot =
+            RoleSlotId::parse(&request.role_slot).map_err(|error| self.refuse_domain(&error))?;
+        if run.role != role_slot.clone().into_role_key() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "this run did not hold the attested role slot",
+            ));
+        }
+        let task_id = self.task_for_team_run(project_id, run.team_run_id)?;
+        let task = self.task_row(project_id, task_id)?;
+        if task.revision != request.expected_task_revision {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the task moved since the handoff was produced",
+            ));
+        }
+
+        let handoff_hash = ContentHash::parse(&request.handoff_hash).map_err(|_| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "handoff_hash must be a lowercase 64-character SHA-256 digest",
+            )
+        })?;
+        let receipt = self
+            .best_effort_handoff_receipt(project_id, &run)?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the run has no matching best-effort handoff compaction receipt",
+                )
+            })?;
+        if receipt.handoff_hash.as_ref() != Some(&handoff_hash) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the attested handoff hash differs from the durable receipt",
+            ));
+        }
+        let artifacts = self.artifact_keys(&request.artifacts)?;
+        let evidence = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "attest_late_handoff",
+            "task_id": task_id.to_string(),
+            "team_run_id": run.team_run_id.to_string(),
+            "agent_run_id": agent_run_id.to_string(),
+            "role_slot": role_slot.as_role_key().as_str(),
+            "task_revision": task.revision.get(),
+            "binding_generation": binding.identity.generation,
+            "terminal_outcome": terminal.outcome.as_str(),
+            "compaction_receipt_id": receipt.id.to_string(),
+            "handoff_hash": handoff_hash.as_str(),
+            "authority_tier": authority.as_str(),
+            "artifacts": artifacts.iter().map(|key| key.as_str()).collect::<Vec<_>>(),
+        }))?;
+        let (settled, applied) = state
+            .with_store(|store| {
+                store.attest_late_role_turn(&NewRoleTurn {
+                    id: RoleTurnId::generate(),
+                    project_id,
+                    task_id,
+                    team_run_id: run.team_run_id,
+                    agent_run_id,
+                    role_slot_id: role_slot.clone(),
+                    idempotency_key: key.as_str().to_owned(),
+                    task_revision: task.revision,
+                    binding_generation: binding.identity.generation,
+                    authority_tier: authority.as_str(),
+                    account_profile: run.account_profile_id,
+                    artifacts: artifacts.clone(),
+                    evidence_hash: evidence.hash().clone(),
+                    settled_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let (team_run_closed, _) = self.settle_team(project_id, &run, now)?;
+        let follow_ups = self.derive_follow_ups(project_id, &settled, now).await?;
+
+        Ok(LateHandoffAttestationDto {
+            realm_id: state.realm_id(),
+            turn_id: settled.id.to_string(),
+            task_id,
+            agent_run_id: agent_run_id.to_string(),
+            role_slot: settled.role_slot_id.as_role_key().as_str().to_owned(),
+            binding_generation: settled.binding_generation,
+            compaction_receipt_id: receipt.id.to_string(),
+            handoff_hash: handoff_hash.as_str().to_owned(),
+            artifacts: settled
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.as_str().to_owned())
+                .collect(),
+            terminal_outcome: terminal.outcome.as_str().to_owned(),
+            seat_live: false,
+            applied: applied_dto(applied),
+            attested_by: authority.as_str().to_owned(),
+            team_run_closed,
+            follow_ups,
+        })
+    }
+
     async fn settle_runtime(
         &self,
         key: &IdempotencyKey,
@@ -4342,6 +4555,17 @@ impl ApplicationOperations for Services {
                 "this run was never bound to a native session, so there is nothing to settle",
             )
         })?;
+
+        if run.terminal.is_none() && self.latest_handoff_receipt(project_id, &run)?.is_some() {
+            let task_id = self.task_for_team_run(project_id, run.team_run_id)?;
+            let role_slot = RoleSlotId::new(run.role.clone());
+            if !self.role_slot_has_disposition(project_id, task_id, &run, &role_slot)? {
+                return Err(self.deny(
+                    ApiErrorCode::HandoffUnsettled,
+                    "a durable handoff must be settled or attested before runtime settlement",
+                ));
+            }
+        }
 
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,

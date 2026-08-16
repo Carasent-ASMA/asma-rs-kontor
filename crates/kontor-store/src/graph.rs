@@ -2318,6 +2318,28 @@ impl SqliteStore {
     /// Returns [`RepositoryError::Conflict`] when the key already settled a turn
     /// whose identifying content differs, and a backend error otherwise.
     pub fn settle_role_turn(&self, turn: &NewRoleTurn) -> RepositoryResult<(SettledTurn, Applied)> {
+        self.record_role_turn(turn, false)
+    }
+
+    /// Record the sole late handoff disposition for a runtime-terminal run.
+    ///
+    /// The daemon proves why the run is terminal; this transaction only makes
+    /// the no-prior-disposition rule atomic with the insert.
+    ///
+    /// # Errors
+    /// Refuses a prior turn/waiver or a key reused for different content.
+    pub fn attest_late_role_turn(
+        &self,
+        turn: &NewRoleTurn,
+    ) -> RepositoryResult<(SettledTurn, Applied)> {
+        self.record_role_turn(turn, true)
+    }
+
+    fn record_role_turn(
+        &self,
+        turn: &NewRoleTurn,
+        require_unsettled_slot: bool,
+    ) -> RepositoryResult<(SettledTurn, Applied)> {
         let transaction = self.begin()?;
         // Key first, and compared whole: a replay of the same settlement is the
         // original answer, and the same key naming a different turn is a
@@ -2341,6 +2363,45 @@ impl SqliteStore {
                 subject: "settled role turn",
             })?;
             return Ok((settled, Applied::Unchanged));
+        }
+
+        if require_unsettled_slot {
+            let prior_turn: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM role_turns
+                         WHERE project_id = ?1 AND team_run_id = ?2
+                           AND agent_run_id = ?3 AND role_slot_id = ?4
+                     )",
+                    params![
+                        turn.project_id.to_string(),
+                        turn.team_run_id.to_string(),
+                        turn.agent_run_id.to_string(),
+                        turn.role_slot_id.as_role_key().as_str(),
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            let prior_waiver: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM role_slot_waivers
+                         WHERE project_id = ?1 AND team_run_id = ?2 AND role_slot_id = ?3
+                     )",
+                    params![
+                        turn.project_id.to_string(),
+                        turn.team_run_id.to_string(),
+                        turn.role_slot_id.as_role_key().as_str(),
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if prior_turn || prior_waiver {
+                return Err(conflict(
+                    "late role handoff",
+                    "the role slot already has a durable disposition",
+                ));
+            }
         }
 
         let ordinal: i64 = transaction

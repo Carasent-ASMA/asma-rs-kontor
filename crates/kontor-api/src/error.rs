@@ -64,6 +64,9 @@ closed_enum! {
         /// under the frozen template's own policy. Recording "could not" as an
         /// accounting source is exactly what this code exists to avoid.
         RoleSlotUnbound => "role_slot_unbound",
+        /// A durable handoff exists but its turn disposition has not yet been
+        /// recorded, so runtime settlement must not terminalize the run.
+        HandoffUnsettled => "handoff_unsettled",
         /// A dependency could not be reached. A fact about the channel only.
         Unavailable => "unavailable",
         /// The addressed thing does not exist in this Realm.
@@ -94,7 +97,9 @@ impl ApiErrorCode {
             | Self::TimelineRefetchRequired => StatusCode::CONFLICT,
             // The request is well formed and understood; this runtime simply
             // cannot do it. That is not a server defect, so it is not a 5xx.
-            Self::UnsupportedCapability => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::UnsupportedCapability | Self::HandoffUnsettled => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             // The position the caller wants is genuinely gone.
             Self::ResnapshotRequired => StatusCode::GONE,
             // The request is well formed and the state it presented is current;
