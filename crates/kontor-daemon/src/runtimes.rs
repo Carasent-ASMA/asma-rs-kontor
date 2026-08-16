@@ -30,11 +30,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{ExternalId, ExternalName, RoleSlotId, RuntimeKindKey};
+use kontor_core::id::{ExternalId, ExternalName, RoleSlotId, RuntimeKindKey, TaskId};
 use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_runtime_paseo::adapter::{
-    PaseoAdapter, PaseoCheckpoint, PaseoConfig, PaseoExecutionScope,
+    PaseoAdapter, PaseoCheckpoint, PaseoConfig, PaseoExecutionScope, PaseoTaskScope,
 };
 use kontor_runtime_paseo::client::PaseoLiveTransport;
 use secrecy::SecretString;
@@ -185,6 +185,9 @@ pub struct PaseoSetting {
     pub project_root_cwd: String,
     /// The filesystem-canonical task worktree.
     pub canonical_worktree_cwd: String,
+    /// Explicit ticket scopes for an epic runtime that serves several tasks.
+    #[serde(default)]
+    pub task_scopes: BTreeMap<String, PaseoTaskSetting>,
     /// The persisted Orchestrator agent every role launches under.
     pub orchestrator_agent_id: String,
     /// The most sessions Kontor holds open on this plane at once.
@@ -203,6 +206,19 @@ pub struct PaseoSetting {
     pub client_id: String,
     /// The per-command wall-clock budget, in seconds.
     pub timeout_seconds: u64,
+}
+
+/// One ticket-specific scope inside an epic-scoped Paseo runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaseoTaskSetting {
+    /// The Kontor plan item.
+    pub plan_item_key: String,
+    /// The Jira issue for this ticket.
+    pub jira_issue_key: String,
+    /// The runtime-neutral short ticket code.
+    pub ticket_short_code: String,
+    /// The filesystem-canonical task worktree.
+    pub canonical_worktree_cwd: String,
 }
 
 /// The visible portion of one canonical Paseo seat title.
@@ -364,6 +380,25 @@ fn compose_paseo(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, FleetError>>()?;
+    let task_scopes = setting
+        .task_scopes
+        .iter()
+        .map(|(task_id, task)| {
+            Ok((
+                TaskId::parse(task_id).map_err(|_| refuse("task_scopes task_id"))?,
+                PaseoTaskScope {
+                    plan_item_key: ExternalId::parse(&task.plan_item_key)
+                        .map_err(|_| refuse("task_scopes plan_item_key"))?,
+                    jira_issue_key: ExternalId::parse(&task.jira_issue_key)
+                        .map_err(|_| refuse("task_scopes jira_issue_key"))?,
+                    ticket_short_code: ExternalId::parse(&task.ticket_short_code)
+                        .map_err(|_| refuse("task_scopes ticket_short_code"))?,
+                    canonical_worktree_cwd: WorkspaceRoot::parse(&task.canonical_worktree_cwd)
+                        .map_err(|_| refuse("task_scopes canonical_worktree_cwd"))?,
+                },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, FleetError>>()?;
     let config = PaseoConfig {
         runtime_kind: runtime_kind.clone(),
         host_key: host_key.clone(),
@@ -385,6 +420,7 @@ fn compose_paseo(
                 .map_err(|_| refuse("project_root_cwd"))?,
             canonical_worktree_cwd: WorkspaceRoot::parse(&setting.canonical_worktree_cwd)
                 .map_err(|_| refuse("canonical_worktree_cwd"))?,
+            task_scopes,
             orchestrator_agent_id: ExternalId::parse(&setting.orchestrator_agent_id)
                 .map_err(|_| refuse("orchestrator_agent_id"))?,
         },
@@ -432,6 +468,7 @@ mod tests {
             )]),
             project_root_cwd: "/w/epic".to_owned(),
             canonical_worktree_cwd: "/w/task".to_owned(),
+            task_scopes: BTreeMap::new(),
             orchestrator_agent_id: "agent-1".to_owned(),
             max_concurrent_sessions: 2,
             executable: "paseo".to_owned(),
@@ -544,6 +581,7 @@ mod tests {
             )]),
             project_root_cwd: "/w/epic".to_owned(),
             canonical_worktree_cwd: "/w/task".to_owned(),
+            task_scopes: BTreeMap::new(),
             orchestrator_agent_id: "agent-1".to_owned(),
             max_concurrent_sessions: 2,
             executable: "paseo".to_owned(),

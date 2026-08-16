@@ -512,6 +512,9 @@ pub struct PaseoAgent {
     /// The effective thinking option Paseo actually applied.
     #[serde(default, rename = "effectiveThinkingOptionId")]
     pub effective_thinking_option_id: Option<String>,
+    /// The provider-native permission mode Paseo actually applied.
+    #[serde(default, rename = "currentModeId")]
+    pub current_mode_id: Option<String>,
     /// The workspace it runs in.
     ///
     /// Optional on the wire, and its absence is a refusal rather than a
@@ -1351,6 +1354,7 @@ mod tests {
             model: "claude-opus-5".to_owned(),
             thinking_option_id: None,
             effective_thinking_option_id: None,
+            current_mode_id: Some("auto".to_owned()),
             workspace_id: Some("wks_1".to_owned()),
             cwd: "/w/task-1".to_owned(),
             title: Some("KON-MVP-11 Implement".to_owned()),
@@ -1384,6 +1388,7 @@ mod tests {
             model: "claude-opus-5".to_owned(),
             thinking_option_id: None,
             effective_thinking_option_id: None,
+            current_mode_id: Some("auto".to_owned()),
             workspace_id: Some("wks_1".to_owned()),
             cwd: "/w/task-1".to_owned(),
             title: None,

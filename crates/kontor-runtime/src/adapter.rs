@@ -85,6 +85,24 @@ pub enum RuntimeError {
     /// The runtime did not prove that the native session belongs to the run.
     #[error("native session is not correlated with the requested run")]
     CorrelationFailed,
+    /// The selected provider has no permission mode Kontor knows how to pin.
+    #[error("provider {provider} has no pinned runtime permission mode")]
+    PermissionModeUnsupported {
+        /// Provider whose mutable default was refused.
+        provider: String,
+    },
+    /// The runtime did not apply the permission mode Kontor selected.
+    #[error(
+        "runtime permission mode mismatch for {provider}: expected {expected:?}, found {found:?}"
+    )]
+    PermissionModeMismatch {
+        /// Provider whose mode was checked.
+        provider: String,
+        /// Mode Kontor pinned; `None` means this provider exposes no modes.
+        expected: Option<String>,
+        /// Mode the runtime read back.
+        found: Option<String>,
+    },
     /// The seat is already spoken for: it holds a live native session, or a
     /// reservation issued to someone else.
     ///

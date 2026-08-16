@@ -84,7 +84,9 @@ use kontor_runtime::workspace::{
     WorkspaceLabel, WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot,
 };
 
-use crate::client::{PaseoCommand, PaseoRpc, PaseoTransport, ensure_frame_bounded};
+use crate::client::{
+    PaseoCommand, PaseoRpc, PaseoTransport, ensure_frame_bounded, permission_mode,
+};
 use crate::wire::{
     MAX_DIRECTORY_PAGE, MAX_DIRECTORY_PAGES, MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES,
     PASEO_APP_VERSION, PaseoAgent, PaseoAgentAnswer, PaseoAgentPage, PaseoAgentStatus,
@@ -167,6 +169,12 @@ pub struct PaseoExecutionScope {
     pub project_root_cwd: WorkspaceRoot,
     /// The filesystem-canonical task worktree. Authority, never display data.
     pub canonical_worktree_cwd: WorkspaceRoot,
+    /// Explicit ticket scopes served by this epic runtime.
+    ///
+    /// Empty preserves the original single-ticket configuration. Once present,
+    /// every task must be named so one runtime family can serve several TSWs
+    /// without silently falling back to another ticket's worktree or titles.
+    pub task_scopes: BTreeMap<TaskId, PaseoTaskScope>,
     /// The persisted Orchestrator agent every role of this ticket launches
     /// under.
     ///
@@ -179,7 +187,37 @@ pub struct PaseoExecutionScope {
     pub orchestrator_agent_id: ExternalId,
 }
 
+/// The ticket-specific half of one epic-scoped Paseo runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaseoTaskScope {
+    /// The Kontor plan item.
+    pub plan_item_key: ExternalId,
+    /// The Jira issue for the ticket.
+    pub jira_issue_key: ExternalId,
+    /// The runtime-neutral short ticket code.
+    pub ticket_short_code: ExternalId,
+    /// The filesystem-canonical task worktree.
+    pub canonical_worktree_cwd: WorkspaceRoot,
+}
+
 impl PaseoExecutionScope {
+    fn task_scope(&self, task_id: TaskId) -> RuntimeResult<PaseoTaskScope> {
+        if self.task_scopes.is_empty() {
+            return Ok(PaseoTaskScope {
+                plan_item_key: self.plan_item_key.clone(),
+                jira_issue_key: self.jira_issue_key.clone(),
+                ticket_short_code: self.ticket_short_code.clone(),
+                canonical_worktree_cwd: self.canonical_worktree_cwd.clone(),
+            });
+        }
+        self.task_scopes
+            .get(&task_id)
+            .cloned()
+            .ok_or(RuntimeError::WorkspaceMismatch {
+                rule: "the task has no configured Paseo workspace scope",
+            })
+    }
+
     /// `Epic · {jira_epic_key} · {mini_project_short_title}`.
     #[must_use]
     pub fn project_display_name(&self) -> String {
@@ -200,12 +238,29 @@ impl PaseoExecutionScope {
         )
     }
 
+    fn workspace_display_name_for(&self, task_id: TaskId) -> RuntimeResult<String> {
+        let task = self.task_scope(task_id)?;
+        Ok(format!(
+            "TSW · {} · {}",
+            task.jira_issue_key.as_str(),
+            task.ticket_short_code.as_str()
+        ))
+    }
+
     /// `{role} · {ticket_short_code} [· {stable_slot_suffix}]`.
     ///
     /// # Errors
     /// Returns [`RuntimeError::LaunchNotAdmitted`] when the configured ticket
     /// did not provide a visible name for the requested role slot.
     pub fn agent_display_name(&self, role_slot_id: &RoleSlotId) -> RuntimeResult<String> {
+        self.agent_display_name_for(role_slot_id, None)
+    }
+
+    fn agent_display_name_for(
+        &self,
+        role_slot_id: &RoleSlotId,
+        task_id: Option<TaskId>,
+    ) -> RuntimeResult<String> {
         let display =
             self.seat_display_roles
                 .get(role_slot_id)
@@ -222,24 +277,27 @@ impl PaseoExecutionScope {
             });
         }
         let (role, suffix) = display;
+        let ticket_short_code = match task_id {
+            Some(task_id) => self.task_scope(task_id)?.ticket_short_code,
+            None => self.ticket_short_code.clone(),
+        };
         Ok(match suffix {
             Some(suffix) => format!(
                 "{} · {} · {}",
                 role.as_str(),
-                self.ticket_short_code.as_str(),
+                ticket_short_code.as_str(),
                 suffix.as_str()
             ),
-            None => format!("{} · {}", role.as_str(), self.ticket_short_code.as_str()),
+            None => format!("{} · {}", role.as_str(), ticket_short_code.as_str()),
         })
     }
 }
 
-/// One configured Paseo execution plane: one host, one epic, one task worktree.
+/// One configured Paseo execution plane: one host, one epic, many task worktrees.
 ///
-/// Scoped to a ticket rather than to a daemon because the placement rules are
-/// about *this* task worktree. A second ticket in the same epic is a second
-/// adapter sharing the same [`PaseoProjectBinding`], which is exactly how one
-/// project comes to hold many task workspaces.
+/// Ticket scope stays explicit inside the adapter because the runtime registry
+/// has one authority entry per runtime family. The task id selects the exact
+/// worktree and display metadata before any native effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaseoConfig {
     /// The Kontor runtime-kind key, e.g. `paseo.agent`.
@@ -1168,6 +1226,7 @@ impl PaseoAdapter {
         &self,
         workspace: &PaseoWorkspace,
         project: &PaseoProjectBinding,
+        expected_root: &WorkspaceRoot,
     ) -> RuntimeResult<()> {
         if workspace.id.is_empty() {
             return Err(RuntimeError::WorkspaceMismatch {
@@ -1180,7 +1239,7 @@ impl PaseoAdapter {
             });
         }
         let reported = WorkspaceRoot::parse(&workspace.workspace_directory)?;
-        if reported != self.config.scope.canonical_worktree_cwd {
+        if &reported != expected_root {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the workspace is not the canonical task worktree",
             });
@@ -1207,14 +1266,15 @@ impl PaseoAdapter {
         task_id: TaskId,
         project: &PaseoProjectBinding,
         workspace_id: &str,
-    ) -> BTreeMap<String, String> {
+    ) -> RuntimeResult<BTreeMap<String, String>> {
         let scope = &self.config.scope;
-        [
+        let task = scope.task_scope(task_id)?;
+        Ok([
             (
                 label::AGENT_RUN,
                 CorrelationLabel::for_run(agent_run_id).to_string(),
             ),
-            (label::JIRA_ISSUE, scope.jira_issue_key.as_str().to_owned()),
+            (label::JIRA_ISSUE, task.jira_issue_key.as_str().to_owned()),
             (label::JIRA_EPIC, scope.jira_epic_key.as_str().to_owned()),
             (
                 label::PROJECT_ID,
@@ -1234,7 +1294,7 @@ impl PaseoAdapter {
             (label::WORKSPACE_ID, workspace_id.to_owned()),
             (
                 label::WORKTREE,
-                scope.canonical_worktree_cwd.as_str().to_owned(),
+                task.canonical_worktree_cwd.as_str().to_owned(),
             ),
             (
                 label::PARENT_AGENT,
@@ -1243,7 +1303,7 @@ impl PaseoAdapter {
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
-        .collect()
+        .collect())
     }
 
     /// The one label every seat of a team run carries, for a run-wide census.
@@ -1291,7 +1351,11 @@ impl PaseoAdapter {
         workspace_id: &str,
         wanted_labels: &BTreeMap<String, String>,
     ) -> RuntimeResult<()> {
-        self.verify_agent_location(agent, workspace_id)?;
+        let expected_root = wanted_labels
+            .get(label::WORKTREE)
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let expected_root = WorkspaceRoot::parse(expected_root)?;
+        self.verify_agent_location(agent, workspace_id, &expected_root)?;
         // `paseo.parent-agent-id` is part of `wanted_labels`, so the exact-label
         // census below already covers it; this line is what makes the refusal
         // legible when the parent is the half that is wrong.
@@ -1317,7 +1381,12 @@ impl PaseoAdapter {
     /// this agent must be in being verified as the bound project's — which is
     /// why every caller of this pairs it with
     /// [`PaseoAdapter::verify_workspace_placement`] on the same workspace id.
-    fn verify_agent_location(&self, agent: &PaseoAgent, workspace_id: &str) -> RuntimeResult<()> {
+    fn verify_agent_location(
+        &self,
+        agent: &PaseoAgent,
+        workspace_id: &str,
+        expected_root: &WorkspaceRoot,
+    ) -> RuntimeResult<()> {
         if agent.id.is_empty() {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -1327,7 +1396,7 @@ impl PaseoAdapter {
             });
         }
         let reported = WorkspaceRoot::parse(&agent.cwd)?;
-        if reported != self.config.scope.canonical_worktree_cwd {
+        if &reported != expected_root {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the agent is working outside the canonical task worktree",
             });
@@ -1357,11 +1426,15 @@ impl PaseoAdapter {
         let workspace_id = self
             .placement(binding.binding_id())
             .ok_or(RuntimeError::WorkspaceBindingRequired)?;
-        self.verify_agent_location(agent, workspace_id.as_str())?;
+        let expected_root = agent
+            .label(label::WORKTREE)
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let expected_root = WorkspaceRoot::parse(expected_root)?;
+        self.verify_agent_location(agent, workspace_id.as_str(), &expected_root)?;
         // …and the workspace itself, which is where the project half of the
         // agent's placement is proved on this wire.
         let workspace = self.fetch_workspace(workspace_id.as_str()).await?;
-        self.verify_workspace_placement(&workspace, &project)?;
+        self.verify_workspace_placement(&workspace, &project, &expected_root)?;
         // A live launch/adoption owns a full seat record and therefore freezes
         // its route. Restart restoration deliberately reconstructs only facts
         // Paseo can re-attest; its launch-time route remains in observation
@@ -1384,6 +1457,14 @@ impl PaseoAdapter {
             && agent.effective_thinking_option_id.as_deref() != Some(effort.as_str())
         {
             return Err(RuntimeError::CorrelationFailed);
+        }
+        let expected_mode = permission_mode(&requested.provider.0)?;
+        if agent.current_mode_id.as_deref() != expected_mode {
+            return Err(RuntimeError::PermissionModeMismatch {
+                provider: requested.provider.0.clone(),
+                expected: expected_mode.map(str::to_owned),
+                found: agent.current_mode_id.clone(),
+            });
         }
         Ok(())
     }
@@ -1451,6 +1532,7 @@ impl PaseoAdapter {
                 "model": agent.model,
                 "thinking": agent.thinking_option_id,
                 "effective_thinking": agent.effective_thinking_option_id,
+                "permission_mode": agent.current_mode_id,
                 "workspace_id": agent.workspace_id,
                 "status": format!("{:?}", agent.status),
                 "archived_at": agent.archived_at,
@@ -1688,9 +1770,10 @@ impl PaseoAdapter {
         let task_workspace = match &prepared {
             Some(workspace_id) => {
                 let workspace = self.fetch_workspace(workspace_id).await?;
-                self.verify_workspace_placement(&workspace, &project)
+                let root = WorkspaceRoot::parse(&workspace.workspace_directory)?;
+                self.verify_workspace_placement(&workspace, &project, &root)
                     .is_ok()
-                    .then(|| workspace_id.clone())
+                    .then(|| (workspace_id.clone(), root))
             }
             None => None,
         };
@@ -1701,7 +1784,7 @@ impl PaseoAdapter {
                 // Nothing may be planned into a place that is not the task
                 // worktree — not a reuse, and not a materialize either, since
                 // materializing is how a seat would be created there.
-                let Some(workspace_id) = &task_workspace else {
+                let Some((workspace_id, expected_root)) = &task_workspace else {
                     return PaseoSlotPlan::Blocked {
                         slot,
                         rule: "this team run has no proven task workspace to plan a seat in",
@@ -1716,7 +1799,10 @@ impl PaseoAdapter {
                 // still answers this census wearing the right name — and reusing
                 // it would drive the seat's next turn in the wrong repository.
                 let (placed, misplaced): (Vec<_>, Vec<_>) =
-                    live.partition(|agent| self.verify_agent_location(agent, workspace_id).is_ok());
+                    live.partition(|agent| {
+                        self.verify_agent_location(agent, workspace_id, expected_root)
+                            .is_ok()
+                    });
                 match (placed.as_slice(), misplaced.is_empty()) {
                     // Two live agents for one seat is the state AC-4 forbids.
                     // Picking one would bind a run to a session that may belong
@@ -2183,12 +2269,13 @@ impl PaseoAdapter {
             });
         }
         let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
+        let task_scope = self.config.scope.task_scope(request.task_id())?;
 
         // Rerun the placement checks against a *fresh* readback. A binding made
         // ten minutes ago is evidence about ten minutes ago, and the whole point
         // of this gate is that nothing has moved since.
         let workspace = self.fetch_workspace(&workspace_id).await?;
-        self.verify_workspace_placement(&workspace, &project)?;
+        self.verify_workspace_placement(&workspace, &project, &task_scope.canonical_worktree_cwd)?;
 
         let labels = self.seat_labels(
             request.agent_run_id(),
@@ -2197,7 +2284,7 @@ impl PaseoAdapter {
             request.task_id(),
             &project,
             &workspace_id,
-        );
+        )?;
         let slot_labels = self.slot_labels(request.team_run_id(), request.role_slot_id());
 
         // A native census before the first effect. An exact full-label match is
@@ -2226,16 +2313,16 @@ impl PaseoAdapter {
         let agent_display_name = self
             .config
             .scope
-            .agent_display_name(request.role_slot_id())?;
+            .agent_display_name_for(request.role_slot_id(), Some(request.task_id()))?;
         let command = PaseoCommand::agent_run(
             &workspace_id,
-            self.config.scope.canonical_worktree_cwd.as_str(),
+            task_scope.canonical_worktree_cwd.as_str(),
             request.model_rung(),
             &agent_display_name,
             &labels,
             self.config.scope.orchestrator_agent_id.as_str(),
             request.prompt().as_str(),
-        );
+        )?;
         let native_id = match recovered_id {
             Some(native_id) => native_id,
             None => match self.transport.run(&command).await {
@@ -2279,14 +2366,14 @@ impl PaseoAdapter {
         let record = PaseoSeatRecord {
             mini_project_id: self.config.mini_project_id.clone(),
             jira_epic_key: self.config.scope.jira_epic_key.clone(),
-            plan_item_key: self.config.scope.plan_item_key.clone(),
+            plan_item_key: task_scope.plan_item_key.clone(),
             task_id: request.task_id(),
             team_run_id: request.team_run_id(),
             role_slot_id: request.role_slot_id().clone(),
             agent_run_id: request.agent_run_id(),
             binding_id: request.binding_id(),
             workspace_binding_id: prepared.binding_id(),
-            canonical_worktree_cwd: self.config.scope.canonical_worktree_cwd.clone(),
+            canonical_worktree_cwd: task_scope.canonical_worktree_cwd.clone(),
             host_key: self.config.host_key.clone(),
             project_id: project.project_id.clone(),
             workspace_id: ExternalId::parse(&workspace_id)?,
@@ -2506,7 +2593,8 @@ impl RuntimeAdapter for PaseoAdapter {
         // The requested root is compared against the canonical worktree this
         // plane serves. `WorkspaceRoot` already refuses `.`, `..` and repeated
         // separators, so two spellings of one place cannot compare unequal here.
-        if request.root != self.config.scope.canonical_worktree_cwd {
+        let task_scope = self.config.scope.task_scope(request.task_id)?;
+        if request.root != task_scope.canonical_worktree_cwd {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the requested root is not the canonical task worktree of this plane",
             });
@@ -2528,7 +2616,10 @@ impl RuntimeAdapter for PaseoAdapter {
         // `wire::workspace_label_suffix` for why that is a real round trip and
         // not a fabricated one.
         let workspace_title = workspace_label_suffix(
-            &self.config.scope.workspace_display_name(),
+            &self
+                .config
+                .scope
+                .workspace_display_name_for(request.task_id)?,
             &WorkspaceLabel::for_team_run(request.team_run_id).to_string(),
         );
         let (workspace, created) = match exact.len() {
@@ -2555,7 +2646,7 @@ impl RuntimeAdapter for PaseoAdapter {
             }
         };
 
-        self.verify_workspace_placement(&workspace, &project)?;
+        self.verify_workspace_placement(&workspace, &project, &task_scope.canonical_worktree_cwd)?;
 
         let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
         // What Paseo *reported*, extracted from the title it returned. A
@@ -2914,6 +3005,7 @@ impl RuntimeAdapter for PaseoAdapter {
             .cloned()
             .ok_or(RuntimeError::WorkspaceBindingRequired)?;
         let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
+        let task_scope = self.config.scope.task_scope(intent.task_id)?;
 
         let before = self.fetch_agent(&native_id).await?;
         // An orphan, and only an orphan: a session already carrying a Kontor run
@@ -2929,7 +3021,7 @@ impl RuntimeAdapter for PaseoAdapter {
             });
         }
         if before.workspace_id.as_deref() != Some(workspace_id.as_str())
-            || WorkspaceRoot::parse(&before.cwd)? != self.config.scope.canonical_worktree_cwd
+            || WorkspaceRoot::parse(&before.cwd)? != task_scope.canonical_worktree_cwd
         {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the session is not placed in this ticket's task workspace",
@@ -2942,7 +3034,7 @@ impl RuntimeAdapter for PaseoAdapter {
         // not one Paseo provisioned for itself — before the labels, because a
         // label write is the theft this whole path exists to gate.
         let workspace = self.fetch_workspace(&workspace_id).await?;
-        self.verify_workspace_placement(&workspace, &project)?;
+        self.verify_workspace_placement(&workspace, &project, &task_scope.canonical_worktree_cwd)?;
 
         let slot = RoleSlotKey::new(intent.team_run_id, intent.role_slot_id.clone());
         {
@@ -2967,7 +3059,7 @@ impl RuntimeAdapter for PaseoAdapter {
             intent.task_id,
             &project,
             &workspace_id,
-        );
+        )?;
         let command = PaseoCommand::agent_update_labels(&native_id, &labels);
         let output = self.transport.run(&command).await?;
         let updated: PaseoCliAgentUpdated = output.parse("PaseoCliAgentUpdated")?;
@@ -3013,14 +3105,14 @@ impl RuntimeAdapter for PaseoAdapter {
         let record = PaseoSeatRecord {
             mini_project_id: self.config.mini_project_id.clone(),
             jira_epic_key: self.config.scope.jira_epic_key.clone(),
-            plan_item_key: self.config.scope.plan_item_key.clone(),
+            plan_item_key: task_scope.plan_item_key.clone(),
             task_id: intent.task_id,
             team_run_id: intent.team_run_id,
             role_slot_id: intent.role_slot_id.clone(),
             agent_run_id: request.agent_run_id,
             binding_id: request.binding_id,
             workspace_binding_id: prepared.binding_id(),
-            canonical_worktree_cwd: self.config.scope.canonical_worktree_cwd.clone(),
+            canonical_worktree_cwd: task_scope.canonical_worktree_cwd.clone(),
             host_key: self.config.host_key.clone(),
             project_id: project.project_id.clone(),
             workspace_id: ExternalId::parse(&workspace_id)?,
@@ -3661,15 +3753,24 @@ impl PaseoAdapter {
             let Some(workspace_id) = agent.workspace_id.clone() else {
                 continue;
             };
+            let Some(root) = agent
+                .label(label::WORKTREE)
+                .and_then(|root| WorkspaceRoot::parse(root).ok())
+            else {
+                continue;
+            };
             // Both halves, exactly as `verify_seat_placement` asks them.
-            if self.verify_agent_location(&agent, &workspace_id).is_err() {
+            if self
+                .verify_agent_location(&agent, &workspace_id, &root)
+                .is_err()
+            {
                 continue;
             }
             let Ok(workspace) = self.fetch_workspace(&workspace_id).await else {
                 continue;
             };
             if self
-                .verify_workspace_placement(&workspace, &project)
+                .verify_workspace_placement(&workspace, &project, &root)
                 .is_err()
             {
                 continue;
@@ -3679,5 +3780,70 @@ impl PaseoAdapter {
             }
         }
         Ok(placements)
+    }
+}
+
+#[cfg(test)]
+mod task_scope_tests {
+    use super::*;
+
+    fn task(value: &str) -> TaskId {
+        TaskId::parse(value).expect("a canonical task id")
+    }
+
+    #[test]
+    fn one_epic_runtime_routes_each_task_to_its_own_worktree() {
+        let first = task("01a0074f-671a-7420-b395-163d160d9792");
+        let second = task("01a0074f-671d-7560-8a66-6a21972e78ae");
+        let mut scope = PaseoExecutionScope {
+            jira_epic_key: ExternalId::parse("ASMA-7869").expect("epic"),
+            mini_project_short_title: ExternalName::parse("Kontor Operational MVP").expect("title"),
+            plan_item_key: ExternalId::parse("OP-01").expect("plan item"),
+            jira_issue_key: ExternalId::parse("ASMA-7870").expect("ticket"),
+            ticket_short_code: ExternalId::parse("OP-01").expect("short code"),
+            seat_display_roles: BTreeMap::new(),
+            project_root_cwd: WorkspaceRoot::parse("/repo").expect("root"),
+            canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-01").expect("worktree"),
+            task_scopes: BTreeMap::new(),
+            orchestrator_agent_id: ExternalId::parse("orchestrator").expect("agent"),
+        };
+        scope.task_scopes.insert(
+            first,
+            PaseoTaskScope {
+                plan_item_key: ExternalId::parse("OP-01").expect("plan item"),
+                jira_issue_key: ExternalId::parse("ASMA-7870").expect("ticket"),
+                ticket_short_code: ExternalId::parse("OP-01").expect("short code"),
+                canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-01").expect("worktree"),
+            },
+        );
+        scope.task_scopes.insert(
+            second,
+            PaseoTaskScope {
+                plan_item_key: ExternalId::parse("OP-02").expect("plan item"),
+                jira_issue_key: ExternalId::parse("ASMA-7871").expect("ticket"),
+                ticket_short_code: ExternalId::parse("OP-02").expect("short code"),
+                canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-02").expect("worktree"),
+            },
+        );
+
+        assert_eq!(
+            scope
+                .task_scope(first)
+                .expect("first task")
+                .canonical_worktree_cwd,
+            WorkspaceRoot::parse("/repo/op-01").expect("worktree")
+        );
+        assert_eq!(
+            scope
+                .task_scope(second)
+                .expect("second task")
+                .canonical_worktree_cwd,
+            WorkspaceRoot::parse("/repo/op-02").expect("worktree")
+        );
+        assert!(
+            scope
+                .task_scope(task("01a0074f-6721-7333-b205-4d0108e157b0"))
+                .is_err()
+        );
     }
 }

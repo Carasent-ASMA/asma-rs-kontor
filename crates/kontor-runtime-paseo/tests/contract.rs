@@ -293,6 +293,7 @@ fn scope() -> PaseoExecutionScope {
         // project registered from the worktree would be one project per task.
         project_root_cwd: WorkspaceRoot::parse("/w/epic").expect("absolute"),
         canonical_worktree_cwd: root(),
+        task_scopes: BTreeMap::new(),
         orchestrator_agent_id: external(ORCHESTRATOR),
     }
 }
@@ -331,6 +332,7 @@ fn any_agent_run() -> PaseoCommand {
         ORCHESTRATOR,
         "p",
     )
+    .expect("the fixture provider has a pinned permission mode")
 }
 
 /// A daemon scripted for the whole happy path: create the workspace, launch one
@@ -1083,6 +1085,28 @@ async fn prelaunch_refuses_a_route_the_readback_did_not_apply() {
             .expect_err("a runtime default cannot replace the selected route");
         assert_eq!(error, RuntimeError::CorrelationFailed, "field: {field}");
     }
+}
+
+#[tokio::test]
+async fn prelaunch_refuses_a_permission_mode_the_readback_did_not_apply() {
+    let recorded = daemon();
+    let mut wrong = v(AGENT);
+    wrong["agent"]["currentModeId"] = serde_json::json!("default");
+    recorded.set_answer_rpc("fetch_agent_request", wrong);
+    let (plane, workspace) = Plane::prepared(recorded).await;
+
+    let error = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect_err("Paseo must apply the pinned permission mode");
+    assert_eq!(
+        error,
+        RuntimeError::PermissionModeMismatch {
+            provider: "claude".to_owned(),
+            expected: Some("auto".to_owned()),
+            found: Some("default".to_owned()),
+        }
+    );
 }
 
 #[tokio::test]

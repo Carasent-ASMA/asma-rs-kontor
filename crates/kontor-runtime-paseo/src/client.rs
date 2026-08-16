@@ -77,6 +77,26 @@ const JSON_FLAG: &str = "--json";
 /// The environment variable Paseo reads the parent agent from.
 pub const PARENT_AGENT_ENV: &str = "PASEO_AGENT_ID";
 
+/// The unattended, approval-aware mode Paseo 0.3.1 exposes for each provider.
+///
+/// Kontor pins this explicitly because an omitted mode delegates authority to
+/// a mutable provider default (including Claude's `default` / Always Ask).
+pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
+    match provider {
+        "claude" => Ok(Some("auto")),
+        "codex" => Ok(Some("auto-review")),
+        "copilot" => Ok(Some(
+            "https://agentclientprotocol.com/protocol/session-modes#agent",
+        )),
+        "opencode" => Ok(Some("build")),
+        "pi" => Ok(None),
+        "omp" => Ok(Some("full")),
+        _ => Err(RuntimeError::PermissionModeUnsupported {
+            provider: provider.to_owned(),
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI commands
 // ---------------------------------------------------------------------------
@@ -160,7 +180,6 @@ impl PaseoCommand {
     /// shape (`paseo agent run [options] <prompt>`); there is no `--prompt`.
     ///
     /// `--provider` is mandatory on this release.
-    #[must_use]
     pub fn agent_run(
         workspace_id: &str,
         canonical_cwd: &str,
@@ -169,12 +188,16 @@ impl PaseoCommand {
         labels: &BTreeMap<String, String>,
         parent_agent_id: &str,
         prompt: &str,
-    ) -> Self {
+    ) -> RuntimeResult<Self> {
+        let permission_mode = permission_mode(&model_rung.provider.0)?;
         let mut argv = Argv::new(&["agent", "run", "--background"])
             .option("--workspace", workspace_id)
             .option("--cwd", canonical_cwd)
             .option("--provider", &model_rung.provider.0)
             .option("--model", &model_rung.model.0);
+        if let Some(mode) = permission_mode {
+            argv = argv.option("--mode", mode);
+        }
         if let Some(effort) = model_rung.effort {
             argv = argv.option("--thinking", effort.as_str());
         }
@@ -189,7 +212,7 @@ impl PaseoCommand {
         command
             .env
             .push((PARENT_AGENT_ENV.to_owned(), parent_agent_id.to_owned()));
-        command
+        Ok(command)
     }
 
     /// `paseo agent update {id} --label …` — the adoption write, and nothing else.
@@ -1343,7 +1366,8 @@ mod tests {
                 &labels(),
                 "agt_orchestrator",
                 "do the work",
-            ),
+            )
+            .expect("Codex has a pinned permission mode"),
             PaseoCommand::agent_update_labels("agt_1", &labels()),
             PaseoCommand::agent_reload("agt_1"),
             PaseoCommand::agent_stop("agt_1"),
@@ -1376,7 +1400,8 @@ mod tests {
             &labels(),
             "agt_p",
             "--not-a-flag",
-        );
+        )
+        .expect("Codex has a pinned permission mode");
         // The option half never carries it, because the transport writes its
         // own `--host` after these and everything past `--` is a positional.
         assert_eq!(command.trailing(), Some("--not-a-flag"));
@@ -1401,7 +1426,8 @@ mod tests {
             &labels(),
             "agt_p",
             "p",
-        );
+        )
+        .expect("Claude has a pinned permission mode");
         let argv = command.argv();
         assert!(argv.windows(2).any(|pair| pair == ["--provider", "claude"]));
         assert!(
@@ -1409,6 +1435,32 @@ mod tests {
                 .any(|pair| pair == ["--model", "claude-opus-5"])
         );
         assert!(argv.windows(2).any(|pair| pair == ["--thinking", "xhigh"]));
+        assert!(argv.windows(2).any(|pair| pair == ["--mode", "auto"]));
+    }
+
+    #[test]
+    fn every_supported_provider_gets_an_explicit_unattended_mode() {
+        let expected = [
+            ("claude", Some("auto")),
+            ("codex", Some("auto-review")),
+            (
+                "copilot",
+                Some("https://agentclientprotocol.com/protocol/session-modes#agent"),
+            ),
+            ("opencode", Some("build")),
+            ("pi", None),
+            ("omp", Some("full")),
+        ];
+        for (provider, mode) in expected {
+            assert_eq!(
+                permission_mode(provider).expect("a supported provider"),
+                mode
+            );
+        }
+        assert!(matches!(
+            permission_mode("new-provider"),
+            Err(RuntimeError::PermissionModeUnsupported { .. })
+        ));
     }
 
     #[test]
@@ -1421,7 +1473,8 @@ mod tests {
             &labels(),
             "agt_orchestrator",
             "the actual prompt",
-        );
+        )
+        .expect("Codex has a pinned permission mode");
         assert_eq!(command.route(), "agent run");
         assert!(!command.route().contains("the actual prompt"));
         assert!(!command.route().contains("secret-project"));
@@ -1445,7 +1498,8 @@ mod tests {
             &labels(),
             "agt_orchestrator",
             "p",
-        );
+        )
+        .expect("Codex has a pinned permission mode");
         assert_eq!(
             command.env(),
             [(PARENT_AGENT_ENV.to_owned(), "agt_orchestrator".to_owned())]
@@ -1477,6 +1531,7 @@ mod tests {
             "agt_p",
             "p",
         )
+        .expect("Codex has a pinned permission mode")
         .ensure_dispatchable()
         .expect("`--background --workspace wks_1` is an ordinary command");
         PaseoCommand::agent_stop("agt_1")
@@ -1497,6 +1552,7 @@ mod tests {
                 "agt_p",
                 "p",
             )
+            .expect("Codex has a pinned permission mode")
             .mutates()
         );
         assert!(PaseoCommand::workspace_create("/w/t", "p", "t").mutates());
