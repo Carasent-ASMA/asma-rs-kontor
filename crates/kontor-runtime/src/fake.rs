@@ -827,6 +827,7 @@ impl ScriptedFakeRuntime {
         let mut state = self.lock();
         state.bindings.clear();
         state.placements.clear();
+        state.admissions = AdmissionLedger::new();
     }
 
     /// Forget that the plane was ever prepared.

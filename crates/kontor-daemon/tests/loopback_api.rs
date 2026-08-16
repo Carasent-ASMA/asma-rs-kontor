@@ -6879,6 +6879,10 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
     });
     assert!(recorded.binding.is_none());
 
+    // A process restart loses the runtime adapter's in-memory seat ledger. The
+    // archived predecessor is then genuinely absent, so replacement falls back
+    // from the stale citation to a vacant-seat admission.
+    world.fake.rebuild_adapter_state();
     let recovered = Call::post(
         format!("/v1/projects/{project}/agent-runs/{retry_predecessor}/successors:replace"),
         &retry_body,

@@ -86,6 +86,7 @@ use kontor_profiles::pack::{
     PackAvailability, PackCategoryKey, ProfilePackSpec, ResolvedProfileBundle, parse_pack,
     resolve_profile, validate_pack,
 };
+use kontor_runtime::adapter::RuntimeError;
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::request::LaunchParts;
@@ -4763,9 +4764,21 @@ impl ApplicationOperations for Services {
             context_policy: context_policy.clone(),
             requested_at: now,
         };
-        let authority = adapter
-            .admit_launch(&permit.admission_request(&launch))
-            .await
+        let admission = permit.admission_request(&launch);
+        let admitted = match adapter.admit_launch(&admission).await {
+            Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "this seat holds no session to replace",
+            }) => {
+                adapter
+                    .admit_launch(&AdmissionRequest {
+                        replaces: None,
+                        ..admission
+                    })
+                    .await
+            }
+            answer => answer,
+        };
+        let authority = admitted
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
             .into_authority()
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
