@@ -4375,6 +4375,29 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
     .await;
     assert_eq!(closed.status, 200, "{}", closed.body);
     assert_eq!(closed.json()["state"], "closed");
+
+    // Closing the epic closes its control plane. That release is what every
+    // delivery seat of this epic reads its orphanhood from, so it is asserted
+    // here on the real close path rather than assumed.
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&seed.epic).expect("an epic id");
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    world.daemon.state().with_store(|store| {
+        let control = store
+            .list_topology_nodes(project_id, Some(epic_id))
+            .expect("the epic's nodes read")
+            .into_iter()
+            .find(|node| node.kind == domain.delivery.control_kind)
+            .expect("admission opened the epic's control plane");
+        let seats = store
+            .list_seat_bindings(project_id, control.id)
+            .expect("the control seats read");
+        assert!(!seats.is_empty(), "the epic had a control seat to close");
+        assert!(
+            seats.iter().all(|seat| seat.released_at.is_some()),
+            "closing the epic released its control seat"
+        );
+    });
 }
 
 #[tokio::test]
@@ -5776,6 +5799,129 @@ async fn a_seat_is_prepared_at_the_worktree_the_task_declares() {
             .is_empty(),
         "{}",
         started.body
+    );
+}
+
+/// A delivery seat whose owning control seat closed is concluded orphaned, and
+/// an orphaned seat cannot hold the task's progress.
+///
+/// The whole point of `parent_seat_binding_id`: orphanhood is a fact about the
+/// *owner's* row, so it is derived rather than recorded. Admission opens one
+/// control seat per epic and every delivery seat of that epic names it, which is
+/// what makes closing the owner conclude all of them at once.
+///
+/// The owner is closed here through the same store observation the production
+/// close path makes (`Services::release_epic_control_seat`);
+/// `settlement_closes_the_team_and_unlocks_the_whole_epic_close_out` proves that
+/// path actually runs on `close_epic`.
+#[tokio::test]
+async fn a_delivery_seat_whose_owner_closed_is_orphaned_and_holds_no_progress() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "orphan").await;
+    let seated = seats.as_array().expect("the seated roster");
+    assert!(!seated.is_empty(), "the start produced seats: {seats}");
+    let task = seated[0]["task_id"].as_str().expect("a task id").to_owned();
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+
+    let (node_id, owner_id) = world.daemon.state().with_store(|store| {
+        let node = store
+            .get_task_topology_node(project_id, task_id)
+            .expect("the node reads")
+            .expect("admission placed the task on a node");
+        let control = store
+            .list_topology_nodes(project_id, Some(epic_id))
+            .expect("the epic's nodes read")
+            .into_iter()
+            .find(|it| it.kind == domain.delivery.control_kind)
+            .expect("admission opened the epic's control plane");
+        let owners: Vec<_> = store
+            .list_seat_bindings(project_id, control.id)
+            .expect("the control seats read");
+        let owner = owners.first().expect("one control seat owns this epic");
+
+        // Every delivery seat names that exact owner. `None` here is the defect
+        // this test exists for: a seat with no owner is a root, and a root is
+        // never orphaned however dead its epic is.
+        let delivery = store
+            .list_seat_bindings(project_id, node.id)
+            .expect("the delivery seats read");
+        assert!(
+            !delivery.is_empty(),
+            "admission recorded the delivery seats it started"
+        );
+        for seat in &delivery {
+            assert_eq!(
+                seat.parent_seat_binding_id,
+                Some(owner.id),
+                "delivery seat `{}` names the epic's control seat as its owner",
+                seat.role_slot_id.as_str()
+            );
+        }
+        (node.id, owner.id)
+    });
+
+    // While the owner is open, the seats are attached and the task's progress
+    // stands on them.
+    let now = kontor_api::now();
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .list_seat_attachments(project_id, node_id, now)
+            .expect("the attachments read")
+    });
+    assert!(
+        before
+            .iter()
+            .all(|seat| *seat == kontor_core::state::SeatAttachment::Attached),
+        "a launched seat is attached: {before:?}"
+    );
+    assert!(
+        kontor_core::state::certify_task_progress(
+            kontor_core::state::RunLifecycle::Running,
+            &before
+        )
+        .is_ok(),
+        "an attached seat holds progress"
+    );
+
+    // Close the owner. Nothing about the delivery seats is rewritten.
+    world.daemon.state().with_store(|store| {
+        store
+            .observe_seat_binding(
+                project_id,
+                owner_id,
+                &kontor_core::repository::SeatLivenessObservation {
+                    released_at: Some(now),
+                    ..kontor_core::repository::SeatLivenessObservation::default()
+                },
+                now,
+            )
+            .expect("the owner is released");
+    });
+
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .list_seat_attachments(project_id, node_id, now)
+            .expect("the attachments read")
+    });
+    assert!(
+        after
+            .iter()
+            .all(|seat| *seat == kontor_core::state::SeatAttachment::Orphaned),
+        "every seat of a closed owner is orphaned: {after:?}"
+    );
+    assert!(
+        kontor_core::state::certify_task_progress(
+            kontor_core::state::RunLifecycle::Running,
+            &after
+        )
+        .is_err(),
+        "an orphaned seat is not progress"
     );
 }
 

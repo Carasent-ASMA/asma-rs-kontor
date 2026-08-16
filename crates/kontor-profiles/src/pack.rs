@@ -239,8 +239,16 @@ pub struct DeliveryRoleBinding {
 pub struct OperationalDelivery {
     /// The kind one epic materializes as.
     pub epic_kind: TopologyKindKey,
+    /// The kind one epic's control plane materializes as.
+    ///
+    /// The control plane is what a delivery seat *belongs to*. An epic cannot
+    /// host seats itself in the bundled vocabulary, so the seat that owns a
+    /// task's seats — and whose closure orphans them — lives here.
+    pub control_kind: TopologyKindKey,
     /// The kind one delivery task's session host materializes as.
     pub task_kind: TopologyKindKey,
+    /// The standard role the owning control seat is opened under.
+    pub control_role_code: RoleCode,
     /// The Foundation-to-catalog role correspondence for delivery seats.
     pub role_bindings: Vec<DeliveryRoleBinding>,
 }
@@ -310,7 +318,11 @@ impl OperationalDomainPack {
         // what stops a seed revision from pointing delivery at a kind or a role
         // that this vocabulary does not have.
         let topology = &self.topology_specs[0];
-        for kind in [&self.delivery.epic_kind, &self.delivery.task_kind] {
+        for kind in [
+            &self.delivery.epic_kind,
+            &self.delivery.control_kind,
+            &self.delivery.task_kind,
+        ] {
             if !topology.node_kinds.iter().any(|node| &node.kind == kind) {
                 return Err(DomainError::invalid(
                     "OperationalDomainPack",
@@ -319,8 +331,10 @@ impl OperationalDomainPack {
             }
         }
         let catalog = &self.role_catalogs[0];
-        for binding in &self.delivery.role_bindings {
-            if catalog.role(&binding.role_code).is_none() {
+        for code in std::iter::once(&self.delivery.control_role_code)
+            .chain(self.delivery.role_bindings.iter().map(|it| &it.role_code))
+        {
+            if catalog.role(code).is_none() {
                 return Err(DomainError::invalid(
                     "OperationalDomainPack",
                     "delivery names a role code the catalog does not declare",

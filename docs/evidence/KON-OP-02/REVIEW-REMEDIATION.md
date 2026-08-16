@@ -178,9 +178,83 @@ The second is the direct evidence for the choice: the escape cannot be restored
 without breaking a quarter of the daemon suite, because nothing else places a
 production seat any more.
 
+## Release gate — two more mechanisms with no production reader/writer
+
+Raised by the architect (receipt `01a00bd9-b2a6-7a10-97b0-3ef925db467f`), same
+class as F2: the mechanism existed, the accepted path never reached it.
+
+### R1 — `observe_seat_binding` had no production caller
+
+**Closed.** It was worse than unreachable. Admission created seat bindings but
+nothing ever wrote `last_attached_at` or `last_activity_at`, so every binding sat
+at "never attached" for its whole life. Past the 600 s deadline every delivery
+seat concludes `AttachmentFailed`, and `certify_task_progress` then refuses work
+that is plainly running. The daemon suite only passed because its runs finish in
+under a second.
+
+`Services::observe_seat` resolves a seat's binding from `(task node, role slot,
+team run)` and records one observation. It is wired at the three places a seat's
+state is genuinely observed, and **what counts as what is the requirement**:
+
+| Site | Records | Why |
+|---|---|---|
+| `Services::seat` / `fill_slot`, after the launch binds | `attached_at` + `activity_at` | The launch read a native session back. Starting is a discrete observed event with its own session id, not a generic confirmation. |
+| `settle_turn` / `attest_late_handoff` | `attached_at` + `activity_at` | An observed turn position — the only thing OP-REQ-039 lets prove activity. |
+| `settle_runtime`, after the inspect | `attached_at` + `runtime_reported` — **never** `activity_at` | A readback proves the session is there. Treating `running` as activity is the shortcut that makes a hung seat look busy for as long as its process survives (NP#6). |
+
+Wiring this exposed a real semantic gap: `Freshness::Unknown` reads as `Stalled`,
+so recording attachment alone made every seat stalled from the instant it started
+until its first turn. The launch is therefore recorded as the seat's first
+activity — which leaves stall detection intact and now *live*: a seat that starts
+and then does nothing still stalls once the 30-minute idle window closes.
+
+A seat whose slot the seeded delivery data does not spell has no binding to
+observe; that is a no-op rather than a refused settle.
+
+### R2 — every delivery binding had `parent_seat_binding_id: None`
+
+**Closed.** Orphan derivation reads the *owner's* row, so `None` made every
+delivery seat a root, and a root is never orphaned however dead its epic is.
+
+An epic node cannot be the owner: in the bundled vocabulary it materializes as a
+native root and hosts no sessions. The owner is a control-plane seat, so
+admission now:
+
+1. creates the epic's control-plane node beside the task's node
+   (`delivery.control_kind`, seeded data — `ECP`);
+2. opens one control seat there per epic under `delivery.control_role_code`
+   (seeded — `TPM`), carrying no task and no team run so it never lands in one
+   task's progress evidence;
+3. gives every delivery binding that seat's id as `parent_seat_binding_id`.
+
+`close_epic` releases the control seat (`Services::release_epic_control_seat`),
+which is the live trigger that makes orphanhood observable. Only the owner is
+touched — the delivery seats are *read* as orphans from its row, never rewritten
+to say so.
+
+One supporting store change: releasing a seat now also retires the row. A
+released seat is finished, and leaving it `active` kept it occupying the unique
+`(node, role_slot)` key, so the slot could never be filled again. Every
+conclusion still reads `released_at`; `closes_children` was already true either
+way.
+
+### Proof
+
+| Test | Proves |
+|---|---|
+| `a_delivery_seat_whose_owner_closed_is_orphaned_and_holds_no_progress` | Every delivery binding names the epic's control seat; while the owner is open the seats are `Attached` and hold progress; once it closes they are all `Orphaned` and `certify_task_progress` refuses. |
+| `settlement_closes_the_team_and_unlocks_the_whole_epic_close_out` (extended) | The real `close_epic` path releases the control seat. |
+
+Mutants, both killed with exactly one failure:
+
+| Mutant | Result |
+|---|---|
+| `observe_seat` stops writing (R1) | 112 passed, **1 failed** — seats read `[Pending, Pending, Pending, Pending]` |
+| `parent_seat_binding_id: None` on delivery seats (R2) | 112 passed, **1 failed** |
+
 ## Verification
 
 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -D warnings`
 and `cargo test --workspace` are all clean (`CARGO_EXIT=0`, 105 test binaries).
 All 110 pre-existing daemon loopback tests pass on the new topology path, plus
-the two OP-02 tests added here (112 in that binary).
+the three OP-02 tests added here (113 in that binary).

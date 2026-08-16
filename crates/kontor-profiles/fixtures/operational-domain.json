@@ -636,7 +636,9 @@
   ],
   "delivery": {
     "epic_kind": "ESW",
+    "control_kind": "ECP",
     "task_kind": "TSW",
+    "control_role_code": "TPM",
     "role_bindings": [
       {
         "role": "architect",

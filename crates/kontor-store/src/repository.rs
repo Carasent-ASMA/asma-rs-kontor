@@ -1686,6 +1686,12 @@ impl TopologyRepository for SqliteStore {
         // is meant to be replaced by the latest one.
         let changed = transaction
             .execute(
+                // Releasing also retires the row. A released seat is finished,
+                // and leaving it `active` would keep it occupying the unique
+                // `(node, role_slot)` key — so the slot it no longer holds could
+                // never be filled again. Its evidence is untouched: every
+                // conclusion below still reads `released_at`, and
+                // `closes_children` was already true either way.
                 "UPDATE seat_bindings SET
                      last_attached_at = COALESCE(?3, last_attached_at),
                      last_activity_at = COALESCE(?4, last_activity_at),
@@ -1693,6 +1699,10 @@ impl TopologyRepository for SqliteStore {
                      released_at = COALESCE(released_at, ?6),
                      replaced_by_seat_binding_id =
                          COALESCE(replaced_by_seat_binding_id, ?7),
+                     lifecycle = CASE
+                         WHEN COALESCE(released_at, ?6) IS NOT NULL THEN 'retired'
+                         ELSE lifecycle
+                     END,
                      revision = revision + 1,
                      updated_at = ?8
                  WHERE project_id = ?1 AND id = ?2",

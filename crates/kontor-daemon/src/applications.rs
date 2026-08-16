@@ -71,8 +71,9 @@ use kontor_core::repository::{
     IntakeOutcome, IntakeRepository, MiniProjectTopologySnapshot, NewAccountProfile, NewAgentRun,
     NewCommandIntent, NewGateEvaluation, NewNativeContainerBinding, NewSeatBinding,
     NewSessionTopologyNode, NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault,
-    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SpecRepository,
-    TaskTransitionRequest, TicketRepository, TopologyRepository, WorkflowRepository,
+    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
+    SpecRepository, TaskTransitionRequest, TicketRepository, TopologyRepository,
+    WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, ContextEnforcement, ContextPolicySnapshot,
@@ -4414,6 +4415,24 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?;
 
+        // A settled turn is the one thing that proves *activity*: the seat took
+        // a turn and it landed. An inspect that merely finds the session alive
+        // is attachment, recorded elsewhere and deliberately not here — a seat
+        // that answers `running` forever while doing nothing must read as
+        // stalled, not as busy.
+        self.observe_seat(
+            project_id,
+            task_id,
+            team_run_id,
+            &role_slot,
+            &SeatLivenessObservation {
+                attached_at: Some(now),
+                activity_at: Some(now),
+                ..SeatLivenessObservation::default()
+            },
+            now,
+        )?;
+
         // The postcondition, asserted rather than assumed: settling a turn must
         // leave the seat's session live. If this process no longer holds the
         // frozen snapshot the seat is not reusable, and saying so is the honest
@@ -5052,6 +5071,24 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?;
         state.signals().appended();
+
+        // (3b) The same readback, against the seat's own binding. A successful
+        // inspect proves the session is *there*, so it records attachment and
+        // quotes what the runtime said about itself — and it deliberately
+        // records no activity. Treating `running` as activity is the shortcut
+        // that makes a hung seat look busy for as long as its process survives.
+        self.observe_seat(
+            project_id,
+            self.task_for_team_run(project_id, run.team_run_id)?,
+            run.team_run_id,
+            &RoleSlotId::new(run.role.clone()),
+            &SeatLivenessObservation {
+                attached_at: Some(observation.observed_at),
+                runtime_reported: Some(observation.state),
+                ..SeatLivenessObservation::default()
+            },
+            now,
+        )?;
 
         // (4) The only place an outcome comes from. It is derived from the
         // observation against the *issued* binding, and it refuses every uncertain
@@ -6093,8 +6130,19 @@ impl Services {
         let workspace = self
             .ensure_container(project_id, &placement, &task_root, adapter.as_ref())
             .await?;
+        // The seat that owns this task's seats, opened once per epic. Every
+        // delivery binding names it, so closing it orphans them all at once
+        // instead of leaving each to be judged on its own liveness.
+        let owner = self.ensure_epic_control_seat(project_id, &placement)?;
         for slot in &ordered {
-            self.ensure_seat_binding(project_id, &placement, admitted.task_id, team_run_id, slot)?;
+            self.ensure_seat_binding(
+                project_id,
+                &placement,
+                admitted.task_id,
+                team_run_id,
+                slot,
+                owner,
+            )?;
         }
         let existing_binding = state
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
@@ -6161,6 +6209,28 @@ impl Services {
                     store.record_run_context_policy(project_id, agent_run_id, &context_policy)
                 })
                 .map_err(|error| self.refuse(&error))?;
+            // The launch read a native session back for this seat: it is
+            // attached, and starting is itself an observed runtime event, so it
+            // is the seat's first activity. Recording only attachment here would
+            // make every seat read as stalled from the instant it started until
+            // its first turn, because never-observed activity is deliberately
+            // not a pass.
+            //
+            // This is a discrete event with its own native session id, not a
+            // generic confirmation: a seat that starts and then does nothing
+            // still stalls once the idle window closes.
+            self.observe_seat(
+                project_id,
+                admitted.task_id,
+                team_run_id,
+                &slot,
+                &SeatLivenessObservation {
+                    attached_at: Some(now),
+                    activity_at: Some(now),
+                    ..SeatLivenessObservation::default()
+                },
+                now,
+            )?;
             self.hold(&outcome.snapshot)?;
             StartedSeatDto {
                 task_id: admitted.task_id,
@@ -6510,6 +6580,25 @@ impl Services {
                 created_at: now,
             },
         )?;
+        // The epic's control plane, which is what a delivery seat belongs to.
+        // Created with the task's node rather than lazily beside it: the seat
+        // that owns this task's seats has to exist before they can name it.
+        self.ensure_node(
+            scoped
+                .iter()
+                .find(|node| node.kind == self.domain.delivery.control_kind),
+            NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology: topology.clone(),
+                kind: self.domain.delivery.control_kind.clone(),
+                parent_id: Some(epic.id),
+                task_id: None,
+                created_at: now,
+            },
+        )?;
+
         self.ensure_node(
             None,
             NewSessionTopologyNode {
@@ -6523,6 +6612,185 @@ impl Services {
                 created_at: now,
             },
         )
+    }
+
+    /// The seat that owns one epic's delivery seats, opened once per epic.
+    ///
+    /// OP-REQ-039 derives orphanhood from the *owner's* Kontor lifecycle, so
+    /// every delivery seat needs an exact owning seat to name. That owner is a
+    /// control-plane seat: an epic node materializes as a native root and hosts
+    /// no sessions, so it cannot be the owner itself.
+    ///
+    /// A released owner is not reused and not repaired. Releasing retires the
+    /// row, which frees the `(node, role slot)` key, so a reopened epic opens a
+    /// fresh control seat while the seats the old one owned stay orphaned —
+    /// which is true: their owner is gone.
+    fn ensure_epic_control_seat(
+        &self,
+        project_id: ProjectId,
+        task_node: &SessionTopologyNode,
+    ) -> Result<Option<SeatBindingId>, ApiError> {
+        let state = self.state()?;
+        let Some(epic_id) = task_node.mini_project_id else {
+            return Ok(None);
+        };
+        let Some(control) = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|node| node.kind == self.domain.delivery.control_kind)
+        else {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this epic has no control plane for its delivery seats to belong to",
+            ));
+        };
+        let slot = self.control_slot()?;
+        if let Some(held) = state
+            .with_store(|store| store.list_seat_bindings(project_id, control.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|binding| binding.role_slot_id == slot && binding.is_non_terminal())
+        {
+            return Ok(Some(held.id));
+        }
+        let role = self.catalog_role_for_code(&self.domain.delivery.control_role_code)?;
+        let now = kontor_api::now();
+        let deadline = now
+            .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
+            .unwrap_or(now);
+        let opened = state
+            .with_store(|store| {
+                store.create_seat_binding(&NewSeatBinding {
+                    id: SeatBindingId::generate(),
+                    project_id,
+                    topology_node_id: control.id,
+                    role_slot_id: slot.clone(),
+                    role: role.clone(),
+                    // The control seat serves the epic, not one delivery. Naming
+                    // a task here would make it look like one task's seat and
+                    // put it in that task's progress evidence.
+                    task_id: None,
+                    team_run_id: None,
+                    attach_deadline: deadline,
+                    // The control seat is the root of the ownership chain, and a
+                    // root is not an orphan.
+                    parent_seat_binding_id: None,
+                    created_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(Some(opened.id))
+    }
+
+    /// Record what was observed about one seat's own binding.
+    ///
+    /// The counterpart to the seat-binding writer: without this, `last_attached_at`
+    /// and `last_activity_at` stay null for the life of every seat, so every
+    /// binding passes its attachment deadline and `certify_task_progress` refuses
+    /// work that is plainly running. The rows exist to be written, and this is
+    /// what writes them.
+    ///
+    /// **What counts as what is the requirement, not a detail.** A readback
+    /// proves the seat is *attached*; only an observed runtime event or turn
+    /// position proves *activity* (OP-REQ-039). Calling this with `activity_at`
+    /// from a generic confirmation would be exactly the shortcut the negative
+    /// proofs forbid, and would make a hung seat read as healthy forever.
+    ///
+    /// A seat with no binding is not an error. A team run whose slots the seeded
+    /// delivery data does not spell has no rows to observe, and observing
+    /// nothing is the honest outcome rather than a refused settle.
+    fn observe_seat(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        team_run_id: TeamRunId,
+        slot: &RoleSlotId,
+        observation: &SeatLivenessObservation,
+        observed_at: Timestamp,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let Some(node) = state
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(());
+        };
+        let Some(binding) = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|binding| {
+                &binding.role_slot_id == slot
+                    && binding.team_run_id == Some(team_run_id)
+                    && binding.is_non_terminal()
+            })
+        else {
+            return Ok(());
+        };
+        state
+            .with_store(|store| {
+                store.observe_seat_binding(project_id, binding.id, observation, observed_at)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
+    /// Release the seat that owns one epic's delivery seats.
+    ///
+    /// The live half of parent-derived orphanhood. Until something closes the
+    /// owner, every delivery seat reads as owned by an open seat and nothing can
+    /// ever conclude `Orphaned` — the derivation would be correct and never
+    /// exercised. Closing the epic is what closes its control plane.
+    ///
+    /// Only the owner is touched. The delivery seats are not rewritten to say
+    /// they are orphans; they are read as orphans, from their owner's row, which
+    /// is the difference between recording a conclusion and deriving one.
+    fn release_epic_control_seat(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let Some(control) = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|node| node.kind == self.domain.delivery.control_kind)
+        else {
+            // An epic nothing was ever admitted under has no control plane, and
+            // closing it is not the moment to build one.
+            return Ok(());
+        };
+        let slot = self.control_slot()?;
+        let now = kontor_api::now();
+        for binding in state
+            .with_store(|store| store.list_seat_bindings(project_id, control.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .filter(|binding| binding.role_slot_id == slot && binding.is_non_terminal())
+        {
+            state
+                .with_store(|store| {
+                    store.observe_seat_binding(
+                        project_id,
+                        binding.id,
+                        &SeatLivenessObservation {
+                            released_at: Some(now),
+                            ..SeatLivenessObservation::default()
+                        },
+                        now,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        Ok(())
+    }
+
+    /// The role slot an epic's control seat occupies.
+    fn control_slot(&self) -> Result<RoleSlotId, ApiError> {
+        let code = self.domain.delivery.control_role_code.as_str();
+        RoleSlotId::parse(&code.to_ascii_lowercase()).map_err(|error| self.refuse_domain(&error))
     }
 
     /// Return the node already there, or create the requested one.
@@ -6561,6 +6829,7 @@ impl Services {
         task_id: TaskId,
         team_run_id: TeamRunId,
         slot: &RoleSlotId,
+        parent: Option<SeatBindingId>,
     ) -> Result<(), ApiError> {
         let state = self.state()?;
         let Some(role) = self.catalog_role(slot)? else {
@@ -6594,11 +6863,11 @@ impl Services {
                     task_id: Some(task_id),
                     team_run_id: Some(team_run_id),
                     attach_deadline: deadline,
-                    // A delivery seat's owning epic seat is an Operational
-                    // control-plane seat, which nothing creates yet. Left absent
-                    // rather than pointed at this node's own seats: a seat that
-                    // owned itself would read as permanently un-orphaned.
-                    parent_seat_binding_id: None,
+                    // The exact owning seat, so orphanhood is read from that
+                    // row's lifecycle rather than guessed. `None` here would
+                    // make every delivery seat a root, and a root is never
+                    // orphaned however dead its epic is.
+                    parent_seat_binding_id: parent,
                     created_at: now,
                 })
             })
@@ -6609,15 +6878,23 @@ impl Services {
     /// The standard catalog role one Foundation slot is recorded under, when the
     /// seeded delivery data spells one for it.
     fn catalog_role(&self, slot: &RoleSlotId) -> Result<Option<CatalogRoleRef>, ApiError> {
+        let Some(code) = self.domain.delivery.role_code(slot.as_role_key()) else {
+            return Ok(None);
+        };
+        self.catalog_role_for_code(code).map(Some)
+    }
+
+    /// The pinned catalog projection of one standard role code.
+    fn catalog_role_for_code(
+        &self,
+        code: &kontor_core::id::RoleCode,
+    ) -> Result<CatalogRoleRef, ApiError> {
         let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::Unavailable,
                 "this build ships no role catalog",
             )
         })?;
-        let Some(code) = self.domain.delivery.role_code(slot.as_role_key()) else {
-            return Ok(None);
-        };
         // A code the catalog does not declare *is* a refusal rather than a gap:
         // the seeded data contradicts itself, and a seat placed under it would
         // be recorded against a role no revision defines.
@@ -6627,13 +6904,13 @@ impl Services {
                 "the seeded delivery binding names a role the catalog does not declare",
             )
         })?;
-        Ok(Some(CatalogRoleRef {
+        Ok(CatalogRoleRef {
             catalog_id: catalog.catalog_id,
             catalog_revision: catalog.version,
             role_code: entry.role_code.clone(),
             standard_title: entry.standard_title.clone(),
             custom_display_name: None,
-        }))
+        })
     }
 
     /// Make one node's native container exist, and persist what came back.
@@ -6946,6 +7223,20 @@ impl Services {
                 store.record_run_context_policy(project_id, agent_run_id, &context_policy)
             })
             .map_err(|error| self.refuse(&error))?;
+        // As in `seat`: the launch read a session back, and starting is the
+        // seat's first observed activity.
+        self.observe_seat(
+            project_id,
+            admitted.task_id,
+            team_run_id,
+            slot,
+            &SeatLivenessObservation {
+                attached_at: Some(now),
+                activity_at: Some(now),
+                ..SeatLivenessObservation::default()
+            },
+            now,
+        )?;
         self.hold(&outcome.snapshot)?;
         Ok(StartedSeatDto {
             task_id: admitted.task_id,
@@ -7170,6 +7461,15 @@ impl Services {
                 &intent,
             )?
         };
+        // A closed epic's control seat is released, which is what makes its
+        // delivery seats orphans rather than seats that merely stopped being
+        // observed. It runs after the receipt so the release cites a transition
+        // that is already recorded, and it is idempotent: `released_at` is only
+        // ever filled in once.
+        if request.action == LifecycleAction::CloseEpic {
+            self.release_epic_control_seat(project_id, epic.id)?;
+        }
+
         state.signals().appended();
         Ok(LifecycleOutcomeDto {
             realm_id: state.realm_id(),
