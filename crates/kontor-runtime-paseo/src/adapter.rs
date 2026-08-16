@@ -1131,9 +1131,9 @@ impl PaseoAdapter {
             return Ok(agent);
         }
         let correlation = correlation.to_string();
-        let labels = BTreeMap::from([(label::AGENT_RUN.to_owned(), correlation.clone())]);
+        let project = self.require_project()?;
         Ok(self
-            .fetch_agents(&labels, true)
+            .fetch_project_agents(&project, true)
             .await?
             .into_iter()
             .find(|candidate| {
