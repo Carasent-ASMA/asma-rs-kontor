@@ -95,6 +95,10 @@ pub const ALLOWED_FIELDS: &[&str] = &[
     "source_realm_id",
     "state",
     "state_root",
+    // The aggregate a refusal is about, as a `&'static str` naming a kind —
+    // "task", "native container binding" — never an id and never a row value.
+    // It travels with `rule`, which is useless without it.
+    "subject",
     "task_id",
     "team_run_id",
     "undispatched",

@@ -258,11 +258,25 @@ impl ApiError {
             // A uniqueness, immutability or ordering rule refused the write. From
             // the transport's side that is always "you were working from a state
             // that has moved", which is what a revision conflict says.
-            RepositoryError::Conflict { .. } => Self::new(
-                realm_id,
-                ApiErrorCode::RevisionConflict,
-                "a persistence rule refused the write against the presented state",
-            ),
+            //
+            // Which rule, on which aggregate, is logged. The caller is told one
+            // thing for every uniqueness and immutability rule in the store —
+            // otherwise a client could enumerate them — but an operator holding
+            // only "a persistence rule refused the write" has nothing to act on,
+            // and both fields are `&'static str` written in this workspace.
+            RepositoryError::Conflict { subject, rule } => {
+                warn!(
+                    realm_id = %realm_id,
+                    subject = %subject,
+                    rule = %rule,
+                    "a persistence rule refused a write"
+                );
+                Self::new(
+                    realm_id,
+                    ApiErrorCode::RevisionConflict,
+                    "a persistence rule refused the write against the presented state",
+                )
+            }
             // Which ceiling bound is a fact about this Realm's configuration and
             // its current load, so it is logged for the operator who runs the
             // plane and withheld from the caller who hit it. One static rule for

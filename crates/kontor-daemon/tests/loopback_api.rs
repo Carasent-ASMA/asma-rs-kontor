@@ -6616,7 +6616,13 @@ async fn a_run_no_runtime_ever_took_is_abandoned_so_its_task_can_be_scheduled_ag
             revision,
             "Phantom epic",
             &category,
-            serde_json::json!([{"title": "Refused task", "worktree": "/w/not-yet-created"}]),
+            // The module matters: contending for one is what makes admission
+            // take a lease, and a lease is what an abandonment has to hand back.
+            serde_json::json!([{
+                "title": "Refused task",
+                "worktree": "/w/not-yet-created",
+                "module": "contended-module"
+            }]),
         ),
     )
     .signed_as(&world, "admin")
@@ -6784,6 +6790,22 @@ async fn a_run_no_runtime_ever_took_is_abandoned_so_its_task_can_be_scheduled_ag
             .expect("the in-flight set reads")
             .contains(&task_id),
         "an abandoned run releases its task"
+    );
+
+    // And schedulable *now*, not after an expiry lapses. A lease is given up
+    // deliberately: closing the run it belonged to does not touch it, so an
+    // abandoned run holds its module for the rest of the window and the very
+    // next admission is refused with "an active lease already claims this
+    // place". Leaving that to the clock would make this operation a promise the
+    // caller cannot act on.
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.live_leases_of_run(project_id, run_id, kontor_api::now()))
+            .expect("the lease read succeeds")
+            .is_empty(),
+        "an abandoned run hands back every lease it still held"
     );
 }
 

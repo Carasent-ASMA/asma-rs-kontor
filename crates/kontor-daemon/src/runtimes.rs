@@ -30,7 +30,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{ExternalId, ExternalName, RoleSlotId, RuntimeKindKey, TaskId};
+use kontor_core::id::{
+    ExternalId, ExternalName, RoleSlotId, RuntimeKindKey, TaskId, TopologyNodeId,
+};
 use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_runtime_paseo::adapter::{
@@ -188,6 +190,18 @@ pub struct PaseoSetting {
     /// Explicit ticket scopes for an epic runtime that serves several tasks.
     #[serde(default)]
     pub task_scopes: BTreeMap<String, PaseoTaskSetting>,
+    /// Native containers this plane adopts, keyed by topology node id.
+    ///
+    /// Needed because a Paseo project is keyed by the directory it is registered
+    /// from: `project add` on a path that already has one returns that one. A
+    /// topology with two `native_root` levels above a seat — a project root and
+    /// an epic root, which is what the bundled Operational domain declares —
+    /// therefore cannot create both from one checkout, and binding them to the
+    /// same container is refused, correctly, because a native container belongs
+    /// to exactly one node. Naming the projects that already exist is the way
+    /// out, and it is the honest one: those projects are not Kontor's to invent.
+    #[serde(default)]
+    pub adopted_containers: BTreeMap<String, String>,
     /// The persisted Orchestrator agent every role launches under.
     pub orchestrator_agent_id: String,
     /// The most sessions Kontor holds open on this plane at once.
@@ -399,6 +413,17 @@ fn compose_paseo(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, FleetError>>()?;
+    let adopted_containers = setting
+        .adopted_containers
+        .iter()
+        .map(|(node_id, native_id)| {
+            Ok((
+                TopologyNodeId::parse(node_id)
+                    .map_err(|_| refuse("adopted_containers topology_node_id"))?,
+                ExternalId::parse(native_id).map_err(|_| refuse("adopted_containers native_id"))?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, FleetError>>()?;
     let config = PaseoConfig {
         runtime_kind: runtime_kind.clone(),
         host_key: host_key.clone(),
@@ -425,9 +450,9 @@ fn compose_paseo(
                 .map_err(|_| refuse("orchestrator_agent_id"))?,
         },
         max_concurrent_sessions: setting.max_concurrent_sessions,
-        // Populated by the admission work that resolves topology nodes; an
-        // empty map means this plane adopts nothing and creates what it needs.
-        adopted_containers: std::collections::BTreeMap::new(),
+        // An empty map means this plane adopts nothing and creates what it
+        // needs, which is right for a topology with one root above the seat.
+        adopted_containers,
     };
     // The credential leaves the settings document here and goes straight into the
     // transport, which is the only thing that may hold it.
@@ -472,6 +497,7 @@ mod tests {
             project_root_cwd: "/w/epic".to_owned(),
             canonical_worktree_cwd: "/w/task".to_owned(),
             task_scopes: BTreeMap::new(),
+            adopted_containers: BTreeMap::new(),
             orchestrator_agent_id: "agent-1".to_owned(),
             max_concurrent_sessions: 2,
             executable: "paseo".to_owned(),
@@ -521,6 +547,46 @@ mod tests {
                 .get(&RuntimeKindKey::parse("paseo.agent").expect("a valid key"))
                 .is_some(),
             "the composed adapter answers under the family its own configuration declares"
+        );
+    }
+
+    /// The adoption map is read from the document, not hard-coded empty.
+    ///
+    /// It was the second: `PaseoAdapter` has adopted whatever this map names
+    /// since it was written, and this function passed it `BTreeMap::new()`
+    /// unconditionally, so no deployment could ever reach the mechanism. A
+    /// topology with a project root *and* an epic root above the seat needs it,
+    /// because both are `native_root` and Paseo keys a project by the directory
+    /// it is registered from.
+    #[test]
+    fn the_containers_a_plane_adopts_are_read_from_its_settings() {
+        let node = "01a00c26-2860-77f1-bd53-bdfd7ed45ed7";
+        let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
+        setting
+            .adopted_containers
+            .insert(node.to_owned(), "prj_epic".to_owned());
+        let settings = RuntimeSettings {
+            schema_version: RUNTIMES_SCHEMA,
+            runtimes: vec![RuntimeSetting::Paseo(setting)],
+        };
+        assert!(
+            build_registry(&settings).is_ok(),
+            "a named adoption composes"
+        );
+
+        // And a node id that is not one is refused when the lane is composed,
+        // rather than at the first admission that tries to place a seat.
+        let RuntimeSetting::Paseo(mut broken) = paseo("paseo.agent");
+        broken
+            .adopted_containers
+            .insert("not-a-node".to_owned(), "prj_epic".to_owned());
+        let settings = RuntimeSettings {
+            schema_version: RUNTIMES_SCHEMA,
+            runtimes: vec![RuntimeSetting::Paseo(broken)],
+        };
+        assert!(
+            build_registry(&settings).is_err(),
+            "an unparseable topology node id is a configuration error"
         );
     }
 
@@ -585,6 +651,7 @@ mod tests {
             project_root_cwd: "/w/epic".to_owned(),
             canonical_worktree_cwd: "/w/task".to_owned(),
             task_scopes: BTreeMap::new(),
+            adopted_containers: BTreeMap::new(),
             orchestrator_agent_id: "agent-1".to_owned(),
             max_concurrent_sessions: 2,
             executable: "paseo".to_owned(),

@@ -5092,6 +5092,29 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?;
 
+        // Hand back what the run claimed. A lease is given up deliberately —
+        // closing the run it belonged to does not touch it — so an abandoned run
+        // goes on holding its module until the expiry lapses, and the next
+        // admission of the very task this is meant to free is refused with "an
+        // active lease already claims this place" for up to an hour. The receipt
+        // that decided the abandonment is the receipt that decides the release.
+        for lease in state
+            .with_store(|store| store.live_leases_of_run(project_id, agent_run_id, now))
+            .map_err(|error| self.refuse(&error))?
+        {
+            state
+                .with_store(|store| {
+                    store.release_lease(&kontor_store::LeaseRelease {
+                        project_id,
+                        lease_id: lease.id,
+                        presented_token: lease.fencing_token,
+                        receipt_id,
+                        released_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
         // The task is only schedulable again once its *team* run is terminal
         // too, so the same certified closure the settle path uses is attempted
         // here. It is attempted, not asserted: a team with other live runs stays
