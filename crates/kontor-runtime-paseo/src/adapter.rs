@@ -1951,12 +1951,17 @@ impl PaseoAdapter {
             ));
         }
 
+        // A Paseo project is a *registered checkout*, so registering one needs a
+        // directory — but only Paseo needs it, and Kontor is right not to invent
+        // a tree for a node that edits nothing. An epic root and a project root
+        // are both registered from the checkout this plane serves, which is the
+        // same directory the single-project path has always used, so that is the
+        // fallback rather than a refusal. The request still wins when it names
+        // one: that is the leaf, and a leaf is registered where it works.
         let cwd = request
             .cwd
             .as_ref()
-            .ok_or(RuntimeError::WorkspaceMismatch {
-                rule: "a native_root must say which directory it is registered from",
-            })?;
+            .unwrap_or(&self.config.scope.project_root_cwd);
         let command = PaseoRpc::project_add(self.next_request_id(), cwd.as_str());
         let frame = self.transport.request(&command).await?;
         let added: PaseoProjectAdded = frame.resolve(&command, "PaseoProjectAdded")?;

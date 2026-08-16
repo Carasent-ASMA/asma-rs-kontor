@@ -3755,6 +3755,60 @@ async fn a_configured_root_is_adopted_by_exact_id_and_never_created() {
     );
 }
 
+/// A root above the seat is registered from the plane's checkout, not refused.
+///
+/// Kontor gives a working directory only to the node the seat actually edits
+/// in: an epic root and a project root are places to put things, not trees. That
+/// is right, and it is also everything Paseo needs told to it, because a Paseo
+/// project *is* a registered checkout. Refusing the request instead meant the
+/// whole lineage failed at its first level, and every admission through the
+/// topology path was blocked with `unsupported_capability` before any seat.
+#[tokio::test]
+async fn a_root_that_names_no_directory_is_registered_from_the_planes_checkout() {
+    let recorded = Arc::new(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("project.add.request", v(PROJECT_ADDED)),
+    );
+    let adapter = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("the plane builds");
+
+    let outcome = adapter
+        .prepare_container(&ContainerRequest {
+            container_binding_id: ContainerBindingId::generate(),
+            topology_node_id: node(NODE_B),
+            topology: topology(),
+            capabilities: vec![NodeProjectionCapability::NativeRoot],
+            display_name: name("Epic · ASMA-7872"),
+            parent: None,
+            // The whole point: nothing above the leaf carries one.
+            cwd: None,
+            bound_native_id: None,
+            task_id: None,
+            team_run_id: None,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        })
+        .await
+        .expect("a root with no directory of its own is still registrable");
+
+    assert_eq!(
+        recorded.count("rpc project.add.request"),
+        1,
+        "the root was registered rather than refused"
+    );
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        PROJECT_ID,
+        "and the binding is made from the readback, as every root's is"
+    );
+}
+
 /// The shape comes from the pinned capabilities, and an undeclared one produces
 /// no native effect at all.
 #[tokio::test]

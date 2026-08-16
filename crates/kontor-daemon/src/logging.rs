@@ -80,6 +80,13 @@ pub const ALLOWED_FIELDS: &[&str] = &[
     "record_count",
     "records_hash",
     "removed",
+    // The `&'static str` a refusal names itself by. It is a source constant in
+    // every case — `ApiError::rule` is typed to make that impossible to violate
+    // — so it carries the same class of text as `detail`. Without it a runtime
+    // refusal logs only "the runtime will not work in the workspace this realm
+    // asked for", and the five checks behind that sentence are indistinguishable
+    // to anyone who is not reading the adapter source.
+    "rule",
     "runtime",
     "schema_version",
     "settings",
