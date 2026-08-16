@@ -24,8 +24,8 @@ use kontor_core::id::{
     CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey, GuardrailEvaluationId,
     HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money,
     PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey,
-    ScheduleOverrideId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
-    TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId, WorkProfileKey,
+    ScheduleOverrideId, SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId,
+    TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId, WorkProfileKey,
     format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
@@ -53,10 +53,11 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{
     AbandonReceiptFacts, DerivedRunState, DesiredRunState, GateState, GateVerdict,
-    NativeRuntimeIdentity, ObservedRunState, RunLifecycle, RunProjection, TaskState,
-    TaskTeamClosure, TaskTransition, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence,
-    TerminalEvidence, TerminalEvidenceSource, TerminalOutcome, plan_team_advance,
-    plan_team_closure,
+    NativeRuntimeIdentity, ObservedRunState, RunLifecycle, RunProjection, SeatAttachment,
+    SeatAttachmentObservation, TaskProgressEvidence, TaskState, TaskTeamClosure, TaskTransition,
+    TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
+    TerminalEvidenceSource, TerminalOutcome, certify_task_progress, evaluate_seat_attachment,
+    plan_team_advance, plan_team_closure,
 };
 use kontor_core::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -1288,6 +1289,127 @@ pub(crate) fn load_workflow(
     ))
 }
 
+/// How long a seat has to attach before its silence becomes a recorded finding
+/// rather than an open wait (OP-REQ-039b).
+const SEAT_ATTACH_GRACE: SignedDuration = SignedDuration::from_mins(10);
+
+/// How long a seat may go without observed activity before it is concluded
+/// stalled rather than working (OP-REQ-039c).
+const SEAT_MAX_IDLE: SignedDuration = SignedDuration::from_mins(30);
+
+/// Conclude each seat of one team run from its persisted row.
+fn read_seat_attachments(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    team_run_id: &str,
+    now: Timestamp,
+) -> RepositoryResult<Vec<SeatAttachment>> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT lifecycle, observed_state, last_confirmed_at, created_at, closed_at
+             FROM agent_runs WHERE project_id = ?1 AND team_run_id = ?2",
+        )
+        .map_err(backend)?;
+    let rows: Vec<(String, String, Option<String>, String, Option<String>)> = statement
+        .query_map(params![project_id.to_string(), team_run_id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .map_err(backend)?
+        .collect::<Result<_, _>>()
+        .map_err(backend)?;
+    drop(statement);
+
+    rows.into_iter()
+        .map(|(lifecycle, observed, last_confirmed, created, closed)| {
+            let lifecycle = RunLifecycle::parse(&lifecycle)?;
+            let observed = ObservedRunState::parse(&observed)?;
+            let created_at = read_timestamp(&created)?;
+            let last_confirmed_at = last_confirmed.as_deref().map(read_timestamp).transpose()?;
+            // A confirmation only evidences attachment once the run was
+            // actually dispatched. A queued seat has been accepted, not
+            // started, however recently it was confirmed.
+            let last_attached_at = if lifecycle.is_dispatched() {
+                last_confirmed_at
+            } else {
+                None
+            };
+            let attach_deadline = created_at.checked_add(SEAT_ATTACH_GRACE).map_err(|_| {
+                DomainError::invalid("seat attach deadline", "overflows the timestamp range")
+            })?;
+            Ok(evaluate_seat_attachment(
+                &SeatAttachmentObservation {
+                    attach_deadline,
+                    last_attached_at,
+                    last_activity_at: last_confirmed_at,
+                    // OP-02 derives this from the owning epic seat's lifecycle.
+                    // Until it does, this path never *concludes* an orphan — it
+                    // simply cannot see one, which is honest rather than wrong.
+                    parent_closed: false,
+                    released: closed.is_some(),
+                    runtime_reported: observed,
+                },
+                now,
+                SEAT_MAX_IDLE,
+            ))
+        })
+        .collect()
+}
+
+/// Certify a task's claim of progress from persisted rows only.
+fn certify_task_progress_from_store(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    task_id: TaskId,
+    now: Timestamp,
+) -> RepositoryResult<TaskProgressEvidence> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT id, lifecycle FROM team_runs
+             WHERE project_id = ?1 AND task_id = ?2 AND closed_at IS NULL",
+        )
+        .map_err(backend)?;
+    let runs: Vec<(String, String)> = statement
+        .query_map(
+            params![project_id.to_string(), task_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(backend)?
+        .collect::<Result<_, _>>()
+        .map_err(backend)?;
+    drop(statement);
+
+    // A task that has never had a team run is being worked without
+    // orchestration — a profile that pins no team has no seats to attach, so
+    // there is no attachment evidence to demand and none to fake. The rule
+    // bites where the incident happened: a task that *does* have a run, none of
+    // whose seats can hold it.
+    if runs.is_empty() {
+        return Ok(certify_task_progress(
+            RunLifecycle::Running,
+            &[SeatAttachment::Attached],
+        )?);
+    }
+
+    for (team_run_id, lifecycle) in runs {
+        let lifecycle = RunLifecycle::parse(&lifecycle)?;
+        let seats = read_seat_attachments(transaction, project_id, &team_run_id, now)?;
+        if let Ok(evidence) = certify_task_progress(lifecycle, &seats) {
+            return Ok(evidence);
+        }
+    }
+    Err(DomainError::MissingEvidence {
+        subject: "task progress",
+        rule: "every open team run of this task has lost all of its seats",
+    }
+    .into())
+}
+
 fn reduce_gate_states(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
@@ -1758,11 +1880,27 @@ impl WorkflowRepository for SqliteStore {
             }
         }
 
+        // Progress is certified from persisted run and seat rows, never
+        // asserted by the caller: `TaskProgressEvidence` has no public
+        // constructor. A queued run with no attached seat cannot produce one,
+        // which is exactly the state that once let a task read `in_progress`
+        // for thirteen hours over work nobody had launched.
+        let mut progress = None;
+        if request.to == TaskState::InProgress {
+            progress = Some(certify_task_progress_from_store(
+                &transaction,
+                request.project_id,
+                request.task_id,
+                request.occurred_at,
+            )?);
+        }
+
         let transition = TaskTransition {
             to: request.to,
             resume_receipt: request.resume_receipt,
             run_outcome: request.run_outcome,
             closure: certificate.as_ref(),
+            progress: progress.as_ref(),
         };
         let next_state = kontor_core::state::apply_task_transition(current, &transition)?;
         let next_revision = revision.next()?;
