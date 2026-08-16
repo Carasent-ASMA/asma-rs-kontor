@@ -74,6 +74,16 @@ impl TaskState {
     ///
     /// Structural legality is necessary but not sufficient: see
     /// [`apply_task_transition`] for the evidence and authority rules.
+    ///
+    /// `Ready -> Done` is legal because closure is proved by evidence, not by
+    /// the state a task happens to be sitting in. A task can reach `ready` with
+    /// all of its work already finished — a reconcile that resumes a task whose
+    /// seats have gone, or a run that closes before the row is moved on — and
+    /// under the old table those tasks were unfinishable: every gate passed,
+    /// every slot settled, and no legal transition left. Structural legality is
+    /// not the safeguard here and never was. [`apply_task_transition`] demands a
+    /// [`TaskClosureCertificate`] for `Done` whatever the previous state, so a
+    /// `ready` task completes on exactly the evidence an `in_progress` one does.
     #[must_use]
     pub const fn can_transition_to(self, next: Self) -> bool {
         use TaskState::{
@@ -85,7 +95,7 @@ impl TaskState {
                 | (Todo, Ready | Blocked | Parked | NeedsHuman | Cancelled)
                 | (
                     Ready,
-                    InProgress | Blocked | Parked | NeedsHuman | Todo | Cancelled
+                    InProgress | Blocked | Parked | NeedsHuman | Todo | Done | Cancelled
                 )
                 | (
                     InProgress,

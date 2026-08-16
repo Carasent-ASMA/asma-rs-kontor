@@ -3,12 +3,12 @@
 Verdict: **passed** (inspector seat, ASMA-7871), on re-review after remediation.
 
 - Round 1 (`b7cca64`): **rejected** — receipt `01a00b6f-b304-7c73-a4ca-47e0a15f7246`, seq 2. Findings F1, F2.
-- Round 2 (`d6da0bb`): **passed**. Both findings closed.
+- Round 2 (`d6da0bb`): **passed** — receipt `01a00baf-25ef-7b30-8fe1-4bd03e4169f5`, seq 3. F1 and F2 closed; one follow-up tracked.
+- Round 3 (`9cf1473`): **passed**, re-affirmed against the QA/release-gate remediation. The tracked follow-up is now closed too.
 
 Evidence under review: `ff54325`, `7a8a9ee`, `9b6b3ad`, `89cdffc`, `b7cca64`,
-`41d2199`, `d6da0bb`. Superproject `fa3a942`, gitlink
-`d6da0bb2b7aeba20fdea555697bf5cefcf2915ff` verified equal to submodule HEAD,
-tree clean.
+`41d2199`, `d6da0bb`, `34404e1`, `9cf1473`. Superproject `9fba086`, gitlink
+`9cf14733ce88ae750a6b0f30b3069be9a89c4b25` verified equal to submodule HEAD.
 
 Judged against `docs/evidence/KON-OP-02/ARCHITECTURE.md`.
 
@@ -66,7 +66,7 @@ Verified closed:
 
 - `cargo fmt --all --check` — exit 0.
 - `cargo clippy --workspace --all-targets -- -D warnings` — exit 0.
-- `cargo test --workspace` — exit 0, **1312 passed, 0 failed**.
+- `cargo test --workspace` — exit 0, **1314 passed, 0 failed** (round 3; 1312 at round 2).
 
 ## Negative proofs
 
@@ -79,7 +79,52 @@ stops (#4); no silent repair — an epic pinned to a different revision, a bound
 container in another directory, and a duplicate live slot each refuse rather than
 rewrite (#7); no `.agentsroom` access (#8).
 
-## Tracked follow-up (non-blocking)
+## Round 3 — the tracked follow-up is closed
+
+`9cf1473` closes both gaps the QA and release gates raised, which are the same
+two recorded below as this review's follow-up.
+
+**R1 — the observation writer.** `Services::observe_seat` now records at the
+three points a seat's state is genuinely observed, and the split between them is
+the OP-REQ-039 requirement rather than a detail:
+
+- the launch (`applications.rs:6229`, `:7235`) and a settled turn (`:4430`)
+  record **activity**, because each is a discrete observed event with its own
+  native session id;
+- the inspect in `settle_runtime` (`:5080`) records **attachment** and quotes
+  `runtime_reported`, and deliberately records **no activity** — treating
+  `running` as activity is exactly what NP#6 forbids and what would make a hung
+  seat read as busy for as long as its process survives.
+
+Wiring it exposed a second-order effect the builder handled correctly: never-
+observed activity reads as `Stalled`, so attachment alone would have made every
+seat stalled from the instant it started. Making the launch the seat's first
+activity fixes that without weakening stall detection — a seat that starts and
+then does nothing still stalls once the idle window closes.
+
+**R2 — parent-derived orphanhood.** Admission opens one control seat per epic on
+the `ECP` node (`control_kind`/`control_role_code` now seeded in the delivery
+data, matching ARCHITECTURE.md §3's "host LSA and TPM in one ECP workspace"),
+and every delivery binding names it. The control seat carries `task_id: None` so
+it never enters one task's progress evidence, and it is the root of the ownership
+chain. Closing the epic releases it; the delivery seats are *read* as orphans
+from its row and never rewritten, so NP#7 holds. Release also retires the row so
+it stops occupying the unique `(node, role_slot)` key it no longer holds.
+
+`34404e1` is doc-only in source: the QA gate correctly refused
+`resolve_placement`'s stale promise of `Ok(None)`, and the claim was retired
+rather than the behaviour restored — restoring it would have reinstated a second
+TeamRun-keyed way to place a production seat, which is F1.
+
+Both are proven by behavioural tests, not wiring checks:
+`a_delivery_seat_whose_owner_closed_is_orphaned_and_holds_no_progress` asserts
+seats are `Attached` and hold progress while the owner is open, then all
+`Orphaned` and refusing progress once it closes;
+`a_project_with_no_topology_is_seeded_one_rather_than_placed_outside_it` asserts
+nothing is configured before the start and that afterwards the revision, node and
+container all exist with no `PrepareWorkspace` call anywhere.
+
+### The original follow-up text, for the record
 
 `observe_seat_binding` — the only writer of `last_attached_at`,
 `last_activity_at`, `runtime_reported`, `released_at` and
@@ -110,3 +155,15 @@ Bounded, and why it does not block:
 Recommend wiring the observation writer before OP-02 is called operationally
 complete. It is not disclosed in `REVIEW-REMEDIATION.md`; the disclosure should
 be added.
+
+**Resolved in round 3.** The writer is wired (R1 above) and
+`REVIEW-REMEDIATION.md` now documents both R1 and R2, including a mutation table
+showing that disabling `observe_seat` turns the delivery seats back into
+`[Pending, …]` and fails the suite. The disclosure gap is closed.
+
+## Hygiene note (not a gate finding)
+
+`34404e1` and `9cf1473` also commit 106 files of unrelated `KON-MVP-18` run
+evidence, and a further MVP-18 run directory is left untracked. Evidence
+artifacts rather than source, so it does not affect this verdict, but the OP-02
+commits would read more cleanly without another ticket's runs in them.

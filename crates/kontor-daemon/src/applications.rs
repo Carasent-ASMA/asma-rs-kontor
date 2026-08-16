@@ -3453,9 +3453,12 @@ impl ApplicationOperations for Services {
         // task there would make the admission check depend on its own write — so
         // the transition belongs here, after the seat exists.
         //
-        // Without it a started task stays `ready` forever, which is not a
-        // cosmetic problem: `ready → done` is not in the transition table, so a
-        // task could be started and could never legally be completed.
+        // Without it a started task stays `ready` forever. That used to be
+        // unrecoverable — `ready → done` was not in the transition table, so a
+        // started task could never legally be completed. It is now legal, on the
+        // same closure certificate `in_progress` needs, so a task that misses
+        // this transition is merely mislabelled rather than stuck. Moving it
+        // here is still the point: a task being worked on should say so.
         self.mark_started_tasks_in_progress(project_id, &started)?;
         state.signals().appended();
         Ok(SchedulerStartDto {

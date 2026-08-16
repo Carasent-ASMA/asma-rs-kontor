@@ -240,6 +240,76 @@ fn closing_a_task_requires_the_profile_to_certify_closure() {
 }
 
 #[test]
+fn a_ready_task_completes_on_the_same_certificate_an_in_progress_one_needs() {
+    // A task can reach `ready` with its work already finished: a reconcile that
+    // resumes a task whose seats have gone, or a run that closes before the row
+    // is moved on. Under a table without this arm those tasks were unfinishable
+    // — every gate passed, every slot settled, and no legal transition left.
+    assert!(
+        TaskState::Ready.can_transition_to(TaskState::Done),
+        "a ready task must have a legal way to complete"
+    );
+
+    // Structural legality is not what protects closure, and never was. Without a
+    // certificate the transition is refused for exactly the same reason, and
+    // with exactly the same error, as it is from `in_progress`.
+    let bare = apply_task_transition(TaskState::Ready, &TaskTransition::to(TaskState::Done))
+        .expect_err("a ready task cannot assert its own closure");
+    assert!(
+        matches!(bare, DomainError::MissingEvidence { .. }),
+        "the refusal names missing evidence, not an illegal transition: {bare:?}"
+    );
+    let from_in_progress =
+        apply_task_transition(TaskState::InProgress, &TaskTransition::to(TaskState::Done))
+            .expect_err("an in-progress task cannot assert its own closure either");
+    assert_eq!(
+        format!("{bare:?}"),
+        format!("{from_in_progress:?}"),
+        "both states are refused on the same evidence rule"
+    );
+
+    let snapshot = ResolvedWorkProfileSnapshot::resolve(&profile(), at("2026-08-09T09:00:00Z"))
+        .expect("the fixture profile resolves");
+    let all_phases: BTreeSet<PhaseKey> = snapshot
+        .definition
+        .phases
+        .iter()
+        .map(|phase| phase.id.clone())
+        .collect();
+    let all_artifacts: BTreeSet<ArtifactKey> = snapshot
+        .definition
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.key.clone())
+        .collect();
+    let passed: BTreeMap<GateKey, GateState> = [(
+        GateKey::parse("q7.attest.sign").expect("valid gate key"),
+        GateState::Passed,
+    )]
+    .into_iter()
+    .collect();
+    let certificate = snapshot
+        .certify_closure(&all_phases, &passed, &all_artifacts)
+        .expect("a complete profile certifies closure");
+
+    let closing = TaskTransition {
+        closure: Some(&certificate),
+        ..TaskTransition::to(TaskState::Done)
+    };
+    assert_eq!(
+        apply_task_transition(TaskState::Ready, &closing).expect("certified closure from ready"),
+        TaskState::Done
+    );
+
+    // The arm is narrow: it adds a way to *finish* a ready task, not a way to
+    // skip the evidence any other terminal state demands.
+    assert!(
+        apply_task_transition(TaskState::Ready, &TaskTransition::to(TaskState::Failed)).is_err(),
+        "a ready task still cannot fail without run evidence"
+    );
+}
+
+#[test]
 fn a_waiver_the_profile_forbids_cannot_certify_closure() {
     let mut definition = profile();
     definition.gates[0].waiver_allowed = false;
