@@ -37,10 +37,13 @@ use std::sync::Arc;
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{AgentRunId, CanonicalDocument, ContentHash, ProjectId, TaskId, TeamRunId};
+use kontor_core::id::{
+    AgentRunId, CanonicalDocument, ContentHash, MiniProjectId, ProjectId, TaskId, TeamRunId,
+    TopologyNodeId,
+};
 use kontor_core::repository::{
     NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunClosure,
-    RunRepository, WorkflowRepository,
+    RunRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::state::{
     Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
@@ -5776,6 +5779,206 @@ async fn a_seat_is_prepared_at_the_worktree_the_task_declares() {
     );
 }
 
+/// A task whose node cannot host sessions is refused before any native effect.
+///
+/// The refusal has to be reachable to be worth anything. Admission resolves the
+/// task's node from the session topology, so seeding that task a node of a kind
+/// the pinned specification declares *without* `session_host` is exactly the
+/// disagreement `placement_blocked` exists to report — and reporting it is the
+/// whole difference between a seat that never starts and a seat that starts in
+/// a place nothing declared it could run.
+///
+/// The node is seeded directly rather than through admission on purpose:
+/// admission's own writer only ever creates the delivery kind, so nothing it
+/// produces could reach this branch.
+#[tokio::test]
+async fn a_task_placed_on_a_node_that_hosts_no_session_is_refused_before_anything_starts() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project(&world, "nohost", "Kontor", "/tmp/kontor-nohost").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("nohost-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Unhostable epic",
+            &category,
+            serde_json::json!([{"title": "Unhostable task", "worktree": "/w/nohost"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("nohost-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // Seed the task a node of a kind that materializes as a native root and
+    // hosts nothing. Admission will find it before it creates one of its own.
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    let topology_spec = domain.topology_specs.first().expect("a topology").clone();
+    let stamp = kontor_core::spec::Shareability::default_for(
+        kontor_core::spec::ShareabilityTier::ProjectKnowledge,
+    )
+    .expect("a default stamp");
+    let at = kontor_api::now();
+    world.daemon.state().with_store(|store| {
+        let canonical_hash = store
+            .publish_topology_spec(project_id, &topology_spec, &stamp, at)
+            .expect("the topology publishes");
+        let topology = kontor_core::spec::TopologySnapshot {
+            spec_id: topology_spec.spec_id,
+            version: topology_spec.version,
+            canonical_hash,
+        };
+        store
+            .set_project_topology_default(&kontor_core::repository::ProjectTopologyDefault {
+                project_id,
+                topology: topology.clone(),
+                selected_at: at,
+            })
+            .expect("the project default is selected");
+        store
+            .pin_mini_project_topology(&kontor_core::repository::MiniProjectTopologySnapshot {
+                project_id,
+                mini_project_id: epic_id,
+                topology: topology.clone(),
+                pinned_at: at,
+            })
+            .expect("the epic is pinned");
+        let root = store
+            .create_topology_node(&kontor_core::repository::NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: None,
+                topology: topology.clone(),
+                kind: topology_spec.root_kind.clone(),
+                parent_id: None,
+                task_id: None,
+                created_at: at,
+            })
+            .expect("the project root is created");
+        store
+            .create_topology_node(&kontor_core::repository::NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology,
+                // The epic kind: a native root that hosts no seats.
+                kind: domain.delivery.epic_kind.clone(),
+                parent_id: Some(root.id),
+                task_id: Some(task_id),
+                created_at: at,
+            })
+            .expect("the unhostable node is created");
+    });
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Try to place the unplaceable"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("nohost-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("nohost-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert!(
+        started.json()["started"]
+            .as_array()
+            .expect("seats")
+            .is_empty(),
+        "nothing may start on a node that hosts no session: {}",
+        started.body
+    );
+    assert_eq!(
+        started.json()["blocked"][0]["code"],
+        serde_json::json!("placement_blocked"),
+        "{}",
+        started.body
+    );
+    assert_eq!(
+        started.json()["blocked"][0]["evidence"][0]["rule"],
+        serde_json::json!("the task's node kind does not host sessions"),
+        "{}",
+        started.body
+    );
+
+    // Nothing was dispatched: the refusal is decided from Kontor's own rows, so
+    // the runtime was never asked to build anything for this task.
+    assert!(
+        !world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+        "a blocked placement reaches no native surface"
+    );
+}
+
 /// The other half of BLK-003: a task nobody placed is refused rather than placed
 /// at a guess, and a task placed somewhere the runtime will not work reports what
 /// actually happened instead of a bare "the runtime refused the operation" —
@@ -6916,7 +7119,9 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
             .identity
             .generation,
     });
-    world.script(r#"{"steps":[{"step":"transport_failure","operation":"prepare_workspace"}]}"#);
+    // The first native call a replacement makes is the container chain above the
+    // seat, so that is where a channel failure lands now.
+    world.script(r#"{"steps":[{"step":"transport_failure","operation":"prepare_project"}]}"#);
     let failed = Call::post(
         format!("/v1/projects/{project}/agent-runs/{retry_predecessor}/successors:replace"),
         &retry_body,

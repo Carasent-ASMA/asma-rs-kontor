@@ -82,7 +82,7 @@
             "session_host"
           ],
           "read_only": false,
-          "name_template": "ECP · <Jira epic> · <short title>",
+          "name_template": "ECP \u00b7 <Jira epic> \u00b7 <short title>",
           "code_help": {
             "full_name": "Epic Control Plane",
             "meaning": "Specification-defined ESW child grouping persistent epic leadership, coordination and authorized ad-hoc seats in one runtime session host.",
@@ -633,5 +633,47 @@
         }
       ]
     }
-  ]
+  ],
+  "delivery": {
+    "epic_kind": "ESW",
+    "task_kind": "TSW",
+    "role_bindings": [
+      {
+        "role": "architect",
+        "role_code": "SA"
+      },
+      {
+        "role": "builder",
+        "role_code": "SWE"
+      },
+      {
+        "role": "tester",
+        "role_code": "QA"
+      },
+      {
+        "role": "inspector",
+        "role_code": "AUD"
+      },
+      {
+        "role": "therapist-verifier",
+        "role_code": "UAT"
+      },
+      {
+        "role": "researcher",
+        "role_code": "BA"
+      },
+      {
+        "role": "judge",
+        "role_code": "AUD"
+      },
+      {
+        "role": "synthesizer",
+        "role_code": "TW"
+      },
+      {
+        "role": "reviewer",
+        "role_code": "AUD"
+      }
+    ]
+  }
 }

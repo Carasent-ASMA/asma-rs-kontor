@@ -22,9 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::id::TeamRunId;
 use kontor_core::id::{
-    ArtifactKey, CanonicalDocument, ContentHash, ExternalName, GateKey, PhaseKey, RoleKey,
-    SchemaVersion, SkillKey, SpecVersion, TeamTemplateId, Timestamp, WorkProfileKey,
-    validate_open_key,
+    ArtifactKey, CanonicalDocument, ContentHash, ExternalName, GateKey, PhaseKey, RoleCode,
+    RoleKey, SchemaVersion, SkillKey, SpecVersion, TeamTemplateId, Timestamp, TopologyKindKey,
+    WorkProfileKey, validate_open_key,
 };
 use kontor_core::spec::{
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
@@ -214,6 +214,52 @@ pub struct ProfilePackSpec {
     pub role_context_seeds: Vec<RoleContextSeed>,
 }
 
+/// How one Foundation role slot is spelled as a standard catalog role.
+///
+/// Seeded data rather than a rule in code. The two vocabularies are genuinely
+/// separate — a Foundation slot is an open deployment-defined key, a catalog
+/// code is a closed standard one — and a daemon that carried the correspondence
+/// as a `match` would hold a copy of it no seed revision could correct.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryRoleBinding {
+    /// The Foundation role a team declares.
+    pub role: RoleKey,
+    /// The standard catalog code the seat is recorded under.
+    pub role_code: RoleCode,
+}
+
+/// Which topology kinds carry delivery, and how delivery roles are spelled.
+///
+/// Every kind here is named as *data*. Several kinds in the bundled vocabulary
+/// are `native_child` session hosts below an epic, so "which one serves a task"
+/// is not derivable from the capability set — it is a choice the specification
+/// data makes, and reading it from here is what keeps the choice correctable
+/// without a code change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationalDelivery {
+    /// The kind one epic materializes as.
+    pub epic_kind: TopologyKindKey,
+    /// The kind one delivery task's session host materializes as.
+    pub task_kind: TopologyKindKey,
+    /// The Foundation-to-catalog role correspondence for delivery seats.
+    pub role_bindings: Vec<DeliveryRoleBinding>,
+}
+
+impl OperationalDelivery {
+    /// The catalog code one Foundation role is recorded under, if it has one.
+    ///
+    /// A role with no binding returns `None`, and the caller refuses rather
+    /// than inventing a code: a seat recorded under a guessed standard role is
+    /// worse evidence than a seat that visibly could not be placed.
+    #[must_use]
+    pub fn role_code(&self, role: &RoleKey) -> Option<&RoleCode> {
+        self.role_bindings
+            .iter()
+            .find(|binding| &binding.role == role)
+            .map(|binding| &binding.role_code)
+    }
+}
+
 /// The Operational domain data bundled independently of Foundation profiles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationalDomainPack {
@@ -223,6 +269,8 @@ pub struct OperationalDomainPack {
     pub topology_specs: Vec<ProjectSessionTopologySpec>,
     /// Server-owned standard-role catalog revisions.
     pub role_catalogs: Vec<RoleCatalogRevision>,
+    /// How delivery work is placed in the topology this data declares.
+    pub delivery: OperationalDelivery,
 }
 
 impl OperationalDomainPack {
@@ -256,6 +304,28 @@ impl OperationalDomainPack {
                 "OperationalDomainPack",
                 "must carry topology and role-catalog data",
             ));
+        }
+        // The delivery binding is only usable if every code and kind it names is
+        // actually declared here. Validating it against the same document is
+        // what stops a seed revision from pointing delivery at a kind or a role
+        // that this vocabulary does not have.
+        let topology = &self.topology_specs[0];
+        for kind in [&self.delivery.epic_kind, &self.delivery.task_kind] {
+            if !topology.node_kinds.iter().any(|node| &node.kind == kind) {
+                return Err(DomainError::invalid(
+                    "OperationalDomainPack",
+                    "delivery names a topology kind the specification does not declare",
+                ));
+            }
+        }
+        let catalog = &self.role_catalogs[0];
+        for binding in &self.delivery.role_bindings {
+            if catalog.role(&binding.role_code).is_none() {
+                return Err(DomainError::invalid(
+                    "OperationalDomainPack",
+                    "delivery names a role code the catalog does not declare",
+                ));
+            }
         }
         Ok(())
     }

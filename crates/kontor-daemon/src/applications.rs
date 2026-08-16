@@ -60,38 +60,45 @@ use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CanonicalDocument,
     CommandReceiptId, ConnectorKey, ContentHash, CurrencyCode, ExecutionAuthorizationId,
     ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey,
-    Money, ProjectId, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SourceEventId,
-    SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp, TriggerKey,
+    Money, ProjectId, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId,
+    SourceEventId, SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
+    TriggerKey,
 };
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     CalendarRepository, CommandRepository, CredentialReference, CredentialReferenceKind,
-    IntakeOutcome, IntakeRepository, NewAccountProfile, NewAgentRun, NewCommandIntent,
-    NewGateEvaluation, NewSourceEvent, NewTeamRun, ProjectRepository, RealmRepository,
-    RepositoryError, RunRepository, RuntimeBinding, SpecRepository, TaskTransitionRequest,
-    TicketRepository, TopologyRepository, WorkflowRepository,
+    IntakeOutcome, IntakeRepository, MiniProjectTopologySnapshot, NewAccountProfile, NewAgentRun,
+    NewCommandIntent, NewGateEvaluation, NewNativeContainerBinding, NewSeatBinding,
+    NewSessionTopologyNode, NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault,
+    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SpecRepository,
+    TaskTransitionRequest, TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
-    AutoArmPolicy, CanonicalSourceEvent, ContextEnforcement, ContextPolicySnapshot,
+    AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, ContextEnforcement, ContextPolicySnapshot,
     EffectiveContextPolicy, IntakeReceipt, IntakeResult, ModelRung, NodeProjectionCapability,
-    RequestedContextPolicy, SourceIdentity, SourceProcessingState, TeamRunSnapshot, TriggerSpec,
+    RequestedContextPolicy, Shareability, ShareabilityTier, SourceIdentity, SourceProcessingState,
+    TeamRunSnapshot, TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
-    GateVerdict, SessionTopologyNode, TaskState, TaskTeamClosure, TerminalEvidenceSource,
-    TerminalOutcome,
+    GateVerdict, ObservedContainerKind, SessionTopologyNode, TaskState, TaskTeamClosure,
+    TerminalEvidenceSource, TerminalOutcome,
 };
 use kontor_core::ticket::OwnershipAction;
 use kontor_integrations_asma::jira::SpecCatalog;
 use kontor_profiles::pack::{
-    PackAvailability, PackCategoryKey, ProfilePackSpec, ResolvedProfileBundle, parse_pack,
-    resolve_profile, validate_pack,
+    OperationalDomainPack, PackAvailability, PackCategoryKey, ProfilePackSpec,
+    ResolvedProfileBundle, parse_pack, resolve_profile, validate_pack,
 };
-use kontor_runtime::adapter::RuntimeError;
+use kontor_runtime::adapter::{RuntimeAdapter, RuntimeError};
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
+use kontor_runtime::container::{
+    ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
+    ContainerRequest,
+};
 use kontor_runtime::request::{LaunchParts, LaunchPlacement};
-use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
+use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
     AuthorizationEvidence, CalendarAdmission, Candidate, CandidateDecision, CapacityConfig,
@@ -115,6 +122,13 @@ const REGISTER_PACK: &str = "register_profile_pack";
 /// How long a scheduler-held module or worktree lease lives, in seconds.
 const LEASE_SECONDS: i64 = 3_600;
 
+/// How long after creation a seat must have been observed attached (OP-REQ-039a).
+///
+/// Fixed at creation and stored, never recomputed from the row's age: a deadline
+/// derived at read time moves every time the row is read, which is the defect
+/// the persisted column exists to remove.
+const SEAT_ATTACH_SECONDS: i64 = 600;
+
 /// The composed services, and the one process state they run against.
 ///
 /// The state arrives *after* construction because the two are mutually
@@ -126,6 +140,13 @@ pub struct Services {
     realm_id: kontor_core::id::RealmId,
     state: OnceLock<ApiState>,
     pack: ProfilePackSpec,
+    /// The Operational topology vocabulary and delivery binding this build
+    /// ships.
+    ///
+    /// Held beside the profile pack for the same reason: it is seeded data the
+    /// build carries, so admission reads *which* kinds and role codes delivery
+    /// uses rather than knowing them.
+    domain: OperationalDomainPack,
     /// The connector specifications this build ships, parsed on first use.
     connectors: OnceLock<SpecCatalog>,
     /// How many simultaneous runs this Realm admits, from its configuration.
@@ -173,6 +194,7 @@ impl Services {
             realm_id,
             state: OnceLock::new(),
             pack: kontor_profiles::seeds::bundled_pack()?,
+            domain: kontor_profiles::bundled_operational_domain()?,
             connectors: OnceLock::new(),
             capacity,
         }))
@@ -1869,6 +1891,14 @@ struct Seating<'a> {
     roots: &'a BTreeSet<RoleSlotId>,
     /// The runtime that issues the sessions.
     adapter: &'a std::sync::Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+    /// The node-keyed container every seat of this team run is placed in.
+    ///
+    /// Prepared once, by `seat`, and carried rather than re-prepared. One
+    /// container per node is the invariant; a seat that prepared its own would
+    /// be asserting a second answer to "where is this task's work".
+    container: &'a ContainerBindingSnapshot,
+    /// Where every seat of this team run works.
+    cwd: &'a kontor_runtime::workspace::WorkspaceRoot,
     /// The instant every seat of this start is dated at.
     now: Timestamp,
 }
@@ -4766,25 +4796,22 @@ impl ApplicationOperations for Services {
             .prepare_plane()
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let workspace = adapter
-            .prepare_workspace(&WorkspacePrepareRequest {
-                team_run_id: predecessor.team_run_id,
-                task_id,
-                workspace_binding_id: WorkspaceBindingId::generate(),
-                root: self.task_root(project_id, task_id)?,
-                requested_at: now,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-            .snapshot;
+        // The replacement is placed in the *same* container as the seat it
+        // replaces. Preparing a fresh one keyed by anything else is how a
+        // successor ends up working somewhere its predecessor never was.
+        let task_root = self.task_root(project_id, task_id)?;
+        let node = self.ensure_task_node(project_id, task_id)?;
+        let workspace = self
+            .ensure_container(project_id, &node, &task_root, adapter.as_ref())
+            .await?;
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let launch = SlotLaunch {
             task_id,
             binding_id,
-            placement: Some(LaunchPlacement::Workspace(workspace.clone())),
-            cwd: workspace.root().clone(),
+            placement: Some(LaunchPlacement::Container(workspace.clone())),
+            cwd: task_root.clone(),
             account_profile_id: predecessor.account_profile_id,
             prompt: slot_prompt(&role_slot, &eligible_roots(slots.template()))
                 .map_err(|error| self.refuse_domain(&error))?,
@@ -6051,10 +6078,10 @@ impl Services {
         // all. A placement that cannot be resolved stops here, with nothing
         // dispatched and nothing to undo.
         let task_root = self.task_root(project_id, admitted.task_id)?;
-        let _placement =
+        let placement =
             self.resolve_placement(project_id, admitted.task_id, &ordered, &task_root)?;
 
-        // A workspace is prepared *inside* the runtime's plane, so the plane has
+        // A container is prepared *inside* the runtime's plane, so the plane has
         // to exist first. This is idempotent and re-attests a binding the
         // adapter already holds, so the cost of asking on every admission is one
         // readback — and the cost of not asking is a seat that can never be
@@ -6063,17 +6090,12 @@ impl Services {
             .prepare_plane()
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let workspace = adapter
-            .prepare_workspace(&WorkspacePrepareRequest {
-                team_run_id,
-                task_id: admitted.task_id,
-                workspace_binding_id: WorkspaceBindingId::generate(),
-                root: self.task_root(project_id, admitted.task_id)?,
-                requested_at: now,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-            .snapshot;
+        let workspace = self
+            .ensure_container(project_id, &placement, &task_root, adapter.as_ref())
+            .await?;
+        for slot in &ordered {
+            self.ensure_seat_binding(project_id, &placement, admitted.task_id, team_run_id, slot)?;
+        }
         let existing_binding = state
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
             .map_err(|error| self.refuse(&error))?
@@ -6113,8 +6135,8 @@ impl Services {
                     role_slot_id: slot.clone(),
                     task_id: admitted.task_id,
                     binding_id,
-                    placement: Some(LaunchPlacement::Workspace(workspace.clone())),
-                    cwd: workspace.root().clone(),
+                    placement: Some(LaunchPlacement::Container(workspace.clone())),
+                    cwd: task_root.clone(),
                     account_profile_id: admitted.account_profile_id,
                     prompt:
                         slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
@@ -6162,6 +6184,8 @@ impl Services {
             team_run_id,
             roots: &roots,
             adapter: &adapter,
+            container: &workspace,
+            cwd: &task_root,
             now,
         };
         for role in ordered.iter().skip(1) {
@@ -6192,14 +6216,9 @@ impl Services {
         task_id: TaskId,
         declared: &[RoleSlotId],
         worktree: &kontor_runtime::workspace::WorkspaceRoot,
-    ) -> Result<Option<SessionTopologyNode>, ApiError> {
+    ) -> Result<SessionTopologyNode, ApiError> {
         let state = self.state()?;
-        let Some(node) = state
-            .with_store(|store| store.get_task_topology_node(project_id, task_id))
-            .map_err(|error| self.refuse(&error))?
-        else {
-            return Ok(None);
-        };
+        let node = self.ensure_task_node(project_id, task_id)?;
 
         // The kind's capabilities come from the pinned specification revision,
         // never from the kind's name: the vocabulary is data a revision owns,
@@ -6236,23 +6255,20 @@ impl Services {
             ));
         }
 
-        // A child node's container lives below its parent's, so an unbound
-        // parent is a seat with nowhere to be. This is the refusal that stops a
-        // fallback container from being created beside the epic.
-        let parent_id = node.parent_id.ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "a task's node is placed below a parent and this one has none",
-            )
-        })?;
-        if state
-            .with_store(|store| store.get_topology_node_container(project_id, parent_id))
-            .map_err(|error| self.refuse(&error))?
-            .is_none()
-        {
+        // A child node's container lives below its parent's, so a node with no
+        // parent is a seat with nowhere to be.
+        //
+        // Whether that parent *holds* a container is deliberately not asked
+        // here. Preparation walks the lineage from the root down and presents
+        // each level's exact binding to the next, so by the time a child is
+        // created its parent is bound or the whole preparation failed loudly.
+        // Asking before preparation would refuse the ordinary first admission of
+        // an epic; asking after it would be asking whether the call that just
+        // returned had returned.
+        if node.parent_id.is_none() {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
-                "the parent node holds no native container to place this seat below",
+                "a task's node is placed below a parent and this one has none",
             ));
         }
 
@@ -6290,7 +6306,505 @@ impl Services {
                 ));
             }
         }
-        Ok(Some(node))
+        Ok(node)
+    }
+
+    /// The exact Operational topology revision this project places against,
+    /// publishing and selecting the bundled one the first time it is asked for.
+    ///
+    /// Seeding here rather than at project creation is what gives every project
+    /// a topology, including the ones created before there was one to give.
+    /// Publication is by `(spec_id, version)` and selection is an upsert, so a
+    /// project that already chose a revision keeps it: this never re-points a
+    /// project at the bundled data.
+    fn project_topology(&self, project_id: ProjectId) -> Result<TopologySnapshot, ApiError> {
+        let state = self.state()?;
+        if let Some(selected) = state
+            .with_store(|store| store.get_project_topology_default(project_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Ok(selected.topology);
+        }
+
+        let now = kontor_api::now();
+        let spec =
+            self.domain.topology_specs.first().ok_or_else(|| {
+                self.deny(ApiErrorCode::Unavailable, "this build ships no topology")
+            })?;
+        let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "this build ships no role catalog",
+            )
+        })?;
+        let stamp = Shareability::default_for(ShareabilityTier::ProjectKnowledge)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let canonical_hash = if let Some(published) = state
+            .with_store(|store| store.get_topology_spec(project_id, spec.spec_id, spec.version))
+            .map_err(|error| self.refuse(&error))?
+        {
+            published
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?
+                .hash()
+                .clone()
+        } else {
+            state
+                .with_store(|store| store.publish_topology_spec(project_id, spec, &stamp, now))
+                .map_err(|error| self.refuse(&error))?
+        };
+        if state
+            .with_store(|store| store.get_role_catalog(catalog.catalog_id, catalog.version))
+            .map_err(|error| self.refuse(&error))?
+            .is_none()
+        {
+            state
+                .with_store(|store| store.publish_role_catalog(catalog, &stamp, now))
+                .map_err(|error| self.refuse(&error))?;
+        }
+        let topology = TopologySnapshot {
+            spec_id: spec.spec_id,
+            version: spec.version,
+            canonical_hash,
+        };
+        state
+            .with_store(|store| {
+                store.set_project_topology_default(&ProjectTopologyDefault {
+                    project_id,
+                    topology: topology.clone(),
+                    selected_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(topology)
+    }
+
+    /// The node one delivery task is placed on, creating the chain above it the
+    /// first time the task is admitted.
+    ///
+    /// The chain is project root, then the task's epic, then the task itself.
+    /// Every kind comes from data — the specification's own `root_kind` and the
+    /// seeded delivery binding — because several kinds in the bundled vocabulary
+    /// are `native_child` session hosts below an epic, so which one serves a task
+    /// is a choice the data makes and not one derivable from capabilities.
+    ///
+    /// Idempotent by construction: each level is looked up before it is created,
+    /// and the task level is unique per `(project, task)` in the schema, so a
+    /// concurrent admission loses the insert rather than producing a second node.
+    fn ensure_task_node(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<SessionTopologyNode, ApiError> {
+        let state = self.state()?;
+        if let Some(node) = state
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Ok(node);
+        }
+
+        // A task outside an epic has no place in this topology: the delivery
+        // kind is declared below the epic kind, and inventing an epic for it
+        // would be Kontor deciding what work an operator grouped together.
+        let epic_id = self
+            .task_row(project_id, task_id)?
+            .mini_project_id
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this task belongs to no epic, so it has no place in the session topology",
+                )
+            })?;
+        let topology = self.project_topology(project_id)?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, topology.spec_id, topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the selected topology revision is not published in this project",
+                )
+            })?;
+        let now = kontor_api::now();
+
+        // An epic-scoped node may only carry the revision its epic is pinned to,
+        // so the pin has to exist before the node does. A pin already there is
+        // never rewritten: repinning an epic to a different revision would
+        // silently move every node already placed under it.
+        match state
+            .with_store(|store| store.get_mini_project_topology(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            Some(pinned) if pinned.topology != topology => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this epic is pinned to another topology revision than the project selects",
+                ));
+            }
+            Some(_) => {}
+            None => state
+                .with_store(|store| {
+                    store.pin_mini_project_topology(&MiniProjectTopologySnapshot {
+                        project_id,
+                        mini_project_id: epic_id,
+                        topology: topology.clone(),
+                        pinned_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?,
+        }
+
+        // Two reads, because the listing is scoped: the project root carries no
+        // epic and every epic-scoped node carries exactly this one.
+        let unscoped = state
+            .with_store(|store| store.list_topology_nodes(project_id, None))
+            .map_err(|error| self.refuse(&error))?;
+        let scoped = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?;
+
+        let root = self.ensure_node(
+            unscoped
+                .iter()
+                .find(|node| node.kind == spec.root_kind && node.parent_id.is_none()),
+            NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: None,
+                topology: topology.clone(),
+                kind: spec.root_kind.clone(),
+                parent_id: None,
+                task_id: None,
+                created_at: now,
+            },
+        )?;
+        let epic = self.ensure_node(
+            scoped
+                .iter()
+                .find(|node| node.kind == self.domain.delivery.epic_kind),
+            NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology: topology.clone(),
+                kind: self.domain.delivery.epic_kind.clone(),
+                parent_id: Some(root.id),
+                task_id: None,
+                created_at: now,
+            },
+        )?;
+        self.ensure_node(
+            None,
+            NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology,
+                kind: self.domain.delivery.task_kind.clone(),
+                parent_id: Some(epic.id),
+                task_id: Some(task_id),
+                created_at: now,
+            },
+        )
+    }
+
+    /// Return the node already there, or create the requested one.
+    fn ensure_node(
+        &self,
+        found: Option<&SessionTopologyNode>,
+        request: NewSessionTopologyNode,
+    ) -> Result<SessionTopologyNode, ApiError> {
+        if let Some(node) = found {
+            return Ok(node.clone());
+        }
+        let state = self.state()?;
+        state
+            .with_store(|store| store.create_topology_node(&request))
+            .map_err(|error| self.refuse(&error))
+    }
+
+    /// Record the `(topology node, role slot)` seat this admission is filling.
+    ///
+    /// The deadline is fixed here and never recomputed, which is the whole
+    /// point of persisting it: derived from `created_at` at read time it would
+    /// move every time the row was read (OP-REQ-039a).
+    ///
+    /// A role slot the seeded delivery data does not spell as a standard code
+    /// gets no binding, and says so. Recording one under a guessed standard role
+    /// would be worse evidence than recording nothing: the whole value of the
+    /// row is that the code in it came from a published catalog.
+    ///
+    /// Skipping rather than refusing is deliberate. The correspondence is seeded
+    /// data an operator's own team templates can outrun, and a slot with no
+    /// entry is a gap in that data — not a reason the work cannot run.
+    fn ensure_seat_binding(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        task_id: TaskId,
+        team_run_id: TeamRunId,
+        slot: &RoleSlotId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let Some(role) = self.catalog_role(slot)? else {
+            tracing::warn!(
+                role_slot = %slot.as_str(),
+                "no seeded standard role for this slot, so its seat is not recorded in the topology"
+            );
+            return Ok(());
+        };
+        let held = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?;
+        if held
+            .iter()
+            .any(|binding| &binding.role_slot_id == slot && binding.is_non_terminal())
+        {
+            return Ok(());
+        }
+        let now = kontor_api::now();
+        let deadline = now
+            .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
+            .unwrap_or(now);
+        state
+            .with_store(|store| {
+                store.create_seat_binding(&NewSeatBinding {
+                    id: SeatBindingId::generate(),
+                    project_id,
+                    topology_node_id: node.id,
+                    role_slot_id: slot.clone(),
+                    role: role.clone(),
+                    task_id: Some(task_id),
+                    team_run_id: Some(team_run_id),
+                    attach_deadline: deadline,
+                    // A delivery seat's owning epic seat is an Operational
+                    // control-plane seat, which nothing creates yet. Left absent
+                    // rather than pointed at this node's own seats: a seat that
+                    // owned itself would read as permanently un-orphaned.
+                    parent_seat_binding_id: None,
+                    created_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
+    /// The standard catalog role one Foundation slot is recorded under, when the
+    /// seeded delivery data spells one for it.
+    fn catalog_role(&self, slot: &RoleSlotId) -> Result<Option<CatalogRoleRef>, ApiError> {
+        let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "this build ships no role catalog",
+            )
+        })?;
+        let Some(code) = self.domain.delivery.role_code(slot.as_role_key()) else {
+            return Ok(None);
+        };
+        // A code the catalog does not declare *is* a refusal rather than a gap:
+        // the seeded data contradicts itself, and a seat placed under it would
+        // be recorded against a role no revision defines.
+        let entry = catalog.role(code).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the seeded delivery binding names a role the catalog does not declare",
+            )
+        })?;
+        Ok(Some(CatalogRoleRef {
+            catalog_id: catalog.catalog_id,
+            catalog_revision: catalog.version,
+            role_code: entry.role_code.clone(),
+            standard_title: entry.standard_title.clone(),
+            custom_display_name: None,
+        }))
+    }
+
+    /// Make one node's native container exist, and persist what came back.
+    ///
+    /// The chain is prepared from the root down rather than recursively from the
+    /// leaf, because a `native_child` must present the *exact* parent binding and
+    /// the only way to have one is to have already prepared the parent. Depth is
+    /// bounded by the specification's own kind graph.
+    ///
+    /// Every preparation carries the native id Kontor already holds for that
+    /// node, when it holds one. That is the whole restart contract: a daemon
+    /// restart destroys the adapter's ledger while the native container carries
+    /// on existing, and the persisted id is the only way back to it.
+    async fn ensure_container(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        cwd: &kontor_runtime::workspace::WorkspaceRoot,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<ContainerBindingSnapshot, ApiError> {
+        let state = self.state()?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the node's pinned topology revision is not published in this project",
+                )
+            })?;
+
+        // Walk to the root first, then build downwards. Reading the ancestry
+        // from stored rows rather than from the request is what stops a child
+        // being placed below "whatever the adapter last touched".
+        let mut known = state
+            .with_store(|store| store.list_topology_nodes(project_id, None))
+            .map_err(|error| self.refuse(&error))?;
+        if let Some(epic_id) = node.mini_project_id {
+            known.extend(
+                state
+                    .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+                    .map_err(|error| self.refuse(&error))?,
+            );
+        }
+        let mut lineage = vec![node.clone()];
+        while let Some(parent_id) = lineage.last().and_then(|node| node.parent_id) {
+            let parent = known
+                .iter()
+                .find(|known| known.id == parent_id)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the node's parent is not in this project's topology",
+                    )
+                })?;
+            lineage.push(parent.clone());
+        }
+        lineage.reverse();
+
+        let mut parent: Option<ContainerBinding> = None;
+        let mut prepared = None;
+        for level in &lineage {
+            let capabilities = spec
+                .node_kinds
+                .iter()
+                .find(|declared| declared.kind == level.kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "a node's kind is not declared by its pinned topology revision",
+                    )
+                })?
+                .projection_capabilities
+                .clone();
+            let bound = state
+                .with_store(|store| store.get_topology_node_container(project_id, level.id))
+                .map_err(|error| self.refuse(&error))?;
+            let leaf = level.id == node.id;
+            // Only a `native_child` is created below anything. A `native_root`
+            // is its own root even when it sits below another node logically —
+            // handing it the ancestor's binding would be asking the runtime to
+            // nest something it declared unnestable.
+            let projection = ContainerProjection::resolve(&capabilities)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let request = ContainerRequest {
+                container_binding_id: ContainerBindingId::generate(),
+                topology_node_id: level.id,
+                topology: level.topology.clone(),
+                capabilities,
+                display_name: self.container_name(&spec, level)?,
+                parent: match projection {
+                    ContainerProjection::NativeChild => parent.clone(),
+                    ContainerProjection::NativeRoot | ContainerProjection::LogicalOnly => None,
+                },
+                // Only the seat's own container needs a working directory. An
+                // epic or a project root is a place to put things, not a tree to
+                // edit in.
+                cwd: leaf.then(|| cwd.clone()),
+                bound_native_id: bound.map(|binding| binding.identity.native_id),
+                task_id: level.task_id,
+                team_run_id: None,
+                requested_at: kontor_api::now(),
+            };
+            let outcome = adapter
+                .prepare_container(&request)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            outcome
+                .snapshot
+                .ensure_node(level.id)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            outcome
+                .snapshot
+                .ensure_correlated()
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            self.bind_container(project_id, level.id, &outcome.snapshot)?;
+            parent = Some(outcome.snapshot.binding.clone());
+            prepared = Some(outcome.snapshot);
+        }
+        prepared.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the node has no lineage to prepare a container along",
+            )
+        })
+    }
+
+    /// The display name one node's container carries, from its kind's template.
+    fn container_name(
+        &self,
+        spec: &kontor_core::spec::ProjectSessionTopologySpec,
+        node: &SessionTopologyNode,
+    ) -> Result<ExternalName, ApiError> {
+        let template = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == node.kind)
+            .map(|declared| declared.name_template.as_str())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a node's kind is not declared by its pinned topology revision",
+                )
+            })?;
+        ExternalName::parse(&format!("{template} · {}", node.id))
+            .map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Persist the native container a runtime read back for one node.
+    fn bind_container(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        snapshot: &ContainerBindingSnapshot,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let observed_kind = match snapshot.binding.projection {
+            ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
+            _ => ObservedContainerKind::Project,
+        };
+        let canonical_cwd = snapshot
+            .binding
+            .root
+            .as_ref()
+            .map(|root| ExternalName::parse(root.as_str()))
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+        let binding_id = ExternalId::parse(&snapshot.binding.id.to_string())
+            .map_err(|error| self.refuse_domain(&error))?;
+        state
+            .with_store(|store| {
+                store.bind_topology_node_container(&NewNativeContainerBinding {
+                    topology_node_id,
+                    project_id,
+                    container_binding_id: binding_id.clone(),
+                    identity: snapshot.binding.identity.clone(),
+                    observed_kind,
+                    canonical_cwd: canonical_cwd.clone(),
+                    observed_at: snapshot.binding.bound_at,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
     }
 
     /// Fill one more declared slot inside a team run admission already committed.
@@ -6305,6 +6819,8 @@ impl Services {
             team_run_id,
             roots,
             adapter,
+            container,
+            cwd,
             now,
         } = *seating;
         let state = self.state()?;
@@ -6363,25 +6879,11 @@ impl Services {
             })?
             .snapshot;
 
-        // The plane is deliberately *not* prepared again here. `fill_slot` is
-        // reached from `seat` and from nowhere else, and `seat` prepares it
-        // immediately before the first slot — so a second call could never
-        // observe a different answer, and a line no test can kill is worse than
-        // no line.
-        //
-        // The workspace is idempotent per team run, so every seat of the team
-        // lands in the one verified root rather than each preparing its own.
-        let workspace = adapter
-            .prepare_workspace(&WorkspacePrepareRequest {
-                team_run_id,
-                task_id: admitted.task_id,
-                workspace_binding_id: WorkspaceBindingId::generate(),
-                root: self.task_root(project_id, admitted.task_id)?,
-                requested_at: now,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?
-            .snapshot;
+        // Neither the plane nor the container is prepared again here.
+        // `fill_slot` is reached from `seat` and from nowhere else, and `seat`
+        // prepares both immediately before the first slot — so a second call
+        // could never observe a different answer, and a line no test can kill is
+        // worse than no line.
         let authority = adapter
             .admit_launch(&AdmissionRequest {
                 slot: RoleSlotKey::new(team_run_id, slot.clone()),
@@ -6406,8 +6908,8 @@ impl Services {
                 role_slot_id: slot.clone(),
                 task_id: admitted.task_id,
                 binding_id,
-                placement: Some(LaunchPlacement::Workspace(workspace.clone())),
-                cwd: workspace.root().clone(),
+                placement: Some(LaunchPlacement::Container(container.clone())),
+                cwd: cwd.clone(),
                 account_profile_id: admitted.account_profile_id,
                 prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
                 model_rung,
