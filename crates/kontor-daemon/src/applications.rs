@@ -3290,6 +3290,65 @@ impl ApplicationOperations for Services {
                 "startup reconciliation has not finished, so nothing may be admitted",
             ));
         }
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "scheduler_start",
+            "epic_id": epic_id.to_string(),
+            "plan_hash": request.plan_hash,
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+
+        // Admission is durable before the runtime is contacted. If that native
+        // call failed, a fresh plan correctly says `task_already_in_flight`; it
+        // cannot be the input for recovering the already-recorded launch. An
+        // exact command replay therefore resumes only the immutable admissions
+        // whose launch keys were derived from this scheduler key.
+        if replayed {
+            let tasks = state
+                .with_store(|store| store.list_epic_tasks(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?;
+            let mut admitted = Vec::new();
+            for task in tasks {
+                let launch_key = IdempotencyKey::parse(&format!("{}-{}", key.as_str(), task.id))
+                    .map_err(|error| self.refuse_domain(&error))?;
+                if let Some(candidate) = state
+                    .with_store(|store| {
+                        store.admitted_candidate_by_launch_key(project_id, &launch_key)
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    admitted.push(candidate);
+                }
+            }
+            if !admitted.is_empty() {
+                let mut started = Vec::new();
+                let mut blocked = Vec::new();
+                for candidate in &admitted {
+                    match self.seat(key, project_id, candidate).await {
+                        Ok(seats) => started.extend(seats),
+                        Err(refusal) => blocked.push(BlockedTaskDto {
+                            task_id: candidate.task_id,
+                            code: refusal.code.as_str().to_owned(),
+                            evidence: vec![serde_json::json!({
+                                "kind": "seat",
+                                "rule": refusal.rule,
+                            })],
+                        }),
+                    }
+                }
+                self.mark_started_tasks_in_progress(project_id, &started)?;
+                state.signals().appended();
+                return Ok(SchedulerStartDto {
+                    realm_id: state.realm_id(),
+                    plan_hash: request.plan_hash.clone(),
+                    started,
+                    blocked,
+                });
+            }
+        }
         let snapshot = self.snapshot(project_id, epic_id).await?;
         let plan =
             kontor_scheduler::ready::plan(&snapshot).map_err(|error| self.refuse_domain(&error))?;
@@ -3309,16 +3368,7 @@ impl ApplicationOperations for Services {
         // plan is a conflict rather than a second batch. The per-seat launch
         // intents below are derived from this key and are the admission path's own
         // idempotency, which is a different question from this one.
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "scheduler_start",
-            "epic_id": epic_id.to_string(),
-            "plan_hash": request.plan_hash,
-        }))?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: epic_id,
-        };
-        if self.replayed(key, &intent, Some(&target))?.is_none() {
+        if !replayed {
             let epic = self.epic_row(project_id, epic_id)?;
             self.record(
                 key,
@@ -3374,29 +3424,7 @@ impl ApplicationOperations for Services {
         // Without it a started task stays `ready` forever, which is not a
         // cosmetic problem: `ready → done` is not in the transition table, so a
         // task could be started and could never legally be completed.
-        let seated: BTreeSet<TaskId> = started.iter().map(|seat| seat.task_id).collect();
-        for task_id in seated {
-            let task = self.task_row(project_id, task_id)?;
-            if task.state != TaskState::Ready {
-                continue;
-            }
-            state
-                .with_store(|store| {
-                    store.transition_task(&TaskTransitionRequest {
-                        project_id,
-                        task_id,
-                        expected_revision: task.revision,
-                        to: TaskState::InProgress,
-                        resume_receipt: None,
-                        run_outcome: None,
-                        produced_artifacts: BTreeSet::new(),
-                        completed_phases: BTreeSet::new(),
-                        team_closure: TaskTeamClosure::NoTeam,
-                        occurred_at: kontor_api::now(),
-                    })
-                })
-                .map_err(|error| self.refuse(&error))?;
-        }
+        self.mark_started_tasks_in_progress(project_id, &started)?;
         state.signals().appended();
         Ok(SchedulerStartDto {
             realm_id: state.realm_id(),
@@ -5767,6 +5795,38 @@ impl ApplicationOperations for Services {
 }
 
 impl Services {
+    fn mark_started_tasks_in_progress(
+        &self,
+        project_id: ProjectId,
+        started: &[StartedSeatDto],
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let seated: BTreeSet<TaskId> = started.iter().map(|seat| seat.task_id).collect();
+        for task_id in seated {
+            let task = self.task_row(project_id, task_id)?;
+            if task.state != TaskState::Ready {
+                continue;
+            }
+            state
+                .with_store(|store| {
+                    store.transition_task(&TaskTransitionRequest {
+                        project_id,
+                        task_id,
+                        expected_revision: task.revision,
+                        to: TaskState::InProgress,
+                        resume_receipt: None,
+                        run_outcome: None,
+                        produced_artifacts: BTreeSet::new(),
+                        completed_phases: BTreeSet::new(),
+                        team_closure: TaskTeamClosure::NoTeam,
+                        occurred_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        Ok(())
+    }
+
     /// Create or reuse every seat one admitted task's team declares.
     ///
     /// The order is the whole point. `admit_candidate` commits the team run, the
@@ -5878,7 +5938,20 @@ impl Services {
             .map(|(id, _)| id);
 
         let team_run_id = existing.unwrap_or_else(TeamRunId::generate);
-        let agent_run_id = AgentRunId::generate();
+        let launch_key = IdempotencyKey::parse(&format!("{}-{}", key.as_str(), admitted.task_id))
+            .map_err(|error| self.refuse_domain(&error))?;
+        let agent_run_id = state
+            .with_store(|store| store.get_receipt_by_key(&launch_key))
+            .map_err(|error| self.refuse(&error))?
+            .map(|receipt| match receipt.target {
+                AggregateRef::AgentRun { agent_run_id } => Ok(agent_run_id),
+                _ => Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the admission launch key already names another operation",
+                )),
+            })
+            .transpose()?
+            .unwrap_or_else(AgentRunId::generate);
         let binding_id = kontor_core::id::RuntimeBindingId::generate();
         let adapter = state
             .runtimes()
@@ -5907,9 +5980,6 @@ impl Services {
             .checked_add(jiff::SignedDuration::from_secs(LEASE_SECONDS))
             .unwrap_or(now);
         let holder = ExternalId::parse("kontord").map_err(|error| self.refuse_domain(&error))?;
-        let launch_key = IdempotencyKey::parse(&format!("{}-{}", key.as_str(), admitted.task_id))
-            .map_err(|error| self.refuse_domain(&error))?;
-
         // Frozen once, here: every seat of this team run resolves its context
         // window against this copy, so the answer cannot drift as packs change.
         let seeded_roles: BTreeSet<kontor_core::id::RoleKey> = team

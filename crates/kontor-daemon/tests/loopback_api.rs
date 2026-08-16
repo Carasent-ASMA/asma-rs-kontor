@@ -2779,6 +2779,43 @@ async fn starting_a_named_plan_creates_one_seat_through_admission_and_reuses_it_
     .await;
     assert_eq!(stale.status, 409, "{}", stale.body);
 
+    // The admission commits before the runtime is called. A workspace failure
+    // therefore leaves one durable TeamRun with an unbound first seat.
+    world.fake.verifying_placement_at(
+        kontor_runtime::workspace::WorkspaceRoot::parse("/tmp/another-worktree")
+            .expect("a valid root"),
+    );
+    let failed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("start-run")
+    .send(&world)
+    .await;
+    assert_eq!(failed.status, 200, "{}", failed.body);
+    assert_eq!(
+        failed.json()["blocked"][0]["code"],
+        "unsupported_capability"
+    );
+    let after_failure = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        after_failure.json()["tasks"][0]["team_runs"]
+            .as_array()
+            .expect("runs")
+            .len(),
+        1,
+        "the failed native call preserves exactly one durable admission"
+    );
+
+    // The same scheduler command resumes that admission. A fresh plan would
+    // reject it as already in flight, so recovery must use the stored decision.
+    world.fake.verifying_placement_at(
+        kontor_runtime::workspace::WorkspaceRoot::parse("/w/started-epic/0").expect("a valid root"),
+    );
     let started = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
         &serde_json::json!({"plan_hash": plan_hash}),

@@ -81,7 +81,8 @@ use std::collections::BTreeSet;
 use kontor_core::DomainError;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, CommandReceiptId,
-    ExternalId, ExternalName, MiniProjectId, ProjectId, ResourceLeaseId, TaskId, Timestamp,
+    ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId, ResourceLeaseId, TaskId,
+    Timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceipt};
 use kontor_core::repository::{
@@ -98,7 +99,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
 use crate::commands::intent::insert_intent;
-use crate::repository::{backend, conflict, read_timestamp, revision_of, text};
+use crate::repository::{backend, conflict, from_json, read_timestamp, revision_of, text};
 
 /// The lifecycle values an agent run is no longer occupying capacity in.
 ///
@@ -392,6 +393,43 @@ struct RejectionDocument {
 // ---------------------------------------------------------------------------
 
 impl SqliteStore {
+    /// Read the immutable scheduler decision behind one launch command.
+    ///
+    /// This is the recovery half of admission: the scheduler start may have
+    /// committed the run before the runtime accepted its workspace. Retrying the
+    /// same command must use the original decision rather than re-plan a task
+    /// that is now correctly reported as already in flight.
+    pub fn admitted_candidate_by_launch_key(
+        &self,
+        project_id: ProjectId,
+        launch_key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<AdmittedCandidate>> {
+        #[derive(serde::Deserialize)]
+        struct StoredAdmission {
+            admitted: AdmittedCandidate,
+        }
+
+        let evidence: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT event.evidence
+                 FROM scheduler_admission_events AS event
+                 JOIN command_receipts AS receipt
+                   ON receipt.project_id = event.project_id
+                  AND receipt.id = event.launch_receipt_id
+                 WHERE event.project_id = ?1
+                   AND event.decision = 'admitted'
+                   AND receipt.idempotency_key = ?2",
+                params![project_id.to_string(), launch_key.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        evidence
+            .map(|value| from_json::<StoredAdmission>(&value).map(|stored| stored.admitted))
+            .transpose()
+    }
+
     /// Every module currently claimed by an unlapsed lease, across the Realm.
     ///
     /// Deliberately not project-scoped. Every other read on this store is, because
