@@ -2200,14 +2200,23 @@ impl PaseoAdapter {
         );
         let slot_labels = self.slot_labels(request.team_run_id(), request.role_slot_id());
 
-        // A native census before the first effect. The admission ledger knows
-        // what *this* adapter admitted; it cannot know about an agent a previous
-        // process left behind, and launching over one is how a seat acquires two
-        // live sessions.
+        // A native census before the first effect. An exact full-label match is
+        // a launch whose acknowledgement was lost; adopt it before the broader
+        // occupied-slot guard so a retry never creates a second session.
         let census = self.fetch_agents(&slot_labels, false).await?;
-        if census
+        let exact = census
             .iter()
-            .any(|agent| agent.matches_labels(&slot_labels) && !agent.is_archived())
+            .filter(|agent| agent.matches_labels(&labels) && !agent.is_archived())
+            .collect::<Vec<_>>();
+        let recovered_id = match exact.as_slice() {
+            [agent] => Some(agent.id.clone()),
+            [] => None,
+            _ => return Err(RuntimeError::CorrelationFailed),
+        };
+        if recovered_id.is_none()
+            && census
+                .iter()
+                .any(|agent| agent.matches_labels(&slot_labels) && !agent.is_archived())
         {
             return Err(RuntimeError::SlotAlreadyAdmitted {
                 rule: "a live Paseo agent already carries this role slot's labels",
@@ -2227,16 +2236,19 @@ impl PaseoAdapter {
             self.config.scope.orchestrator_agent_id.as_str(),
             request.prompt().as_str(),
         );
-        let native_id = match self.transport.run(&command).await {
-            Ok(output) => {
-                let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
-                started.agent_id
-            }
-            // The command may have landed. An exact-label census before deciding
-            // anything is the whole of the recovery rule; running `agent run`
-            // again would be how one seat acquires two agents.
-            Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
-            Err(other) => return Err(other),
+        let native_id = match recovered_id {
+            Some(native_id) => native_id,
+            None => match self.transport.run(&command).await {
+                Ok(output) => {
+                    let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
+                    started.agent_id
+                }
+                // The command may have landed. An exact-label census before deciding
+                // anything is the whole of the recovery rule; running `agent run`
+                // again would be how one seat acquires two agents.
+                Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
+                Err(other) => return Err(other),
+            },
         };
 
         // The CLI's answer is an id, a status, a provider and two display

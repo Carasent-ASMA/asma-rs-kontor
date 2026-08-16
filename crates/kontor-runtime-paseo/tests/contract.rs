@@ -1231,6 +1231,24 @@ async fn lost_launch_ack_binds_the_one_correlated_agent_without_a_second_run() {
 }
 
 #[tokio::test]
+async fn lost_launch_ack_retry_adopts_the_exact_existing_agent_without_relaunching() {
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+    let (plane, workspace) = Plane::prepared(recorded).await;
+
+    let outcome = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the exact agent from the lost acknowledgement is adopted");
+    assert_eq!(outcome.snapshot.identity().native_id.as_str(), AGENT_ID);
+    assert_eq!(
+        plane.daemon.count("agent run"),
+        0,
+        "retry adoption must not create a second agent"
+    );
+}
+
+#[tokio::test]
 async fn lost_launch_ack_with_no_match_stays_unknown_rather_than_relaunching() {
     let recorded = daemon();
     recorded.lose_next(&any_agent_run());
