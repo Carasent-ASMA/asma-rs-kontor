@@ -6066,71 +6066,84 @@ impl Services {
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
             .snapshot;
-        let authority = adapter
-            .admit_launch(&AdmissionRequest {
-                slot: RoleSlotKey::new(team_run_id, slot.clone()),
-                agent_run_id,
-                binding_id,
-                replaces: None,
-                requested_at: now,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-            .into_authority()
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let model_rung = freeze_seat_model_rung(&team_snapshot, &slot)
-            .map_err(|error| self.refuse_domain(&error))?;
-        let outcome = adapter
-            .launch(&authority.into_request(LaunchParts {
-                agent_run_id,
-                team_run_id,
-                role_slot_id: slot.clone(),
+        let existing_binding = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .and_then(|run| run.binding);
+        let first = if let Some(binding) = existing_binding {
+            StartedSeatDto {
                 task_id: admitted.task_id,
-                binding_id,
-                workspace: Some(workspace.clone()),
-                cwd: workspace.root().clone(),
-                account_profile_id: admitted.account_profile_id,
-                prompt: slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
-                model_rung,
-                context_policy: context_policy.clone(),
-                requested_at: now,
-            }))
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                team_run_id: team_run_id.to_string(),
+                agent_run_id: agent_run_id.to_string(),
+                role_slot: slot.as_role_key().as_str().to_owned(),
+                runtime_kind: binding.identity.runtime_kind,
+                native_id: binding.identity.native_id.as_str().to_owned(),
+                applied: AppliedDto::Unchanged,
+            }
+        } else {
+            let authority = adapter
+                .admit_launch(&AdmissionRequest {
+                    slot: RoleSlotKey::new(team_run_id, slot.clone()),
+                    agent_run_id,
+                    binding_id,
+                    replaces: None,
+                    requested_at: now,
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+                .into_authority()
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let model_rung = freeze_seat_model_rung(&team_snapshot, &slot)
+                .map_err(|error| self.refuse_domain(&error))?;
+            let outcome = adapter
+                .launch(&authority.into_request(LaunchParts {
+                    agent_run_id,
+                    team_run_id,
+                    role_slot_id: slot.clone(),
+                    task_id: admitted.task_id,
+                    binding_id,
+                    workspace: Some(workspace.clone()),
+                    cwd: workspace.root().clone(),
+                    account_profile_id: admitted.account_profile_id,
+                    prompt:
+                        slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
+                    model_rung,
+                    context_policy: context_policy.clone(),
+                    requested_at: now,
+                }))
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
 
-        let binding = RuntimeBinding {
-            id: outcome.snapshot.binding_id(),
-            agent_run_id,
-            identity: outcome.snapshot.identity().clone(),
-            bound_at: now,
+            let binding = RuntimeBinding {
+                id: outcome.snapshot.binding_id(),
+                agent_run_id,
+                identity: outcome.snapshot.identity().clone(),
+                bound_at: now,
+            };
+            state
+                .with_store(|store| store.bind_agent_run(project_id, agent_run_id, &binding))
+                .map_err(|error| self.refuse(&error))?;
+            state
+                .with_store(|store| {
+                    store.record_run_context_policy(project_id, agent_run_id, &context_policy)
+                })
+                .map_err(|error| self.refuse(&error))?;
+            self.hold(&outcome.snapshot)?;
+            StartedSeatDto {
+                task_id: admitted.task_id,
+                team_run_id: team_run_id.to_string(),
+                agent_run_id: agent_run_id.to_string(),
+                role_slot: slot.as_role_key().as_str().to_owned(),
+                runtime_kind: binding.identity.runtime_kind,
+                native_id: binding.identity.native_id.as_str().to_owned(),
+                applied: AppliedDto::Created,
+            }
         };
-        state
-            .with_store(|store| store.bind_agent_run(project_id, agent_run_id, &binding))
-            .map_err(|error| self.refuse(&error))?;
-        // Freeze the requested/effective pair onto the run, beside the binding.
-        // The record of what a seat was launched under has to outlive this
-        // process, or an audit after a restart has only the session to go on.
-        state
-            .with_store(|store| {
-                store.record_run_context_policy(project_id, agent_run_id, &context_policy)
-            })
-            .map_err(|error| self.refuse(&error))?;
-        // The frozen snapshot lives in this process: it is what lets the session
-        // routes address the seat at the evidence quality it was bound at.
-        self.hold(&outcome.snapshot)?;
 
-        let mut filled = vec![StartedSeatDto {
-            task_id: admitted.task_id,
-            team_run_id: team_run_id.to_string(),
-            agent_run_id: agent_run_id.to_string(),
-            role_slot: slot.as_role_key().as_str().to_owned(),
-            runtime_kind: binding.identity.runtime_kind.clone(),
-            native_id: binding.identity.native_id.as_str().to_owned(),
-            applied: AppliedDto::Created,
-        }];
+        let mut filled = vec![first];
         // The remaining declared slots join the team run admission already
         // committed. They are additional runs inside an admitted team rather than
         // additional admissions: the leases, the capacity and the launch intent
@@ -6170,7 +6183,7 @@ impl Services {
             .map_err(|error| self.refuse(&error))?
             .into_iter()
             .find(|seat| &seat.role == slot.as_role_key());
-        if let Some(seat) = existing
+        if let Some(seat) = existing.as_ref()
             && let (Some(kind), Some(native)) = (seat.runtime_kind.clone(), seat.native_id.clone())
         {
             return Ok(StartedSeatDto {
@@ -6184,22 +6197,26 @@ impl Services {
             });
         }
 
-        let agent_run_id = AgentRunId::generate();
+        let agent_run_id = existing
+            .as_ref()
+            .map_or_else(AgentRunId::generate, |seat| seat.agent_run_id);
         let binding_id = kontor_core::id::RuntimeBindingId::generate();
-        state
-            .with_store(|store| {
-                store.create_agent_run(&NewAgentRun {
-                    id: agent_run_id,
-                    project_id,
-                    team_run_id,
-                    parent_agent_run_id: None,
-                    role: slot.clone().into_role_key(),
-                    account_profile_id: admitted.account_profile_id,
-                    binding: None,
-                    created_at: now,
+        if existing.is_none() {
+            state
+                .with_store(|store| {
+                    store.create_agent_run(&NewAgentRun {
+                        id: agent_run_id,
+                        project_id,
+                        team_run_id,
+                        parent_agent_run_id: None,
+                        role: slot.clone().into_role_key(),
+                        account_profile_id: admitted.account_profile_id,
+                        binding: None,
+                        created_at: now,
+                    })
                 })
-            })
-            .map_err(|error| self.refuse(&error))?;
+                .map_err(|error| self.refuse(&error))?;
+        }
 
         // The seat resolves its context window against the team run's own frozen
         // inputs, read back from storage rather than recomposed from whatever
