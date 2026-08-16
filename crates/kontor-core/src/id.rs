@@ -57,7 +57,7 @@ pub fn generate_uuid_v7() -> Uuid {
     Uuid::now_v7()
 }
 
-pub use jiff::Timestamp;
+pub use jiff::{SignedDuration, Timestamp};
 
 /// Maximum length of an internal open key, in characters.
 pub const MAX_KEY_LEN: usize = 128;

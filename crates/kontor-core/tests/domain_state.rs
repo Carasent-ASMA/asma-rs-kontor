@@ -34,13 +34,33 @@ use kontor_core::spec::{ResolvedWorkProfileSnapshot, WorkProfileSpec};
 use kontor_core::state::{
     AbandonReceiptFacts, DerivedRunState, DesiredRunState, Freshness, GateState, GateVerdict,
     NativeRuntimeIdentity, ObservedRunState, RunDerivation, RunLifecycle, RuntimeContact,
-    RuntimeObservation, TaskState, TaskTransition, TeamChildEvidence, TeamEvidenceSource,
-    TeamTerminalEvidence, TerminalEvidence, TerminalEvidenceSource, TerminalOutcome,
-    apply_task_transition, derive_run_state, plan_team_advance, plan_team_closure,
+    RuntimeObservation, SeatAttachment, SeatAttachmentObservation, TaskState, TaskTransition,
+    TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
+    TerminalEvidenceSource, TerminalOutcome, apply_task_transition, certify_task_progress,
+    derive_run_state, evaluate_seat_attachment, plan_team_advance, plan_team_closure,
     reduce_team_outcome, team_child_evidence_digest,
 };
 
 const ARBITRARY_PROFILE: &str = include_str!("fixtures/work_profile_arbitrary.json");
+
+/// A seat observation that is healthy in every respect, so each test below can
+/// spoil exactly one thing and attribute the conclusion to that one thing.
+fn healthy_seat() -> SeatAttachmentObservation {
+    SeatAttachmentObservation {
+        attach_deadline: at("2026-08-16T08:00:00Z"),
+        last_attached_at: Some(at("2026-08-16T09:55:00Z")),
+        last_activity_at: Some(at("2026-08-16T09:55:00Z")),
+        parent_closed: false,
+        released: false,
+        runtime_reported: ObservedRunState::Running,
+    }
+}
+
+const SEAT_IDLE_BOUND: jiff::SignedDuration = jiff::SignedDuration::from_mins(30);
+
+fn conclude(observation: &SeatAttachmentObservation, now: &str) -> SeatAttachment {
+    evaluate_seat_attachment(observation, at(now), SEAT_IDLE_BOUND)
+}
 
 fn at(text: &str) -> Timestamp {
     parse_utc_timestamp(text).expect("fixture timestamp is canonical UTC")
@@ -1594,5 +1614,210 @@ fn every_command_kind_declares_its_legal_targets_revision_rule_and_desired_state
                 .any(|target| kind.rule_for(*target).is_some()),
             "{kind} can target nothing at all"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OP-REQ-039 — a task never claims progress its evidence does not support.
+//
+// The incident these cases exist to make impossible: OP-01 read `in_progress`
+// for thirteen hours while its only team run was `queued` with five unattached
+// seats, one of which reported itself `running` the whole time because a turn
+// was open on an unanswered permission prompt.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_task_cannot_claim_progress_without_an_attached_seat() {
+    let error = apply_task_transition(TaskState::Ready, &TaskTransition::to(TaskState::InProgress))
+        .expect_err("progress needs evidence, exactly like closure does");
+    assert!(matches!(error, DomainError::MissingEvidence { .. }));
+
+    let evidence = certify_task_progress(RunLifecycle::Running, &[SeatAttachment::Attached])
+        .expect("a dispatched run with an attached seat evidences progress");
+    let dispatched = TaskTransition {
+        progress: Some(&evidence),
+        ..TaskTransition::to(TaskState::InProgress)
+    };
+    assert_eq!(
+        apply_task_transition(TaskState::Ready, &dispatched).expect("evidenced progress"),
+        TaskState::InProgress
+    );
+}
+
+#[test]
+fn the_exact_incident_shape_cannot_certify_progress() {
+    // The state that was allowed to read `in_progress` for thirteen hours on
+    // 2026-08-16: a queued team run whose five seats never attached. By then
+    // every deadline had long passed.
+    let abandoned = [SeatAttachment::AttachmentFailed; 5];
+    let error = certify_task_progress(RunLifecycle::Queued, &abandoned)
+        .expect_err("seats that never attached evidence nothing");
+    assert!(matches!(error, DomainError::MissingEvidence { .. }));
+    assert!(
+        certify_task_progress(RunLifecycle::Running, &abandoned).is_err(),
+        "and a run calling itself running does not rescue them"
+    );
+
+    // Admission legitimately produces the *same shape* one second in: a queued
+    // run whose seats have not reported yet. Refusing this would make every
+    // launch illegal, so the deadline — not the lifecycle — is the guard.
+    let starting = [SeatAttachment::Pending; 5];
+    assert!(
+        certify_task_progress(RunLifecycle::Queued, &starting).is_ok(),
+        "a seat inside its attachment deadline is starting, not phantom"
+    );
+
+    // A closed run holds nothing, whatever its seats last looked like.
+    for closed in [RunLifecycle::Succeeded, RunLifecycle::Cancelled] {
+        assert!(
+            certify_task_progress(closed, &[SeatAttachment::Attached]).is_err(),
+            "{closed} is over"
+        );
+    }
+
+    // A run whose seats are not materialized yet is the same transient moment
+    // as a pending seat, so it is allowed — but a closed one still is not.
+    assert!(certify_task_progress(RunLifecycle::Running, &[]).is_ok());
+    assert!(
+        certify_task_progress(RunLifecycle::Succeeded, &[]).is_err(),
+        "a closed run holds nothing, seats or no seats"
+    );
+
+    // And a stalled or orphaned seat can never hold progress, deadline or not.
+    for spoiled in [SeatAttachment::Stalled, SeatAttachment::Orphaned] {
+        assert!(
+            certify_task_progress(RunLifecycle::Running, &[spoiled]).is_err(),
+            "{spoiled} must not hold a task in progress"
+        );
+    }
+}
+
+#[test]
+fn a_queued_run_is_accepted_but_not_dispatched() {
+    assert!(!RunLifecycle::Queued.is_dispatched());
+    for dispatched in [
+        RunLifecycle::Launching,
+        RunLifecycle::Running,
+        RunLifecycle::WaitingInput,
+        RunLifecycle::Blocked,
+    ] {
+        assert!(dispatched.is_dispatched(), "{dispatched} is executing");
+    }
+    for terminal in [
+        RunLifecycle::Succeeded,
+        RunLifecycle::Failed,
+        RunLifecycle::Cancelled,
+        RunLifecycle::Parked,
+    ] {
+        assert!(!terminal.is_dispatched(), "{terminal} is over");
+    }
+}
+
+#[test]
+fn an_unattached_seat_becomes_a_finding_once_its_deadline_passes() {
+    let never_attached = SeatAttachmentObservation {
+        last_attached_at: None,
+        last_activity_at: None,
+        ..healthy_seat()
+    };
+    assert_eq!(
+        conclude(&never_attached, "2026-08-16T07:59:00Z"),
+        SeatAttachment::Pending,
+        "before the deadline a silent seat is merely young"
+    );
+    assert_eq!(
+        conclude(&never_attached, "2026-08-16T08:00:01Z"),
+        SeatAttachment::AttachmentFailed,
+        "after it, silence is a recorded finding rather than an open wait"
+    );
+}
+
+#[test]
+fn a_self_reported_running_runtime_does_not_prove_activity() {
+    // The builder seat reported `running` for two and a half hours while parked
+    // on a permission prompt. An open turn is a fact about a process, not about
+    // the work, so only observed activity may conclude `Attached`.
+    let parked_on_a_prompt = SeatAttachmentObservation {
+        last_attached_at: Some(at("2026-08-16T07:53:00Z")),
+        last_activity_at: Some(at("2026-08-16T07:53:00Z")),
+        runtime_reported: ObservedRunState::Running,
+        ..healthy_seat()
+    };
+    assert_eq!(
+        conclude(&parked_on_a_prompt, "2026-08-16T10:26:00Z"),
+        SeatAttachment::Stalled
+    );
+    assert!(SeatAttachment::Stalled.requires_human());
+    assert!(!SeatAttachment::Stalled.is_executing());
+
+    // And inside the bound the very same runtime report concludes healthily,
+    // which proves the verdict came from the activity timestamp, not the label.
+    assert_eq!(
+        conclude(&parked_on_a_prompt, "2026-08-16T08:20:00Z"),
+        SeatAttachment::Attached
+    );
+}
+
+#[test]
+fn an_attached_seat_that_never_showed_activity_is_stalled_not_healthy() {
+    let silent = SeatAttachmentObservation {
+        last_attached_at: Some(at("2026-08-16T07:53:00Z")),
+        last_activity_at: None,
+        ..healthy_seat()
+    };
+    assert_eq!(
+        conclude(&silent, "2026-08-16T07:54:00Z"),
+        SeatAttachment::Stalled,
+        "unknown activity must not read as fresh"
+    );
+}
+
+#[test]
+fn an_orphan_is_an_orphan_however_healthy_its_runtime_looks() {
+    let orphan = SeatAttachmentObservation {
+        parent_closed: true,
+        ..healthy_seat()
+    };
+    assert_eq!(
+        conclude(&orphan, "2026-08-16T09:56:00Z"),
+        SeatAttachment::Orphaned
+    );
+    assert!(SeatAttachment::Orphaned.is_excluded());
+    assert!(!SeatAttachment::Orphaned.is_executing());
+    assert!(
+        certify_task_progress(RunLifecycle::Running, &[SeatAttachment::Orphaned]).is_err(),
+        "an orphan cannot hold a task in progress"
+    );
+
+    // Release outranks even orphanhood: a reaped seat is simply gone.
+    let released = SeatAttachmentObservation {
+        released: true,
+        ..orphan
+    };
+    assert_eq!(
+        conclude(&released, "2026-08-16T09:56:00Z"),
+        SeatAttachment::Released
+    );
+}
+
+#[test]
+fn a_healthy_seat_is_the_only_one_that_counts_as_executing() {
+    assert_eq!(
+        conclude(&healthy_seat(), "2026-08-16T09:56:00Z"),
+        SeatAttachment::Attached
+    );
+    for state in SeatAttachment::ALL {
+        assert_eq!(
+            state.is_executing(),
+            *state == SeatAttachment::Attached,
+            "{state} must not be mistaken for executing work"
+        );
+    }
+    for excluded in [
+        SeatAttachment::Orphaned,
+        SeatAttachment::AttachmentFailed,
+        SeatAttachment::Released,
+    ] {
+        assert!(excluded.is_excluded(), "{excluded} is out of every count");
     }
 }

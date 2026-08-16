@@ -121,6 +121,183 @@ impl TaskClosureCertificate {
     }
 }
 
+closed_enum! {
+    /// What Kontor may conclude about one seat's attachment to its runtime.
+    ///
+    /// This is a *conclusion drawn from stored evidence*, never a value copied
+    /// from a runtime's own report. A runtime that calls itself running is
+    /// making a claim about its process, not about the work: a seat can hold an
+    /// open turn for hours while parked on an unanswered prompt.
+    SeatAttachment, "SeatAttachment" {
+        /// Created; its attachment deadline has not passed yet.
+        Pending => "pending",
+        /// Observed attached, with activity inside the declared bound.
+        Attached => "attached",
+        /// The attachment deadline passed with no attached observation.
+        AttachmentFailed => "attachment_failed",
+        /// The owning epic seat is closed or has been replaced.
+        Orphaned => "orphaned",
+        /// Attached, but with no observed activity inside the declared bound.
+        Stalled => "stalled",
+        /// Deliberately released or reaped.
+        Released => "released",
+    }
+}
+
+impl SeatAttachment {
+    /// Whether this seat may be counted as executing a task's work.
+    #[must_use]
+    pub const fn is_executing(self) -> bool {
+        matches!(self, Self::Attached)
+    }
+
+    /// Whether this seat must be excluded from admission, capacity and every
+    /// task-state computation.
+    #[must_use]
+    pub const fn is_excluded(self) -> bool {
+        matches!(
+            self,
+            Self::Orphaned | Self::AttachmentFailed | Self::Released
+        )
+    }
+
+    /// Whether this conclusion is a stall that must reach a human.
+    #[must_use]
+    pub const fn requires_human(self) -> bool {
+        matches!(self, Self::Stalled)
+    }
+
+    /// Whether this seat may hold a task in [`TaskState::InProgress`].
+    ///
+    /// [`Self::Pending`] qualifies deliberately: a seat dispatched a moment ago
+    /// has not been confirmed yet, and refusing that would make every legitimate
+    /// launch illegal. The bound is the attachment deadline — once it passes,
+    /// the same silence becomes [`Self::AttachmentFailed`] and stops counting.
+    /// That is what separates a starting task from the thirteen-hour phantom.
+    #[must_use]
+    pub const fn can_hold_progress(self) -> bool {
+        matches!(self, Self::Attached | Self::Pending)
+    }
+}
+
+/// What Kontor has stored about one seat's attachment.
+///
+/// Every field is a recorded deadline or a recorded observation. Nothing here
+/// is read live from a runtime at evaluation time, which is what makes
+/// [`evaluate_seat_attachment`] deterministic and replayable.
+#[derive(Debug, Clone, Copy)]
+pub struct SeatAttachmentObservation {
+    /// The instant by which this seat must have been observed attached, fixed
+    /// when the seat was created. Without it, a seat that never attached is
+    /// indistinguishable from one that is merely slow — forever.
+    pub attach_deadline: Timestamp,
+    /// When the seat was last observed attached to its runtime session.
+    pub last_attached_at: Option<Timestamp>,
+    /// When the seat last produced observable activity.
+    pub last_activity_at: Option<Timestamp>,
+    /// Whether the owning epic seat is closed or has been replaced. Derived
+    /// from that seat's lifecycle, never from the runtime's own parent field.
+    pub parent_closed: bool,
+    /// Whether the seat was deliberately released or reaped.
+    pub released: bool,
+    /// What the runtime says about itself. Carried so an escalation can quote
+    /// it; deliberately **not** consulted when concluding attachment.
+    pub runtime_reported: ObservedRunState,
+}
+
+/// Conclude one seat's attachment from stored evidence alone.
+///
+/// Order matters. A released seat is released whatever else is true; an orphan
+/// is an orphan even if its runtime looks healthy, because its owner is gone
+/// and nothing is steering it.
+#[must_use]
+pub fn evaluate_seat_attachment(
+    observation: &SeatAttachmentObservation,
+    now: Timestamp,
+    max_idle: jiff::SignedDuration,
+) -> SeatAttachment {
+    if observation.released {
+        return SeatAttachment::Released;
+    }
+    if observation.parent_closed {
+        return SeatAttachment::Orphaned;
+    }
+    if observation.last_attached_at.is_none() {
+        return if now > observation.attach_deadline {
+            SeatAttachment::AttachmentFailed
+        } else {
+            SeatAttachment::Pending
+        };
+    }
+    // Liveness is judged on observed *activity*, never on the runtime's
+    // self-reported state, and never-observed activity is a stall rather than a
+    // pass: `Freshness::Unknown` must not read as healthy.
+    match Freshness::evaluate(observation.last_activity_at, now, max_idle) {
+        Freshness::Fresh => SeatAttachment::Attached,
+        Freshness::Stale | Freshness::Unknown => SeatAttachment::Stalled,
+    }
+}
+
+/// Proof that a task's claim of progress is backed by a dispatched run with at
+/// least one attached seat.
+///
+/// Like [`TaskClosureCertificate`], it has no public constructor: the only way
+/// to obtain one is [`certify_task_progress`], so a caller cannot assert that
+/// work is underway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskProgressEvidence {
+    /// Private field: constructed only inside this crate.
+    certified: (),
+}
+
+impl TaskProgressEvidence {
+    pub(crate) const fn issue() -> Self {
+        Self { certified: () }
+    }
+
+    /// Present the certificate (its existence is the proof).
+    #[must_use]
+    pub const fn is_certified(&self) -> bool {
+        let () = self.certified;
+        true
+    }
+}
+
+/// Certify that a task may claim [`TaskState::InProgress`].
+///
+/// The discriminator is **time, not lifecycle**. A run is legitimately `queued`
+/// for the moment between admission creating its seats and the runtime
+/// acknowledging them, so refusing every queued run would make admission
+/// illegal. What separates that moment from a phantom is whether any seat is
+/// still inside its attachment deadline.
+///
+/// # Errors
+/// [`DomainError::MissingEvidence`] when the run has closed, or when no seat
+/// can hold progress.
+pub fn certify_task_progress(
+    run: RunLifecycle,
+    seats: &[SeatAttachment],
+) -> DomainResult<TaskProgressEvidence> {
+    if run.is_terminal() {
+        return Err(DomainError::MissingEvidence {
+            subject: "task progress",
+            rule: "a closed run is not work in progress",
+        });
+    }
+    // A run whose seats have not been materialized yet is the same transient
+    // moment as a `Pending` seat, so an empty list is not by itself a refusal.
+    // A run that never materializes one is a real gap, but it is a *seat
+    // materialization* deadline rather than a task-state rule, and it belongs
+    // with the rest of the binding work in OP-02.
+    if !seats.is_empty() && !seats.iter().any(|seat| seat.can_hold_progress()) {
+        return Err(DomainError::MissingEvidence {
+            subject: "task progress",
+            rule: "every seat has failed to attach, orphaned, stalled or been released",
+        });
+    }
+    Ok(TaskProgressEvidence::issue())
+}
+
 /// What a task presents about the team that did its work, when it is asked to
 /// become terminal.
 ///
@@ -166,6 +343,8 @@ pub struct TaskTransition<'a> {
     pub run_outcome: Option<TerminalOutcome>,
     /// Proof of profile closure, required for [`TaskState::Done`].
     pub closure: Option<&'a TaskClosureCertificate>,
+    /// Proof of an attached seat, required for [`TaskState::InProgress`].
+    pub progress: Option<&'a TaskProgressEvidence>,
 }
 
 impl TaskTransition<'_> {
@@ -177,6 +356,7 @@ impl TaskTransition<'_> {
             resume_receipt: None,
             run_outcome: None,
             closure: None,
+            progress: None,
         }
     }
 }
@@ -224,6 +404,12 @@ pub fn apply_task_transition(
             return Err(DomainError::MissingEvidence {
                 subject: "task failure",
                 rule: "the current run must be closed failed",
+            });
+        }
+        TaskState::InProgress if transition.progress.is_none() => {
+            return Err(DomainError::MissingEvidence {
+                subject: "task progress",
+                rule: "a dispatched run with at least one attached seat must be observed",
             });
         }
         _ => {}
@@ -330,6 +516,15 @@ impl RunLifecycle {
             self,
             Self::Succeeded | Self::Failed | Self::Cancelled | Self::Parked
         )
+    }
+
+    /// Whether the run has actually been dispatched to a runtime.
+    ///
+    /// A queued run has been accepted, not started. Treating the two as the
+    /// same is how a task comes to claim progress over work nobody launched.
+    #[must_use]
+    pub const fn is_dispatched(self) -> bool {
+        !self.is_terminal() && !matches!(self, Self::Queued)
     }
 
     /// Whether `next` is a legal non-terminal advance from `self`.
