@@ -673,6 +673,41 @@ impl Services {
         Ok(accounted)
     }
 
+    /// Hand back every lease an abandoned run still holds.
+    ///
+    /// A lease is given up deliberately — closing the run it belonged to does
+    /// not touch it — so an abandoned run goes on holding its module until the
+    /// expiry lapses, and the next admission of the very task the abandonment
+    /// was meant to free is refused with "an active lease already claims this
+    /// place" for the rest of the window. The receipt that decided the
+    /// abandonment is the receipt that decides the release.
+    fn release_run_leases(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        receipt_id: CommandReceiptId,
+        now: Timestamp,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        for lease in state
+            .with_store(|store| store.live_leases_of_run(project_id, agent_run_id, now))
+            .map_err(|error| self.refuse(&error))?
+        {
+            state
+                .with_store(|store| {
+                    store.release_lease(&kontor_store::LeaseRelease {
+                        project_id,
+                        lease_id: lease.id,
+                        presented_token: lease.fencing_token,
+                        receipt_id,
+                        released_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        Ok(())
+    }
+
     /// Abandon the team run of a run just abandoned, when nothing of it is left
     /// running and no certificate can close it.
     ///
@@ -5005,6 +5040,19 @@ impl ApplicationOperations for Services {
         // Already closed: report the stored closure rather than closing twice.
         // A terminal row is immutable, so a repeated abandon is answered from it.
         if let Some(terminal) = run.terminal.as_ref() {
+            let receipt_id = match terminal.source {
+                TerminalEvidenceSource::OperatorAbandon { receipt_id } => Some(receipt_id),
+                TerminalEvidenceSource::RuntimeObservation { .. } => None,
+            };
+            // A repeat converges rather than reporting. The run is immutable and
+            // nothing about it moves again, but a lease it still holds is state
+            // this operation promised to give back — an abandonment that closed
+            // the run and then failed before the release would otherwise be
+            // unrepeatable, and the task would wait out an expiry with no way to
+            // ask again.
+            if let Some(receipt_id) = receipt_id {
+                self.release_run_leases(project_id, agent_run_id, receipt_id, now)?;
+            }
             let (team_run_closed, team_pending) = self.team_closure_state(project_id, &run)?;
             return Ok(AbandonedRunDto {
                 realm_id: state.realm_id(),
@@ -5014,12 +5062,7 @@ impl ApplicationOperations for Services {
                 revision: run.revision,
                 team_run_closed,
                 team_pending,
-                receipt_id: match terminal.source {
-                    TerminalEvidenceSource::OperatorAbandon { receipt_id } => {
-                        receipt_id.to_string()
-                    }
-                    TerminalEvidenceSource::RuntimeObservation { .. } => String::new(),
-                },
+                receipt_id: receipt_id.map(|id| id.to_string()).unwrap_or_default(),
             });
         }
 
@@ -5092,28 +5135,7 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?;
 
-        // Hand back what the run claimed. A lease is given up deliberately —
-        // closing the run it belonged to does not touch it — so an abandoned run
-        // goes on holding its module until the expiry lapses, and the next
-        // admission of the very task this is meant to free is refused with "an
-        // active lease already claims this place" for up to an hour. The receipt
-        // that decided the abandonment is the receipt that decides the release.
-        for lease in state
-            .with_store(|store| store.live_leases_of_run(project_id, agent_run_id, now))
-            .map_err(|error| self.refuse(&error))?
-        {
-            state
-                .with_store(|store| {
-                    store.release_lease(&kontor_store::LeaseRelease {
-                        project_id,
-                        lease_id: lease.id,
-                        presented_token: lease.fencing_token,
-                        receipt_id,
-                        released_at: now,
-                    })
-                })
-                .map_err(|error| self.refuse(&error))?;
-        }
+        self.release_run_leases(project_id, agent_run_id, receipt_id, now)?;
 
         // The task is only schedulable again once its *team* run is terminal
         // too, so the same certified closure the settle path uses is attempted
