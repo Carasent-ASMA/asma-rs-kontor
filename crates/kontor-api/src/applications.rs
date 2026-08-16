@@ -39,6 +39,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::Json;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use kontor_core::id::{
@@ -51,7 +52,7 @@ use utoipa::ToSchema;
 use crate::Caller;
 use crate::auth::CallerCapability;
 use crate::control::{idempotency_key, parse_id};
-use crate::error::ApiError;
+use crate::error::{ApiError, ApiErrorCode};
 use crate::state::ApiState;
 
 // ---------------------------------------------------------------------------
@@ -2314,9 +2315,15 @@ pub async fn arm(
     caller: Caller,
     Path((project_id, epic_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(request): Json<ArmRequest>,
+    request: Result<Json<ArmRequest>, JsonRejection>,
 ) -> Result<Json<AuthorizationProjectionDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
+    let Json(request) = request.map_err(|_| {
+        state.refuse(
+            ApiErrorCode::InvalidRequest,
+            "execution:arm requires a JSON body matching the documented budget contract",
+        )
+    })?;
     let (project_id, epic_id, key) = scope(&state, &project_id, &epic_id, &headers)?;
     Ok(Json(
         state

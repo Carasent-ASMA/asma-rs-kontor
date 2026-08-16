@@ -2297,6 +2297,19 @@ async fn arming_disarming_and_planning_are_scoped_authority_decisions() {
         "reason": "Bootstrap the epic"
     });
 
+    // Axum's default JSON extractor answers malformed bodies as plain text.
+    // This route is an MCP contract, so even schema rejection stays typed JSON.
+    let malformed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({"expected_revision": epic_revision, "budget": {}}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("arm-malformed")
+    .send(&world)
+    .await;
+    assert_eq!(malformed.status, 400, "{}", malformed.body);
+    assert_eq!(malformed.code(), "invalid_request");
+
     // Arming is admin authority: an operator credential does not reach it.
     let refused = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
@@ -2329,6 +2342,21 @@ async fn arming_disarming_and_planning_are_scoped_authority_decisions() {
             .len(),
         1,
         "arming names exactly the scope it was asked for"
+    );
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &arm_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("arm-admin")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["authorization_id"],
+        armed.json()["authorization_id"],
+        "the same key replays the original grant"
     );
 
     // The planner explains itself, and writes nothing while doing it.
