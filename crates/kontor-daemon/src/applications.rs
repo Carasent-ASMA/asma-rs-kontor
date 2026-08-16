@@ -4644,16 +4644,15 @@ impl ApplicationOperations for Services {
         }
 
         let members = self.team_members(project_id, predecessor.team_run_id)?;
-        if let Some(successor) = members
+        let recorded_successor = members
             .iter()
-            .find(|run| run.parent_agent_run_id == Some(agent_run_id))
-        {
-            let successor_binding = successor.binding.as_ref().ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "the recorded successor has not acquired a runtime binding",
-                )
-            })?;
+            .find(|run| run.parent_agent_run_id == Some(agent_run_id));
+        if let Some((successor, successor_binding)) = recorded_successor.and_then(|successor| {
+            successor
+                .binding
+                .as_ref()
+                .map(|binding| (successor, binding))
+        }) {
             return Ok(ReplacedSeatDto {
                 realm_id: state.realm_id(),
                 task_id,
@@ -4667,6 +4666,18 @@ impl ApplicationOperations for Services {
             });
         }
 
+        let recorded_successor_id = recorded_successor.map(|successor| successor.id);
+        let slot_members = recorded_successor_id.map_or_else(
+            || members.clone(),
+            |successor_id| {
+                members
+                    .iter()
+                    .filter(|run| run.id != successor_id)
+                    .cloned()
+                    .collect()
+            },
+        );
+
         let bindings: Vec<_> = members
             .iter()
             .filter_map(|run| run.binding.as_ref())
@@ -4674,7 +4685,7 @@ impl ApplicationOperations for Services {
             .collect();
         let lease = TeamRunLease::acquire(predecessor.team_run_id)
             .map_err(|error| self.refuse_domain(&error))?;
-        let mut slots = TeamRunSlots::hydrate(lease, &team.snapshot, &members, &bindings)
+        let mut slots = TeamRunSlots::hydrate(lease, &team.snapshot, &slot_members, &bindings)
             .map_err(|error| self.refuse_domain(&error))?;
         let closed = slots
             .latest_closed(&role_slot)
@@ -4686,11 +4697,23 @@ impl ApplicationOperations for Services {
             ));
         }
 
-        let successor_agent_run_id = AgentRunId::generate();
+        let successor_agent_run_id = recorded_successor_id.unwrap_or_else(AgentRunId::generate);
         let permit = slots
             .reserve_successor(closed, successor_agent_run_id)
             .map_err(|error| self.refuse_domain(&error))?;
-        let binding_id = kontor_core::id::RuntimeBindingId::generate();
+        // The run id is durable before runtime launch. Derive a distinct UUIDv7
+        // binding id from it so a retry can reclaim the runtime's exact admission.
+        let mut binding_id = successor_agent_run_id.to_string();
+        let last = binding_id.pop().expect("an entity id is not empty");
+        binding_id.push(
+            char::from_digit(
+                last.to_digit(16).expect("an entity id is hexadecimal") ^ 1,
+                16,
+            )
+            .expect("a hexadecimal digit remains hexadecimal"),
+        );
+        let binding_id = kontor_core::id::RuntimeBindingId::parse(&binding_id)
+            .map_err(|error| self.refuse_domain(&error))?;
         let adapter = state
             .runtimes()
             .get(&binding.identity.runtime_kind)
@@ -4700,12 +4723,14 @@ impl ApplicationOperations for Services {
                     "this daemon is not configured with the predecessor's runtime",
                 )
             })?;
-        let successor_row = permit
-            .new_agent_run(project_id, predecessor.account_profile_id, None, now)
-            .map_err(|error| self.refuse_domain(&error))?;
-        state
-            .with_store(|store| store.create_agent_run(&successor_row))
-            .map_err(|error| self.refuse(&error))?;
+        if recorded_successor_id.is_none() {
+            let successor_row = permit
+                .new_agent_run(project_id, predecessor.account_profile_id, None, now)
+                .map_err(|error| self.refuse_domain(&error))?;
+            state
+                .with_store(|store| store.create_agent_run(&successor_row))
+                .map_err(|error| self.refuse(&error))?;
+        }
 
         adapter
             .prepare_plane()
@@ -4780,7 +4805,11 @@ impl ApplicationOperations for Services {
             role_slot: role_slot.as_role_key().as_str().to_owned(),
             runtime_kind: successor_binding.identity.runtime_kind.as_str().to_owned(),
             native_id: successor_binding.identity.native_id.as_str().to_owned(),
-            applied: AppliedDto::Created,
+            applied: if recorded_successor_id.is_some() {
+                AppliedDto::Unchanged
+            } else {
+                AppliedDto::Created
+            },
         })
     }
 

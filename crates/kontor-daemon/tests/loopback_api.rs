@@ -37,7 +37,7 @@ use std::sync::Arc;
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{AgentRunId, CanonicalDocument, ContentHash, ProjectId, TaskId};
+use kontor_core::id::{AgentRunId, CanonicalDocument, ContentHash, ProjectId, TaskId, TeamRunId};
 use kontor_core::repository::{
     NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunClosure,
     RunRepository, WorkflowRepository,
@@ -6813,6 +6813,113 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
     assert_eq!(
         replay.json()["successor_agent_run_id"],
         successor_id.to_string()
+    );
+
+    let retry_seat = seats.as_array().expect("the seated roster")[2].clone();
+    let retry_predecessor = retry_seat["agent_run_id"]
+        .as_str()
+        .expect("the retry run id");
+    let retry_role_slot = retry_seat["role_slot"]
+        .as_str()
+        .expect("the retry role slot");
+    finish_natively(&world, retry_predecessor).await;
+    let retry_settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{retry_predecessor}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-seat-retry-runtime-settle")
+    .send(&world)
+    .await;
+    assert_eq!(retry_settled.status, 200, "{}", retry_settled.body);
+
+    let retry_predecessor_id =
+        AgentRunId::parse(retry_predecessor).expect("a canonical retry predecessor id");
+    let retry_before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, retry_predecessor_id)
+            .expect("the retry predecessor reads")
+            .expect("the retry predecessor exists")
+    });
+    let retry_body = serde_json::json!({
+        "role_slot": retry_role_slot,
+        "expected_task_revision": task_revision,
+        "binding_generation": retry_before
+            .binding
+            .as_ref()
+            .expect("the retry predecessor was bound")
+            .identity
+            .generation,
+    });
+    world.script(r#"{"steps":[{"step":"transport_failure","operation":"prepare_workspace"}]}"#);
+    let failed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{retry_predecessor}/successors:replace"),
+        &retry_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-seat-successor-retry")
+    .send(&world)
+    .await;
+    assert_eq!(failed.status, 503, "{}", failed.body);
+
+    let team_run_id = TeamRunId::parse(team_run).expect("a canonical team run id");
+    let recorded = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, team_run_id)
+            .expect("the team members read")
+            .into_iter()
+            .map(|seat| {
+                store
+                    .get_agent_run(project_id, seat.agent_run_id)
+                    .expect("the member reads")
+                    .expect("the member exists")
+            })
+            .find(|run| run.parent_agent_run_id == Some(retry_predecessor_id))
+            .expect("the failed launch recorded one successor")
+    });
+    assert!(recorded.binding.is_none());
+
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{retry_predecessor}/successors:replace"),
+        &retry_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-seat-successor-retry")
+    .send(&world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["applied"], "unchanged");
+    assert_eq!(
+        recovered.json()["successor_agent_run_id"],
+        recorded.id.to_string()
+    );
+    let recovered_members = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, team_run_id)
+            .expect("the recovered team members read")
+            .into_iter()
+            .map(|seat| {
+                store
+                    .get_agent_run(project_id, seat.agent_run_id)
+                    .expect("the recovered member reads")
+                    .expect("the recovered member exists")
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        recovered_members
+            .iter()
+            .filter(|run| run.parent_agent_run_id == Some(retry_predecessor_id))
+            .count(),
+        1
+    );
+    assert!(
+        recovered_members
+            .iter()
+            .find(|run| run.id == recorded.id)
+            .expect("the same successor remains")
+            .binding
+            .is_some()
     );
 }
 
