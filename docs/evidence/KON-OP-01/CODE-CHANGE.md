@@ -3,18 +3,23 @@
 Date: 2026-08-16
 Branch: `feat/ASMA-7870-kontor-operational-domain`
 Frozen submodule: `_tools/asma-rs-kontor`
-Commits: `dedd300` (implementation), `597fa26` (mutation-driven test)
+Commits: `dedd300` (shareability), `597fa26` (mutation-driven test),
+`181c628` (master merge), `b367683` (ECP + code help)
 Predecessor baseline: `7314721` generic topology domain, on the deployed hotfix `6b3e95c`
 
 ## What this delivers
 
-OP-REQ-037 write-time `shareability` for the published documents OP-01 owns.
+Two amendments layered onto the predecessor's generic topology domain:
 
-The predecessor run landed the generic topology domain at `7314721` (08:19). The
-shareability boundary architecture was approved at 09:40 the same day, and
-OP-REQ-036/037 were added to the plan after that. Everything else in the OP-01
-Implementation and Acceptance list was already present and green; the
-classification was the open gap. This change closes it and nothing else.
+1. **OP-REQ-037** write-time `shareability` for the published documents OP-01
+   owns (`dedd300`, `597fa26`).
+2. **OP-REQ-040/041** the Epic Control Plane and server-owned code help
+   (`b367683`), from the 2026-08-16 13:02 amendment.
+
+The predecessor run landed the generic topology domain at `7314721` (08:19).
+Each amendment postdates it, which is why each arrived as a separate gap rather
+than as part of the original build. `181c628` merges master's OP-REQ-039
+seat-attachment guardrails in between.
 
 ## Domain — `crates/kontor-core/src/spec.rs`
 
@@ -78,10 +83,48 @@ versus shared would produce two different hashes, and every epic that pinned
 decision that says nothing about the topology. This also leaves every existing
 document hash and the predecessor's fixtures byte-identical.
 
+## ECP and server-owned code help (`b367683`)
+
+Added under the 2026-08-16 13:02 amendment (OP-REQ-040/041, DEC-033/034).
+
+**OP-REQ-040 — Epic Control Plane.** The seeded vocabulary is now
+`PSW QSW ESW ECP TSW ASW CSW`. `LSA` and `TPM` are removed as node kinds: they
+were never containers, and modelling them as kinds gave each control role its
+own workspace. One `ECP` sits under each `ESW` with cardinality exactly one,
+`native_child + session_host` and never `native_root`, so the default claims no
+nested Paseo workspace. Both control seats bind directly to that one ECP node.
+
+**OP-REQ-041 — code help.** `CodeHelp { full_name, meaning, category, lifecycle }`
+hangs off every declared node kind; roles carry the same five facts through
+`role_code`, `standard_title`, `responsibility_summary`, `segment` and a new
+`lifecycle`, rather than a parallel structure that would duplicate title and
+category. `historical_codes` explains codes a client meets in old state but must
+never create — `TSC` (compatibility) and `PASE` (retired) — because a vocabulary
+describing only its current kinds would force every client to hard-code the
+rest, which is the competing dictionary the requirement forbids.
+`ProjectSessionTopologySpec::code_help` resolves both lists and returns `None`
+for an unknown code rather than guessing.
+
+Validation ties the two together: a declared kind must be `current`, a
+`historical_code` must not be, and no code may be both.
+
+Role meanings now come from the approved dictionary instead of echoing each
+title back.
+
+**Why this is seed data, not a migration.** The fixture has never been published
+by production code — `publish_topology_spec` and `publish_role_catalog` have no
+callers outside `kontor-profiles`' seed and OP-01's own tests, verified before
+the change. So no stored document, pinned hash, running topology or bound seat is
+affected, which is what the amending brief's constraint 4 required.
+
 ## Scope
 
 Every changed file is inside the OP-01 ownership list. No `/v1`, MCP, CLI,
 promotion, Jira/memory, publication surface, repository writer, synchronization
 or drift detector was added — the MVP stores and exposes the classification
-only. No Foundation fixture or snapshot was modified. `independent_review@1` and
-`operational_default@1` were **not** seeded; see `OPEN-QUESTIONS.md` OQ-OP-01-1.
+only, and the ECP/code-help change is seed data with no runtime projection. No
+Foundation fixture or snapshot was modified, and no topology, workspace, TeamRun
+or seat was created or migrated. `independent_review@1` and
+`operational_default@1` were **not** seeded — the amended plan does assign them
+to OP-01, but this run was scoped to shareability, ECP and code help; see
+`OPEN-QUESTIONS.md` OQ-OP-01-1.

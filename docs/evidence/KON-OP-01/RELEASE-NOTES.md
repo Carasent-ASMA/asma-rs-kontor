@@ -1,7 +1,7 @@
 # KON-OP-01 / ASMA-7870 — release notes
 
 Date: 2026-08-16
-Commits: `dedd300`, `597fa26`
+Commits: `dedd300`, `597fa26`, `181c628`, `b367683`
 Schema: 24 → **25**
 
 ## Summary
@@ -40,6 +40,23 @@ newer schema is refused rather than truncated.
 - Canonical document hashes are **unchanged**. Classification is stored beside
   the document, so no pinned `(spec_id, revision, canonical_hash)` moved.
 
+## Epic Control Plane and code help
+
+The ASMA Operational default seeds one `ECP` (Epic Control Plane) under each
+`ESW`, hosting the epic's `LSA` and `TPM` seats in a single workspace instead of
+one workspace per control role. `LSA` and `TPM` are role codes on SeatBindings
+and are no longer topology-node kinds.
+
+Every seeded topology kind and role code now carries server-owned help — code,
+full name, concise meaning, category and lifecycle — so a client renders one
+authoritative explanation instead of keeping its own dictionary. `TSC` is
+explained as compatibility-only and `PASE` as retired; an unknown code resolves
+to nothing rather than a guess.
+
+This is seed data. No topology, workspace, TeamRun or seat is created or
+migrated, and no existing identity changes: the fixture has never been published
+by production code.
+
 ## Not in this release
 
 - Any publication, synchronization or repository-writing behaviour.
@@ -49,11 +66,15 @@ newer schema is refused rather than truncated.
   no column to hold one.
 - `/v1`, MCP, CLI or UI exposure of the classification. Projection is OP-03;
   the diagnostic surface is OP-09.
-- `independent_review@1` and `operational_default@1`, which the plan assigns to
-  OP-05 and OP-06.
+- `independent_review@1` and `operational_default@1`. The amended plan assigns
+  these to OP-01, but the amending brief scoped this run to shareability, ECP
+  and code help; they are remaining OP-01 work (OQ-OP-01-1).
+- Runtime projection of the ECP (OP-02), the `/v1` code-help projection (OP-03)
+  and the accessible hover/focus/touch UI (OP-09).
 
 ## Risk
 
-Low. Additive columns with defaults, additive read ports, and one changed
-argument list on two publish ports whose only callers are OP-01's own tests.
-Full workspace suite green at 1264 tests; clippy clean at `-D warnings`.
+Low. Additive columns with defaults, additive read ports, one changed argument
+list on two publish ports whose only callers are OP-01's own tests, and seed
+data that production code has never published. Full workspace suite green at
+1280 tests; clippy clean at `-D warnings`; 11 seeded mutants all killed.

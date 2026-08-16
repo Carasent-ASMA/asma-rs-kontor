@@ -34,9 +34,19 @@ generic domain-store scope that a seeded Committee template and Completion
 Profile would exceed. §9 Migration also assigns the `independent_review@1`
 linkage to Foundation-behaviour preservation, not to OP-01.
 
-**If the LSA rules the other way:** both are additive seed documents plus their
-fixture entries; OP-01 would reopen for a follow-up commit. Nothing delivered
-here would be rewritten.
+**CLOSED — the brief was right and the worktree's plan copy was stale.** The
+main checkout's KON-OP-01 Implementation now reads "Seed only
+`independent_review@1` and `operational_default@1` with one remediation round.
+Migrate the Foundation three-seat compliance fixture to that pinned template
+without changing its semantics." The prohibition I followed came from a stale
+plan copy in this worktree.
+
+**Not done here, and deliberately so.** The amending brief scoped this run to
+shareability, ECP and code help, and restated "keep generic-domain-store scope".
+Seeding a Committee template and a Completion Profile is neither. This is
+**remaining OP-01 work**, not delivered and not silently dropped — it needs its
+own run against the amended plan text, together with the Foundation three-seat
+fixture migration that clause also assigns to OP-01.
 
 ---
 
@@ -97,6 +107,30 @@ to change.
 
 ---
 
+## OQ-OP-01-6 — the worktree's plan copy was stale (process)
+
+**Closes:** TPM (process — how a builder seat gets the current plan)
+
+**CLOSED by observation.** Two of the four questions raised in the first OP-01
+run (OQ-OP-01-1 and OQ-OP-01-4) existed only because
+`_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md`
+inside this worktree predated amendments already made in the main checkout. The
+worktree copy prohibited seeding `independent_review@1`; the main copy requires
+it. The worktree copy had no OP-REQ-038; the main copy defines it, along with
+OP-REQ-039, 040 and 041.
+
+Reading the worktree's own copy is the natural thing for a seat to do, and it
+was wrong here. The later brief had to say "your worktree's plan copy is stale;
+read from the main checkout" — that instruction should not have to be given by
+hand each time.
+
+**Ask:** either the plan is read from the main checkout by convention and every
+brief says so, or a worktree refreshes `_docs` before a seat starts. A builder
+that silently reads a stale requirements register produces confidently wrong
+scope decisions, which is exactly what happened twice here.
+
+---
+
 ## OQ-OP-01-4 — OP-REQ-038 is cited but does not exist
 
 **Closes:** TPM (process — requirement register)
@@ -111,10 +145,12 @@ OP-REQ-038 in
 terms — this document is the durable record, raised and not self-closed, with
 architectural and process items attributed separately.
 
-**Ask:** either add OP-REQ-038 to the plan with the wording the brief assumes, or
-correct future briefs to cite OP-REQ-030, which already governs missing
-capabilities discovered during delivery. Two requirement registers disagreeing
-about their own contents is the kind of drift that gets worse quietly.
+**CLOSED — it exists in the main checkout.** OP-REQ-038 defines the open-question
+record: subject, attached record, author, why the state is ambiguous, options
+seen, and exactly three dispositions (`resolved`, `deferred`, `not_relevant`).
+This ledger is that record in document form for OP-01; the aggregate itself is
+`KON-OP-12` / ASMA-7881, not OP-01. The question was raised only because this
+worktree's plan copy was stale — see OQ-OP-01-6.
 
 ---
 
