@@ -10,8 +10,8 @@ use kontor_core::repository::{
     ProjectTopologyDefault, RepositoryError, TopologyRepository,
 };
 use kontor_core::spec::{
-    CatalogRoleRef, Shareability, ShareabilityClass, ShareabilityProvenance, ShareabilityTier,
-    TopologySnapshot,
+    CatalogRoleRef, Shareability, ShareabilityClass, ShareabilityClassifier,
+    ShareabilityProvenance, ShareabilityTier, TopologySnapshot,
 };
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
@@ -340,5 +340,62 @@ fn an_unattributed_override_is_refused_by_the_schema() {
     assert!(
         anonymous.is_err(),
         "an override with no human identity is not a stamp anyone made"
+    );
+}
+
+/// Publishing refuses a stamp the schema alone cannot catch.
+///
+/// The insert trigger only proves that an override names a human. A class the
+/// tier's default rule would never have produced, wearing that rule's identity,
+/// is well-formed as far as SQLite is concerned — withholding a tier-B document
+/// is a human decision, and the domain check at the publish boundary is the
+/// only thing that says so. The mutant this kills is dropping `validate_for`
+/// from the publish path.
+#[test]
+fn publishing_refuses_a_class_nobody_chose() {
+    let home = TempDir::new().expect("a temporary directory");
+    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let project_id = ProjectId::generate();
+    let created_at = at("2026-08-16T01:00:00Z");
+    store
+        .create_project(&NewProject {
+            id: project_id,
+            name: name("Forged project"),
+            root_path: name("/tmp/forged-project"),
+            created_at,
+        })
+        .expect("the project is created");
+
+    let domain = bundled_operational_domain().expect("the bundled domain validates");
+    let topology = domain.topology_specs.first().expect("a topology").clone();
+    let catalog = domain
+        .role_catalogs
+        .first()
+        .expect("a role catalog")
+        .clone();
+    let forged = Shareability {
+        class: ShareabilityClass::KontorLocal,
+        classifier: ShareabilityClassifier::TypeDefaultRule,
+        provenance: ShareabilityProvenance::TypeDefault,
+    };
+
+    assert!(
+        store
+            .publish_topology_spec(project_id, &topology, &forged, created_at)
+            .is_err(),
+        "a withheld specification must name the human who withheld it"
+    );
+    assert!(
+        store
+            .publish_role_catalog(&catalog, &forged, created_at)
+            .is_err(),
+        "a withheld catalog must name the human who withheld it"
+    );
+    assert_eq!(
+        store
+            .get_topology_spec_shareability(project_id, topology.spec_id, topology.version)
+            .expect("the read succeeds"),
+        None,
+        "a refused publish leaves nothing behind"
     );
 }
