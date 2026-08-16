@@ -110,7 +110,45 @@ pub enum ArgType {
     /// An array of text.
     TextArray,
     /// A nested document the daemon validates.
+    ///
+    /// Prefer [`ArgType::Object`] wherever the accepted shape is actually
+    /// known. This variant tells a caller only that *some* object goes here,
+    /// which leaves it guessing field names against a closed DTO — and a wrong
+    /// guess is refused by the daemon, not by anything the caller could have
+    /// read first.
     Json,
+    /// A nested document whose fields are declared.
+    ///
+    /// The fields are emitted into the tool's own JSON Schema, so a caller sees
+    /// the shape before it calls instead of discovering it from a refusal.
+    Object(&'static [FieldSpec]),
+}
+
+/// One field of a declared nested object.
+///
+/// Deliberately not an [`ArgSpec`]: a nested field has no [`Place`] of its own —
+/// it lives wherever its parent argument goes — and a type that offered one
+/// would invite a field claiming to be a header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldSpec {
+    /// The property name a caller supplies.
+    pub name: &'static str,
+    /// What it must be.
+    pub ty: ArgType,
+    /// Whether the parent object is refused without it.
+    pub required: bool,
+    /// What it means, for the tool's own schema.
+    pub about: &'static str,
+}
+
+/// A shorthand for one required field of a declared object.
+const fn field(name: &'static str, ty: ArgType, about: &'static str) -> FieldSpec {
+    FieldSpec {
+        name,
+        ty,
+        required: true,
+        about,
+    }
 }
 
 impl ArgType {
@@ -135,8 +173,46 @@ impl ArgType {
             Self::Revision | Self::SpecVersion | Self::U32 | Self::U64 | Self::I64 => "integer",
             Self::Bool => "boolean",
             Self::TextArray => "array",
-            Self::Json => "object",
+            Self::Json | Self::Object(_) => "object",
         }
+    }
+
+    /// This type's own JSON Schema fragment, less its description.
+    ///
+    /// Recursive so that a declared object's fields are as fully described as a
+    /// top-level argument: a nested `Object` inside an `Object` still shows its
+    /// shape rather than bottoming out at "object".
+    #[must_use]
+    pub fn schema(self) -> serde_json::Map<String, serde_json::Value> {
+        let mut fragment = serde_json::Map::new();
+        fragment.insert("type".into(), self.json_type().into());
+        match self {
+            Self::Enum(allowed) => {
+                fragment.insert("enum".into(), allowed.iter().copied().collect());
+            }
+            Self::TextArray => {
+                fragment.insert("items".into(), serde_json::json!({ "type": "string" }));
+            }
+            Self::Object(fields) => {
+                let mut properties = serde_json::Map::new();
+                let mut required = Vec::new();
+                for field in fields {
+                    let mut property = field.ty.schema();
+                    property.insert("description".into(), field.about.into());
+                    properties.insert(field.name.to_owned(), property.into());
+                    if field.required {
+                        required.push(serde_json::Value::from(field.name));
+                    }
+                }
+                fragment.insert("properties".into(), properties.into());
+                fragment.insert("required".into(), required.into());
+                // Same reasoning as the top-level schema: the daemon's DTOs are
+                // closed, so advertising openness would invite a smuggled field.
+                fragment.insert("additionalProperties".into(), false.into());
+            }
+            _ => {}
+        }
+        fragment
     }
 }
 
@@ -184,6 +260,40 @@ const IDEMPOTENCY: ArgSpec = req(
     ArgType::IdempotencyKey,
     "The caller's stable key. Reusing it returns the original receipt.",
 );
+
+/// The bounds every budget ceiling is declared with.
+///
+/// This mirrors `kontor_api::applications::BudgetBoundsRequest` field for field.
+/// The two are kept in step by `budget_bounds_match_the_daemons_dto` below,
+/// because a schema that drifts from the DTO is worse than no schema: it is a
+/// wrong answer a caller has no reason to doubt.
+const BUDGET_BOUNDS: &[FieldSpec] = &[
+    field(
+        "max_tokens",
+        ArgType::U64,
+        "Maximum tokens across the bounded work.",
+    ),
+    field(
+        "max_commands",
+        ArgType::U64,
+        "Maximum runtime commands across the bounded work.",
+    ),
+    field(
+        "max_duration_seconds",
+        ArgType::U64,
+        "Maximum wall-clock seconds across the bounded work.",
+    ),
+    field(
+        "max_cost_minor_units",
+        ArgType::U64,
+        "Maximum monetary cost, in integer minor units of `cost_currency`.",
+    ),
+    field(
+        "cost_currency",
+        ArgType::Text,
+        "The ISO 4217 currency those minor units are in, such as `NOK`.",
+    ),
+];
 
 /// The two bounds a streamed read is taken under.
 const MAX_FRAMES: ArgSpec = opt(
@@ -260,15 +370,8 @@ impl ToolSpec {
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();
         for arg in self.args {
-            let mut property = serde_json::Map::new();
-            property.insert("type".into(), arg.ty.json_type().into());
+            let mut property = arg.ty.schema();
             property.insert("description".into(), arg.about.into());
-            if let ArgType::Enum(allowed) = arg.ty {
-                property.insert("enum".into(), allowed.iter().copied().collect());
-            }
-            if matches!(arg.ty, ArgType::TextArray) {
-                property.insert("items".into(), serde_json::json!({ "type": "string" }));
-            }
             properties.insert(arg.name.to_owned(), property.into());
             if arg.required {
                 required.push(serde_json::Value::from(arg.name));
@@ -773,7 +876,7 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "budget",
                 Place::Body,
-                ArgType::Json,
+                ArgType::Object(BUDGET_BOUNDS),
                 "The token, command, duration and cost bounds.",
             ),
             req(
@@ -1167,6 +1270,36 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "One pinned trigger revision: its filter and dedup pointers, never an event's values.",
+    },
+    ToolSpec {
+        name: "kontor_trigger_publish",
+        // Admin, and not operator: a trigger may declare a bounded auto-arm, and
+        // that is the capability to start work with no human in the loop.
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/triggers:publish",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "spec",
+                Place::Body,
+                ArgType::Json,
+                "The whole trigger specification document. Required keys: schema_version, id, \
+                 version, source_kind, source_connection, event_schema, event_schema_version, \
+                 filter, dedup, work_profile, work_profile_version, team_template, \
+                 context_template, approval, limits. `approval` is either \
+                 {\"kind\":\"approval_required\"} or {\"kind\":\"bounded_auto_arm\", capability, \
+                 max_concurrency, budget}.",
+            ),
+        ],
+        about: "Install one immutable trigger revision, including a bounded auto-arm capability.",
     },
     ToolSpec {
         name: "kontor_intake_submit",

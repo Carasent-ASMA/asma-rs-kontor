@@ -1297,6 +1297,13 @@ const SEAT_ATTACH_GRACE: SignedDuration = SignedDuration::from_mins(10);
 /// stalled rather than working (OP-REQ-039c).
 const SEAT_MAX_IDLE: SignedDuration = SignedDuration::from_mins(30);
 
+/// One `agent_runs` row, as the seat-attachment read selects it.
+///
+/// Named because the tuple is five columns wide and `clippy::type_complexity`
+/// is right about it: the shape says nothing at the call site, and the alias
+/// costs one line.
+type SeatAttachmentRow = (String, String, Option<String>, String, Option<String>);
+
 /// Conclude each seat of one team run from its persisted row.
 fn read_seat_attachments(
     transaction: &Transaction<'_>,
@@ -1310,7 +1317,7 @@ fn read_seat_attachments(
              FROM agent_runs WHERE project_id = ?1 AND team_run_id = ?2",
         )
         .map_err(backend)?;
-    let rows: Vec<(String, String, Option<String>, String, Option<String>)> = statement
+    let rows: Vec<SeatAttachmentRow> = statement
         .query_map(params![project_id.to_string(), team_run_id], |row| {
             Ok((
                 row.get(0)?,

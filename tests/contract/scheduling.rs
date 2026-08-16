@@ -593,6 +593,7 @@ async fn a_lost_launch_and_a_restart_still_leave_exactly_one_durable_admission()
             now(),
         )
         .expect("the standard fallback freezes"),
+        autonomy: kontor_core::spec::SeatAutonomy::standard(),
         requested_at: now(),
     };
     let authority = world

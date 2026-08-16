@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 24;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -110,6 +110,31 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0020_role_slot_waivers.sql"),
     include_str!("../migrations/0021_native_memory.sql"),
     include_str!("../migrations/0022_teams_editor.sql"),
+    // ⚠️ MERGE HAZARD — these two numbers are contested and must be renumbered
+    // when `feat/ASMA-7871-kontor-operational-bindings` integrates.
+    //
+    // That branch holds *different* scripts at 0023–0027 and is at
+    // `SCHEMA_VERSION = 27`; the live realm has already run its 0023–0025
+    // (`user_version = 25`). An applied migration can never be renumbered without
+    // breaking every database that ran it, so the direction is forced rather than
+    // chosen: **theirs keep their numbers and these two move to the end.** The
+    // exact numbers are whatever their final count plus one and plus two are, so
+    // they are settled at merge and not guessable now — the branch was still
+    // adding scripts when this was written.
+    //
+    // The renumber is mechanical, and all five steps are required together
+    // because the list is positional (`the index *is* the version it upgrades
+    // from`): rename the two files; move these two `include_str!` entries to the
+    // end of `MIGRATIONS`; set `SCHEMA_VERSION` to the new length; update each
+    // script's trailing `PRAGMA user_version` to its new index; update the
+    // canary in `kontor-store/tests/schema_v1.rs`.
+    //
+    // OP-REQ-036: a `needs_human` row states its recommendation, its author and
+    // the deliberation path already walked.
+    include_str!("../migrations/0023_escalation_brief.sql"),
+    // One command kind for installing a trigger revision, which is how a bounded
+    // auto-arm capability is declared at all.
+    include_str!("../migrations/0024_publish_trigger_command.sql"),
 ];
 
 const _: () = assert!(

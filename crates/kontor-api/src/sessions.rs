@@ -24,8 +24,8 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::body::Json;
 use crate::dto::{CompactRequestBody, CompactionReceiptDto};
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};

@@ -903,6 +903,15 @@ pub struct RecoveryEpisode {
     pub successor_agent_run_id: Option<AgentRunId>,
     /// Why it escalated, when it did.
     pub escalation_cause: Option<EscalationCause>,
+    /// What the operator is being asked to confirm, when a human was reached.
+    ///
+    /// OP-REQ-036 makes this half of an escalation, not an annotation on one: an
+    /// operator reading a `needs_human` episode is owed the recommendation and
+    /// its author, so the episode has to carry them rather than leaving them in
+    /// a transition nobody kept.
+    pub escalation_brief: Option<crate::recovery::Escalation>,
+    /// What had already been tried when the human was reached.
+    pub deliberation_path: Option<crate::recovery::DeliberationPath>,
     /// Optimistic concurrency.
     pub revision: AggregateRevision,
     /// When it opened.

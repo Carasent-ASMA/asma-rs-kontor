@@ -16,7 +16,7 @@ use kontor_core::id::{
     AccountProfileId, AgentRunId, BoundedText, CanonicalDocument, CompactionReceiptId, ContentHash,
     ExternalId, RoleSlotId, RuntimeBindingId, TaskId, TeamRunId, Timestamp,
 };
-use kontor_core::spec::{ContextEnforcement, ContextPolicySnapshot, ModelRung};
+use kontor_core::spec::{ContextEnforcement, ContextPolicySnapshot, ModelRung, SeatAutonomy};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
@@ -170,6 +170,12 @@ pub struct LaunchParts {
     /// it does not compute it, so a runtime cannot influence what Kontor says it
     /// asked for.
     pub context_policy: ContextPolicySnapshot,
+    /// How much this seat may do before it has to ask a human.
+    ///
+    /// Frozen with the rest of the launch: an adapter reads what Kontor declared
+    /// rather than deciding for itself, and a runtime that cannot express the
+    /// declared policy refuses instead of running under a wider one.
+    pub autonomy: SeatAutonomy,
     /// When the launch was requested.
     pub requested_at: Timestamp,
 }
@@ -295,6 +301,12 @@ impl LaunchRequest {
     #[must_use]
     pub const fn context_policy(&self) -> &ContextPolicySnapshot {
         &self.parts.context_policy
+    }
+
+    /// How much this seat may do before it has to ask a human.
+    #[must_use]
+    pub const fn autonomy(&self) -> SeatAutonomy {
+        self.parts.autonomy
     }
 
     /// When the launch was requested.

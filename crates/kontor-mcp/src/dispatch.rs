@@ -326,18 +326,34 @@ fn scalar_text(value: &serde_json::Value) -> String {
 
 /// Refuse one argument the schema or the domain does not accept.
 fn check(tool: &'static str, arg: &ArgSpec, value: &serde_json::Value) -> Result<(), Denied> {
+    check_value(tool, arg.name, arg.ty, value)
+}
+
+/// Refuse one value the schema or the domain does not accept.
+///
+/// Split from [`check`] so a declared nested object can be checked with the same
+/// rules as a top-level argument. `property` is the caller-facing path — `budget`
+/// at the top level, `budget.max_tokens` one level down — so a refusal names the
+/// field the caller actually has to fix rather than the argument that contains
+/// it.
+fn check_value(
+    tool: &'static str,
+    property: &str,
+    ty: ArgType,
+    value: &serde_json::Value,
+) -> Result<(), Denied> {
     let wrong = |expected: &'static str| Denied::WrongType {
         tool: tool.to_owned(),
-        property: arg.name.to_owned(),
+        property: property.to_owned(),
         expected,
     };
     let invalid = |error: &kontor_core::DomainError| Denied::InvalidValue {
         tool: tool.to_owned(),
-        property: arg.name.to_owned(),
+        property: property.to_owned(),
         rule: error.to_string(),
     };
 
-    match arg.ty {
+    match ty {
         ArgType::ProjectId
         | ArgType::MiniProjectId
         | ArgType::TaskId
@@ -351,14 +367,14 @@ fn check(tool: &'static str, arg: &ArgSpec, value: &serde_json::Value) -> Result
         | ArgType::IdempotencyKey
         | ArgType::Timestamp => {
             let text = value.as_str().ok_or_else(|| wrong("a string"))?;
-            parse_domain(arg.ty, text).map_err(|error| invalid(&error))?;
+            parse_domain(ty, text).map_err(|error| invalid(&error))?;
         }
         ArgType::Text => {
             let text = value.as_str().ok_or_else(|| wrong("a string"))?;
             if text.is_empty() {
                 return Err(Denied::WrongType {
                     tool: tool.to_owned(),
-                    property: arg.name.to_owned(),
+                    property: property.to_owned(),
                     expected: "a non-empty string",
                 });
             }
@@ -368,7 +384,7 @@ fn check(tool: &'static str, arg: &ArgSpec, value: &serde_json::Value) -> Result
             if !allowed.contains(&text) {
                 return Err(Denied::InvalidValue {
                     tool: tool.to_owned(),
-                    property: arg.name.to_owned(),
+                    property: property.to_owned(),
                     rule: format!("one of {}", allowed.join(", ")),
                 });
             }
@@ -410,6 +426,55 @@ fn check(tool: &'static str, arg: &ArgSpec, value: &serde_json::Value) -> Result
         ArgType::Json => {
             if !(value.is_object() || value.is_array()) {
                 return Err(wrong("an object or an array"));
+            }
+        }
+        // A nested document whose shape is declared, so it is refused *here*,
+        // naming the field. Letting it through would spend a network round trip
+        // to learn the same thing from the daemon's extractor, which can only
+        // answer that the body did not match — the difference between "fix
+        // `budget.max_tokens`" and "something about your request was wrong".
+        ArgType::Object(fields) => {
+            let object = value.as_object().ok_or_else(|| wrong("an object"))?;
+
+            // Unknown fields are judged *first*, and the order is the whole point.
+            // A caller that sent `{tokens, commands, …}` for `{max_tokens,
+            // max_commands, …}` made one naming mistake, and checking required
+            // fields first would report it as four unrelated omissions — true, and
+            // no help at all in seeing that the names simply differ. The DTOs are
+            // closed, so an unknown field is almost always a guess at a name that
+            // exists under another spelling; naming the alternatives is what stops
+            // the guess being repeated.
+            if let Some(unknown) = object
+                .keys()
+                .find(|key| !fields.iter().any(|field| field.name == key.as_str()))
+            {
+                return Err(Denied::InvalidValue {
+                    tool: tool.to_owned(),
+                    property: format!("{property}.{unknown}"),
+                    rule: format!(
+                        "not a field of this object; it declares {}",
+                        fields
+                            .iter()
+                            .map(|field| field.name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                });
+            }
+
+            for field in fields {
+                let path = format!("{property}.{}", field.name);
+                match object.get(field.name) {
+                    Some(nested) => check_value(tool, &path, field.ty, nested)?,
+                    None if field.required => {
+                        return Err(Denied::InvalidValue {
+                            tool: tool.to_owned(),
+                            property: path,
+                            rule: "required, and absent".to_owned(),
+                        });
+                    }
+                    None => {}
+                }
             }
         }
     }
@@ -480,6 +545,102 @@ mod tests {
             denied,
             Denied::MissingProperty { ref property, .. } if property == "agent_run_id"
         ));
+    }
+
+    /// The budget shape the arm incident guessed is refused here, by name.
+    ///
+    /// All three attempts in that incident reached the daemon and came back as
+    /// "the body was not JSON", because a declared `object` with no fields
+    /// accepts anything object-shaped and defers the real check to an extractor
+    /// that cannot describe what it refused. A declared object closes that: the
+    /// guess never becomes a request, and the refusal names the field.
+    #[test]
+    fn a_guessed_nested_shape_is_refused_here_and_names_the_field() {
+        let arguments = serde_json::json!({
+            "project_id": UUID,
+            "epic_id": UUID,
+            "idempotency_key": "arm-1",
+            "expected_revision": 1,
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"tokens": 1, "commands": 1, "duration": 1, "cost": 1},
+            "granted_by": UUID,
+            "reason": "Bootstrap the epic"
+        });
+        let denied = build(spec("kontor_execution_arm"), &arguments)
+            .expect_err("the budget shape is not the declared one");
+        let Denied::InvalidValue { property, rule, .. } = &denied else {
+            panic!("a wrong nested field is an invalid value: {denied:?}");
+        };
+        assert!(
+            property.starts_with("budget."),
+            "the refusal names the nested field, not the argument: {property}"
+        );
+        assert!(
+            rule.contains("max_tokens"),
+            "the refusal tells the caller the name that does exist: {rule}"
+        );
+    }
+
+    /// A missing required field of a declared object is refused by name too, so
+    /// an *incomplete* budget is as legible as a misspelled one.
+    #[test]
+    fn a_missing_nested_field_is_refused_by_its_full_path() {
+        let arguments = serde_json::json!({
+            "project_id": UUID,
+            "epic_id": UUID,
+            "idempotency_key": "arm-2",
+            "expected_revision": 1,
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {
+                "max_tokens": 1,
+                "max_commands": 1,
+                "max_duration_seconds": 1,
+                "max_cost_minor_units": 1
+            },
+            "granted_by": UUID,
+            "reason": "Bootstrap the epic"
+        });
+        let denied =
+            build(spec("kontor_execution_arm"), &arguments).expect_err("cost_currency is required");
+        assert!(matches!(
+            denied,
+            Denied::InvalidValue { ref property, .. } if property == "budget.cost_currency"
+        ));
+    }
+
+    /// The shape the daemon actually accepts passes, so the refusals above are
+    /// about the guesses and not about the tool being unusable.
+    #[test]
+    fn the_declared_budget_shape_becomes_a_request() {
+        let arguments = serde_json::json!({
+            "project_id": UUID,
+            "epic_id": UUID,
+            "idempotency_key": "arm-3",
+            "expected_revision": 1,
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {
+                "max_tokens": 100_000,
+                "max_commands": 500,
+                "max_duration_seconds": 3600,
+                "max_cost_minor_units": 5000,
+                "cost_currency": "NOK"
+            },
+            "granted_by": UUID,
+            "reason": "Bootstrap the epic"
+        });
+        let request = build(spec("kontor_execution_arm"), &arguments)
+            .expect("the declared shape is accepted");
+        assert_eq!(
+            request.body.as_ref().and_then(|body| body.get("budget")),
+            arguments.get("budget"),
+            "the budget reaches the daemon unchanged"
+        );
     }
 
     #[test]

@@ -2715,6 +2715,69 @@
         }
       }
     },
+    "/v1/projects/{project_id}/triggers:publish": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Install one immutable trigger revision.",
+        "operationId": "publish_trigger",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishTriggerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Installed, or the identical revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TriggerSpecDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "That revision is installed with different bytes"
+          }
+        }
+      }
+    },
     "/v1/projects:ensure": {
       "post": {
         "tags": [
@@ -5499,6 +5562,18 @@
           "source_id": {
             "type": "string",
             "description": "The source inside that layer."
+          }
+        }
+      },
+      "PublishTriggerRequest": {
+        "type": "object",
+        "description": "What `triggers:publish` is asked for.\n\nThe body carries the trigger document itself rather than a field-by-field\nmirror of it. A `TriggerSpec` is already a validated, canonicalizable,\nversioned document with its own rules, and restating its twenty-odd fields as\na second type would create exactly one thing: somewhere for the two to\ndisagree. The daemon deserializes it with the domain's own parser, so an\nunknown or malformed field is refused rather than dropped.",
+        "required": [
+          "spec"
+        ],
+        "properties": {
+          "spec": {
+            "description": "The complete trigger specification, as the domain spells it."
           }
         }
       },

@@ -190,6 +190,13 @@ fn raw(directory: &TempDir) -> Connection {
     let connection =
         Connection::open(directory.path().join("kontor.db")).expect("a raw connection opens");
     connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys can be disabled");
+    let fk: i64 = connection
+        .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+        .expect("readable");
+    eprintln!("FOREIGN_KEYS = {fk}");
+    connection
         .pragma_update(None, "foreign_keys", true)
         .expect("foreign keys can be enabled");
     connection
@@ -220,7 +227,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 22);
+    assert_eq!(SCHEMA_VERSION, 24);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
@@ -1006,6 +1013,108 @@ fn the_schema_has_no_outbound_comment_representation() {
             "`{policy}` must not be a storable comment policy"
         );
     }
+}
+
+/// OP-REQ-036, enforced by the database and not only by the type.
+///
+/// `RecoveryAction::Escalate` already makes a briefless escalation
+/// unrepresentable in Rust, which is the guarantee that matters for the code
+/// that exists today. This is the guard for the code that does not: a repair
+/// script, an import, or a future writer that reaches the table by another
+/// route. An operator asked to decide something with no recommendation and no
+/// account of what was tried is exactly the outcome the requirement exists to
+/// prevent, whichever writer produced it.
+#[test]
+fn a_needs_human_row_cannot_be_written_without_its_brief() {
+    let directory = temp();
+    let _store = open(&directory);
+    // Foreign keys are off for this one test. An episode references a project, a
+    // task, a workflow and an agent run, and building all four would be four
+    // fixtures' worth of setup for a question about none of them — while a
+    // reference failure would also make the "accepted" half of the test pass for
+    // the wrong reason. Triggers fire either way, which is what is under test.
+    let connection =
+        Connection::open(directory.path().join("kontor.db")).expect("a raw connection opens");
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys can be disabled");
+
+    let insert = |status: &str, brief: bool| {
+        let (recommendation, author, path) = if brief {
+            (
+                Some("Cancel the seat and re-plan the ticket."),
+                Some("lsa"),
+                Some(
+                    r#"{"deterministic_repair":true,"advisor":true,"committee":true,"followups":2}"#,
+                ),
+            )
+        } else {
+            (None, None, None)
+        };
+        connection.execute(
+            "INSERT INTO recovery_episodes
+                 (id, project_id, task_id, workflow_id, parked_agent_run_id, status,
+                  cause_evaluation_id, advisor_used, committee_used, effective_followups,
+                  successor_agent_run_id, escalation_cause, revision, created_at, closed_at,
+                  escalation_recommendation, escalation_recommended_by, deliberation_path_json)
+             VALUES (?1, '0193f000-0000-7000-8000-000000000001',
+                     '0193f000-0000-7000-8000-000000000002',
+                     '0193f000-0000-7000-8000-000000000003',
+                     '0193f000-0000-7000-8000-000000000004', ?2,
+                     '0193f000-0000-7000-8000-000000000005', 1, 1, 2, NULL,
+                     'budget_exhausted', 1, '2026-08-16T10:00:00Z',
+                     '2026-08-16T11:00:00Z', ?3, ?4, ?5)",
+            rusqlite::params![
+                format!(
+                    "0193f000-0000-7000-8000-00000000{:04}",
+                    u32::from(brief) + 10
+                ),
+                status,
+                recommendation,
+                author,
+                path
+            ],
+        )
+    };
+
+    assert!(
+        insert("needs_human", false).is_err(),
+        "a `needs_human` row with no recommendation, author or path must be refused"
+    );
+    insert("needs_human", true).expect("a complete escalation is accepted");
+
+    // A non-terminal episode has nothing to recommend yet, so the rule applies
+    // to the escalation and not to every row.
+    connection
+        .execute(
+            "INSERT INTO recovery_episodes
+                 (id, project_id, task_id, workflow_id, parked_agent_run_id, status,
+                  cause_evaluation_id, advisor_used, committee_used, effective_followups,
+                  successor_agent_run_id, escalation_cause, revision, created_at, closed_at)
+             VALUES ('0193f000-0000-7000-8000-000000000020',
+                     '0193f000-0000-7000-8000-000000000001',
+                     '0193f000-0000-7000-8000-000000000002',
+                     '0193f000-0000-7000-8000-000000000003',
+                     '0193f000-0000-7000-8000-000000000004', 'open',
+                     '0193f000-0000-7000-8000-000000000005', 0, 0, 0, NULL, NULL, 1,
+                     '2026-08-16T10:00:00Z', NULL)",
+            [],
+        )
+        .expect("an open episode needs no brief");
+
+    // …and the update path is the one every real escalation actually takes.
+    assert!(
+        connection
+            .execute(
+                "UPDATE recovery_episodes
+                 SET status = 'needs_human', escalation_cause = 'budget_exhausted',
+                     closed_at = '2026-08-16T11:00:00Z'
+                 WHERE id = '0193f000-0000-7000-8000-000000000020'",
+                [],
+            )
+            .is_err(),
+        "escalating by UPDATE must carry the brief too, or the trigger guards only the rarer path"
+    );
 }
 
 #[test]

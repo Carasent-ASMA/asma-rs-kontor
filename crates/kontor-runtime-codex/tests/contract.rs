@@ -480,6 +480,7 @@ async fn admitted(adapter: &CodexAdapter<'_>, seat: &Seat, parts: &Parts) -> Lau
                 effort: None,
             },
             context_policy: standard_context_policy(),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         })
 }

@@ -354,6 +354,7 @@ impl World {
                 at("2026-08-10T09:00:00Z"),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         };
         let authority = self
@@ -495,6 +496,24 @@ impl Call {
             idempotency_key: None,
             extra: Vec::new(),
             body: Body::from(serde_json::to_vec(body).expect("a serializable body")),
+        }
+    }
+
+    /// A `POST` carrying bytes verbatim.
+    ///
+    /// The point is to send what `post` cannot: a body that is not JSON at all.
+    /// The `content-type` header still says it is, because that is the case the
+    /// extractor has to classify — a caller that lies about its body.
+    pub(crate) fn post_raw(uri: impl Into<String>, body: &'static str) -> Self {
+        Self {
+            method: axum::http::Method::POST,
+            uri: uri.into(),
+            host: "127.0.0.1:7717".to_owned(),
+            origin: None,
+            token: None,
+            idempotency_key: None,
+            extra: Vec::new(),
+            body: Body::from(body),
         }
     }
 

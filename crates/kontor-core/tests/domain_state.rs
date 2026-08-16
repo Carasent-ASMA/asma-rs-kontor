@@ -1468,6 +1468,10 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("submit_intake", "project", "witness", None),
     ("pull_ticket_comments", "task", "witness", None),
     ("claim_ticket", "task", "witness", None),
+    // Publishing installs an immutable document into the project and names no
+    // row inside it: the revision it creates is addressed by `(id, version)`,
+    // not by an aggregate carrying a revision of its own.
+    ("publish_trigger", "project", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.

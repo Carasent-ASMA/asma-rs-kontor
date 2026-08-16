@@ -162,6 +162,7 @@ async fn live_admitted_launch(ao: &AoAdapter, config: &LiveEnv) -> LaunchRequest
             parse_utc_timestamp("2026-08-10T09:00:00Z").expect("canonical UTC"),
         )
         .expect("the standard fallback freezes"),
+        autonomy: kontor_core::spec::SeatAutonomy::standard(),
         requested_at: parse_utc_timestamp("2026-08-10T09:00:00Z").expect("canonical UTC"),
     };
     ao.admit_launch(&AdmissionRequest {

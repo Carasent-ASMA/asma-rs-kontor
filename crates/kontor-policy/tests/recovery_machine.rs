@@ -17,7 +17,8 @@ use kontor_core::id::{
 };
 use kontor_policy::model::{EscalationCause, RecoveryEpisode, RecoveryStatus, RecoveryStepKind};
 use kontor_policy::recovery::{
-    MAX_EFFECTIVE_FOLLOWUPS, RecoveryAction, RecoveryRequest, RecoveryTransition, plan,
+    DeliberationPath, Escalation, MAX_EFFECTIVE_FOLLOWUPS, RecoveryAction, RecoveryRequest,
+    RecoveryTransition, plan,
 };
 
 fn now() -> Timestamp {
@@ -42,6 +43,8 @@ fn episode() -> RecoveryEpisode {
         effective_followups: 0,
         successor_agent_run_id: None,
         escalation_cause: None,
+        escalation_brief: None,
+        deliberation_path: None,
         revision: AggregateRevision::INITIAL,
         created_at: now(),
         closed_at: None,
@@ -67,6 +70,8 @@ fn apply(episode: &RecoveryEpisode, transition: &RecoveryTransition) -> Recovery
         effective_followups: transition.effective_followups,
         successor_agent_run_id: transition.successor_agent_run_id,
         escalation_cause: transition.escalation_cause,
+        escalation_brief: transition.escalation_brief.clone(),
+        deliberation_path: transition.deliberation_path,
         revision: episode.revision.next().expect("the revision advances"),
         closed_at: transition.closed_at,
         ..episode.clone()
@@ -247,6 +252,19 @@ fn a_replayed_step_is_refused_rather_than_spent_twice() {
     assert!(matches!(error, DomainError::RevisionConflict { .. }));
 }
 
+/// A well-formed escalation brief, for tests about something other than the
+/// brief itself.
+fn brief(cause: EscalationCause) -> Escalation {
+    Escalation {
+        cause,
+        recommendation: kontor_core::id::BoundedText::parse(
+            "Confirm the seat may be cancelled and the ticket re-planned.",
+        )
+        .expect("bounded text"),
+        recommended_by: kontor_core::id::RoleKey::parse("lsa").expect("an open key"),
+    }
+}
+
 #[test]
 fn a_closed_episode_accepts_nothing_further() {
     let recovered = advance(&inspected(), RecoveryAction::Recover);
@@ -257,7 +275,7 @@ fn a_closed_episode_accepts_nothing_further() {
         RecoveryAction::Advisor,
         RecoveryAction::Committee,
         RecoveryAction::Recover,
-        RecoveryAction::Escalate(EscalationCause::BudgetExhausted),
+        RecoveryAction::Escalate(brief(EscalationCause::BudgetExhausted)),
     ] {
         let error = plan(&recovered, &request(&recovered, action))
             .expect_err("a closed episode is terminal");
@@ -282,7 +300,7 @@ fn exactly_the_five_declared_causes_reach_needs_human() {
     );
     for cause in EscalationCause::ALL {
         let current = inspected();
-        let escalated = advance(&current, RecoveryAction::Escalate(*cause));
+        let escalated = advance(&current, RecoveryAction::Escalate(brief(*cause)));
         assert_eq!(escalated.status, RecoveryStatus::NeedsHuman);
         assert_eq!(escalated.escalation_cause, Some(*cause));
         assert!(escalated.closed_at.is_some());
@@ -292,6 +310,111 @@ fn exactly_the_five_declared_causes_reach_needs_human() {
     // `needs_human` has no second route in.
     let recovered = advance(&inspected(), RecoveryAction::Recover);
     assert_eq!(recovered.escalation_cause, None);
+}
+
+/// OP-REQ-036: no escalation reaches a human as a bare question.
+///
+/// Every entry into `needs_human` carries a recommended resolution with its
+/// author and the deliberation path already walked, so the operator's cheapest
+/// correct action is confirmation rather than reconstruction. The rule is held
+/// by the *type* — `RecoveryAction::Escalate` takes an `Escalation`, which has no
+/// field-free form — so this test is about the transition actually recording
+/// both halves rather than accepting them and dropping them.
+#[test]
+fn no_escalation_reaches_a_human_without_a_recommendation_and_a_path() {
+    let current = inspected();
+    let escalation = brief(EscalationCause::IncompleteEvidence);
+    let escalated = advance(&current, RecoveryAction::Escalate(escalation.clone()));
+
+    assert_eq!(escalated.status, RecoveryStatus::NeedsHuman);
+    assert_eq!(
+        escalated.escalation_brief.as_ref(),
+        Some(&escalation),
+        "the recommendation the operator is owed was accepted and then dropped"
+    );
+    assert_eq!(
+        escalated.deliberation_path,
+        Some(DeliberationPath {
+            deterministic_repair: true,
+            advisor: false,
+            committee: false,
+            followups: 0,
+        }),
+        "the path is derived from the episode's own steps"
+    );
+
+    // The two halves are inseparable: a cause without a brief is what the rule
+    // exists to forbid, so no reachable transition may carry one and not the
+    // other.
+    assert_eq!(
+        escalated.escalation_cause.is_some(),
+        escalated.escalation_brief.is_some(),
+        "a cause and its recommendation must travel together"
+    );
+}
+
+/// The path is *observed*, not asserted — so it grows as the episode does.
+///
+/// The mutant this kills is a derivation that reports a constant: an operator
+/// reading "advisor and committee already tried" on an episode that consulted
+/// neither would take the escalation far more seriously than it deserves, and
+/// one that under-reports invites re-running work that already failed.
+#[test]
+fn the_deliberation_path_reports_what_the_episode_actually_spent() {
+    let mut current = inspected();
+    current = advance(&current, RecoveryAction::Advisor);
+    current = advance(&current, RecoveryAction::Committee);
+
+    let escalated = advance(
+        &current,
+        RecoveryAction::Escalate(brief(EscalationCause::CommitteeDisagreement)),
+    );
+    let path = escalated
+        .deliberation_path
+        .expect("an escalation has a path");
+    assert!(path.deterministic_repair);
+    assert!(
+        path.advisor,
+        "the advisor was consulted and the path says so"
+    );
+    assert!(
+        path.committee,
+        "the committee was convened and the path says so"
+    );
+    assert!(!path.is_empty());
+}
+
+/// An unsafe state escalates with a brief the machine wrote itself.
+///
+/// This is the one escalation no seat authors, so it is the one that would most
+/// easily reach an operator bare. An empty deliberation path is correct here and
+/// is not a gap: acting further on an unsafe state is the mistake.
+#[test]
+fn a_machine_raised_escalation_still_carries_a_recommendation() {
+    let open = episode();
+    let escalated = advance(&open, RecoveryAction::DeterministicRepair { safe: false });
+
+    assert_eq!(escalated.status, RecoveryStatus::NeedsHuman);
+    let brief = escalated
+        .escalation_brief
+        .expect("even a machine-raised escalation recommends something");
+    assert_eq!(brief.cause, EscalationCause::UnsafeState);
+    assert!(
+        brief.recommendation.as_str().len() > 40,
+        "a recommendation an operator can act on is more than a restatement"
+    );
+    assert_eq!(
+        brief.recommended_by.as_str(),
+        "kontord",
+        "a machine-authored recommendation says so, so an operator can weigh it"
+    );
+    assert!(
+        escalated
+            .deliberation_path
+            .expect("a path is always recorded")
+            .is_empty(),
+        "nothing was tried, and claiming otherwise would be a lie about an unsafe state"
+    );
 }
 
 #[test]

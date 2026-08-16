@@ -266,6 +266,7 @@ impl World {
                 now(),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: now(),
         }
     }

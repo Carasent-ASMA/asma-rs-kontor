@@ -1,10 +1,9 @@
 //! Thin `/v1` interface over the native memory ledger.
 #![allow(missing_docs)]
 
-use axum::{
-    Json,
-    extract::{Path, Query, State},
-};
+use axum::extract::{Path, Query, State};
+
+use crate::body::Json;
 use kontor_core::id::{AggregateRevision, CanonicalDocument, ContentHash, ProjectId};
 use kontor_store::memory::{AgentsRoomExport, LegacyMemoryEntry, MemoryError, MemoryProvenance};
 use serde::Deserialize;
