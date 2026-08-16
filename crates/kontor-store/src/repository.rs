@@ -39,15 +39,15 @@ use kontor_core::repository::{
     GateEvaluation, HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord,
     IntakeOutcome, IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAccountProfile,
     NewAdaptiveAdmissionState, NewAgentRun, NewCommandIntent, NewGateEvaluation, NewIntakeDecision,
-    NewIntakeDecisionRecord, NewIntakeReevaluation, NewMiniProject, NewObservation, NewProject,
-    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
-    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
-    ProjectRepository, ProjectTopologyDefault, RealmEventPage, RealmRepository, ReceiptAdvance,
-    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
-    RunRepository, RuntimeBinding, RuntimeEvent, SourceEventIngest, SpecRepository, Task,
-    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
-    validate_dependency_graph,
+    NewIntakeDecisionRecord, NewIntakeReevaluation, NewMiniProject, NewNativeContainerBinding,
+    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, RealmEventPage,
+    RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
+    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
+    SeatLivenessObservation, SourceEventIngest, SpecRepository, Task, TaskInspection,
+    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
@@ -58,12 +58,12 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{
     AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
-    GateVerdict, NativeRuntimeIdentity, ObservedRunState, PlacementState, RunLifecycle,
-    RunProjection, SeatAttachment, SeatAttachmentObservation, SeatBinding, SessionTopologyNode,
-    TaskProgressEvidence, TaskState, TaskTeamClosure, TaskTransition, TeamChildEvidence,
-    TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence, TerminalEvidenceSource,
-    TerminalOutcome, TopologyLifecycle, certify_task_progress, evaluate_seat_attachment,
-    plan_team_advance, plan_team_closure,
+    GateVerdict, NativeContainerBinding, NativeRuntimeIdentity, ObservedContainerKind,
+    ObservedRunState, PlacementState, RunLifecycle, RunProjection, SeatAttachment,
+    SeatAttachmentObservation, SeatBinding, SessionTopologyNode, TaskProgressEvidence, TaskState,
+    TaskTeamClosure, TaskTransition, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence,
+    TerminalEvidence, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    certify_task_progress, evaluate_seat_attachment, plan_team_advance, plan_team_closure,
 };
 use kontor_core::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -805,7 +805,12 @@ const TOPOLOGY_NODE_COLUMNS: &str = "id, project_id, mini_project_id, spec_id, s
     spec_hash, kind, parent_id, lifecycle, placement, revision, created_at, updated_at";
 const SEAT_BINDING_COLUMNS: &str = "id, project_id, topology_node_id, role_slot_id, \
     role_catalog_id, role_catalog_version, role_code, standard_title, custom_display_name, \
-    task_id, team_run_id, lifecycle, revision, created_at, updated_at";
+    task_id, team_run_id, lifecycle, attach_deadline, last_attached_at, last_activity_at, \
+    parent_seat_binding_id, released_at, replaced_by_seat_binding_id, runtime_reported, \
+    revision, created_at, updated_at";
+const NATIVE_CONTAINER_COLUMNS: &str = "topology_node_id, project_id, container_binding_id, \
+    runtime_kind, host, generation, native_id, observed_kind, canonical_cwd, bound_at, \
+    last_readback_at, revision";
 const ADAPTIVE_ADMISSION_COLUMNS: &str = "project_id, mini_project_id, current_window, \
     clean_observation_streak, last_observation_id, revision, updated_at";
 
@@ -859,9 +864,66 @@ fn read_seat_binding(row: &Row<'_>) -> RepositoryResult<SeatBinding> {
         task_id: task_id.as_deref().map(TaskId::parse).transpose()?,
         team_run_id: team_run_id.as_deref().map(TeamRunId::parse).transpose()?,
         lifecycle: TopologyLifecycle::parse(&row.get::<_, String>(11).map_err(backend)?)?,
-        revision: revision_of(row.get::<_, i64>(12).map_err(backend)?)?,
-        created_at: read_timestamp(&row.get::<_, String>(13).map_err(backend)?)?,
-        updated_at: read_timestamp(&row.get::<_, String>(14).map_err(backend)?)?,
+        attach_deadline: read_timestamp(&row.get::<_, String>(12).map_err(backend)?)?,
+        last_attached_at: read_optional_timestamp(row, 13)?,
+        last_activity_at: read_optional_timestamp(row, 14)?,
+        parent_seat_binding_id: row
+            .get::<_, Option<String>>(15)
+            .map_err(backend)?
+            .as_deref()
+            .map(SeatBindingId::parse)
+            .transpose()?,
+        released_at: read_optional_timestamp(row, 16)?,
+        replaced_by: row
+            .get::<_, Option<String>>(17)
+            .map_err(backend)?
+            .as_deref()
+            .map(SeatBindingId::parse)
+            .transpose()?,
+        runtime_reported: row
+            .get::<_, Option<String>>(18)
+            .map_err(backend)?
+            .as_deref()
+            .map(ObservedRunState::parse)
+            .transpose()?,
+        revision: revision_of(row.get::<_, i64>(19).map_err(backend)?)?,
+        created_at: read_timestamp(&row.get::<_, String>(20).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(21).map_err(backend)?)?,
+    })
+}
+
+/// Read one nullable timestamp column.
+fn read_optional_timestamp(row: &Row<'_>, index: usize) -> RepositoryResult<Option<Timestamp>> {
+    row.get::<_, Option<String>>(index)
+        .map_err(backend)?
+        .as_deref()
+        .map(read_timestamp)
+        .transpose()
+}
+
+fn read_native_container_binding(row: &Row<'_>) -> RepositoryResult<NativeContainerBinding> {
+    let canonical_cwd: Option<String> = row.get(8).map_err(backend)?;
+    let generation: i64 = row.get(5).map_err(backend)?;
+    Ok(NativeContainerBinding {
+        topology_node_id: TopologyNodeId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        container_binding_id: ExternalId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+            host: ExternalName::parse(&row.get::<_, String>(4).map_err(backend)?)?,
+            generation: u64::try_from(generation).map_err(|_| {
+                DomainError::invalid("native container generation", "is outside the stored range")
+            })?,
+            native_id: ExternalId::parse(&row.get::<_, String>(6).map_err(backend)?)?,
+        },
+        observed_kind: ObservedContainerKind::parse(&row.get::<_, String>(7).map_err(backend)?)?,
+        canonical_cwd: canonical_cwd
+            .as_deref()
+            .map(ExternalName::parse)
+            .transpose()?,
+        bound_at: read_timestamp(&row.get::<_, String>(9).map_err(backend)?)?,
+        last_readback_at: read_timestamp(&row.get::<_, String>(10).map_err(backend)?)?,
+        revision: revision_of(row.get::<_, i64>(11).map_err(backend)?)?,
     })
 }
 
@@ -1536,9 +1598,10 @@ impl TopologyRepository for SqliteStore {
                 "INSERT INTO seat_bindings
                      (id, project_id, topology_node_id, role_slot_id, role_catalog_id,
                       role_catalog_version, role_code, standard_title, custom_display_name,
-                      task_id, team_run_id, lifecycle, revision, created_at, updated_at)
+                      task_id, team_run_id, lifecycle, attach_deadline,
+                      parent_seat_binding_id, revision, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                         'active', 1, ?12, ?12)",
+                         'active', ?12, ?13, 1, ?14, ?14)",
                 params![
                     request.id.to_string(),
                     request.project_id.to_string(),
@@ -1555,6 +1618,8 @@ impl TopologyRepository for SqliteStore {
                         .map(ExternalName::as_str),
                     request.task_id.map(|id| id.to_string()),
                     request.team_run_id.map(|id| id.to_string()),
+                    text(request.attach_deadline),
+                    request.parent_seat_binding_id.map(|id| id.to_string()),
                     text(request.created_at),
                 ],
             )
@@ -1571,6 +1636,232 @@ impl TopologyRepository for SqliteStore {
             .map_err(backend)??;
         transaction.commit().map_err(backend)?;
         Ok(binding)
+    }
+
+    fn observe_seat_binding(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+        observation: &SeatLivenessObservation,
+        observed_at: Timestamp,
+    ) -> RepositoryResult<SeatBinding> {
+        if observation.replaced_by == Some(id) {
+            return Err(conflict(
+                "seat binding",
+                "a seat cannot be its own replacement",
+            ));
+        }
+        let transaction = self.begin()?;
+        // COALESCE, never assignment: an observation carries what was seen and
+        // nothing else, so recording an attachment must not erase an activity
+        // instant recorded a moment earlier by a different observer. The one
+        // exception is `runtime_reported`, which is a *current* self-report and
+        // is meant to be replaced by the latest one.
+        let changed = transaction
+            .execute(
+                "UPDATE seat_bindings SET
+                     last_attached_at = COALESCE(?3, last_attached_at),
+                     last_activity_at = COALESCE(?4, last_activity_at),
+                     runtime_reported = COALESCE(?5, runtime_reported),
+                     released_at = COALESCE(released_at, ?6),
+                     replaced_by_seat_binding_id =
+                         COALESCE(replaced_by_seat_binding_id, ?7),
+                     revision = revision + 1,
+                     updated_at = ?8
+                 WHERE project_id = ?1 AND id = ?2",
+                params![
+                    project_id.to_string(),
+                    id.to_string(),
+                    observation.attached_at.map(text),
+                    observation.activity_at.map(text),
+                    observation.runtime_reported.map(|it| it.as_str()),
+                    observation.released_at.map(text),
+                    observation.replaced_by.map(|it| it.to_string()),
+                    text(observed_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "seat binding",
+            });
+        }
+        let binding = transaction
+            .query_row(
+                &format!(
+                    "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_seat_binding(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(binding)
+    }
+
+    fn bind_topology_node_container(
+        &self,
+        request: &NewNativeContainerBinding,
+    ) -> RepositoryResult<NativeContainerBinding> {
+        let transaction = self.begin()?;
+        let owning_project: Option<String> = transaction
+            .query_row(
+                "SELECT project_id FROM topology_nodes WHERE id = ?1",
+                params![request.topology_node_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let owning_project = owning_project.ok_or(RepositoryError::NotFound {
+            subject: "topology node",
+        })?;
+        if ProjectId::parse(&owning_project)? != request.project_id {
+            return Err(conflict(
+                "native container binding",
+                "the topology node belongs to another project",
+            ));
+        }
+
+        let existing: Option<NativeContainerBinding> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {NATIVE_CONTAINER_COLUMNS} FROM topology_node_containers
+                     WHERE topology_node_id = ?1"
+                ),
+                params![request.topology_node_id.to_string()],
+                |row| Ok(read_native_container_binding(row)),
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()?;
+
+        if let Some(existing) = existing {
+            // Re-confirming the binding this node already holds advances the
+            // readback instant and nothing else. A *different* identity is a
+            // disagreement between Kontor and the runtime, and this is not the
+            // place that resolves one: silently rewriting the row would make
+            // the node point at whatever was seen last, which is precisely the
+            // repair OP-02 forbids.
+            if existing.identity != request.identity {
+                return Err(conflict(
+                    "native container binding",
+                    "this topology node is bound to another native container",
+                ));
+            }
+            transaction
+                .execute(
+                    "UPDATE topology_node_containers
+                     SET last_readback_at = ?2, observed_kind = ?3, revision = revision + 1
+                     WHERE topology_node_id = ?1",
+                    params![
+                        request.topology_node_id.to_string(),
+                        text(request.observed_at),
+                        request.observed_kind.as_str(),
+                    ],
+                )
+                .map_err(backend)?;
+        } else {
+            // A native container already owned by another node is a collision,
+            // and it is refused here rather than discovered later — by then
+            // both nodes have been treated as placed.
+            transaction
+                .execute(
+                    "INSERT INTO topology_node_containers
+                         (topology_node_id, project_id, container_binding_id, runtime_kind,
+                          host, generation, native_id, observed_kind, canonical_cwd,
+                          bound_at, last_readback_at, revision)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 1)",
+                    params![
+                        request.topology_node_id.to_string(),
+                        request.project_id.to_string(),
+                        request.container_binding_id.as_str(),
+                        request.identity.runtime_kind.as_str(),
+                        request.identity.host.as_str(),
+                        i64::try_from(request.identity.generation).map_err(|_| {
+                            DomainError::invalid(
+                                "native container generation",
+                                "is outside the storable range",
+                            )
+                        })?,
+                        request.identity.native_id.as_str(),
+                        request.observed_kind.as_str(),
+                        request.canonical_cwd.as_ref().map(ExternalName::as_str),
+                        text(request.observed_at),
+                    ],
+                )
+                .map_err(|error| match &error {
+                    rusqlite::Error::SqliteFailure(failure, _)
+                        if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        conflict(
+                            "native container binding",
+                            "this native container is already bound to another topology node",
+                        )
+                    }
+                    _ => backend(error),
+                })?;
+        }
+
+        let binding = transaction
+            .query_row(
+                &format!(
+                    "SELECT {NATIVE_CONTAINER_COLUMNS} FROM topology_node_containers
+                     WHERE topology_node_id = ?1"
+                ),
+                params![request.topology_node_id.to_string()],
+                |row| Ok(read_native_container_binding(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(binding)
+    }
+
+    fn list_seat_attachments(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        now: Timestamp,
+    ) -> RepositoryResult<Vec<SeatAttachment>> {
+        let transaction = self.begin()?;
+        let mut statement = transaction
+            .prepare(&format!(
+                "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                 WHERE project_id = ?1 AND topology_node_id = ?2 ORDER BY created_at, id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![
+                project_id.to_string(),
+                topology_node_id.to_string()
+            ])
+            .map_err(backend)?;
+        let mut bindings = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            bindings.push(read_seat_binding(row)?);
+        }
+        drop(rows);
+        drop(statement);
+        conclude_seat_attachments(&transaction, project_id, &bindings, now)
+    }
+
+    fn get_topology_node_container(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+    ) -> RepositoryResult<Option<NativeContainerBinding>> {
+        self.connection
+            .query_row(
+                &format!(
+                    "SELECT {NATIVE_CONTAINER_COLUMNS} FROM topology_node_containers
+                     WHERE project_id = ?1 AND topology_node_id = ?2"
+                ),
+                params![project_id.to_string(), topology_node_id.to_string()],
+                |row| Ok(read_native_container_binding(row)),
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
     }
 
     fn list_seat_bindings(
@@ -2254,8 +2545,100 @@ const SEAT_MAX_IDLE: SignedDuration = SignedDuration::from_mins(30);
 /// lifecycle, observed state, last confirmed instant, creation and closure.
 type SeatAttachmentRow = (String, String, Option<String>, String, Option<String>);
 
-/// Conclude each seat of one team run from its persisted row.
+/// Conclude each seat of one team run from persisted OP-REQ-039 evidence.
+///
+/// The evidence lives on the logical [`SeatBinding`], and every input is read
+/// rather than derived: the deadline was fixed when the seat was created, the
+/// activity instant was written by an observed runtime event, and orphanhood
+/// comes from the owning epic seat's own Kontor lifecycle. Deriving any of the
+/// three at read time is what let a seat that never attached stay
+/// indistinguishable from one that was merely slow.
+///
+/// A team run with no seat bindings falls through to
+/// [`read_legacy_seat_attachments`]. That is the pre-OP-02 world — nothing
+/// creates seat bindings on the production path until the admission work in
+/// checkpoint 4 — and refusing to conclude anything there would remove the
+/// phantom-seat guard rather than improve it.
 fn read_seat_attachments(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    team_run_id: &str,
+    now: Timestamp,
+) -> RepositoryResult<Vec<SeatAttachment>> {
+    let mut statement = transaction
+        .prepare(&format!(
+            "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+             WHERE project_id = ?1 AND team_run_id = ?2 ORDER BY created_at, id"
+        ))
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![project_id.to_string(), team_run_id])
+        .map_err(backend)?;
+    let mut bindings = Vec::new();
+    while let Some(row) = rows.next().map_err(backend)? {
+        bindings.push(read_seat_binding(row)?);
+    }
+    drop(rows);
+    drop(statement);
+
+    if bindings.is_empty() {
+        return read_legacy_seat_attachments(transaction, project_id, team_run_id, now);
+    }
+    conclude_seat_attachments(transaction, project_id, &bindings, now)
+}
+
+/// Conclude a set of seats from their persisted evidence and their owners'.
+///
+/// The one place the OP-REQ-039 join lives, so the team-run reader above and the
+/// node-keyed read below cannot drift into two different answers about the same
+/// seat.
+fn conclude_seat_attachments(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    bindings: &[SeatBinding],
+    now: Timestamp,
+) -> RepositoryResult<Vec<SeatAttachment>> {
+    let mut attachments = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        // Orphanhood is a fact about the *owner*, so it is read from the owner's
+        // row. A seat with no parent is a root rather than an orphan.
+        let parent_closed = match binding.parent_seat_binding_id {
+            Some(parent_id) => transaction
+                .query_row(
+                    &format!(
+                        "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                         WHERE project_id = ?1 AND id = ?2"
+                    ),
+                    params![project_id.to_string(), parent_id.to_string()],
+                    |row| Ok(read_seat_binding(row)),
+                )
+                .optional()
+                .map_err(backend)?
+                .transpose()?
+                // A parent that is not there at all is gone, and a seat whose
+                // owner cannot be found is steered by nobody. Reading a missing
+                // owner as "still open" is the assumption that keeps orphans
+                // counted as capacity.
+                .is_none_or(|parent| parent.closes_children()),
+            None => false,
+        };
+        attachments.push(evaluate_seat_attachment(
+            &binding.attachment_observation(parent_closed),
+            now,
+            SEAT_MAX_IDLE,
+        ));
+    }
+    Ok(attachments)
+}
+
+/// Conclude each seat of one team run from its `agent_runs` row.
+///
+/// The pre-OP-02 path, kept only for team runs that have no seat bindings yet.
+/// Its three known weaknesses are exactly what OP-REQ-039 names: the deadline is
+/// derived from `created_at` at read time, a generic confirmation stands in for
+/// observed activity, and an orphan cannot be seen at all. Checkpoint 4 retires
+/// this function by giving every production seat a binding.
+fn read_legacy_seat_attachments(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
     team_run_id: &str,

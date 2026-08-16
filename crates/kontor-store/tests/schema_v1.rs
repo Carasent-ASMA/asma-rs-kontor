@@ -124,6 +124,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "ticket_field_specs",
     "ticket_sync_projections",
     "trigger_specs",
+    "topology_node_containers",
     "topology_nodes",
     "topology_specs",
     "turn_dispatches",
@@ -256,7 +257,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 25);
+    assert_eq!(SCHEMA_VERSION, 26);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
@@ -3043,6 +3044,7 @@ fn tier_a_operational_tables_have_nowhere_to_store_a_classification() {
         "topology_nodes",
         "seat_bindings",
         "adaptive_admission_state",
+        "topology_node_containers",
     ] {
         let columns: i64 = connection
             .query_row(

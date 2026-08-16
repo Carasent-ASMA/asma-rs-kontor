@@ -41,8 +41,9 @@ use crate::spec::{
     TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use crate::state::{
-    AdaptiveAdmissionState, DesiredRunState, GateState, GateVerdict, NativeRuntimeIdentity,
-    RunLifecycle, RunProjection, SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure,
+    AdaptiveAdmissionState, DesiredRunState, GateState, GateVerdict, NativeContainerBinding,
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RunLifecycle, RunProjection,
+    SeatAttachment, SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure,
     TeamTerminalEvidence, TerminalEvidence, TerminalOutcome,
 };
 use crate::ticket::{
@@ -228,8 +229,58 @@ pub struct NewSeatBinding {
     pub task_id: Option<TaskId>,
     /// Optional delivery TeamRun reference.
     pub team_run_id: Option<TeamRunId>,
+    /// The instant this seat must be observed attached by (OP-REQ-039a).
+    ///
+    /// Supplied by the caller rather than computed here, and then never
+    /// recomputed: fixing it at creation is the whole point of the column.
+    pub attach_deadline: Timestamp,
+    /// The exact owning epic seat, when this seat has one.
+    pub parent_seat_binding_id: Option<SeatBindingId>,
     /// Creation instant.
     pub created_at: Timestamp,
+}
+
+/// One observed change to a seat's OP-REQ-039 evidence.
+///
+/// Every field is `None` for "nothing observed about this", so one call records
+/// exactly what was seen and silently overwrites nothing else. The separation
+/// between `attached_at` and `activity_at` is the requirement, not a
+/// convenience: a readback may prove attachment, and only an observed runtime
+/// event or turn position may prove activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SeatLivenessObservation {
+    /// The seat was observed attached at this instant.
+    pub attached_at: Option<Timestamp>,
+    /// The seat was observed *doing something* at this instant.
+    ///
+    /// Only an observed runtime event or turn position may fill this in. A
+    /// successful inspect belongs in `attached_at`.
+    pub activity_at: Option<Timestamp>,
+    /// The runtime's self-report, recorded so an escalation can quote it.
+    pub runtime_reported: Option<ObservedRunState>,
+    /// The seat was deliberately released or reaped at this instant.
+    pub released_at: Option<Timestamp>,
+    /// The seat was replaced by this one.
+    pub replaced_by: Option<SeatBindingId>,
+}
+
+/// A native container to bind to one topology node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewNativeContainerBinding {
+    /// The node that owns the container.
+    pub topology_node_id: TopologyNodeId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The runtime-issued binding id this placement was made under.
+    pub container_binding_id: ExternalId,
+    /// The exact native identity read back from the runtime.
+    pub identity: NativeRuntimeIdentity,
+    /// What the runtime said the container is.
+    pub observed_kind: ObservedContainerKind,
+    /// The container's canonical working directory, where it has one.
+    pub canonical_cwd: Option<ExternalName>,
+    /// When the binding was established or last confirmed.
+    pub observed_at: Timestamp,
 }
 
 /// Initial persisted adaptive-admission state.
@@ -1658,6 +1709,66 @@ pub trait TopologyRepository {
         project_id: ProjectId,
         topology_node_id: TopologyNodeId,
     ) -> RepositoryResult<Vec<SeatBinding>>;
+
+    /// Record what was observed about one seat's attachment.
+    ///
+    /// Advances only the fields the observation carries, so recording an
+    /// attachment cannot silently clear an activity instant, and neither can
+    /// overwrite a release.
+    ///
+    /// # Errors
+    /// Refuses an unknown seat and a replacement citing the seat itself.
+    fn observe_seat_binding(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+        observation: &SeatLivenessObservation,
+        observed_at: Timestamp,
+    ) -> RepositoryResult<SeatBinding>;
+
+    /// Bind one topology node to the native container read back for it.
+    ///
+    /// Idempotent per node *for the same native identity*: re-confirming a
+    /// binding advances its readback instant and creates nothing. A node whose
+    /// stored identity differs is a disagreement to report, never a rebinding
+    /// to perform silently — reconciliation refuses invalid state rather than
+    /// making one side match the other.
+    ///
+    /// # Errors
+    /// Refuses a dangling/cross-project node, a native container already bound
+    /// to a different node, and a rebinding of a node that already holds
+    /// another identity.
+    fn bind_topology_node_container(
+        &self,
+        request: &NewNativeContainerBinding,
+    ) -> RepositoryResult<NativeContainerBinding>;
+
+    /// Conclude the attachment of every seat hosted by one topology node.
+    ///
+    /// The read a watch, reap or stale path uses: it resolves exact Kontor
+    /// bindings and concludes from recorded evidence, and it consults no
+    /// runtime and no AgentsRoom file to do it.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_seat_attachments(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        now: Timestamp,
+    ) -> RepositoryResult<Vec<SeatAttachment>>;
+
+    /// Read the current native container binding of one topology node.
+    ///
+    /// # Errors
+    /// Backend failures only. An unbound node is `None` rather than an error:
+    /// "not placed yet" is a normal state, and the caller that must refuse it
+    /// says so in its own words.
+    fn get_topology_node_container(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+    ) -> RepositoryResult<Option<NativeContainerBinding>>;
 
     /// Create one MiniProject's persisted adaptive-admission state.
     ///

@@ -1636,6 +1636,46 @@ pub struct SeatBinding {
     pub team_run_id: Option<TeamRunId>,
     /// Binding lifecycle.
     pub lifecycle: TopologyLifecycle,
+    /// The instant this seat must have been observed attached by, fixed when
+    /// the seat was created (OP-REQ-039a).
+    ///
+    /// Persisted rather than derived. A deadline recomputed at read time moves
+    /// whenever the grace constant does, which retroactively forgives every
+    /// seat that already failed to attach — the thirteen-hour phantom is
+    /// exactly that forgiveness applied once too often.
+    pub attach_deadline: Timestamp,
+    /// When this seat was last observed attached to its runtime session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attached_at: Option<Timestamp>,
+    /// When this seat last produced *observed activity* (OP-REQ-039c).
+    ///
+    /// Written only from an observed runtime event or turn position. A
+    /// successful readback may confirm attachment and must never land here: a
+    /// generic confirmation is Kontor asking, not the seat working, and reading
+    /// one as activity makes a wedged seat look busy for as long as anything
+    /// keeps polling it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<Timestamp>,
+    /// The exact owning epic seat, when this seat has one.
+    ///
+    /// Orphanhood is derived from *this* seat's Kontor lifecycle, never from a
+    /// runtime's own parent field: a runtime that has lost its parent is the
+    /// least reliable witness to whether the parent is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_seat_binding_id: Option<SeatBindingId>,
+    /// When the seat was deliberately released or reaped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<Timestamp>,
+    /// The seat that replaced this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<SeatBindingId>,
+    /// What the runtime last said about itself.
+    ///
+    /// Carried so an escalation can quote it, and deliberately not consulted
+    /// when concluding attachment: `running` is a claim about a process, not
+    /// evidence that a seat is doing anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_reported: Option<ObservedRunState>,
     /// Optimistic-concurrency revision.
     pub revision: AggregateRevision,
     /// Creation instant.
@@ -1650,6 +1690,91 @@ impl SeatBinding {
     pub const fn is_non_terminal(&self) -> bool {
         matches!(self.lifecycle, TopologyLifecycle::Active)
     }
+
+    /// Whether this seat's closure orphans the seats it owns.
+    ///
+    /// A replaced seat counts as closed even while its row is still active: the
+    /// work moved to the successor, so anything still steering by this seat is
+    /// steering by nothing.
+    #[must_use]
+    pub const fn closes_children(&self) -> bool {
+        self.replaced_by.is_some()
+            || self.released_at.is_some()
+            || !matches!(self.lifecycle, TopologyLifecycle::Active)
+    }
+
+    /// Assemble the OP-REQ-039 observation from persisted evidence alone.
+    ///
+    /// `parent_closed` is the caller's join, because it is a fact about
+    /// *another* row: whoever holds the store looks up
+    /// [`Self::parent_seat_binding_id`] and asks that seat
+    /// [`Self::closes_children`]. A seat with no parent is not an orphan — it
+    /// is a root, and roots answer to Kontor lifecycle instead.
+    #[must_use]
+    pub const fn attachment_observation(&self, parent_closed: bool) -> SeatAttachmentObservation {
+        SeatAttachmentObservation {
+            attach_deadline: self.attach_deadline,
+            last_attached_at: self.last_attached_at,
+            last_activity_at: self.last_activity_at,
+            parent_closed,
+            released: self.released_at.is_some(),
+            runtime_reported: match self.runtime_reported {
+                Some(state) => state,
+                // Nothing heard is not a healthy report, and it is not an
+                // unhealthy one either. It is carried through as unknown so the
+                // conclusion rests on the recorded observations above.
+                None => ObservedRunState::Unknown,
+            },
+        }
+    }
+}
+
+crate::closed_enum! {
+    /// What a runtime read back a container as.
+    ///
+    /// Stored beside the shape that was desired, because "we asked for a
+    /// project and got a workspace" is only detectable if both are recorded.
+    ObservedContainerKind, "ObservedContainerKind" {
+        /// A native root/project.
+        Project => "project",
+        /// A container below a native root.
+        Workspace => "workspace",
+    }
+}
+
+/// The one current native container bound to a topology node.
+///
+/// There is no history here on purpose. A node that is rebound has exactly one
+/// binding, and the native id it used to hold is evidence in the event stream —
+/// a second row would be indistinguishable from a live second placement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeContainerBinding {
+    /// The node that owns the container.
+    pub topology_node_id: TopologyNodeId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The runtime-issued binding id this placement was made under.
+    pub container_binding_id: ExternalId,
+    /// The exact native identity, in the four parts that make it one.
+    ///
+    /// A native id means nothing on its own: it is only that container inside
+    /// one generation, on one host, of one runtime family. Reconciling on any
+    /// subset of these matches a container a restart has already replaced.
+    pub identity: NativeRuntimeIdentity,
+    /// What the runtime said the container is, read back rather than assumed.
+    pub observed_kind: ObservedContainerKind,
+    /// The container's canonical working directory, where it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_cwd: Option<ExternalName>,
+    /// When the binding was established.
+    pub bound_at: Timestamp,
+    /// When it was last confirmed against the runtime.
+    ///
+    /// Distinct from `bound_at` so a stale binding reads as stale instead of
+    /// looking as fresh as the day it was made.
+    pub last_readback_at: Timestamp,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
 }
 
 /// Persisted adaptive-admission state for one MiniProject.

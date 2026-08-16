@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 25;
+pub const SCHEMA_VERSION: i64 = 26;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -113,6 +113,12 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0023_operational_topology.sql"),
     include_str!("../migrations/0024_replace_seat_command.sql"),
     include_str!("../migrations/0025_document_shareability.sql"),
+    // Schema v26. The durable native container binding per topology node, and
+    // the OP-REQ-039 attachment evidence a logical seat is concluded from —
+    // the deadline fixed at creation, the last observed attachment, the last
+    // observed *activity*, the owning epic seat, and the runtime's self-report
+    // as quotable evidence.
+    include_str!("../migrations/0026_operational_liveness.sql"),
 ];
 
 const _: () = assert!(

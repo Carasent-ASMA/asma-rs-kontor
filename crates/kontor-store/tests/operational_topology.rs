@@ -150,6 +150,8 @@ fn operational_state_survives_restart_and_typed_export() {
                 },
                 task_id: None,
                 team_run_id: None,
+                attach_deadline: at("2026-08-16T01:10:00Z"),
+                parent_seat_binding_id: None,
                 created_at,
             })
             .expect("the typed seat binding is created");
