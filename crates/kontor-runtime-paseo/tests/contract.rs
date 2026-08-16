@@ -3232,10 +3232,10 @@ async fn the_current_daemon_advertises_no_context_or_compaction_capability() {
     assert_eq!(declared.limits.context_window.minimum_trigger_tokens, None);
 }
 
-/// MUT-CTX-05. Reporting an unsupported Paseo compaction as `Confirmed` makes
+/// MUT-CTX-05. Reporting an unenforced Paseo compaction as `Confirmed` makes
 /// this fail — and so does substituting any daemon mutation for it.
 #[tokio::test]
-async fn compaction_is_reported_unsupported_and_mutates_nothing() {
+async fn best_effort_compaction_is_reported_not_enforced_and_mutates_nothing() {
     let (plane, binding) = launched().await;
     let before = binding.identity().clone();
     plane.daemon.take_calls();
@@ -3256,7 +3256,7 @@ async fn compaction_is_reported_unsupported_and_mutates_nothing() {
 
     assert_eq!(
         receipt.status,
-        kontor_core::compaction::CompactionStatus::Unsupported
+        kontor_core::compaction::CompactionStatus::NotEnforced
     );
     assert_ne!(
         receipt.status,

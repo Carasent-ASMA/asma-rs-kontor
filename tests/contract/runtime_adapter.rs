@@ -2820,7 +2820,7 @@ async fn unknown_compaction_telemetry_is_absent_and_never_zero() {
 
 /// A runtime that cannot compact says so, and touches nothing to say it.
 #[tokio::test]
-async fn an_unsupported_compaction_emits_no_call_and_never_confirms() {
+async fn an_unenforced_compaction_emits_no_call_and_never_confirms() {
     let mut declared = capabilities(TrustGrade::A);
     declared.supported.remove(&RuntimeCapability::Compact);
     let fixture = Team::with_capabilities(declared).await;
@@ -2845,7 +2845,7 @@ async fn an_unsupported_compaction_emits_no_call_and_never_confirms() {
         .expect("an incapable runtime reports rather than fails");
     assert_eq!(
         reported.status,
-        kontor_core::compaction::CompactionStatus::Unsupported
+        kontor_core::compaction::CompactionStatus::NotEnforced
     );
     assert_eq!(reported.native_after, None);
     assert!(reported.telemetry.is_unknown());
