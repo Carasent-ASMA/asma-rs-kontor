@@ -1,24 +1,47 @@
 # KON-OP-01 / ASMA-7870 — QA report
 
 Date: 2026-08-16
-Commit: `597fa26`
+Commit: `181c628` (merge of `origin/master` into the OP-01 branch)
 Branch: `feat/ASMA-7870-kontor-operational-domain`
 Frozen submodule: `_tools/asma-rs-kontor`
 
 ## Verdict
 
-**PASS.**
+**PASS**, re-verified after merging `origin/master` (`5e38792`, OP-REQ-039
+seat-attachment guardrails).
 
 | Gate | Result |
 | --- | --- |
-| `cargo test --workspace` | 1264 passed, 0 failed |
-| `cargo test -p kontor-runtime-paseo` | 126 passed, 0 failed, 5 ignored |
+| `cargo test --workspace` | 1272 passed, 0 failed, 7 ignored |
+| `cargo test -p kontor-core` | 115 passed, 0 failed |
+| `cargo test -p kontor-store` | 264 passed, 0 failed |
+| `cargo test -p kontor-runtime-paseo` | 126 passed, 0 failed |
 | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0, no diagnostics |
 | `cargo fmt --all -- --check` | clean |
 | Targeted mutation | 6 seeded, 6 killed |
 
-The 5 ignored `kontor-runtime-paseo` tests are pre-existing live-harness tests,
-unchanged by this ticket.
+The ignored tests are pre-existing live-harness tests, unchanged by this ticket.
+The workspace count rose from 1264 to 1272 because the merge brought master's
+eight OP-REQ-039 tests.
+
+## Merge reconciliation (`181c628`)
+
+`origin/master` and this branch both edited
+`crates/kontor-store/src/repository.rs`. The two changes do not interact:
+OP-REQ-039 concludes seat attachment from existing `agent_runs` rows and adds no
+migration and no durable table, so it introduces no record that could carry a
+classification. Seats and bindings are tier A under OP-REQ-037 either way, and
+`tier_a_operational_tables_have_nowhere_to_store_a_classification`
+(`schema_v1.rs:3038`) still holds.
+
+Resolution was verified symbol-by-symbol rather than by eye: every symbol either
+side added is present in the result with matching occurrence counts, and the
+only textual losses were import lines that reflowed to absorb the other side's
+new names. No migration-number collision — master touched no migration, so
+`0025` and `SCHEMA_VERSION = 25` stand.
+
+One inherited defect was fixed to make the branch green; see `OPEN-QUESTIONS.md`
+OQ-OP-01-5.
 
 ## OP-01 acceptance criteria
 

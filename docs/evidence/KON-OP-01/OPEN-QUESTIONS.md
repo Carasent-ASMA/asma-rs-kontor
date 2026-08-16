@@ -105,3 +105,34 @@ architectural and process items attributed separately.
 correct future briefs to cite OP-REQ-030, which already governs missing
 capabilities discovered during delivery. Two requirement registers disagreeing
 about their own contents is the kind of drift that gets worse quietly.
+
+---
+
+## OQ-OP-01-5 — `master` is red on `clippy -D warnings`
+
+**Closes:** TPM (process — branch health / CI gate)
+
+**Observed:** `origin/master` at `5e38792` fails
+`cargo clippy --workspace --all-targets -- -D warnings`:
+
+```
+error: very complex type used. Consider factoring parts into `type` definitions
+    --> crates/kontor-store/src/repository.rs:1313:15
+error: could not compile `kontor-store` (lib) due to 1 previous error
+```
+
+Verified by checking out `5e38792` into a throwaway worktree and running clippy
+against master alone, not inferred from the merge result. The offending line
+arrives from `bbc7e52` (OP-REQ-039) and is byte-identical on both sides of the
+merge, so it is inherited, not merge-induced.
+
+**Done here:** the merge commit `181c628` factors the row into a named
+`SeatAttachmentRow` alias — clippy's own suggested remedy, no behaviour change —
+because this branch is required to be green. The file is inside OP-01's declared
+ownership, so the fix needed no ownership exception.
+
+**Ask:** master itself is still red until something merges this fix back. Worth
+knowing whether the OP-REQ-039 ticket's gate ran clippy with `--all-targets` and
+`-D warnings` at all, since this would have failed it. If that gate is not
+running as specified, every subsequent Operational ticket inherits the same
+breakage and each one pays to rediscover it.
