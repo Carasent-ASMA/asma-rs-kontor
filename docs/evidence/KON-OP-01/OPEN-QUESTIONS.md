@@ -77,11 +77,21 @@ evidence directory, emitted by `crates/kontor-daemon/tests/mcp_journey.rs`. This
 run produced `run-b467fdd87cbf3251`, whose own verdict is ACCEPT with 42 pass /
 0 fail.
 
-**Left uncommitted.** It is KON-MVP-18's evidence, not OP-01's, and the plan
-excludes Foundation fixtures and snapshots from this ticket's ownership. Two
-sibling `run-*` directories are tracked in git, so the prevailing convention may
-be to commit them; that convention question is the TPM's, not a change OP-01
-should make unilaterally.
+**CLOSED by the TPM — commit them.** Four bundles had accumulated by then
+(`run-4b06c82c9d1bffe5`, `run-7270ac6d1a9d9526`, `run-93ef2a31a7b6425a`,
+`run-b467fdd87cbf3251`), committed in `49ab481`. Checked first: identical file
+set to the tracked `run-848de845cac8046a` precedent, and the secrecy evidence
+reports `leaked_in_bundle: []` with `leaked_in_renderings: 0` — the
+secret-shaped strings are planted canaries and needle-class descriptions, which
+is what those files exist to prove.
+
+**Still worth a decision:** the bundle regenerates on every `kontor-daemon` test
+run, so any ticket that runs the full workspace suite produces another 324 KB
+of near-identical ACCEPT evidence. Committing each one grows the repository
+without adding information. Either the journey should write outside the
+repository by default, or `docs/evidence/KON-MVP-18/run-*` should be ignored and
+bundles promoted deliberately when a run is worth keeping. This is not OP-01's
+to change.
 
 **No source file outside the OP-01 ownership list was modified.**
 
