@@ -582,6 +582,84 @@
         }
       }
     },
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Replace one runtime-terminal unusable seat with a linked successor.",
+        "operationId": "replace_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The terminal predecessor run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceSeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Created, or replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplacedSeatDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid role slot"
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The task, binding, run, team, or successor lineage moved"
+          },
+          "422": {
+            "description": "The predecessor is not runtime-terminal and unusable"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle": {
       "post": {
         "tags": [
@@ -5987,6 +6065,86 @@
           "pack": {
             "type": "object",
             "description": "The pack document. Validated in full before anything is stored."
+          }
+        }
+      },
+      "ReplaceSeatRequest": {
+        "type": "object",
+        "description": "What the Admin-only unusable-seat replacement is asked for.",
+        "required": [
+          "role_slot",
+          "expected_task_revision",
+          "binding_generation"
+        ],
+        "properties": {
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The immutable binding generation of the terminal predecessor.",
+            "minimum": 0
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The task revision the replacement is reconciled against.",
+            "minimum": 0
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "The role slot whose terminal attempt is being replaced."
+          }
+        }
+      },
+      "ReplacedSeatDto": {
+        "type": "object",
+        "description": "One linked successor created for an unusable persistent seat.",
+        "required": [
+          "realm_id",
+          "task_id",
+          "team_run_id",
+          "predecessor_agent_run_id",
+          "successor_agent_run_id",
+          "role_slot",
+          "runtime_kind",
+          "native_id",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call created the successor or replayed it."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The successor's new native identity."
+          },
+          "predecessor_agent_run_id": {
+            "type": "string",
+            "description": "The terminal predecessor; it remains immutable."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was created in."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "The role slot retained by the successor."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The successor's runtime family."
+          },
+          "successor_agent_run_id": {
+            "type": "string",
+            "description": "The linked successor run."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task whose team owns the seat."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "The preserved team run."
           }
         }
       },

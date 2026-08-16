@@ -1275,6 +1275,18 @@ pub struct AttestLateHandoffRequest {
     pub artifacts: Vec<String>,
 }
 
+/// What the Admin-only unusable-seat replacement is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct ReplaceSeatRequest {
+    /// The role slot whose terminal attempt is being replaced.
+    pub role_slot: String,
+    /// The task revision the replacement is reconciled against.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// The immutable binding generation of the terminal predecessor.
+    pub binding_generation: u64,
+}
+
 /// One follow-up a settled turn derived.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TurnFollowUpDto {
@@ -1424,6 +1436,31 @@ pub struct LateHandoffAttestationDto {
     pub team_run_closed: Option<String>,
     /// Normal follow-ups derived from the recorded handoff.
     pub follow_ups: Vec<TurnFollowUpDto>,
+}
+
+/// One linked successor created for an unusable persistent seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ReplacedSeatDto {
+    /// The Realm it was created in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task whose team owns the seat.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The preserved team run.
+    pub team_run_id: String,
+    /// The terminal predecessor; it remains immutable.
+    pub predecessor_agent_run_id: String,
+    /// The linked successor run.
+    pub successor_agent_run_id: String,
+    /// The role slot retained by the successor.
+    pub role_slot: String,
+    /// The successor's runtime family.
+    pub runtime_kind: String,
+    /// The successor's new native identity.
+    pub native_id: String,
+    /// Whether this call created the successor or replayed it.
+    pub applied: AppliedDto,
 }
 
 // ---------------------------------------------------------------------------
@@ -1910,6 +1947,15 @@ pub trait ApplicationOperations: Send + Sync {
         agent_run_id: AgentRunId,
         request: &AttestLateHandoffRequest,
     ) -> Result<LateHandoffAttestationDto, ApiError>;
+
+    /// Replace one runtime-terminal unusable seat with a linked successor.
+    async fn replace_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &ReplaceSeatRequest,
+    ) -> Result<ReplacedSeatDto, ApiError>;
 
     /// Settle one run against a fresh reading of its runtime.
     async fn settle_runtime(
@@ -2781,6 +2827,44 @@ pub async fn attest_late_handoff(
         state
             .applications()
             .attest_late_handoff(&key, caller.0, project_id, agent_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Replace one runtime-terminal unusable seat with a linked successor.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The terminal predecessor run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ReplaceSeatRequest,
+    responses(
+        (status = 200, body = ReplacedSeatDto, description = "Created, or replayed"),
+        (status = 400, description = "Invalid role slot"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The task, binding, run, team, or successor lineage moved"),
+        (status = 422, description = "The predecessor is not runtime-terminal and unusable")
+    )
+)]
+pub async fn replace_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ReplaceSeatRequest>,
+) -> Result<Json<ReplacedSeatDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .replace_seat(&key, project_id, agent_run_id, &request)
             .await?,
     ))
 }

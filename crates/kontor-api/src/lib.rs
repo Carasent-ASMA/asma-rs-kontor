@@ -337,6 +337,10 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late",
             post(applications::attest_late_handoff),
         )
+        .route(
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace",
+            post(applications::replace_seat),
+        )
         // A declared slot that never got a seat is accounted for by an explicit,
         // authorized waiver — and by nothing else.
         .route(

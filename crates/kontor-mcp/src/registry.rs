@@ -1154,6 +1154,47 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Attest one durable handoff after runtime cancellation without reopening the run.",
     },
     ToolSpec {
+        name: "kontor_seat_replace",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The runtime-terminal predecessor run.",
+            ),
+            req(
+                "role_slot",
+                Place::Body,
+                ArgType::OpenKey,
+                "The predecessor's immutable role slot.",
+            ),
+            req(
+                "expected_task_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The task revision the replacement is reconciled against.",
+            ),
+            req(
+                "binding_generation",
+                Place::Body,
+                ArgType::U64,
+                "The predecessor's immutable binding generation.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Replace one runtime-terminal unusable seat with its linked successor.",
+    },
+    ToolSpec {
         name: "kontor_ticket_reconcile_plan",
         tier: CallerTier::Operator,
         method: Method::Post,

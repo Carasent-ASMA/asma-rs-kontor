@@ -1698,6 +1698,44 @@ async fn a_replacement_waits_for_the_runtime_to_observe_the_end() {
     );
 }
 
+#[tokio::test]
+async fn hydration_recovers_the_latest_closed_slot_for_operator_replacement() {
+    let template = parallel_seed();
+    let team_run_id = TeamRunId::generate();
+    let runtime = Runtime::prepare(team_run_id).await;
+    let mut slots =
+        TeamRunSlots::open(lease(team_run_id), &snapshot_of(&template)).expect("slots open");
+    let slot = template.slots[0].id.clone();
+    let first_run = AgentRunId::generate();
+    let binding = occupy(&mut slots, &runtime, &slot, first_run).await;
+    let occupied = slots.occupied(&slot).expect("the seat is occupied");
+    let closed_row = closing_row(team_run_id, &slot, &binding, None, RunLifecycle::Cancelled);
+    slots
+        .close_completed(occupied, &closed_row)
+        .expect("the evidenced terminal closes the slot");
+    drop(slots);
+
+    let mut recovered = TeamRunSlots::hydrate(
+        lease(team_run_id),
+        &snapshot_of(&template),
+        &[closed_row],
+        &[],
+    )
+    .expect("the durable lineage hydrates");
+    let closed = recovered
+        .latest_closed(&slot)
+        .expect("the latest closed attempt is recoverable");
+    assert_eq!(closed.agent_run_id(), first_run);
+    assert_eq!(closed.retired_binding(), Some(binding.binding_id()));
+
+    let successor = AgentRunId::generate();
+    let permit = recovered
+        .reserve_successor(closed, successor)
+        .expect("the recovered token reserves exactly one successor");
+    assert_eq!(permit.parent_agent_run_id(), Some(first_run));
+    assert!(recovered.latest_closed(&slot).is_err());
+}
+
 /// Finding 2 regression: the closing run must carry the session being retired.
 #[tokio::test]
 async fn a_closing_run_carrying_another_session_is_refused() {

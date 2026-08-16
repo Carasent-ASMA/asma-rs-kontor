@@ -41,9 +41,10 @@ use kontor_api::applications::{
 use kontor_api::applications::{
     AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
     ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto, ProfilePhaseDto, ProfileValidationDto,
-    RegisterPackRequest, ResolveConflictRequest, RoleSlotWaiverDto, SettleTurnRequest,
-    SettledTurnDto, SubmitIntakeRequest, TicketClaimDto, TicketCommentDto, TicketCommentPullDto,
-    TicketConflictDto, TriggerSpecDto, TurnFollowUpDto, WaiveRoleSlotRequest, WorkProfileDetailDto,
+    RegisterPackRequest, ReplaceSeatRequest, ReplacedSeatDto, ResolveConflictRequest,
+    RoleSlotWaiverDto, SettleTurnRequest, SettledTurnDto, SubmitIntakeRequest, TicketClaimDto,
+    TicketCommentDto, TicketCommentPullDto, TicketConflictDto, TriggerSpecDto, TurnFollowUpDto,
+    WaiveRoleSlotRequest, WorkProfileDetailDto,
 };
 use kontor_api::applications::{
     GateProjectionDto, GateVerdictDto, ProvenanceDto, RecordGateRequest, RedactionDto,
@@ -100,7 +101,7 @@ use kontor_store::{
     IdempotencyBinding, NewRoleTurn, ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore,
     StoredConflict, StoredTeamDraft, StoredTeamsProjection, TurnDispatch,
 };
-use kontor_teams::run::{TeamClosureCertificate, TeamRunLease, TeamRunSlots};
+use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 
 /// The realm-scoped operation a pack registration binds its key to.
 ///
@@ -1077,14 +1078,19 @@ impl Services {
         team_run_id: TeamRunId,
         slot: &RoleSlotId,
     ) -> Result<Option<AgentRunId>, ApiError> {
-        let state = self.state()?;
         let role = slot.clone().into_role_key();
-        Ok(state
-            .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
-            .map_err(|error| self.refuse(&error))?
+        let mut live = self
+            .team_members(project_id, team_run_id)?
             .into_iter()
-            .find(|seat| seat.role == role)
-            .map(|seat| seat.agent_run_id))
+            .filter(|run| run.role == role && run.terminal.is_none());
+        let seat = live.next().map(|run| run.id);
+        if live.next().is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the role slot has more than one non-terminal successor",
+            ));
+        }
+        Ok(seat)
     }
 
     /// Give one already-materialized seat its follow-up work.
@@ -4086,7 +4092,11 @@ impl ApplicationOperations for Services {
                         project.project_id,
                         &settled,
                         &handoff,
-                        row.target_agent_run,
+                        self.seat_for_slot(
+                            project.project_id,
+                            row.team_run_id,
+                            &row.to_role_slot_id,
+                        )?,
                         message_id,
                         now,
                     )
@@ -4525,6 +4535,252 @@ impl ApplicationOperations for Services {
             attested_by: authority.as_str().to_owned(),
             team_run_closed,
             follow_ups,
+        })
+    }
+
+    async fn replace_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &ReplaceSeatRequest,
+    ) -> Result<ReplacedSeatDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let predecessor = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such predecessor run exists in this project",
+                )
+            })?;
+        let binding = predecessor.binding.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the predecessor has no immutable native binding to replace",
+            )
+        })?;
+        if request.binding_generation != binding.identity.generation {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the immutable binding generation differs from the replacement request",
+            ));
+        }
+        let terminal = predecessor.terminal.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the predecessor is not terminal, so its seat cannot be replaced",
+            )
+        })?;
+        if terminal.outcome != TerminalOutcome::Cancelled
+            || !matches!(
+                terminal.source,
+                TerminalEvidenceSource::RuntimeObservation { .. }
+            )
+        {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "seat replacement requires runtime-observed cancellation",
+            ));
+        }
+        if state.sessions().get(binding.id).is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the predecessor seat is still live and must be reused",
+            ));
+        }
+
+        let role_slot =
+            RoleSlotId::parse(&request.role_slot).map_err(|error| self.refuse_domain(&error))?;
+        if predecessor.role != role_slot.clone().into_role_key() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the predecessor did not hold the requested role slot",
+            ));
+        }
+        let task_id = self.task_for_team_run(project_id, predecessor.team_run_id)?;
+        let task = self.task_row(project_id, task_id)?;
+        if task.revision != request.expected_task_revision {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the task moved since the replacement was authorized",
+            ));
+        }
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, predecessor.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the team run no longer exists"))?;
+        if team.lifecycle.is_terminal() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the team run is terminal and cannot receive a successor",
+            ));
+        }
+
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "replace_seat",
+            "predecessor_agent_run_id": agent_run_id.to_string(),
+            "team_run_id": predecessor.team_run_id.to_string(),
+            "role_slot": role_slot.as_role_key().as_str(),
+            "task_revision": task.revision.get(),
+            "binding_generation": binding.identity.generation,
+        }))?;
+        let target = AggregateRef::TeamRun {
+            team_run_id: predecessor.team_run_id,
+        };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+        if !replayed {
+            self.record(
+                key,
+                project_id,
+                CommandKind::ReplaceSeat,
+                target,
+                team.revision,
+                &intent,
+            )?;
+        }
+
+        let members = self.team_members(project_id, predecessor.team_run_id)?;
+        if let Some(successor) = members
+            .iter()
+            .find(|run| run.parent_agent_run_id == Some(agent_run_id))
+        {
+            let successor_binding = successor.binding.as_ref().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the recorded successor has not acquired a runtime binding",
+                )
+            })?;
+            return Ok(ReplacedSeatDto {
+                realm_id: state.realm_id(),
+                task_id,
+                team_run_id: predecessor.team_run_id.to_string(),
+                predecessor_agent_run_id: agent_run_id.to_string(),
+                successor_agent_run_id: successor.id.to_string(),
+                role_slot: role_slot.as_role_key().as_str().to_owned(),
+                runtime_kind: successor_binding.identity.runtime_kind.as_str().to_owned(),
+                native_id: successor_binding.identity.native_id.as_str().to_owned(),
+                applied: AppliedDto::Unchanged,
+            });
+        }
+
+        let bindings: Vec<_> = members
+            .iter()
+            .filter_map(|run| run.binding.as_ref())
+            .filter_map(|held| state.sessions().get(held.id))
+            .collect();
+        let lease = TeamRunLease::acquire(predecessor.team_run_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let mut slots = TeamRunSlots::hydrate(lease, &team.snapshot, &members, &bindings)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let closed = slots
+            .latest_closed(&role_slot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if closed.agent_run_id() != agent_run_id {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the predecessor is not the role slot's latest closed attempt",
+            ));
+        }
+
+        let successor_agent_run_id = AgentRunId::generate();
+        let permit = slots
+            .reserve_successor(closed, successor_agent_run_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let binding_id = kontor_core::id::RuntimeBindingId::generate();
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this daemon is not configured with the predecessor's runtime",
+                )
+            })?;
+        let successor_row = permit
+            .new_agent_run(project_id, predecessor.account_profile_id, None, now)
+            .map_err(|error| self.refuse_domain(&error))?;
+        state
+            .with_store(|store| store.create_agent_run(&successor_row))
+            .map_err(|error| self.refuse(&error))?;
+
+        adapter
+            .prepare_plane()
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let workspace = adapter
+            .prepare_workspace(&WorkspacePrepareRequest {
+                team_run_id: predecessor.team_run_id,
+                task_id,
+                workspace_binding_id: WorkspaceBindingId::generate(),
+                root: self.task_root(project_id, task_id)?,
+                requested_at: now,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+            .snapshot;
+        let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let launch = SlotLaunch {
+            task_id,
+            binding_id,
+            workspace: Some(workspace.clone()),
+            cwd: workspace.root().clone(),
+            account_profile_id: predecessor.account_profile_id,
+            prompt: slot_prompt(&role_slot, &eligible_roots(slots.template()))
+                .map_err(|error| self.refuse_domain(&error))?,
+            model_rung: freeze_seat_model_rung(&team.snapshot, &role_slot)
+                .map_err(|error| self.refuse_domain(&error))?,
+            context_policy: context_policy.clone(),
+            requested_at: now,
+        };
+        let authority = adapter
+            .admit_launch(&permit.admission_request(&launch))
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+            .into_authority()
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let prepared = permit.launch_request(authority, launch);
+        let outcome = adapter
+            .launch(prepared.request())
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        slots
+            .bind(prepared, &outcome.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let successor_binding = RuntimeBinding {
+            id: outcome.snapshot.binding_id(),
+            agent_run_id: successor_agent_run_id,
+            identity: outcome.snapshot.identity().clone(),
+            bound_at: now,
+        };
+        state
+            .with_store(|store| {
+                store.bind_agent_run(project_id, successor_agent_run_id, &successor_binding)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state
+            .with_store(|store| {
+                store.record_run_context_policy(project_id, successor_agent_run_id, &context_policy)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        self.hold(&outcome.snapshot)?;
+        self.retry_undelivered_dispatches().await?;
+
+        Ok(ReplacedSeatDto {
+            realm_id: state.realm_id(),
+            task_id,
+            team_run_id: predecessor.team_run_id.to_string(),
+            predecessor_agent_run_id: agent_run_id.to_string(),
+            successor_agent_run_id: successor_agent_run_id.to_string(),
+            role_slot: role_slot.as_role_key().as_str().to_owned(),
+            runtime_kind: successor_binding.identity.runtime_kind.as_str().to_owned(),
+            native_id: successor_binding.identity.native_id.as_str().to_owned(),
+            applied: AppliedDto::Created,
         })
     }
 

@@ -6711,6 +6711,111 @@ async fn a_runtime_cancelled_run_accepts_one_guarded_late_handoff_without_reopen
     assert_eq!(duplicate.status, 409, "{}", duplicate.body);
 }
 
+#[tokio::test]
+async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "replace-seat").await;
+    let seat = seats.as_array().expect("the seated roster")[1].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let team_run = seat["team_run_id"].as_str().expect("the team run");
+
+    finish_natively(&world, predecessor).await;
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-seat-runtime-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["observed"], "cancelled");
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("a canonical run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let old_binding = before.binding.as_ref().expect("the predecessor was bound");
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": task_revision,
+        "binding_generation": old_binding.identity.generation,
+    });
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-seat-successor")
+    .send(&world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    assert_eq!(replaced.json()["applied"], "created");
+    assert_eq!(replaced.json()["team_run_id"], team_run);
+
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the successor id"),
+    )
+    .expect("a canonical successor id");
+    let successor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor_id)
+            .expect("the successor reads")
+            .expect("the successor exists")
+    });
+    assert_eq!(successor.parent_agent_run_id, Some(predecessor_id));
+    assert_eq!(successor.team_run_id.to_string(), team_run);
+    let successor_binding = successor.binding.expect("the successor is bound");
+    assert_ne!(successor_binding.id, old_binding.id);
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(old_binding.id)
+            .is_none()
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(successor_binding.id)
+            .is_some()
+    );
+
+    let replay = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-seat-successor")
+    .send(&world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    assert_eq!(
+        replay.json()["successor_agent_run_id"],
+        successor_id.to_string()
+    );
+}
+
 /// BLK-009. A bounded Kontor role turn settles on Kontor's own authority, and
 /// the seat it was taken in stays live: settling a turn is not a claim that the
 /// runtime ended anything, and the persistent Paseo session is expected to still

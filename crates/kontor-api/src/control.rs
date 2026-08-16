@@ -184,7 +184,8 @@ pub const fn command_authority(kind: CommandKind) -> CallerCapability {
         | CommandKind::ApplyEpicGraph
         | CommandKind::SelectTaskProfile
         | CommandKind::SelectTaskTeam
-        | CommandKind::SelectTaskAccount => CallerCapability::Admin,
+        | CommandKind::SelectTaskAccount
+        | CommandKind::ReplaceSeat => CallerCapability::Admin,
         _ => CallerCapability::Operator,
     }
 }

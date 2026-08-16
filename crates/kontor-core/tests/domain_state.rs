@@ -1443,6 +1443,7 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("select_task_account", "task", "witness", None),
     ("reconcile_ticket", "task", "witness", None),
     ("settle_runtime", "agent_run", "witness", None),
+    ("replace_seat", "team_run", "witness", None),
     // Intake decides about the project's inbound events, and about no narrower
     // aggregate: a decision that creates no work graph has none to name.
     ("submit_intake", "project", "witness", None),

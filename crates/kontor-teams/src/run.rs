@@ -1132,6 +1132,36 @@ impl TeamRunSlots {
         })
     }
 
+    /// Recover the token for a slot whose latest durable attempt is closed.
+    ///
+    /// Hydration has already proved the lineage is a single evidenced chain.
+    /// Reconstructing this token is therefore the restart-safe equivalent of
+    /// [`TeamRunSlots::close_completed`], and is the only supported way an
+    /// operator reconciliation may reserve a successor after process loss.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the slot is undeclared, still live, or has
+    /// never recorded a closed attempt.
+    pub fn latest_closed(&self, slot: &RoleSlotId) -> DomainResult<ClosedSlot> {
+        let state = self.state(slot)?;
+        if state.head.live_run().is_some() {
+            return Err(DomainError::invalid(
+                "TeamRunSlots",
+                "the role slot still has a live attempt",
+            ));
+        }
+        let latest = state.lineage.last().ok_or(DomainError::Invalid {
+            subject: "TeamRunSlots",
+            rule: "the role slot has no closed attempt to succeed",
+        })?;
+        Ok(ClosedSlot {
+            team_run_id: self.team_run_id(),
+            slot: slot.clone(),
+            agent_run_id: latest.agent_run_id,
+            retired_binding: latest.binding_id,
+        })
+    }
+
     /// Take the handle for a slot that a hydration found already occupied.
     ///
     /// # Errors

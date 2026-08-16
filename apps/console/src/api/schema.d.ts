@@ -310,6 +310,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replace one runtime-terminal unusable seat with a linked successor. */
+        post: operations["replace_seat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle": {
         parameters: {
             query?: never;
@@ -2530,6 +2547,42 @@ export interface components {
             /** @description The pack document. Validated in full before anything is stored. */
             pack: Record<string, never>;
         };
+        /** @description What the Admin-only unusable-seat replacement is asked for. */
+        ReplaceSeatRequest: {
+            /**
+             * Format: int64
+             * @description The immutable binding generation of the terminal predecessor.
+             */
+            binding_generation: number;
+            /**
+             * Format: int64
+             * @description The task revision the replacement is reconciled against.
+             */
+            expected_task_revision: number;
+            /** @description The role slot whose terminal attempt is being replaced. */
+            role_slot: string;
+        };
+        /** @description One linked successor created for an unusable persistent seat. */
+        ReplacedSeatDto: {
+            /** @description Whether this call created the successor or replayed it. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The successor's new native identity. */
+            native_id: string;
+            /** @description The terminal predecessor; it remains immutable. */
+            predecessor_agent_run_id: string;
+            /** @description The Realm it was created in. */
+            realm_id: string;
+            /** @description The role slot retained by the successor. */
+            role_slot: string;
+            /** @description The successor's runtime family. */
+            runtime_kind: string;
+            /** @description The linked successor run. */
+            successor_agent_run_id: string;
+            /** @description The task whose team owns the seat. */
+            task_id: string;
+            /** @description The preserved team run. */
+            team_run_id: string;
+        };
         /** @description What `ticket:resolve-conflict` is asked for. */
         ResolveConflictRequest: {
             /** @description The conflict to close. */
@@ -4047,6 +4100,77 @@ export interface operations {
             };
             /** @description The runtime could not be reached */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    replace_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The terminal predecessor run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceSeatRequest"];
+            };
+        };
+        responses: {
+            /** @description Created, or replayed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplacedSeatDto"];
+                };
+            };
+            /** @description Invalid role slot */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The task, binding, run, team, or successor lineage moved */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The predecessor is not runtime-terminal and unusable */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
