@@ -52,8 +52,9 @@ use kontor_core::repository::{
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
     PersonaScenarioSpec, ProjectSessionTopologySpec, ResolvedWorkProfileSnapshot,
-    RoleCatalogRevision, SourceIdentity, TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot,
-    TriggerSpec, WorkProfileSpec,
+    RoleCatalogRevision, Shareability, ShareabilityClass, ShareabilityClassifier,
+    ShareabilityProvenance, ShareabilityTier, SourceIdentity, TeamRunSnapshot,
+    TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use kontor_core::state::{
     AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
@@ -901,6 +902,32 @@ fn validate_adaptive_values(
     Ok(())
 }
 
+/// A published topology specification is project configuration, never
+/// operational state, so it is classifiable and defaults to `project_shared`.
+const TOPOLOGY_SPEC_TIER: ShareabilityTier = ShareabilityTier::ProjectKnowledge;
+
+/// A published role catalog is project configuration on the same footing.
+const ROLE_CATALOG_TIER: ShareabilityTier = ShareabilityTier::ProjectKnowledge;
+
+/// Rebuild one stamp from its three stored columns.
+///
+/// The pairing is re-proved on the way out as well as on the way in, so a row
+/// edited around the repository cannot read back as a valid classification.
+fn stored_shareability(
+    (class, classifier, provenance): (String, Option<String>, String),
+) -> RepositoryResult<Shareability> {
+    let stamp = Shareability {
+        class: ShareabilityClass::parse(&class)?,
+        classifier: match classifier {
+            None => ShareabilityClassifier::TypeDefaultRule,
+            Some(name) => ShareabilityClassifier::Human(ExternalName::parse(&name)?),
+        },
+        provenance: ShareabilityProvenance::parse(&provenance)?,
+    };
+    stamp.validate_for(ShareabilityTier::ProjectKnowledge)?;
+    Ok(stamp)
+}
+
 fn topology_spec_in(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
@@ -957,16 +984,19 @@ impl TopologyRepository for SqliteStore {
         &self,
         project_id: ProjectId,
         spec: &ProjectSessionTopologySpec,
+        shareability: &Shareability,
         published_at: Timestamp,
     ) -> RepositoryResult<ContentHash> {
         let document = spec.canonicalize()?;
+        shareability.validate_for(TOPOLOGY_SPEC_TIER)?;
         let transaction = self.begin()?;
         transaction
             .execute(
                 "INSERT INTO topology_specs
                      (project_id, spec_id, version, name, root_kind, definition,
-                      definition_hash, published_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                      definition_hash, published_at, shareability_class,
+                      shareability_classifier, shareability_provenance)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     project_id.to_string(),
                     spec.spec_id.to_string(),
@@ -976,11 +1006,39 @@ impl TopologyRepository for SqliteStore {
                     document.json(),
                     document.hash().as_str(),
                     text(published_at),
+                    shareability.class.as_str(),
+                    shareability.classifier.identity().map(ExternalName::as_str),
+                    shareability.provenance.as_str(),
                 ],
             )
             .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(document.hash().clone())
+    }
+
+    fn get_topology_spec_shareability(
+        &self,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<Shareability>> {
+        let found: Option<(String, Option<String>, String)> = self
+            .connection
+            .query_row(
+                "SELECT shareability_class, shareability_classifier,
+                        shareability_provenance
+                 FROM topology_specs
+                 WHERE project_id = ?1 AND spec_id = ?2 AND version = ?3",
+                params![
+                    project_id.to_string(),
+                    spec_id.to_string(),
+                    version_column(version)
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found.map(stored_shareability).transpose()
     }
 
     fn get_topology_spec(
@@ -1143,15 +1201,18 @@ impl TopologyRepository for SqliteStore {
     fn publish_role_catalog(
         &self,
         catalog: &RoleCatalogRevision,
+        shareability: &Shareability,
         published_at: Timestamp,
     ) -> RepositoryResult<ContentHash> {
         let document = catalog.canonicalize()?;
+        shareability.validate_for(ROLE_CATALOG_TIER)?;
         let transaction = self.begin()?;
         transaction
             .execute(
                 "INSERT INTO role_catalog_revisions
-                     (catalog_id, version, name, definition, definition_hash, published_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                     (catalog_id, version, name, definition, definition_hash, published_at,
+                      shareability_class, shareability_classifier, shareability_provenance)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     catalog.catalog_id.to_string(),
                     version_column(catalog.version),
@@ -1159,11 +1220,34 @@ impl TopologyRepository for SqliteStore {
                     document.json(),
                     document.hash().as_str(),
                     text(published_at),
+                    shareability.class.as_str(),
+                    shareability.classifier.identity().map(ExternalName::as_str),
+                    shareability.provenance.as_str(),
                 ],
             )
             .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(document.hash().clone())
+    }
+
+    fn get_role_catalog_shareability(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<Shareability>> {
+        let found: Option<(String, Option<String>, String)> = self
+            .connection
+            .query_row(
+                "SELECT shareability_class, shareability_classifier,
+                        shareability_provenance
+                 FROM role_catalog_revisions
+                 WHERE catalog_id = ?1 AND version = ?2",
+                params![catalog_id.to_string(), version_column(version)],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found.map(stored_shareability).transpose()
     }
 
     fn get_role_catalog(

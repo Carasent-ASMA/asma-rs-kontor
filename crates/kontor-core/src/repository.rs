@@ -37,8 +37,8 @@ use crate::receipt::{
 use crate::spec::{
     CanonicalSourceEvent, CatalogRoleRef, ExecutionCapability, IntakeReceipt,
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
-    ResolvedWorkProfileSnapshot, RoleCatalogRevision, SourceIdentity, TeamRunSnapshot,
-    TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
+    ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability, SourceIdentity,
+    TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use crate::state::{
     AdaptiveAdmissionState, DesiredRunState, GateState, GateVerdict, NativeRuntimeIdentity,
@@ -1511,14 +1511,33 @@ pub trait ProjectRepository {
 pub trait TopologyRepository {
     /// Publish one immutable project topology specification revision.
     ///
+    /// A published topology specification is project configuration, so it is
+    /// tier B and always carries a write-time classification. The stamp lives
+    /// beside the document rather than inside it: the canonical hash keeps
+    /// identifying the specification text alone, so withholding a revision
+    /// never changes the hash an epic pinned.
+    ///
     /// # Errors
-    /// Refuses an invalid document, dangling project or duplicate revision.
+    /// Refuses an invalid document or stamp, dangling project or duplicate
+    /// revision.
     fn publish_topology_spec(
         &self,
         project_id: ProjectId,
         spec: &ProjectSessionTopologySpec,
+        shareability: &Shareability,
         published_at: Timestamp,
     ) -> RepositoryResult<ContentHash>;
+
+    /// Read one topology specification revision's immutable classification.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_topology_spec_shareability(
+        &self,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<Shareability>>;
 
     /// Read one topology specification revision and re-prove its digest.
     ///
@@ -1571,13 +1590,27 @@ pub trait TopologyRepository {
 
     /// Publish one immutable standard-role catalog revision.
     ///
+    /// A published role catalog is project configuration, so it is tier B and
+    /// always carries a write-time classification.
+    ///
     /// # Errors
-    /// Refuses an invalid or duplicate revision.
+    /// Refuses an invalid or duplicate revision, or an invalid stamp.
     fn publish_role_catalog(
         &self,
         catalog: &RoleCatalogRevision,
+        shareability: &Shareability,
         published_at: Timestamp,
     ) -> RepositoryResult<ContentHash>;
+
+    /// Read one role catalog revision's immutable classification.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_role_catalog_shareability(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<Shareability>>;
 
     /// Read one standard-role catalog revision and re-prove its digest.
     ///

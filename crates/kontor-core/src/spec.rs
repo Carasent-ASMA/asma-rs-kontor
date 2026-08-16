@@ -124,6 +124,173 @@ pub const MAX_PHASES: usize = 256;
 pub const MAX_GATES: usize = 256;
 
 // ---------------------------------------------------------------------------
+// Write-time shareability classification
+// ---------------------------------------------------------------------------
+
+crate::closed_enum! {
+    /// Which durable-record tier a classification is being asked for.
+    ///
+    /// The tier is a property of the record *type*, never a value a caller may
+    /// choose per write, so it is an argument to the constructors below rather
+    /// than a stored field that could drift away from the row it describes.
+    ShareabilityTier, "ShareabilityTier" {
+        /// Tier A — Kontor operational state: seats, bindings, receipts,
+        /// reconciliation, scheduler/capacity state, provider/model routing and
+        /// cost, unapproved memory and per-run scratch context. Never leaves
+        /// Kontor and refuses classification outright.
+        OperationalState => "operational_state",
+        /// Tier B — project decisions, durable knowledge, plans, approved
+        /// memory, glossary and published project configuration.
+        ProjectKnowledge => "project_knowledge",
+        /// Tier C — personal notes, drafts, half-formed decisions and local
+        /// dispositions.
+        PersonalDraft => "personal_draft",
+    }
+}
+
+impl ShareabilityTier {
+    /// Whether records of this tier carry a classification at all.
+    #[must_use]
+    pub const fn is_classifiable(self) -> bool {
+        !matches!(self, Self::OperationalState)
+    }
+
+    /// The class applied when no human overrides it.
+    ///
+    /// A default always exists for a classifiable tier, which is what keeps
+    /// ordinary work from stalling on a human decision.
+    ///
+    /// # Errors
+    /// Refuses tier A, which is never classified.
+    pub fn default_class(self) -> DomainResult<ShareabilityClass> {
+        match self {
+            Self::OperationalState => Err(DomainError::invalid(
+                "Shareability",
+                "tier-A Kontor operational state refuses classification",
+            )),
+            Self::ProjectKnowledge => Ok(ShareabilityClass::ProjectShared),
+            Self::PersonalDraft => Ok(ShareabilityClass::KontorLocal),
+        }
+    }
+}
+
+crate::closed_enum! {
+    /// Whether a classified record may ever leave Kontor.
+    ShareabilityClass, "ShareabilityClass" {
+        /// Eligible to be published into the project repository later.
+        ProjectShared => "project_shared",
+        /// Stays inside Kontor.
+        KontorLocal => "kontor_local",
+    }
+}
+
+crate::closed_enum! {
+    /// Where the recorded class came from.
+    ShareabilityProvenance, "ShareabilityProvenance" {
+        /// The tier's default rule applied; no human was consulted.
+        TypeDefault => "type_default",
+        /// A named human chose the class at write time.
+        HumanOverride => "human_override",
+    }
+}
+
+/// Who classified one durable record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareabilityClassifier {
+    /// The write-time type-default rule.
+    TypeDefaultRule,
+    /// The human who overrode the default at write time.
+    Human(ExternalName),
+}
+
+impl ShareabilityClassifier {
+    /// The stored identity, or `None` for the default rule.
+    #[must_use]
+    pub fn identity(&self) -> Option<&ExternalName> {
+        match self {
+            Self::TypeDefaultRule => None,
+            Self::Human(name) => Some(name),
+        }
+    }
+}
+
+/// One immutable write-time classification.
+///
+/// Eligibility is decided once, when the record is written; publication is a
+/// separate, later and repeatable action that this MVP does not implement. No
+/// surface reclassifies an existing record — a correction is a new record that
+/// supersedes the old one and carries its own stamp.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shareability {
+    /// Whether the record may ever leave Kontor.
+    pub class: ShareabilityClass,
+    /// Who classified it.
+    pub classifier: ShareabilityClassifier,
+    /// Default rule versus human override.
+    pub provenance: ShareabilityProvenance,
+}
+
+impl Shareability {
+    /// Stamp a record with its tier's default class.
+    ///
+    /// # Errors
+    /// Refuses tier A.
+    pub fn default_for(tier: ShareabilityTier) -> DomainResult<Self> {
+        Ok(Self {
+            class: tier.default_class()?,
+            classifier: ShareabilityClassifier::TypeDefaultRule,
+            provenance: ShareabilityProvenance::TypeDefault,
+        })
+    }
+
+    /// Stamp a record with a human's write-time override.
+    ///
+    /// # Errors
+    /// Refuses tier A. An override is always attributable, so the human's
+    /// identity is mandatory here rather than optional.
+    pub fn overridden_by(
+        tier: ShareabilityTier,
+        class: ShareabilityClass,
+        human: ExternalName,
+    ) -> DomainResult<Self> {
+        tier.default_class()?;
+        Ok(Self {
+            class,
+            classifier: ShareabilityClassifier::Human(human),
+            provenance: ShareabilityProvenance::HumanOverride,
+        })
+    }
+
+    /// Prove this stamp is internally consistent and legal for `tier`.
+    ///
+    /// # Errors
+    /// Refuses a tier-A stamp, a classifier that disagrees with the recorded
+    /// provenance, and a `type_default` stamp whose class is not the tier's
+    /// default — which is what stops a non-default class being written as
+    /// though no one had chosen it.
+    pub fn validate_for(&self, tier: ShareabilityTier) -> DomainResult<()> {
+        let default_class = tier.default_class()?;
+        match (&self.classifier, self.provenance) {
+            (ShareabilityClassifier::TypeDefaultRule, ShareabilityProvenance::TypeDefault) => {
+                if self.class != default_class {
+                    return Err(DomainError::invalid(
+                        "Shareability",
+                        "a type-default stamp must carry the tier's default class",
+                    ));
+                }
+                Ok(())
+            }
+            (ShareabilityClassifier::Human(_), ShareabilityProvenance::HumanOverride) => Ok(()),
+            _ => Err(DomainError::invalid(
+                "Shareability",
+                "classifier identity and provenance disagree",
+            )),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared references and bounds
 // ---------------------------------------------------------------------------
 

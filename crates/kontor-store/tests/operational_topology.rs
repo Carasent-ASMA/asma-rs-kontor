@@ -9,7 +9,10 @@ use kontor_core::repository::{
     NewMiniProject, NewProject, NewSeatBinding, NewSessionTopologyNode, ProjectRepository,
     ProjectTopologyDefault, RepositoryError, TopologyRepository,
 };
-use kontor_core::spec::{CatalogRoleRef, TopologySnapshot};
+use kontor_core::spec::{
+    CatalogRoleRef, Shareability, ShareabilityClass, ShareabilityProvenance, ShareabilityTier,
+    TopologySnapshot,
+};
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use kontor_store::backup::export_realm;
@@ -21,6 +24,11 @@ fn at(text: &str) -> Timestamp {
 
 fn name(text: &str) -> ExternalName {
     ExternalName::parse(text).expect("a valid name")
+}
+
+/// The stamp ordinary work produces: nobody was asked.
+fn default_stamp() -> Shareability {
+    Shareability::default_for(ShareabilityTier::ProjectKnowledge).expect("tier B classifies")
 }
 
 #[test]
@@ -56,10 +64,10 @@ fn operational_state_survives_restart_and_typed_export() {
         .expect("a role catalog")
         .clone();
     let canonical_hash = store
-        .publish_topology_spec(project_id, &topology, created_at)
+        .publish_topology_spec(project_id, &topology, &default_stamp(), created_at)
         .expect("the topology is published");
     store
-        .publish_role_catalog(&catalog, created_at)
+        .publish_role_catalog(&catalog, &default_stamp(), created_at)
         .expect("the catalog is published");
     let snapshot = TopologySnapshot {
         spec_id: topology.spec_id,
@@ -199,9 +207,138 @@ fn operational_state_survives_restart_and_typed_export() {
             .clean_observation_streak,
         1
     );
+    assert_eq!(
+        reopened
+            .get_topology_spec_shareability(project_id, topology.spec_id, topology.version)
+            .expect("the classification is readable")
+            .expect("the revision is classified"),
+        default_stamp(),
+        "a published specification keeps its write-time stamp across restart"
+    );
+
     let export = export_realm(&reopened, at("2026-08-16T02:00:00Z")).expect("the Realm exports");
     assert_eq!(export.records.topology_specs.len(), 1);
     assert_eq!(export.records.topology_nodes.len(), 3);
     assert_eq!(export.records.seat_bindings.len(), 1);
     assert_eq!(export.records.adaptive_admission_state.len(), 1);
+
+    let exported = export
+        .records
+        .topology_specs
+        .first()
+        .expect("the exported specification");
+    assert_eq!(exported.shareability_class, "project_shared");
+    assert_eq!(exported.shareability_classifier, None);
+    assert_eq!(exported.shareability_provenance, "type_default");
+    let exported_catalog = export
+        .records
+        .role_catalog_revisions
+        .first()
+        .expect("the exported catalog");
+    assert_eq!(exported_catalog.shareability_class, "project_shared");
+    assert_eq!(exported_catalog.shareability_provenance, "type_default");
+}
+
+#[test]
+fn a_human_override_is_stored_whole_and_read_back() {
+    let home = TempDir::new().expect("a temporary directory");
+    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let project_id = ProjectId::generate();
+    let created_at = at("2026-08-16T01:00:00Z");
+    store
+        .create_project(&NewProject {
+            id: project_id,
+            name: name("Withheld project"),
+            root_path: name("/tmp/withheld-project"),
+            created_at,
+        })
+        .expect("the project is created");
+
+    let domain = bundled_operational_domain().expect("the bundled domain validates");
+    let topology = domain.topology_specs.first().expect("a topology").clone();
+    let withheld = Shareability::overridden_by(
+        ShareabilityTier::ProjectKnowledge,
+        ShareabilityClass::KontorLocal,
+        name("Lead Software Architect"),
+    )
+    .expect("tier B accepts an override");
+    store
+        .publish_topology_spec(project_id, &topology, &withheld, created_at)
+        .expect("the withheld topology is published");
+
+    let stored = store
+        .get_topology_spec_shareability(project_id, topology.spec_id, topology.version)
+        .expect("the classification is readable")
+        .expect("the revision is classified");
+    assert_eq!(stored, withheld);
+    assert_eq!(stored.class, ShareabilityClass::KontorLocal);
+    assert_eq!(stored.provenance, ShareabilityProvenance::HumanOverride);
+    assert_eq!(
+        stored.classifier.identity().map(ExternalName::to_string),
+        Some("Lead Software Architect".to_owned()),
+        "an override names the human who made it"
+    );
+}
+
+#[test]
+fn a_published_classification_cannot_be_revised_after_the_fact() {
+    let home = TempDir::new().expect("a temporary directory");
+    let database = home.path().join("kontor.db");
+    let store = SqliteStore::open(&database).expect("the store opens");
+    let project_id = ProjectId::generate();
+    let created_at = at("2026-08-16T01:00:00Z");
+    store
+        .create_project(&NewProject {
+            id: project_id,
+            name: name("Immutable project"),
+            root_path: name("/tmp/immutable-project"),
+            created_at,
+        })
+        .expect("the project is created");
+    let domain = bundled_operational_domain().expect("the bundled domain validates");
+    let topology = domain.topology_specs.first().expect("a topology").clone();
+    store
+        .publish_topology_spec(project_id, &topology, &default_stamp(), created_at)
+        .expect("the topology is published");
+
+    let connection = rusqlite::Connection::open(&database).expect("a direct connection");
+    let reclassified = connection.execute(
+        "UPDATE topology_specs SET shareability_class = 'kontor_local'",
+        [],
+    );
+    assert!(
+        reclassified.is_err(),
+        "no surface may reclassify a published revision"
+    );
+}
+
+#[test]
+fn an_unattributed_override_is_refused_by_the_schema() {
+    let home = TempDir::new().expect("a temporary directory");
+    let database = home.path().join("kontor.db");
+    let store = SqliteStore::open(&database).expect("the store opens");
+    let project_id = ProjectId::generate();
+    store
+        .create_project(&NewProject {
+            id: project_id,
+            name: name("Unattributed project"),
+            root_path: name("/tmp/unattributed-project"),
+            created_at: at("2026-08-16T01:00:00Z"),
+        })
+        .expect("the project is created");
+
+    let connection = rusqlite::Connection::open(&database).expect("a direct connection");
+    let anonymous = connection.execute(
+        "INSERT INTO topology_specs
+             (project_id, spec_id, version, name, root_kind, definition, definition_hash,
+              published_at, shareability_class, shareability_classifier, shareability_provenance)
+         VALUES (?1, 'spec', 1, 'n', 'PSW', '{}',
+                 '0000000000000000000000000000000000000000000000000000000000000000',
+                 '2026-08-16T01:00:00Z', 'kontor_local', NULL, 'human_override')",
+        rusqlite::params![project_id.to_string()],
+    );
+    assert!(
+        anonymous.is_err(),
+        "an override with no human identity is not a stamp anyone made"
+    );
 }

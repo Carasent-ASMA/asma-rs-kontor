@@ -148,6 +148,35 @@ const MIGRATIONS_THROUGH_V9: &[&str] = &[
     include_str!("../migrations/0009_authorization_revocation.sql"),
 ];
 
+/// Every migration up to schema v24, so a test can build a genuine
+/// pre-shareability file rather than degrading a current one.
+const MIGRATIONS_THROUGH_V24: &[&str] = &[
+    MIGRATION_0001,
+    include_str!("../migrations/0002_account_profiles_expanded.sql"),
+    include_str!("../migrations/0003_guardrails_and_recovery.sql"),
+    include_str!("../migrations/0004_scheduler_admission.sql"),
+    include_str!("../migrations/0005_redacted_import.sql"),
+    include_str!("../migrations/0006_intake_decisions.sql"),
+    include_str!("../migrations/0007_calendar_imports.sql"),
+    include_str!("../migrations/0008_child_calendar_windows.sql"),
+    include_str!("../migrations/0009_authorization_revocation.sql"),
+    include_str!("../migrations/0010_bootstrap_command_kinds.sql"),
+    include_str!("../migrations/0011_task_account_selection.sql"),
+    include_str!("../migrations/0012_surface_command_kinds.sql"),
+    include_str!("../migrations/0013_context_policy_and_compaction.sql"),
+    include_str!("../migrations/0014_registered_profile_packs.sql"),
+    include_str!("../migrations/0015_realm_idempotency_bindings.sql"),
+    include_str!("../migrations/0016_task_worktrees.sql"),
+    include_str!("../migrations/0017_runtime_binding_snapshots.sql"),
+    include_str!("../migrations/0018_role_turns.sql"),
+    include_str!("../migrations/0019_team_closure_on_settled_turns.sql"),
+    include_str!("../migrations/0020_role_slot_waivers.sql"),
+    include_str!("../migrations/0021_native_memory.sql"),
+    include_str!("../migrations/0022_teams_editor.sql"),
+    include_str!("../migrations/0023_operational_topology.sql"),
+    include_str!("../migrations/0024_replace_seat_command.sql"),
+];
+
 /// A minimal project → task → workflow → team run → agent run chain, inserted
 /// with direct SQL so the schema's own constraints are what is under test.
 const RUN_FIXTURE: &str = "\
@@ -227,7 +256,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 24);
+    assert_eq!(SCHEMA_VERSION, 25);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
@@ -2907,4 +2936,124 @@ fn uuid_like(label: &str) -> String {
         digest = digest.wrapping_mul(31).wrapping_add(u32::from(byte));
     }
     format!("0193f000-0000-7000-8000-{digest:012x}")
+}
+
+/// Migration 0025 stamps a classification onto documents published before the
+/// classification existed.
+///
+/// A realm that predates OP-REQ-037 has topology specifications and role
+/// catalogs already in it. Opening that file must not fail, must not ask a
+/// human anything, and must not invent an override: every pre-existing tier-B
+/// document reads back as `project_shared` by the type-default rule. The
+/// mutants this kills are dropping the column defaults — which would refuse to
+/// open an existing realm — and backfilling `human_override`, which would
+/// attribute a decision to a human who never made one.
+#[test]
+fn documents_published_before_the_classification_existed_adopt_the_tier_default() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000c2";
+    const PROJECT: &str = "0193f000-0000-7000-8000-000000000001";
+    const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        for migration in MIGRATIONS_THROUGH_V24 {
+            connection
+                .execute_batch(migration)
+                .expect("a frozen migration runs");
+        }
+        connection
+            .execute(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, ?1, 1, '2026-08-16T01:00:00Z', NULL)",
+                [REALM],
+            )
+            .expect("the v24 realm row is written");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, root_path, revision, created_at)
+                 VALUES (?1, 'P', '/tmp/p', 1, '2026-08-16T01:00:00Z')",
+                [PROJECT],
+            )
+            .expect("the project is written");
+        connection
+            .execute(
+                "INSERT INTO topology_specs
+                     (project_id, spec_id, version, name, root_kind, definition,
+                      definition_hash, published_at)
+                 VALUES (?1, 'spec', 1, 'Legacy topology', 'PSW', '{}', ?2,
+                         '2026-08-16T01:00:00Z')",
+                [PROJECT, HASH],
+            )
+            .expect("a pre-classification topology specification is written");
+        connection
+            .execute(
+                "INSERT INTO role_catalog_revisions
+                     (catalog_id, version, name, definition, definition_hash, published_at)
+                 VALUES ('catalog', 1, 'Legacy catalog', '{}', ?1, '2026-08-16T01:00:00Z')",
+                [HASH],
+            )
+            .expect("a pre-classification role catalog is written");
+    }
+
+    let store = SqliteStore::open(&path).expect("a v24 database opens rather than being refused");
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
+    assert_eq!(
+        store.realm_id().to_string(),
+        REALM,
+        "an upgrade must not mint a second Realm identity"
+    );
+
+    let connection = raw(&directory);
+    for table in ["topology_specs", "role_catalog_revisions"] {
+        let (class, classifier, provenance): (String, Option<String>, String) = connection
+            .query_row(
+                &format!(
+                    "SELECT shareability_class, shareability_classifier,
+                            shareability_provenance
+                     FROM {table}"
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("the backfilled stamp is readable");
+        assert_eq!(class, "project_shared", "{table} defaults to shareable");
+        assert_eq!(
+            provenance, "type_default",
+            "{table} was not decided by anyone"
+        );
+        assert_eq!(classifier, None, "{table} names no human");
+    }
+}
+
+/// The tier-A tables added by 0023 are never given somewhere to put a
+/// classification.
+///
+/// Refusing to classify operational state means the column does not exist, not
+/// that it exists and holds a null. The mutant this kills is a later migration
+/// "harmonizing" these tables with the classified ones.
+#[test]
+fn tier_a_operational_tables_have_nowhere_to_store_a_classification() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    for table in [
+        "topology_nodes",
+        "seat_bindings",
+        "adaptive_admission_state",
+    ] {
+        let columns: i64 = connection
+            .query_row(
+                &format!(
+                    "SELECT count(*) FROM pragma_table_info('{table}')
+                     WHERE name LIKE 'shareability%'"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .expect("readable");
+        assert_eq!(columns, 0, "{table} is tier A and refuses classification");
+    }
 }

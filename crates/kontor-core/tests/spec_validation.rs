@@ -35,7 +35,8 @@ use kontor_core::spec::{
     EnvironmentKind, IntakeReceipt, IntakeResult, JsonPointer, ModelChainPolicy, ModelRef,
     ModelRung, PersonaScenarioSnapshot, PersonaScenarioSpec, PhaseEdge, ProposedWorkGraph,
     ProviderRef, RequestedContextPolicy, ResolvedWorkProfileSnapshot, RoleContextSeed,
-    TeamContextPolicySeed, TriggerSpec, WorkProfileSpec, resolve_context_window,
+    Shareability, ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance,
+    ShareabilityTier, TeamContextPolicySeed, TriggerSpec, WorkProfileSpec, resolve_context_window,
 };
 use proptest::prelude::*;
 
@@ -1596,4 +1597,125 @@ fn a_model_chain_is_closed_and_bounded() {
         .validate()
         .is_err()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Write-time shareability classification
+//
+// The mutants this section exists to kill:
+//
+// * letting tier-A operational state be classified at all;
+// * flipping either tier default, so ordinary work silently changes side;
+// * recording a human override with nobody's name on it;
+// * recording a non-default class as though the default rule had produced it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tier_a_operational_state_refuses_classification() {
+    assert!(!ShareabilityTier::OperationalState.is_classifiable());
+    assert!(ShareabilityTier::OperationalState.default_class().is_err());
+    assert!(Shareability::default_for(ShareabilityTier::OperationalState).is_err());
+    assert!(
+        Shareability::overridden_by(
+            ShareabilityTier::OperationalState,
+            ShareabilityClass::ProjectShared,
+            ExternalName::parse("An operator").expect("a valid name"),
+        )
+        .is_err(),
+        "a human cannot promote operational state either"
+    );
+}
+
+#[test]
+fn each_classifiable_tier_has_a_default_so_work_never_stalls() {
+    for (tier, expected) in [
+        (
+            ShareabilityTier::ProjectKnowledge,
+            ShareabilityClass::ProjectShared,
+        ),
+        (
+            ShareabilityTier::PersonalDraft,
+            ShareabilityClass::KontorLocal,
+        ),
+    ] {
+        assert!(tier.is_classifiable());
+        let stamp = Shareability::default_for(tier).expect("a classifiable tier has a default");
+        assert_eq!(stamp.class, expected);
+        assert_eq!(stamp.provenance, ShareabilityProvenance::TypeDefault);
+        assert_eq!(stamp.classifier, ShareabilityClassifier::TypeDefaultRule);
+        assert!(stamp.classifier.identity().is_none());
+        stamp
+            .validate_for(tier)
+            .expect("a freshly defaulted stamp validates");
+    }
+}
+
+#[test]
+fn an_override_is_attributable_and_a_default_is_not() {
+    let human = ExternalName::parse("Lead Software Architect").expect("a valid name");
+    let promoted = Shareability::overridden_by(
+        ShareabilityTier::PersonalDraft,
+        ShareabilityClass::ProjectShared,
+        human.clone(),
+    )
+    .expect("a human may promote a draft");
+    assert_eq!(promoted.provenance, ShareabilityProvenance::HumanOverride);
+    assert_eq!(promoted.classifier.identity(), Some(&human));
+    promoted
+        .validate_for(ShareabilityTier::PersonalDraft)
+        .expect("an attributed override validates");
+
+    // A class nobody chose, wearing the default rule's name.
+    let forged = Shareability {
+        class: ShareabilityClass::KontorLocal,
+        classifier: ShareabilityClassifier::TypeDefaultRule,
+        provenance: ShareabilityProvenance::TypeDefault,
+    };
+    assert!(
+        forged
+            .validate_for(ShareabilityTier::ProjectKnowledge)
+            .is_err(),
+        "withholding tier-B knowledge is a human decision, not a default"
+    );
+
+    // An override with the default rule's identity, and its mirror image.
+    let unattributed = Shareability {
+        class: ShareabilityClass::KontorLocal,
+        classifier: ShareabilityClassifier::TypeDefaultRule,
+        provenance: ShareabilityProvenance::HumanOverride,
+    };
+    assert!(
+        unattributed
+            .validate_for(ShareabilityTier::ProjectKnowledge)
+            .is_err()
+    );
+    let unclaimed = Shareability {
+        class: ShareabilityClass::ProjectShared,
+        classifier: ShareabilityClassifier::Human(human),
+        provenance: ShareabilityProvenance::TypeDefault,
+    };
+    assert!(
+        unclaimed
+            .validate_for(ShareabilityTier::ProjectKnowledge)
+            .is_err()
+    );
+}
+
+#[test]
+fn classification_spellings_are_stable_and_closed() {
+    assert_eq!(ShareabilityClass::ProjectShared.as_str(), "project_shared");
+    assert_eq!(ShareabilityClass::KontorLocal.as_str(), "kontor_local");
+    assert_eq!(ShareabilityProvenance::TypeDefault.as_str(), "type_default");
+    assert_eq!(
+        ShareabilityProvenance::HumanOverride.as_str(),
+        "human_override"
+    );
+    assert!(ShareabilityClass::parse("public").is_err());
+    assert!(ShareabilityProvenance::parse("guessed").is_err());
+    for class in ShareabilityClass::ALL {
+        assert_eq!(
+            ShareabilityClass::parse(class.as_str()).expect("a known value"),
+            *class
+        );
+    }
 }

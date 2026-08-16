@@ -545,6 +545,9 @@ exported_tables! {
         definition: String,
         definition_hash: String,
         published_at: String,
+        shareability_class: String,
+        shareability_classifier: Option<String>,
+        shareability_provenance: String,
     }
     project_topology_defaults: ProjectTopologyDefaultsRow from "project_topology_defaults" key(project_id) {
         project_id: String,
@@ -568,6 +571,9 @@ exported_tables! {
         definition: String,
         definition_hash: String,
         published_at: String,
+        shareability_class: String,
+        shareability_classifier: Option<String>,
+        shareability_provenance: String,
     }
     topology_nodes: TopologyNodesRow from "topology_nodes" key(id) {
         id: String,
