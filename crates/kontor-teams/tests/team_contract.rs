@@ -37,7 +37,7 @@ use kontor_runtime::capability::{
     RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade,
 };
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep, ScriptedFakeRuntime};
-use kontor_runtime::request::{CancelRequest, LaunchParts};
+use kontor_runtime::request::{CancelRequest, LaunchParts, LaunchPlacement};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -173,7 +173,7 @@ impl Runtime {
             role_slot_id: slot.clone(),
             task_id: self.task_id,
             binding_id: RuntimeBindingId::generate(),
-            workspace: Some(self.workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(self.workspace.clone())),
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),
@@ -210,7 +210,7 @@ impl Runtime {
         SlotLaunch {
             task_id: self.task_id,
             binding_id: RuntimeBindingId::generate(),
-            workspace: Some(self.workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(self.workspace.clone())),
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),

@@ -488,6 +488,47 @@ impl ContainerBindingSnapshot {
     }
 }
 
+/// What a launch claims about the node-keyed container it will work in.
+///
+/// The exact parallel of [`crate::workspace::WorkspaceClaim`], with the one
+/// difference that matters: nothing here is keyed by a TeamRun. The claim is
+/// answered entirely from the snapshot's own parts, because the snapshot names
+/// the node it belongs to — there is no outside pair to compare it against, and
+/// inventing one would only re-introduce the tracker as an identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerClaim<'a> {
+    /// The verified container binding, when the caller has one.
+    pub binding: Option<&'a ContainerBindingSnapshot>,
+    /// Where the role says it will work.
+    pub cwd: &'a WorkspaceRoot,
+}
+
+impl ContainerClaim<'_> {
+    /// Verify the claim before anything can be edited.
+    ///
+    /// # Errors
+    /// * [`RuntimeError::WorkspaceBindingRequired`] — no binding at all.
+    /// * [`RuntimeError::CorrelationFailed`] — a binding whose correlation does
+    ///   not belong to it.
+    /// * [`RuntimeError::WorkspaceMismatch`] — a working directory that is not
+    ///   the bound container root.
+    /// * [`RuntimeError::StaleBinding`] — the runtime restarted since it was
+    ///   prepared.
+    pub fn verify(&self, current_generation: Option<u64>) -> RuntimeResult<()> {
+        let Some(snapshot) = self.binding else {
+            return Err(RuntimeError::WorkspaceBindingRequired);
+        };
+        // Before the binding is read as evidence for anything, it has to be
+        // evidence at all.
+        snapshot.ensure_correlated()?;
+        snapshot.ensure_root(self.cwd)?;
+        if let Some(generation) = current_generation {
+            snapshot.ensure_generation(generation)?;
+        }
+        Ok(())
+    }
+}
+
 /// What preparing a container produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerOutcome {

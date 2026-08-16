@@ -64,8 +64,8 @@ pub use observation::{
 };
 pub use request::{
     AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchParts,
-    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
-    ResumeRequest, SendMessageRequest,
+    LaunchPlacement, LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision,
+    PermissionResponseRequest, PlacementClaim, ResumeRequest, SendMessageRequest,
 };
 pub use timeline::{
     HistoryCursor, HistoryPage, HistoryReader, LiveSubscription, SessionEvent, SessionEventKind,

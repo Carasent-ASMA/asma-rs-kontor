@@ -41,7 +41,7 @@ use kontor_runtime::capability::{
     RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade,
 };
 use kontor_runtime::fake::{RuntimeScript, ScriptedFakeRuntime};
-use kontor_runtime::request::LaunchParts;
+use kontor_runtime::request::{LaunchParts, LaunchPlacement};
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_scheduler::model::CapacityConfig;
 use tempfile::TempDir;
@@ -338,7 +338,7 @@ impl World {
             role_slot_id: role_slot_id.clone(),
             task_id: self.task,
             binding_id,
-            workspace: Some(workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(workspace.clone())),
             cwd: workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse("do the loopback work").expect("bounded text"),

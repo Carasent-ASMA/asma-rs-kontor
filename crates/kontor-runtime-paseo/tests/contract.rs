@@ -46,9 +46,9 @@ use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
 use kontor_runtime::observation::{ReconciliationAction, ReconciliationFinding};
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchParts, LaunchRequest,
-    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
-    SendMessageRequest,
+    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchParts, LaunchPlacement,
+    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
+    ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::timeline::{HistoryCursor, TimelineBreak, TimelinePosition};
 use kontor_runtime::workspace::{
@@ -447,7 +447,7 @@ impl Plane {
             role_slot_id: slot_id.clone(),
             task_id: task(),
             binding_id,
-            workspace: Some(workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(workspace.clone())),
             cwd: root(),
             account_profile_id: None,
             prompt: text("bootstrap the role"),
@@ -1213,7 +1213,7 @@ async fn role_slot_a_same_slot_race_yields_one_permit_and_one_agent() {
             role_slot_id: slot("implement-a"),
             task_id: task(),
             binding_id: RuntimeBindingId::generate(),
-            workspace: Some(workspace),
+            placement: Some(LaunchPlacement::Workspace(workspace)),
             cwd: root(),
             account_profile_id: None,
             prompt: text("bootstrap"),

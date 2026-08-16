@@ -66,7 +66,7 @@ use kontor_runtime::capability::{
 use kontor_runtime::fake::{
     AdapterCall, RequestKey, RuntimeScript, ScriptStep, ScriptedFakeRuntime,
 };
-use kontor_runtime::request::{LaunchParts, MessageId};
+use kontor_runtime::request::{LaunchParts, LaunchPlacement, MessageId};
 use kontor_runtime::timeline::{EventSubject, HistoryCursor, SessionEventKind, TimelinePosition};
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_tests_e2e::{Bundle, digest, scan_for_canaries};
@@ -1653,7 +1653,7 @@ impl Realm {
             role_slot_id: role_slot_id.clone(),
             task_id: self.task,
             binding_id,
-            workspace: Some(workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(workspace.clone())),
             cwd: workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse(PROMPT_CANARY).expect("bounded text"),

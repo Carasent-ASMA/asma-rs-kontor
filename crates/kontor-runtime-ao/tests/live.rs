@@ -142,7 +142,7 @@ async fn live_admitted_launch(ao: &AoAdapter, config: &LiveEnv) -> LaunchRequest
             .expect("a run id is a legal open key"),
         task_id: TaskId::generate(),
         binding_id: RuntimeBindingId::generate(),
-        workspace: None,
+        placement: None,
         cwd: config.project_path.clone(),
         account_profile_id: None,
         prompt: BoundedText::parse(&format!(

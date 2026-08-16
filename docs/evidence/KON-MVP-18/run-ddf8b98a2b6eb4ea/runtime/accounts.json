@@ -1,0 +1,47 @@
+{
+  "approved_environment": [
+    "CODEX_HOME"
+  ],
+  "both_seats_live_at_once": true,
+  "canary_scan_control": "PILOT-SCAN-CONTROL-MARKER",
+  "control_runtime_without_account_environment": "runtime cannot prove a per-run account environment",
+  "harness": "fake.runtime",
+  "resolution": {
+    "first": {
+      "profile_id": "0192f0c0-0000-7000-8000-000000000080",
+      "revision": 1,
+      "variables": [
+        "CODEX_HOME"
+      ]
+    },
+    "homes_are_distinct_and_not_crossed": true,
+    "second": {
+      "profile_id": "0192f0c0-0000-7000-8000-000000000081",
+      "revision": 1,
+      "variables": [
+        "CODEX_HOME"
+      ]
+    }
+  },
+  "rule": "a profile stores a closed reference kind and an opaque alias; only an in-memory operator policy maps an alias to a real place, and the resolved value's single exit is a child process environment block",
+  "seats": [
+    {
+      "account_profile_id": "0192f0c0-0000-7000-8000-000000000080",
+      "agent_run_id": "0192f0c0-0000-7000-8000-000000000085",
+      "binding_id": "0192f0c0-0000-7000-8000-000000000087",
+      "label": "pilot-account-a",
+      "native_id": "native-session-2",
+      "reference_alias": "pilot-account-a",
+      "reference_kind": "config_home"
+    },
+    {
+      "account_profile_id": "0192f0c0-0000-7000-8000-000000000081",
+      "agent_run_id": "0192f0c0-0000-7000-8000-000000000086",
+      "binding_id": "0192f0c0-0000-7000-8000-000000000089",
+      "label": "pilot-account-b",
+      "native_id": "native-session-3",
+      "reference_alias": "pilot-account-b",
+      "reference_kind": "config_home"
+    }
+  ]
+}

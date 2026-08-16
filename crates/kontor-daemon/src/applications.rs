@@ -90,7 +90,7 @@ use kontor_profiles::pack::{
 use kontor_runtime::adapter::RuntimeError;
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
-use kontor_runtime::request::LaunchParts;
+use kontor_runtime::request::{LaunchParts, LaunchPlacement};
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
@@ -4783,7 +4783,7 @@ impl ApplicationOperations for Services {
         let launch = SlotLaunch {
             task_id,
             binding_id,
-            workspace: Some(workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(workspace.clone())),
             cwd: workspace.root().clone(),
             account_profile_id: predecessor.account_profile_id,
             prompt: slot_prompt(&role_slot, &eligible_roots(slots.template()))
@@ -6113,7 +6113,7 @@ impl Services {
                     role_slot_id: slot.clone(),
                     task_id: admitted.task_id,
                     binding_id,
-                    workspace: Some(workspace.clone()),
+                    placement: Some(LaunchPlacement::Workspace(workspace.clone())),
                     cwd: workspace.root().clone(),
                     account_profile_id: admitted.account_profile_id,
                     prompt:
@@ -6406,7 +6406,7 @@ impl Services {
                 role_slot_id: slot.clone(),
                 task_id: admitted.task_id,
                 binding_id,
-                workspace: Some(workspace.clone()),
+                placement: Some(LaunchPlacement::Workspace(workspace.clone())),
                 cwd: workspace.root().clone(),
                 account_profile_id: admitted.account_profile_id,
                 prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,

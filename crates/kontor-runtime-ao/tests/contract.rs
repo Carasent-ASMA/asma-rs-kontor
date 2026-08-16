@@ -39,9 +39,9 @@ use kontor_runtime::observation::{
     CorrelationEvidence, ObservationSource, ReconciliationAction, ReconciliationFinding,
 };
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchParts, LaunchRequest,
-    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
-    SendMessageRequest,
+    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchParts, LaunchPlacement,
+    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
+    ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::timeline::{TimelineBreak, TimelinePosition};
 use kontor_runtime::workspace::{
@@ -310,7 +310,7 @@ fn launch_parts(agent_run_id: AgentRunId) -> LaunchParts {
         role_slot_id: slot_of(agent_run_id),
         task_id: TaskId::generate(),
         binding_id: RuntimeBindingId::generate(),
-        workspace: None,
+        placement: None,
         cwd: WorkspaceRoot::parse(PROJECT_PATH).expect("absolute project path"),
         account_profile_id: None,
         prompt: text("do the work"),
@@ -680,7 +680,7 @@ async fn a_launch_presenting_a_kontor_workspace_binding_is_refused_before_dispat
         generation: 1,
         native_id: ExternalId::parse("wks_invented").expect("valid id"),
     };
-    parts.workspace = Some(WorkspaceBindingSnapshot {
+    parts.placement = Some(LaunchPlacement::Workspace(WorkspaceBindingSnapshot {
         binding: WorkspaceBinding {
             id: WorkspaceBindingId::generate(),
             team_run_id,
@@ -695,7 +695,7 @@ async fn a_launch_presenting_a_kontor_workspace_binding_is_refused_before_dispat
             native: identity,
             established_at: at("2026-08-10T08:59:00Z"),
         },
-    });
+    }));
     parts.cwd = root;
     let request = admitted(&ao, parts).await;
 

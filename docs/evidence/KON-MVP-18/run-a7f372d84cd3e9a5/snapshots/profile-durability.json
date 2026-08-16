@@ -1,0 +1,108 @@
+{
+  "after_restart": {
+    "artifact_evidence": [
+      "design-decisions",
+      "design-review-notes",
+      "interaction-states"
+    ],
+    "authority_evidence": [
+      "degraded_verdict_denied pass verdict_authority_held a8ffec0ca20c0b0e47e02ed910f19cfc088f9ca326d17cbe7068eac26b61c907"
+    ],
+    "current_phase": "design-review",
+    "definition_hash": "0d5738312e904ffe371fa327876805c25485df9b07e1eb6246a54abda8deae1d",
+    "gate_evaluations": [
+      {
+        "evaluator_role": "inspector",
+        "evidence": [
+          "design-decisions",
+          "interaction-states",
+          "design-review-notes"
+        ],
+        "gate": "design-review-gate",
+        "policy_evaluation_id": "0192f0c0-0000-7000-8000-0000000000de",
+        "resulting_state": "active",
+        "reviewer_principal": "pilot-reviewer-alpha",
+        "sequence": 1,
+        "verdict": "started"
+      },
+      {
+        "evaluator_role": "inspector",
+        "evidence": [
+          "design-decisions",
+          "interaction-states",
+          "design-review-notes"
+        ],
+        "gate": "design-review-gate",
+        "policy_evaluation_id": "0192f0c0-0000-7000-8000-0000000000de",
+        "resulting_state": "passed",
+        "reviewer_principal": "pilot-reviewer-alpha",
+        "sequence": 2,
+        "verdict": "passed"
+      }
+    ],
+    "gate_states": [
+      {
+        "gate": "design-review-gate",
+        "state": "passed"
+      }
+    ],
+    "profile": "ux-ui-layout",
+    "profile_version": 1,
+    "revision": 2,
+    "snapshot_reverifies": true
+  },
+  "before_restart": {
+    "artifact_evidence": [
+      "design-decisions",
+      "design-review-notes",
+      "interaction-states"
+    ],
+    "authority_evidence": [
+      "degraded_verdict_denied pass verdict_authority_held a8ffec0ca20c0b0e47e02ed910f19cfc088f9ca326d17cbe7068eac26b61c907"
+    ],
+    "current_phase": "design-review",
+    "definition_hash": "0d5738312e904ffe371fa327876805c25485df9b07e1eb6246a54abda8deae1d",
+    "gate_evaluations": [
+      {
+        "evaluator_role": "inspector",
+        "evidence": [
+          "design-decisions",
+          "interaction-states",
+          "design-review-notes"
+        ],
+        "gate": "design-review-gate",
+        "policy_evaluation_id": "0192f0c0-0000-7000-8000-0000000000de",
+        "resulting_state": "active",
+        "reviewer_principal": "pilot-reviewer-alpha",
+        "sequence": 1,
+        "verdict": "started"
+      },
+      {
+        "evaluator_role": "inspector",
+        "evidence": [
+          "design-decisions",
+          "interaction-states",
+          "design-review-notes"
+        ],
+        "gate": "design-review-gate",
+        "policy_evaluation_id": "0192f0c0-0000-7000-8000-0000000000de",
+        "resulting_state": "passed",
+        "reviewer_principal": "pilot-reviewer-alpha",
+        "sequence": 2,
+        "verdict": "passed"
+      }
+    ],
+    "gate_states": [
+      {
+        "gate": "design-review-gate",
+        "state": "passed"
+      }
+    ],
+    "profile": "ux-ui-layout",
+    "profile_version": 1,
+    "revision": 2,
+    "snapshot_reverifies": true
+  },
+  "database": "file-backed SQLite, closed and reopened from the same path",
+  "identical": true
+}

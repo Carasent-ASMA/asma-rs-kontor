@@ -73,9 +73,9 @@ use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::admission::{AdmissionRequest, LaunchAuthority, ReplacedBinding, RoleSlotKey};
 use kontor_runtime::capability::RuntimeBindingSnapshot;
 use kontor_runtime::request::{
-    LaunchParts, LaunchRequest, MessageId, ResumeRequest, SendMessageRequest,
+    LaunchParts, LaunchPlacement, LaunchRequest, MessageId, ResumeRequest, SendMessageRequest,
 };
-use kontor_runtime::workspace::{WorkspaceBindingSnapshot, WorkspaceRoot};
+use kontor_runtime::workspace::WorkspaceRoot;
 use serde::Serialize;
 
 use crate::spec::{RoleSlotId, TeamTemplateSpec};
@@ -363,7 +363,7 @@ impl LaunchPermit {
             role_slot_id: self.slot.clone(),
             task_id: launch.task_id,
             binding_id: launch.binding_id,
-            workspace: launch.workspace,
+            placement: launch.placement,
             cwd: launch.cwd,
             account_profile_id: launch.account_profile_id,
             prompt: launch.prompt,
@@ -442,8 +442,8 @@ pub struct SlotLaunch {
     pub task_id: TaskId,
     /// The binding id Kontor has minted for the session to come.
     pub binding_id: RuntimeBindingId,
-    /// The verified task workspace every role of this team run shares.
-    pub workspace: Option<WorkspaceBindingSnapshot>,
+    /// The verified place every role of this team run works in.
+    pub placement: Option<LaunchPlacement>,
     /// Where this role says it will work.
     pub cwd: WorkspaceRoot,
     /// The coding account this attempt is pinned to, if any.

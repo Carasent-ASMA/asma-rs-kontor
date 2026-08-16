@@ -84,8 +84,8 @@ use kontor_runtime::timeline::{
     PermissionLedger, SessionEvent, TimelineBreak, TimelinePosition,
 };
 use kontor_runtime::workspace::{
-    WorkspaceBinding, WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspaceCorrelationEvidence,
-    WorkspaceLabel, WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot,
+    WorkspaceBinding, WorkspaceBindingSnapshot, WorkspaceCorrelationEvidence, WorkspaceLabel,
+    WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot,
 };
 
 use crate::client::{
@@ -468,6 +468,17 @@ pub enum PaseoCompaction {
     Pending,
 }
 
+/// The native place a launch resolved to, and the Kontor binding that made it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LaunchPlace {
+    /// The native workspace the seat is placed in.
+    workspace_id: String,
+    /// The directory that workspace must be rooted at.
+    root: WorkspaceRoot,
+    /// The Kontor binding this place was made under, in canonical text.
+    binding: String,
+}
+
 /// The whole correlation chain one seat is persisted under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaseoSeatRecord {
@@ -487,8 +498,13 @@ pub struct PaseoSeatRecord {
     pub agent_run_id: AgentRunId,
     /// The Kontor session binding.
     pub binding_id: RuntimeBindingId,
-    /// The Kontor workspace binding.
-    pub workspace_binding_id: WorkspaceBindingId,
+    /// The Kontor binding this seat's place was made under, in canonical text.
+    ///
+    /// Text rather than one of the two binding id types, because a seat may be
+    /// placed in a TeamRun-keyed workspace or in a topology-node-keyed
+    /// container and this record is evidence about *which place*, not about
+    /// which keying produced it.
+    pub placement_binding_id: String,
     /// The canonical task worktree.
     pub canonical_worktree_cwd: WorkspaceRoot,
     /// The non-secret host key.
@@ -1314,6 +1330,72 @@ impl PaseoAdapter {
             });
         }
         Ok(())
+    }
+
+    /// The native workspace a launch will be placed in, and the directory it
+    /// must be rooted at.
+    ///
+    /// A node-keyed container is resolved by the node it names, so a second
+    /// delivery attempt at the same ticket lands in the same place and the
+    /// TeamRun never participates in finding it. The workspace-keyed branch
+    /// below it is the pre-topology path, kept for callers that have no
+    /// topology to place against.
+    ///
+    /// The expected root is read off the binding rather than recomputed from the
+    /// configured task scope: the container was created at a directory this
+    /// adapter read back, and re-deriving it here would compare the scope
+    /// against itself.
+    fn launch_placement(&self, request: &LaunchRequest) -> RuntimeResult<LaunchPlace> {
+        if let Some(presented) = request.container() {
+            let prepared = self
+                .lock()
+                .containers
+                .get(&presented.topology_node_id())
+                .cloned()
+                .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+            if &prepared != presented {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "this is not the container this runtime prepared for that node",
+                });
+            }
+            let root = prepared
+                .binding
+                .root
+                .clone()
+                .ok_or(RuntimeError::WorkspaceMismatch {
+                    rule: "the bound container has no working directory to launch a seat in",
+                })?;
+            return Ok(LaunchPlace {
+                workspace_id: prepared.binding.identity.native_id.as_str().to_owned(),
+                root,
+                binding: prepared.binding_id().to_string(),
+            });
+        }
+
+        let presented = request
+            .workspace()
+            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+        let prepared = self
+            .lock()
+            .workspaces
+            .get(&request.team_run_id())
+            .cloned()
+            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+        if &prepared != presented {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "this is not the task workspace this runtime prepared",
+            });
+        }
+        Ok(LaunchPlace {
+            workspace_id: prepared.binding.identity.native_id.as_str().to_owned(),
+            root: self
+                .config
+                .scope
+                .task_scope(request.task_id())?
+                .canonical_worktree_cwd
+                .clone(),
+            binding: prepared.binding_id().to_string(),
+        })
     }
 
     /// The full label set one seat's agent must carry, exactly.
@@ -2530,7 +2612,7 @@ impl PaseoAdapter {
                 // working directory that is not the bound root — before the
                 // session exists, because a wrong-tree edit is not recoverable
                 // by noticing it afterwards.
-                workspace: Some(request.workspace_claim()),
+                placement: Some(request.placement_claim()),
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::ConcurrentSessions(
                     u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
@@ -2540,33 +2622,20 @@ impl PaseoAdapter {
         )?;
 
         let project = self.require_project()?;
-        let workspace_snapshot = request
-            .workspace()
-            .cloned()
-            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
-        // The presented workspace binding must be the one *this* adapter
-        // prepared, not merely a self-consistent value naming the right team
-        // run. Preflight compares a snapshot against itself and is satisfied by
-        // any coherent forgery.
-        let prepared = self
-            .lock()
-            .workspaces
-            .get(&request.team_run_id())
-            .cloned()
-            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
-        if prepared != workspace_snapshot {
-            return Err(RuntimeError::WorkspaceMismatch {
-                rule: "this is not the task workspace this runtime prepared",
-            });
-        }
-        let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
+        // Whichever way the place was keyed, the presented binding must be the
+        // one *this* adapter prepared, not merely a self-consistent value naming
+        // the right thing. Preflight compares a snapshot against itself and is
+        // satisfied by any coherent forgery; only the adapter's own ledger
+        // distinguishes a binding it made from one that merely looks like it.
+        let place = self.launch_placement(request)?;
+        let workspace_id = place.workspace_id.clone();
         let task_scope = self.config.scope.task_scope(request.task_id())?;
 
         // Rerun the placement checks against a *fresh* readback. A binding made
         // ten minutes ago is evidence about ten minutes ago, and the whole point
         // of this gate is that nothing has moved since.
         let workspace = self.fetch_workspace(&workspace_id).await?;
-        self.verify_workspace_placement(&workspace, &project, &task_scope.canonical_worktree_cwd)?;
+        self.verify_workspace_placement(&workspace, &project, &place.root)?;
 
         let labels = self.seat_labels(
             request.agent_run_id(),
@@ -2663,7 +2732,7 @@ impl PaseoAdapter {
             role_slot_id: request.role_slot_id().clone(),
             agent_run_id: request.agent_run_id(),
             binding_id: request.binding_id(),
-            workspace_binding_id: prepared.binding_id(),
+            placement_binding_id: place.binding.clone(),
             canonical_worktree_cwd: task_scope.canonical_worktree_cwd.clone(),
             host_key: self.config.host_key.clone(),
             project_id: project.project_id.clone(),
@@ -3143,7 +3212,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -3212,7 +3281,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::MessageBytes(request.body_bytes())),
                 context_policy: None,
@@ -3325,7 +3394,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -3368,7 +3437,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -3528,7 +3597,7 @@ impl RuntimeAdapter for PaseoAdapter {
             role_slot_id: intent.role_slot_id.clone(),
             agent_run_id: request.agent_run_id,
             binding_id: request.binding_id,
-            workspace_binding_id: prepared.binding_id(),
+            placement_binding_id: prepared.binding_id().to_string(),
             canonical_worktree_cwd: task_scope.canonical_worktree_cwd.clone(),
             host_key: self.config.host_key.clone(),
             project_id: project.project_id.clone(),
@@ -3575,7 +3644,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: None,
-                workspace: None,
+                placement: None,
                 current_generation: None,
                 demand: None,
                 context_policy: None,
@@ -3652,7 +3721,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::HistoryPage(request.page_size)),
                 context_policy: None,
@@ -3723,7 +3792,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -3843,7 +3912,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -3950,7 +4019,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(self.generation()),
                 demand: None,
                 context_policy: None,

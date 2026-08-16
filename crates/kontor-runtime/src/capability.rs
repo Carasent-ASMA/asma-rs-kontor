@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::adapter::{RuntimeError, RuntimeResult};
 use crate::observation::CorrelationEvidence;
-use crate::workspace::WorkspaceClaim;
+use crate::request::PlacementClaim;
 
 /// One operation a runtime may or may not be able to perform.
 ///
@@ -517,10 +517,9 @@ pub struct OperationContext<'a> {
     pub account_pinned: bool,
     /// The binding the operation addresses, for everything but launch.
     pub binding: Option<&'a RuntimeBindingSnapshot>,
-    /// What the operation claims about the task workspace it will work in.
-    /// Present for launch, absent for operations that address an already-bound
-    /// session.
-    pub workspace: Option<WorkspaceClaim<'a>>,
+    /// What the operation claims about the place it will work in. Present for
+    /// launch, absent for operations that address an already-bound session.
+    pub placement: Option<PlacementClaim<'a>>,
     /// The runtime's current generation, when it is known.
     pub current_generation: Option<u64>,
     /// The bound this request consumes, if any.
@@ -540,7 +539,7 @@ impl<'a> OperationContext<'a> {
             autonomous: true,
             account_pinned: false,
             binding: None,
-            workspace: None,
+            placement: None,
             current_generation: None,
             demand: None,
             context_policy: None,
@@ -624,11 +623,14 @@ pub fn preflight(
         });
     }
 
-    // A runtime that prepares task workspaces only ever works inside one. This
-    // runs before any effect precisely because a wrong-tree edit cannot be
-    // taken back once it has happened.
-    if let Some(claim) = context.workspace
-        && capabilities.supports(RuntimeCapability::PrepareWorkspace)
+    // A runtime that prepares places only ever works inside one. This runs
+    // before any effect precisely because a wrong-tree edit cannot be taken back
+    // once it has happened. Either capability is enough to make the claim
+    // binding: a runtime that can build the place is a runtime that must be
+    // shown the one it built.
+    if let Some(claim) = context.placement
+        && (capabilities.supports(RuntimeCapability::PrepareWorkspace)
+            || capabilities.supports(RuntimeCapability::PrepareProject))
     {
         claim.verify(context.current_generation)?;
     }
