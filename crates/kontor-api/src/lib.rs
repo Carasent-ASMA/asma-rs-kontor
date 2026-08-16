@@ -327,6 +327,10 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
             post(applications::settle_runtime),
         )
+        .route(
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
+            post(applications::abandon_run),
+        )
         // A *turn* is smaller than a run: settling one closes Kontor's bounded
         // piece of work and leaves the seat's native session live.
         .route(

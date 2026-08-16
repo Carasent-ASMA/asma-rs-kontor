@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        63,
+        64,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        65,
+        66,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -503,6 +503,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_context_resolve", CallerTier::Operator),
         ("kontor_gate_record", CallerTier::Operator),
         ("kontor_runtime_settle", CallerTier::Operator),
+        // Abandoning an unbound run drives the same seat-shaped aggregate that
+        // settlement does, so it sits at the same tier — no wider, because the
+        // daemon refuses it outright once the seat holds a session.
+        ("kontor_runtime_abandon", CallerTier::Operator),
         ("kontor_ticket_reconcile_plan", CallerTier::Operator),
         ("kontor_ticket_reconcile_apply", CallerTier::Operator),
         ("kontor_session_message_send", CallerTier::Operator),

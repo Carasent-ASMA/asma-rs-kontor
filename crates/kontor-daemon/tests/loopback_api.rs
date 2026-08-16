@@ -6565,6 +6565,267 @@ async fn a_workspace_refusal_is_reported_as_a_placement_fact() {
     );
 }
 
+/// A launch that was refused leaves a run nothing can settle, and abandoning it
+/// is what lets the task be scheduled again.
+///
+/// The incident this exists for: admission commits the run *before* the runtime
+/// is asked for a session, so a refused launch leaves a queued, unbound run
+/// behind. That run is non-terminal, a non-terminal run keeps its task in
+/// flight, and every other exit demands evidence from a runtime that never
+/// answered — `runtime:settle` has no binding to inspect, `turns:settle` has no
+/// bound slot. Without this operation the task is unschedulable forever and the
+/// only way out is editing the database.
+#[tokio::test]
+async fn a_run_no_runtime_ever_took_is_abandoned_so_its_task_can_be_scheduled_again() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    // The runtime serves exactly one tree, and the task declares another — the
+    // same shape as a worktree that does not exist yet.
+    world.fake.verifying_placement_at(
+        kontor_runtime::workspace::WorkspaceRoot::parse("/w/the-only-tree").expect("a valid root"),
+    );
+
+    let created = ensure_project(&world, "phantom", "Kontor", "/tmp/kontor-phantom").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("phantom-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Phantom epic",
+            &category,
+            serde_json::json!([{"title": "Refused task", "worktree": "/w/not-yet-created"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("phantom-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Start before the tree exists"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("phantom-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("phantom-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert!(
+        started.json()["started"]
+            .as_array()
+            .expect("seats")
+            .is_empty(),
+        "the launch was refused: {}",
+        started.body
+    );
+
+    // The wreckage: a committed, unbound, non-terminal run.
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let (run_id, run_revision) = world.daemon.state().with_store(|store| {
+        let runs = store
+            .list_team_runs_for_task(project_id, task_id)
+            .expect("the team runs read");
+        let (team_run_id, _) = runs
+            .first()
+            .expect("the refused start committed a team run");
+        let seats = store
+            .list_agent_runs_for_team_run(project_id, *team_run_id)
+            .expect("the team members read");
+        let seat = seats.first().expect("the refused start committed a run");
+        let run = store
+            .get_agent_run(project_id, seat.agent_run_id)
+            .expect("the run reads")
+            .expect("the run exists");
+        assert!(run.binding.is_none(), "the run was never bound");
+        assert!(run.terminal.is_none(), "the run is not terminal");
+        (run.id, run.revision)
+    });
+
+    // And the consequence: the task is in flight, so nothing can be planned for
+    // it even though nothing is running.
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(kontor_store::SqliteStore::tasks_with_open_runs)
+            .expect("the in-flight set reads")
+            .contains(&task_id),
+        "an unbound queued run keeps its task in flight"
+    );
+
+    // Neither settlement path can reach it: one has no binding to inspect, the
+    // other has no bound slot to settle.
+    let settle = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{run_id}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("phantom-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settle.status, 404, "{}", settle.body);
+
+    // Abandon is refused against the wrong revision, like every other decision
+    // made about a specific version of a specific thing.
+    let stale = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{run_id}/runtime:abandon"),
+        &serde_json::json!({"expected_revision": run_revision.get() + 1, "reason": "stale"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("phantom-abandon-stale")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+
+    let abandoned = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{run_id}/runtime:abandon"),
+        &serde_json::json!({
+            "expected_revision": run_revision.get(),
+            "reason": "The launch was refused and no session was ever created"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("phantom-abandon")
+    .send(&world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(abandoned.json()["outcome"], "abandoned");
+    assert_eq!(abandoned.json()["applied"], "created");
+    assert!(
+        abandoned.json()["team_run_closed"].is_string(),
+        "the team run closes with its only run, or the task stays in flight: {}",
+        abandoned.body
+    );
+
+    // Idempotent: the same key returns the stored closure and closes nothing
+    // twice.
+    let replay = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{run_id}/runtime:abandon"),
+        &serde_json::json!({
+            "expected_revision": run_revision.get(),
+            "reason": "The launch was refused and no session was ever created"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("phantom-abandon")
+    .send(&world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+
+    // The point of the whole operation: the task is schedulable again.
+    assert!(
+        !world
+            .daemon
+            .state()
+            .with_store(kontor_store::SqliteStore::tasks_with_open_runs)
+            .expect("the in-flight set reads")
+            .contains(&task_id),
+        "an abandoned run releases its task"
+    );
+}
+
+/// A bound run is never abandoned: it holds a session, and closing Kontor's row
+/// would leave an agent running that nothing is steering.
+#[tokio::test]
+async fn a_run_that_holds_a_session_is_settled_rather_than_abandoned() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, _epic, _account, seats) = seated_turns(&world, "bound-abandon").await;
+    let seat = seats.as_array().expect("the seated roster")[0].clone();
+    let run_id = seat["agent_run_id"].as_str().expect("a run id").to_owned();
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let run_revision = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, AgentRunId::parse(&run_id).expect("a run id"))
+            .expect("the run reads")
+            .expect("the run exists")
+            .revision
+    });
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{run_id}/runtime:abandon"),
+        &serde_json::json!({
+            "expected_revision": run_revision.get(),
+            "reason": "try to abandon a live seat"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("bound-abandon-attempt")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    assert!(
+        refused.body.contains("settled against its runtime"),
+        "the refusal points at the supported path: {}",
+        refused.body
+    );
+}
+
 /// FND-002. `bundle_hash` disagreed between a fresh apply and the *same key*
 /// served from the receipt: the two paths built the answer by different routes
 /// and each digested its own shape. They now share one digest by construction.

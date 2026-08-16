@@ -37,14 +37,14 @@ use kontor_core::repository::{
     AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, CalendarRepository,
     CommandRepository, ConnectorSpecSelector, CredentialReference, CredentialReferenceKind,
     GateEvaluation, HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord,
-    IntakeOutcome, IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAccountProfile,
-    NewAdaptiveAdmissionState, NewAgentRun, NewCommandIntent, NewGateEvaluation, NewIntakeDecision,
-    NewIntakeDecisionRecord, NewIntakeReevaluation, NewMiniProject, NewNativeContainerBinding,
-    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, RealmEventPage,
-    RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
-    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
+    IntakeOutcome, IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
+    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewCommandIntent, NewGateEvaluation,
+    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewMiniProject,
+    NewNativeContainerBinding, NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding,
+    NewSessionTopologyNode, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow,
+    NewTeamRun, NewTicketLink, PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault,
+    RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError,
+    RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
     SeatLivenessObservation, SourceEventIngest, SpecRepository, Task, TaskInspection,
     TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
     TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
@@ -4059,6 +4059,96 @@ impl RunRepository for SqliteStore {
 
     fn record_observation(&self, request: &NewObservation) -> RepositoryResult<RunProjection> {
         crate::events::append::record_observation(self, request)
+    }
+
+    fn record_abandon_receipt(
+        &self,
+        request: &NewAbandonReceipt,
+    ) -> RepositoryResult<CommandReceiptId> {
+        let transaction = self.begin()?;
+        // A repeat of the same decision cites the first receipt. The comparison
+        // is on what the receipt is *for*, so a key reused for a different run or
+        // a different document is refused rather than silently answered with an
+        // unrelated authorization.
+        let existing: Option<(String, String, String, String)> = transaction
+            .query_row(
+                "SELECT id, kind, target, intent_hash FROM command_receipts
+                 WHERE idempotency_key = ?1",
+                params![request.idempotency_key.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let target = request.target;
+        if let Some((id, kind, stored_target, intent_hash)) = existing {
+            let stored_target: AggregateRef = from_json(&stored_target)?;
+            if kind != CommandKind::AbandonRun.as_str()
+                || stored_target != target
+                || intent_hash != request.intent.hash().as_str()
+            {
+                return Err(DomainError::invalid(
+                    "CommandReceipt",
+                    "an idempotency key may not be reused for a different command",
+                )
+                .into());
+            }
+            return CommandReceiptId::parse(&id).map_err(Into::into);
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                      intent_hash, state, attempts, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'intent_persisted', 0, ?9, ?9)",
+                params![
+                    request.receipt_id.to_string(),
+                    request.project_id.to_string(),
+                    request.idempotency_key.as_str(),
+                    CommandKind::AbandonRun.as_str(),
+                    to_json(&target)?,
+                    revision_column(request.target_revision)?,
+                    request.intent.json(),
+                    request.intent.hash().as_str(),
+                    text(request.recorded_at)
+                ],
+            )
+            .map_err(backend)?;
+        let (kind, columns) = target_columns(&target);
+        transaction
+            .execute(
+                "INSERT INTO command_targets
+                     (project_id, receipt_id, target_kind, target_project_id,
+                      target_mini_project_id, target_task_id, target_team_run_id,
+                      target_agent_run_id, target_ticket_link_id, target_work_calendar_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    request.project_id.to_string(),
+                    request.receipt_id.to_string(),
+                    kind,
+                    columns[0],
+                    columns[1],
+                    columns[2],
+                    columns[3],
+                    columns[4],
+                    columns[5],
+                    columns[6]
+                ],
+            )
+            .map_err(backend)?;
+        crate::commands::receipts::append_transition(
+            &transaction,
+            request.project_id,
+            request.receipt_id,
+            1,
+            kontor_core::receipt::CommandReceiptState::IntentPersisted,
+            None,
+            None,
+            None,
+            request.recorded_at,
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(request.receipt_id)
     }
 
     fn close_agent_run(&self, request: &RunClosure) -> RepositoryResult<()> {

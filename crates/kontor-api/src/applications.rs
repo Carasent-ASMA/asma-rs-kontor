@@ -1116,6 +1116,49 @@ pub struct RuntimeSettlementDto {
     pub receipt_id: String,
 }
 
+/// What an operator says when abandoning a run no runtime ever took.
+///
+/// The revision is the operator's, not a convenience: an abandon decision is
+/// made against a specific revision of a specific run, and closing a revision
+/// nobody looked at would let a stale decision close work that has moved on.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct AbandonRunRequest {
+    /// The revision the caller read the run at.
+    pub expected_revision: u64,
+    /// Why the run is being abandoned. Recorded on the receipt.
+    pub reason: String,
+}
+
+/// What abandoning one unbound run produced.
+///
+/// There is no field on the way in for an outcome, and none on the way out that
+/// the caller chose. An operator may abandon a run; an operator may not declare
+/// it cancelled, failed or succeeded — those are claims about a runtime, and
+/// this operation exists precisely because no runtime ever answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AbandonedRunDto {
+    /// The Realm it happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The run that was abandoned.
+    pub agent_run_id: String,
+    /// How the run closed. Always `abandoned`.
+    pub outcome: String,
+    /// Whether this call closed the run, or found it already closed.
+    pub applied: AppliedDto,
+    /// The run's revision after the closure.
+    #[schema(value_type = u64)]
+    pub revision: kontor_core::id::AggregateRevision,
+    /// The team run, once every one of its runs is terminal and the team's
+    /// closure has been certified.
+    pub team_run_closed: Option<String>,
+    /// Why the team is not closed yet, when it is not. A static rule, never a
+    /// stored value.
+    pub team_pending: Option<String>,
+    /// The command receipt that authorizes the abandon.
+    pub receipt_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // Work-profile detail and validation
 // ---------------------------------------------------------------------------
@@ -1966,6 +2009,22 @@ pub trait ApplicationOperations: Send + Sync {
         agent_run_id: AgentRunId,
     ) -> Result<RuntimeSettlementDto, ApiError>;
 
+    /// Abandon one run that was admitted but never bound to a session.
+    ///
+    /// The recovery path for a launch that was refused. Admission commits the
+    /// run before the runtime is asked for a session, so a refused launch leaves
+    /// a non-terminal run behind with nothing to settle and nothing to cancel —
+    /// and a non-terminal run keeps its task in flight, so the task can never be
+    /// scheduled again. Every other exit demands evidence from a runtime that,
+    /// in this case, never answered.
+    async fn abandon_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &AbandonRunRequest,
+    ) -> Result<AbandonedRunDto, ApiError>;
+
     /// Register one profile pack, additively, alongside the compiled seeds.
     async fn register_pack(
         &self,
@@ -2494,6 +2553,49 @@ pub async fn settle_runtime(
         state
             .applications()
             .settle_runtime(&key, project_id, agent_run_id)
+            .await?,
+    ))
+}
+
+/// Abandon a run that was admitted but never bound, so its task can be
+/// scheduled again.
+///
+/// Refused for a run that *is* bound: that run has a native session, and closing
+/// Kontor's row without cancelling it would leave an agent running that nothing
+/// is steering. `runtime:settle` is the path for those.
+///
+/// Idempotent: a run that is already closed reports its stored closure.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The run to abandon"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = AbandonRunRequest,
+    responses(
+        (status = 200, body = AbandonedRunDto, description = "Abandoned, or already closed"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The run moved, or it holds a session that must be settled"),
+        (status = 422, description = "The run is bound, so it cannot be abandoned")
+    )
+)]
+pub async fn abandon_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AbandonRunRequest>,
+) -> Result<Json<AbandonedRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .abandon_run(&key, project_id, agent_run_id, &request)
             .await?,
     ))
 }

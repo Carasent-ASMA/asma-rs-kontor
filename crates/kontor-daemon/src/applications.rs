@@ -29,14 +29,14 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use kontor_api::applications::{
-    AccountProfileDto, ApplicationOperations, AppliedDto, AppliedEpicDto, AppliedLinkDto,
-    AppliedTaskDto, ApplyEpicRequest, ArmRequest, AuthorizationProjectionDto, BlockedTaskDto,
-    DisarmRequest, EnsureAccountProfileRequest, EnsureProjectRequest, EpicProjectionDto,
-    EpicTaskProjectionDto, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto,
-    ProjectDto, PublishedTeamRevisionDto, ReadyTaskDto, RevisionRefDto, RuntimeCapabilityDto,
-    SchedulerPlanDto, SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto,
-    TeamDraftDto, TeamDraftRequest, TeamRunProjectionDto, TeamTemplateCatalogDto,
-    TeamsProjectionDto, WorkProfileCatalogDto,
+    AbandonRunRequest, AbandonedRunDto, AccountProfileDto, ApplicationOperations, AppliedDto,
+    AppliedEpicDto, AppliedLinkDto, AppliedTaskDto, ApplyEpicRequest, ArmRequest,
+    AuthorizationProjectionDto, BlockedTaskDto, DisarmRequest, EnsureAccountProfileRequest,
+    EnsureProjectRequest, EpicProjectionDto, EpicTaskProjectionDto, LifecycleAction,
+    LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, ProjectDto, PublishedTeamRevisionDto,
+    ReadyTaskDto, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerStartDto,
+    SeatProjectionDto, StartRequest, StartedSeatDto, TeamDraftDto, TeamDraftRequest,
+    TeamRunProjectionDto, TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
@@ -57,7 +57,7 @@ use kontor_api::state::ApiState;
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CanonicalDocument,
+    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CanonicalDocument,
     CommandReceiptId, ConnectorKey, ContentHash, CurrencyCode, ExecutionAuthorizationId,
     ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey,
     Money, ProjectId, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId,
@@ -671,6 +671,85 @@ impl Services {
             accounted.insert(turn.role_slot_id, turn.evidence_hash);
         }
         Ok(accounted)
+    }
+
+    /// Abandon the team run of a run just abandoned, when nothing of it is left
+    /// running and no certificate can close it.
+    ///
+    /// Returns `None` when the team still has a live run, or when it is already
+    /// closed — in both cases there is nothing an operator decision should do to
+    /// it.
+    fn abandon_team_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run: &kontor_core::repository::AgentRun,
+        now: Timestamp,
+    ) -> Result<Option<String>, ApiError> {
+        let state = self.state()?;
+        let Some(team) = state
+            .with_store(|store| store.get_team_run(project_id, run.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+        if team.lifecycle.is_terminal() {
+            return Ok(None);
+        }
+        let members = state
+            .with_store(|store| store.list_agent_runs_for_team_run(project_id, run.team_run_id))
+            .map_err(|error| self.refuse(&error))?;
+        for member in &members {
+            let member = state
+                .with_store(|store| store.get_agent_run(project_id, member.agent_run_id))
+                .map_err(|error| self.refuse(&error))?;
+            if member.is_some_and(|member| member.terminal.is_none()) {
+                return Ok(None);
+            }
+        }
+
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "team_run_abandon",
+            "team_run_id": run.team_run_id.to_string(),
+            "expected_revision": team.revision.get(),
+            "reason": "every run of this team ended without a certifiable closure",
+        }))?;
+        let team_key = IdempotencyKey::parse(&format!("{}-team", key.as_str()))
+            .map_err(|error| self.refuse_domain(&error))?;
+        let receipt_id = state
+            .with_store(|store| {
+                store.record_abandon_receipt(&kontor_core::repository::NewAbandonReceipt {
+                    project_id,
+                    receipt_id: CommandReceiptId::generate(),
+                    idempotency_key: team_key.clone(),
+                    target: AggregateRef::TeamRun {
+                        team_run_id: run.team_run_id,
+                    },
+                    target_revision: team.revision,
+                    intent: intent.clone(),
+                    recorded_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state
+            .with_store(|store| {
+                store.close_team_run(&kontor_core::repository::TeamRunClosure {
+                    project_id,
+                    team_run_id: run.team_run_id,
+                    expected_revision: team.revision,
+                    evidence: kontor_core::state::TeamTerminalEvidence {
+                        outcome: TerminalOutcome::Abandoned,
+                        source: kontor_core::state::TeamEvidenceSource::OperatorAbandon {
+                            receipt_id,
+                        },
+                        evidence_hash: intent.hash().clone(),
+                        closed_at: now,
+                    },
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(Some(run.team_run_id.to_string()))
     }
 
     /// Close the team run behind a settled agent run, when every slot is done.
@@ -4901,6 +4980,156 @@ impl ApplicationOperations for Services {
             } else {
                 AppliedDto::Created
             },
+        })
+    }
+
+    async fn abandon_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &AbandonRunRequest,
+    ) -> Result<AbandonedRunDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such agent run exists in this project",
+                )
+            })?;
+
+        // Already closed: report the stored closure rather than closing twice.
+        // A terminal row is immutable, so a repeated abandon is answered from it.
+        if let Some(terminal) = run.terminal.as_ref() {
+            let (team_run_closed, team_pending) = self.team_closure_state(project_id, &run)?;
+            return Ok(AbandonedRunDto {
+                realm_id: state.realm_id(),
+                agent_run_id: agent_run_id.to_string(),
+                outcome: terminal.outcome.as_str().to_owned(),
+                applied: AppliedDto::Unchanged,
+                revision: run.revision,
+                team_run_closed,
+                team_pending,
+                receipt_id: match terminal.source {
+                    TerminalEvidenceSource::OperatorAbandon { receipt_id } => {
+                        receipt_id.to_string()
+                    }
+                    TerminalEvidenceSource::RuntimeObservation { .. } => String::new(),
+                },
+            });
+        }
+
+        // The one rule that makes this operation safe to expose. A bound run
+        // holds a native session: closing Kontor's row would leave an agent
+        // running that nothing is steering, and Kontor would have no record that
+        // it is there. Those runs settle against their runtime, which is the
+        // only thing that can say what the session is doing.
+        if run.binding.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "this run holds a native session, so it is settled against its runtime rather than abandoned",
+            ));
+        }
+
+        if run.revision.get() != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the run moved since the caller read it",
+                )
+                .with_revision(Some(run.revision)));
+        }
+
+        let reason =
+            BoundedText::parse(&request.reason).map_err(|error| self.refuse_domain(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "runtime_abandon",
+            "agent_run_id": agent_run_id.to_string(),
+            "expected_revision": request.expected_revision,
+            "reason": reason.as_str(),
+        }))?;
+        // Recorded against the revision being closed, because that is what the
+        // store re-proves: a receipt naming another revision authorizes nothing
+        // here, which stops a decision made about an older run from closing this
+        // one.
+        //
+        // Deliberately not a command intent. An intent moves desired state under
+        // compare-and-swap, which would bump the very revision this receipt has
+        // to stay bound to — the receipt would invalidate itself. The gate
+        // rejection path reached the same conclusion and writes its abandon
+        // receipt the same way.
+        let receipt_id = state
+            .with_store(|store| {
+                store.record_abandon_receipt(&kontor_core::repository::NewAbandonReceipt {
+                    project_id,
+                    receipt_id: CommandReceiptId::generate(),
+                    idempotency_key: key.clone(),
+                    target: AggregateRef::AgentRun { agent_run_id },
+                    target_revision: run.revision,
+                    intent: intent.clone(),
+                    recorded_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state
+            .with_store(|store| {
+                store.close_agent_run(&kontor_core::repository::RunClosure {
+                    project_id,
+                    agent_run_id,
+                    expected_revision: run.revision,
+                    evidence: kontor_core::state::TerminalEvidence {
+                        outcome: TerminalOutcome::Abandoned,
+                        source: TerminalEvidenceSource::OperatorAbandon { receipt_id },
+                        evidence_hash: intent.hash().clone(),
+                        closed_at: now,
+                    },
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+
+        // The task is only schedulable again once its *team* run is terminal
+        // too, so the same certified closure the settle path uses is attempted
+        // here. It is attempted, not asserted: a team with other live runs stays
+        // open and says why.
+        let closed = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the run disappeared while it was being abandoned",
+                )
+            })?;
+        let (mut team_run_closed, mut team_pending) = self.settle_team(project_id, &closed, now)?;
+        // A team whose every run has ended, and which no certificate can close,
+        // is abandoned under the same operator decision. That is the whole
+        // reason the task stays stuck: a certified closure proves every declared
+        // slot is accounted for, and a launch refused at the first seat never
+        // created the rest of them.
+        //
+        // Only when nothing is left running. A team with a live run keeps it:
+        // abandoning one phantom must never close the work beside it.
+        if team_run_closed.is_none()
+            && let Some(abandoned) = self.abandon_team_run(key, project_id, &closed, now)?
+        {
+            team_run_closed = Some(abandoned);
+            team_pending = None;
+        }
+        state.signals().appended();
+        Ok(AbandonedRunDto {
+            realm_id: state.realm_id(),
+            agent_run_id: agent_run_id.to_string(),
+            outcome: TerminalOutcome::Abandoned.as_str().to_owned(),
+            applied: AppliedDto::Created,
+            revision: closed.revision,
+            team_run_closed,
+            team_pending,
+            receipt_id: receipt_id.to_string(),
         })
     }
 

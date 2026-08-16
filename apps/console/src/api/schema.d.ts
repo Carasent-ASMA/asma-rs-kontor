@@ -281,6 +281,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Abandon a run that was admitted but never bound, so its task can be
+         *     scheduled again.
+         * @description Refused for a run that *is* bound: that run has a native session, and closing
+         *     Kontor's row without cancelling it would leave an agent running that nothing
+         *     is steering. `runtime:settle` is the path for those.
+         *
+         *     Idempotent: a run that is already closed reports its stored closure.
+         */
+        post: operations["abandon_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle": {
         parameters: {
             query?: never;
@@ -1239,6 +1264,57 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description What an operator says when abandoning a run no runtime ever took.
+         *
+         *     The revision is the operator's, not a convenience: an abandon decision is
+         *     made against a specific revision of a specific run, and closing a revision
+         *     nobody looked at would let a stale decision close work that has moved on.
+         */
+        AbandonRunRequest: {
+            /**
+             * Format: int64
+             * @description The revision the caller read the run at.
+             */
+            expected_revision: number;
+            /** @description Why the run is being abandoned. Recorded on the receipt. */
+            reason: string;
+        };
+        /**
+         * @description What abandoning one unbound run produced.
+         *
+         *     There is no field on the way in for an outcome, and none on the way out that
+         *     the caller chose. An operator may abandon a run; an operator may not declare
+         *     it cancelled, failed or succeeded — those are claims about a runtime, and
+         *     this operation exists precisely because no runtime ever answered.
+         */
+        AbandonedRunDto: {
+            /** @description The run that was abandoned. */
+            agent_run_id: string;
+            /** @description Whether this call closed the run, or found it already closed. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description How the run closed. Always `abandoned`. */
+            outcome: string;
+            /** @description The Realm it happened in. */
+            realm_id: string;
+            /** @description The command receipt that authorizes the abandon. */
+            receipt_id: string;
+            /**
+             * Format: int64
+             * @description The run's revision after the closure.
+             */
+            revision: number;
+            /**
+             * @description Why the team is not closed yet, when it is not. A static rule, never a
+             *     stored value.
+             */
+            team_pending?: string | null;
+            /**
+             * @description The team run, once every one of its runs is terminal and the team's
+             *     closure has been certified.
+             */
+            team_run_closed?: string | null;
+        };
         /**
          * @description One provider-account profile, with nothing a caller could authenticate with.
          *
@@ -4033,6 +4109,70 @@ export interface operations {
             };
             /** @description The task, binding, terminal state, or disposition moved */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    abandon_run: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The run to abandon */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AbandonRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Abandoned, or already closed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AbandonedRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run moved, or it holds a session that must be settled */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run is bound, so it cannot be abandoned */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

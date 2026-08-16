@@ -1195,6 +1195,47 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Replace one runtime-terminal unusable seat with its linked successor.",
     },
     ToolSpec {
+        name: "kontor_runtime_abandon",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
+        kind: OpKind::Write,
+        // The sibling of settlement, for the one case settlement cannot serve: a
+        // run whose launch was refused holds no session, so there is no runtime
+        // verdict to read and `runtime:settle` answers 404 forever. The caller
+        // supplies the outcome here — deliberately, because an operator *is* the
+        // evidence — and the daemon refuses the moment a seat is actually bound,
+        // so this can never be used to overrule a runtime that could speak.
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The unbound run to abandon.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the abandonment was decided against.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why the operator is abandoning it. Quoted in the receipt.",
+            ),
+        ],
+        about: "Abandon one run whose launch was refused, so its task is schedulable again.",
+    },
+    ToolSpec {
         name: "kontor_ticket_reconcile_plan",
         tier: CallerTier::Operator,
         method: Method::Post,

@@ -513,6 +513,82 @@
         }
       }
     },
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Abandon a run that was admitted but never bound, so its task can be\nscheduled again.",
+        "description": "Refused for a run that *is* bound: that run has a native session, and closing\nKontor's row without cancelling it would leave an agent running that nothing\nis steering. `runtime:settle` is the path for those.\n\nIdempotent: a run that is already closed reports its stored closure.",
+        "operationId": "abandon_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The run to abandon",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbandonRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Abandoned, or already closed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbandonedRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The run moved, or it holds a session that must be settled"
+          },
+          "422": {
+            "description": "The run is bound, so it cannot be abandoned"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle": {
       "post": {
         "tags": [
@@ -3427,6 +3503,80 @@
   },
   "components": {
     "schemas": {
+      "AbandonRunRequest": {
+        "type": "object",
+        "description": "What an operator says when abandoning a run no runtime ever took.\n\nThe revision is the operator's, not a convenience: an abandon decision is\nmade against a specific revision of a specific run, and closing a revision\nnobody looked at would let a stale decision close work that has moved on.",
+        "required": [
+          "expected_revision",
+          "reason"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision the caller read the run at.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the run is being abandoned. Recorded on the receipt."
+          }
+        }
+      },
+      "AbandonedRunDto": {
+        "type": "object",
+        "description": "What abandoning one unbound run produced.\n\nThere is no field on the way in for an outcome, and none on the way out that\nthe caller chose. An operator may abandon a run; an operator may not declare\nit cancelled, failed or succeeded — those are claims about a runtime, and\nthis operation exists precisely because no runtime ever answered.",
+        "required": [
+          "realm_id",
+          "agent_run_id",
+          "outcome",
+          "applied",
+          "revision",
+          "receipt_id"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The run that was abandoned."
+          },
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call closed the run, or found it already closed."
+          },
+          "outcome": {
+            "type": "string",
+            "description": "How the run closed. Always `abandoned`."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it happened in."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "The command receipt that authorizes the abandon."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run's revision after the closure.",
+            "minimum": 0
+          },
+          "team_pending": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the team is not closed yet, when it is not. A static rule, never a\nstored value."
+          },
+          "team_run_closed": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team run, once every one of its runs is terminal and the team's\nclosure has been certified."
+          }
+        }
+      },
       "AccountProfileDto": {
         "type": "object",
         "description": "One provider-account profile, with nothing a caller could authenticate with.\n\nThe credential reference is an opaque alias whose meaning lives entirely in\nthe resolver's policy: publishing it discloses nothing, and there is no field\nhere that a token, a config home or a keychain target could occupy.",

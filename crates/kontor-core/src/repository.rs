@@ -1198,6 +1198,34 @@ pub struct TeamRunClosure {
     pub evidence: TeamTerminalEvidence,
 }
 
+/// The operator receipt that authorizes abandoning one run.
+///
+/// Deliberately *not* a [`NewCommandIntent`]. An intent moves a run's desired
+/// state under compare-and-swap, which bumps the very revision the closure
+/// receipt has to stay bound to — the abandon evidence is verified against the
+/// revision present when the run closes, so an intent would invalidate its own
+/// receipt. This records the decision and nothing else; the closure is a
+/// separate act that cites it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAbandonReceipt {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The receipt id to mint.
+    pub receipt_id: CommandReceiptId,
+    /// The caller's stable key.
+    pub idempotency_key: IdempotencyKey,
+    /// The aggregate being abandoned: a run, or the team run whose every run
+    /// has ended.
+    pub target: AggregateRef,
+    /// The revision the operator decided against, which is the revision the
+    /// closure must be made at.
+    pub target_revision: AggregateRevision,
+    /// The canonical decision document. Its digest is the closure evidence.
+    pub intent: CanonicalDocument,
+    /// When the decision was recorded.
+    pub recorded_at: Timestamp,
+}
+
 /// A new command intent, written atomically with desired state, the outbox entry
 /// and the intent event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2175,6 +2203,19 @@ pub trait RunRepository {
     /// Refuses invalid evidence, a stale revision and any attempt to close an
     /// already closed run.
     fn close_agent_run(&self, request: &RunClosure) -> RepositoryResult<()>;
+
+    /// Record the operator decision that authorizes abandoning one run.
+    ///
+    /// Returns the existing receipt when the key was already used for this exact
+    /// decision, so a retry cites the first one rather than minting a second.
+    ///
+    /// # Errors
+    /// Refuses a key already used for a different command, and a run that is not
+    /// in this project.
+    fn record_abandon_receipt(
+        &self,
+        request: &NewAbandonReceipt,
+    ) -> RepositoryResult<CommandReceiptId>;
 
     /// Read a run's raw event history from *after* a cursor.
     ///
