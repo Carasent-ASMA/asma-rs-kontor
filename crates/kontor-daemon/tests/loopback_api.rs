@@ -5340,6 +5340,70 @@ async fn reapplying_an_identical_epic_returns_the_identical_graph_digest() {
     );
 }
 
+#[tokio::test]
+async fn epic_read_preserves_the_team_revision_apply_froze_across_restart() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "team-read", "Kontor", "/tmp/kontor-team-read").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Pinned team epic",
+            &category,
+            serde_json::json!([{"title": "One task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("team-read-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("epic id")
+        .to_owned();
+    let expected = applied.json()["team_template"].clone();
+    assert!(expected.is_object(), "apply froze a team revision");
+
+    let uri = format!("/v1/projects/{project}/epics/{epic}");
+    let immediate = Call::get(&uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(immediate.status, 200, "{}", immediate.body);
+    assert_eq!(immediate.json()["team_template"], expected);
+
+    let observer = secret(&world, "observer");
+    let realm = world.realm_id();
+    let World {
+        directory, daemon, ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(daemon);
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new(),
+    )
+    .expect("the same state root reopens");
+    assert_eq!(restarted.realm_id(), realm);
+
+    let after_restart = Call::get(&uri)
+        .with_token(&observer)
+        .send_to(&restarted.router())
+        .await;
+    assert_eq!(after_restart.status, 200, "{}", after_restart.body);
+    assert_eq!(after_restart.json()["team_template"], expected);
+    restarted.state().signals().stop();
+}
+
 /// The incident pack the pilot fixture ships — a profile and a team this build's
 /// compiled catalogue has never seen.
 const INCIDENT_PACK: &str =

@@ -2983,6 +2983,7 @@ impl ApplicationOperations for Services {
             .map_err(|error| self.refuse(&error))?;
 
         let mut profile = None;
+        let mut team = None;
         let mut projected = Vec::with_capacity(tasks.len());
         let mut cursor: Option<kontor_core::id::EventCursor> = None;
         for task in &tasks {
@@ -3004,6 +3005,12 @@ impl ApplicationOperations for Services {
                                 id: workflow.snapshot.definition.id.as_str().to_owned(),
                                 version: workflow.snapshot.definition.version,
                             });
+                            if let Some(reference) = &workflow.snapshot.definition.team_template {
+                                team.get_or_insert(RevisionRefDto {
+                                    id: reference.template_id.to_string(),
+                                    version: reference.version,
+                                });
+                            }
                         }
                         let Some(workflow) = inspection.workflow.as_ref() else {
                             return (None, None, Vec::new(), Vec::new());
@@ -3149,7 +3156,7 @@ impl ApplicationOperations for Services {
             name: epic.name,
             revision: epic.revision,
             work_profile: profile,
-            team_template: None,
+            team_template: team,
             tasks: projected,
             authorizations: authorizations
                 .iter()
