@@ -4095,12 +4095,18 @@ impl RunRepository for SqliteStore {
             return CommandReceiptId::parse(&id).map_err(Into::into);
         }
 
+        // Born `confirmed`, not `intent_persisted`. Nothing is dispatched here:
+        // the closure is already committed in this same transaction, so there is
+        // no outbox entry and never will be. `intent_persisted` is the one state
+        // that authorizes a launch, and a restart's recovery scan reads it as
+        // "this was queued and never sent" — it then demands the outbox row that
+        // by design does not exist, and the whole startup inventory fails.
         transaction
             .execute(
                 "INSERT INTO command_receipts
                      (id, project_id, idempotency_key, kind, target, target_revision, intent,
                       intent_hash, state, attempts, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'intent_persisted', 0, ?9, ?9)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'confirmed', 0, ?9, ?9)",
                 params![
                     request.receipt_id.to_string(),
                     request.project_id.to_string(),
@@ -4136,15 +4142,18 @@ impl RunRepository for SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        // The intent document is the evidence: it is what the decision was, and
+        // the transitions table refuses a confirmation that cites none.
+        let evidence = ExternalId::parse(request.intent.hash().as_str())?;
         crate::commands::receipts::append_transition(
             &transaction,
             request.project_id,
             request.receipt_id,
             1,
-            kontor_core::receipt::CommandReceiptState::IntentPersisted,
+            kontor_core::receipt::CommandReceiptState::Confirmed,
             None,
             None,
-            None,
+            Some(&evidence),
             request.recorded_at,
         )?;
         transaction.commit().map_err(backend)?;
