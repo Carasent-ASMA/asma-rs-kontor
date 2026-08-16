@@ -1078,6 +1078,7 @@ impl PaseoAdapter {
     async fn fetch_project_agents(
         &self,
         project: &PaseoProjectBinding,
+        include_archived: bool,
     ) -> RuntimeResult<Vec<PaseoAgent>> {
         let workspaces: BTreeSet<String> = self
             .fetch_workspaces(project.project_id.as_str())
@@ -1086,7 +1087,7 @@ impl PaseoAdapter {
             .map(|workspace| workspace.id)
             .collect();
         Ok(self
-            .fetch_agents(&BTreeMap::new(), false)
+            .fetch_agents(&BTreeMap::new(), include_archived)
             .await?
             .into_iter()
             .filter(|agent| {
@@ -2347,7 +2348,24 @@ impl RuntimeAdapter for PaseoAdapter {
         // Two independent sources of runtime truth, both read before anything is
         // recorded: what sessions this daemon actually holds right now, and what
         // this runtime can currently prove.
-        let live = self.discover_sessions().await?;
+        let project = self.require_project()?;
+        let generation = self.generation();
+        let live = self
+            .fetch_project_agents(&project, true)
+            .await?
+            .into_iter()
+            .map(|agent| {
+                let (state, _) = Self::normalize_agent(&agent);
+                Ok(NativeSession {
+                    identity: self.identity(ExternalId::parse(&agent.id)?, generation),
+                    correlation: agent
+                        .label(label::AGENT_RUN)
+                        .and_then(|value| CorrelationLabel::parse(value).ok()),
+                    state,
+                    observed_at: Timestamp::now(),
+                })
+            })
+            .collect::<RuntimeResult<Vec<_>>>()?;
         let declared = self.declared().await?;
         // Placement is re-proved from the live agents, not remembered: an agent
         // reports which workspace it sits in, and that workspace is checked
@@ -3009,7 +3027,7 @@ impl RuntimeAdapter for PaseoAdapter {
         let project = self.require_project()?;
         let generation = self.generation();
         let mut found = Vec::new();
-        for agent in self.fetch_project_agents(&project).await? {
+        for agent in self.fetch_project_agents(&project, false).await? {
             let (state, _) = Self::normalize_agent(&agent);
             found.push(NativeSession {
                 identity: self.identity(ExternalId::parse(&agent.id)?, generation),

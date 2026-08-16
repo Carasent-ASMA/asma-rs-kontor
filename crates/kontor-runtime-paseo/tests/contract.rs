@@ -1580,6 +1580,36 @@ async fn freshness_only_a_fresh_archived_readback_is_terminal_evidence() {
 }
 
 #[tokio::test]
+async fn continuity_an_archived_binding_restores_for_terminal_inspection() {
+    let (_, binding) = launched().await;
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_ARCHIVED_ONLY));
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT_ARCHIVED));
+    let (restarted, _) = Plane::prepared(recorded).await;
+
+    assert_eq!(
+        restarted
+            .adapter
+            .restore_bindings(std::slice::from_ref(&binding))
+            .await
+            .expect("an archived binding remains inspectable after restart"),
+        vec![binding.clone()]
+    );
+    let observed = restarted
+        .adapter
+        .inspect(&InspectRequest {
+            binding: binding.clone(),
+            requested_at: at("2026-08-10T09:32:00Z"),
+        })
+        .await
+        .expect("the restored archived seat is inspected by exact identity");
+    assert_eq!(
+        closes(&restarted.adapter, &observed, &binding).await,
+        Some(TerminalOutcome::Cancelled)
+    );
+}
+
+#[tokio::test]
 async fn freshness_an_archive_that_is_not_observed_evidences_nothing() {
     let (plane, binding) = launched().await;
     // Paseo acknowledged the archive and then kept reporting the agent running.
