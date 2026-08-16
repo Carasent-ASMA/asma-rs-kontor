@@ -5779,6 +5779,187 @@ async fn a_seat_is_prepared_at_the_worktree_the_task_declares() {
     );
 }
 
+/// A project that never selected a topology is given one, not excused from one.
+///
+/// This is the claim that replaced the old `Ok(None)` escape. Admission used to
+/// answer "this project runs no Operational topology, so there is nothing to
+/// place against" and fall back to a TeamRun-keyed task workspace. It now seeds
+/// the project's revision and creates the node chain instead, so the worry the
+/// escape answered — that an unconfigured project becomes unrunnable — is
+/// answered without a second way to place a production seat.
+///
+/// Both halves are asserted: nothing is configured before the start, and after
+/// it the seat is live *and* the topology exists to explain where it is.
+#[tokio::test]
+async fn a_project_with_no_topology_is_seeded_one_rather_than_placed_outside_it() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project(&world, "seeded", "Kontor", "/tmp/kontor-seeded").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("seeded-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Unconfigured epic",
+            &category,
+            serde_json::json!([{"title": "Unconfigured task", "worktree": "/w/seeded"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("seeded-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+
+    // Nothing about a topology exists yet. This is the state the removed escape
+    // was written for.
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .get_project_topology_default(project_id)
+                .expect("the default reads")
+                .is_none(),
+            "the project has selected no topology revision"
+        );
+        assert!(
+            store
+                .get_task_topology_node(project_id, task_id)
+                .expect("the node reads")
+                .is_none(),
+            "the task has no node to be placed on"
+        );
+    });
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Run an unconfigured project"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("seeded-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("seeded-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert!(
+        !started.json()["started"]
+            .as_array()
+            .expect("seats")
+            .is_empty(),
+        "an unconfigured project still runs its work: {}",
+        started.body
+    );
+
+    // And it ran *inside* the topology rather than beside it: the revision is
+    // selected, the task has a node of the seeded delivery kind, and that node
+    // holds the native container the seat was placed in.
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .get_project_topology_default(project_id)
+                .expect("the default reads")
+                .is_some(),
+            "admission selected a topology revision for the project"
+        );
+        let node = store
+            .get_task_topology_node(project_id, task_id)
+            .expect("the node reads")
+            .expect("admission created the task's node");
+        assert_eq!(node.kind, domain.delivery.task_kind);
+        assert!(
+            node.parent_id.is_some(),
+            "the task's node hangs below its epic"
+        );
+        assert!(
+            store
+                .get_topology_node_container(project_id, node.id)
+                .expect("the container reads")
+                .is_some(),
+            "the node holds the native container the seat was placed in"
+        );
+    });
+
+    // The seat was placed by node, not by team run: the runtime was asked to
+    // prepare containers and never a task workspace.
+    let calls = world.fake.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+        "admission prepared the node's container"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareWorkspace(_))),
+        "no accepted seat falls back to a TeamRun-keyed workspace"
+    );
+}
+
 /// A task whose node cannot host sessions is refused before any native effect.
 ///
 /// The refusal has to be reachable to be worth anything. Admission resolves the

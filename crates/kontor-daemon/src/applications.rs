@@ -6196,16 +6196,25 @@ impl Services {
 
     /// Resolve where this task's seats belong, before anything is started.
     ///
-    /// A project running an Operational topology places every accepted seat
-    /// through it. The task's node is the locator, and every check below is a
-    /// question about *where*, answered from Kontor's own rows: a node that
-    /// hosts no session, a parent with no bound native container, a working
-    /// directory that is not the bound one, or a slot that already holds a live
-    /// seat all stop here as `placement_blocked`, with nothing dispatched.
+    /// Every accepted seat is placed through the Operational topology, so this
+    /// is total: it answers with a node or it refuses. The task's node is the
+    /// locator, and every check below is a question about *where*, answered from
+    /// Kontor's own rows — a node that hosts no session, a working directory
+    /// that is not the bound one, or a slot that already holds a live seat all
+    /// stop here as `placement_blocked`, with nothing dispatched.
     ///
-    /// A task with no node returns `Ok(None)`: a project that is not running an
-    /// Operational topology has no placement to resolve, and refusing it would
-    /// make every pre-topology task unrunnable rather than safer.
+    /// **There is deliberately no escape for a project that has no topology
+    /// yet.** An earlier revision answered `Ok(None)` there and let admission
+    /// fall back to a TeamRun-keyed task workspace. That escape existed only
+    /// because nothing wrote topology nodes; now [`Self::ensure_task_node`]
+    /// does, seeding the project's revision and creating the chain on first
+    /// admission. Keeping the escape would mean keeping a second, TeamRun-keyed
+    /// way to place a production seat, which is the whole defect OP-02 removes.
+    ///
+    /// The worry the escape answered is still answered — a project that never
+    /// selected a topology is given one rather than refused, so no task becomes
+    /// unrunnable by not having been configured. What changed is *how*: by
+    /// seeding, not by placing the seat somewhere unmodelled.
     ///
     /// Nothing here repairs a disagreement. Rewriting either side to match the
     /// other is what turns "these two disagree about where the work is" into
@@ -6407,6 +6416,11 @@ impl Services {
         // A task outside an epic has no place in this topology: the delivery
         // kind is declared below the epic kind, and inventing an epic for it
         // would be Kontor deciding what work an operator grouped together.
+        //
+        // Every admission reaches this through an epic-scoped start, so no
+        // caller can currently arrive here without one. It is kept as the guard
+        // that says so rather than as an `expect`: the day a second admission
+        // route exists, this refuses instead of placing the work at a guess.
         let epic_id = self
             .task_row(project_id, task_id)?
             .mini_project_id

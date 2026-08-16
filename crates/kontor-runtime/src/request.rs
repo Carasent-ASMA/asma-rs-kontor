@@ -145,8 +145,10 @@ impl fmt::Display for MessageId {
 /// keyed by [`kontor_core::id::TopologyNodeId`], so a second delivery attempt at
 /// the same ticket resolves to the same container and a container no ticket owns
 /// is still addressable. [`Self::Workspace`] is the older TeamRun-keyed task
-/// workspace, kept for runtimes and fixtures that have no topology to place
-/// against.
+/// workspace. No Kontor application service presents one any more — admission
+/// places every accepted seat through the topology — so it is reached only by
+/// direct adapter callers: contract fixtures, and the runtimes that prepare
+/// workspaces but not projects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchPlacement {
     /// A TeamRun-keyed task workspace.

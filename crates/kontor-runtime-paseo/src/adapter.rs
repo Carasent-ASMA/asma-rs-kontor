@@ -1338,7 +1338,9 @@ impl PaseoAdapter {
     /// A node-keyed container is resolved by the node it names, so a second
     /// delivery attempt at the same ticket lands in the same place and the
     /// TeamRun never participates in finding it. The workspace-keyed branch
-    /// below it is the pre-topology path, kept for callers that have no
+    /// below it is the older path; no Kontor application service reaches it any
+    /// more, and it is kept for direct adapter callers — contract fixtures and
+    /// the runtimes that prepare workspaces but not projects — which have no
     /// topology to place against.
     ///
     /// The expected root is read off the binding rather than recomputed from the

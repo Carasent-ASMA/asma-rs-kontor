@@ -1,104 +1,112 @@
 # KON-OP-02 code-review-gate — review notes
 
-Verdict: **rejected** (inspector seat, ASMA-7871).
+Verdict: **passed** (inspector seat, ASMA-7871), on re-review after remediation.
 
-Evidence under review: `b7cca64`, `89cdffc`, `9b6b3ad`, `7a8a9ee`, `ff54325`.
-Superproject gitlink `b7cca6428fddb435af33fde49fc2b5bd291414fa` verified equal to
-submodule HEAD.
+- Round 1 (`b7cca64`): **rejected** — receipt `01a00b6f-b304-7c73-a4ca-47e0a15f7246`, seq 2. Findings F1, F2.
+- Round 2 (`d6da0bb`): **passed**. Both findings closed.
+
+Evidence under review: `ff54325`, `7a8a9ee`, `9b6b3ad`, `89cdffc`, `b7cca64`,
+`41d2199`, `d6da0bb`. Superproject `fa3a942`, gitlink
+`d6da0bb2b7aeba20fdea555697bf5cefcf2915ff` verified equal to submodule HEAD,
+tree clean.
 
 Judged against `docs/evidence/KON-OP-02/ARCHITECTURE.md`.
 
-## Verdict
+## F1 — closed
 
-Checkpoints 1–3 substantially hold and are good work. Checkpoint 4 does not.
-CP1–CP3 build a correct mechanism that CP4 never connects to the production
-path, so two of the required negative proofs remain violated where it counts.
+Was: `Services::seat` resolved a placement, bound it to `_placement`, and called
+`prepare_workspace` anyway.
 
-## Blocking findings
+Verified closed:
 
-### F1 — `Services::seat` resolves placement, then discards it
+- `prepare_workspace` has **zero** callers in `crates/kontor-daemon/src/`. The
+  only production occurrences anywhere are the three adapter trait impls
+  (ao/codex/paseo) and the capability name string in `capability.rs:94`.
+- All three production paths route through `ensure_container` →
+  `prepare_container`, keyed by `topology_node_id`:
+  - `Services::seat` — `applications.rs:6082` resolves, `:6094` prepares, `:6097`
+    records the seat bindings;
+  - `replace_seat` — `applications.rs:4803-4806`, deliberately reusing the
+    predecessor's node;
+  - `fill_slot` — carries `Seating.container` and states "Neither the plane nor
+    the container is prepared again here", so one team run has one container.
+- `LaunchPlacement::Workspace` has no production constructor; the daemon only
+  builds `LaunchPlacement::Container`.
 
-`crates/kontor-daemon/src/applications.rs:6054` binds the `resolve_placement`
-result to `_placement`. Line 6066 then calls
-`prepare_workspace(WorkspacePrepareRequest { team_run_id, .. })` — the
-TeamRun-keyed legacy path — unconditionally on every admission.
+## F2 — closed
 
-`prepare_container` has **zero** production callers; the only callers are in
-`crates/kontor-runtime-paseo/tests/contract.rs`.
+Was: nothing in production wrote a topology node, so `get_task_topology_node`
+always returned `None`, every `placement_blocked` refusal was unreachable, and
+seat attachment always fell through to `read_legacy_seat_attachments`.
 
-ARCHITECTURE.md §1 is explicit: a compatibility wrapper "must not be callable by
-`Services::seat`". It is. That violates required negative proof #1
-(binding/caching by TeamRun instead of topology node) on the accepted production
-path — which ARCHITECTURE.md:53 says "fails OP-02 even if the Foundation
-contract suite stays green".
+Verified closed:
 
-### F2 — the topology plane has no production writer
+- Production writers now exist in `kontor-daemon/src/applications.rs`:
+  `create_topology_node` (:6525), `create_seat_binding` (:6574),
+  `bind_topology_node_container` (:6796), `publish_topology_spec` (:6353),
+  `set_project_topology_default` (:6372), `pin_mini_project_topology` (:6450).
+- `resolve_placement` now returns `SessionTopologyNode` rather than
+  `Option<…>` — the pre-topology `Ok(None)` escape is gone. `ensure_task_node`
+  creates the root → epic → task lineage idempotently, and `ensure_container`
+  walks that lineage root-down presenting each level's exact binding to the next.
+- The refusals are reachable and proven end-to-end:
+  `a_task_placed_on_a_node_that_hosts_no_session_is_refused_before_anything_starts`
+  (`loopback_api.rs:5795`) drives the real HTTP API through arm → plan → start,
+  asserts `started` is empty, `blocked[0].code == "placement_blocked"`, the exact
+  rule string, and — the part that makes it a proof rather than wiring — that no
+  `AdapterCall::PrepareContainer` ever reached the runtime.
+- The legacy fallback is dead on the production path: all five Foundation slots
+  resolve a catalog code via `slot.as_role_key()` (the `verifier` slot carries
+  role `therapist-verifier` → `UAT`), so every admission writes seat bindings and
+  `read_seat_attachments` takes `conclude_seat_attachments`. The legacy function
+  survives only for pre-OP-02 team runs, which is correct — bindings cannot be
+  invented retroactively.
 
-`create_topology_node`, `create_seat_binding` and `bind_topology_node_container`
-have callers only under `crates/kontor-store/tests/` — verified across all 19
-crates.
+## Checks
 
-Consequences on the production path:
+- `cargo fmt --all --check` — exit 0.
+- `cargo clippy --workspace --all-targets -- -D warnings` — exit 0.
+- `cargo test --workspace` — exit 0, **1312 passed, 0 failed**.
 
-- `get_task_topology_node` always returns `None`, so `resolve_placement` returns
-  `Ok(None)` at its first check and **every `placement_blocked` refusal is
-  unreachable**;
-- `read_seat_attachments` always falls through to `read_legacy_seat_attachments`
-  (`crates/kontor-store/src/repository.rs:2668`), whose own doc comment states it
-  carries all three OP-REQ-039 weaknesses and that "Checkpoint 4 retires this
-  function by giving every production seat a binding". CP4 does not.
+## Negative proofs
 
-So negative proof #5 (unattached/orphaned/stalled seat counted as
-progress/capacity) and #6 (a generic confirmation treated as activity) remain
-violated on the accepted production path.
+All eight hold. Re-verified this round: no binding/caching by TeamRun on the
+production path (#1); adoption by exact id only, ownership by label (#2); zero
+hard-coded Operational kind names in the adapter, and the daemon reads the kinds
+from the seeded `delivery` data and the pinned revision rather than its own copy
+(#3); no fallback project — a `native_child` presents the exact parent binding or
+stops (#4); no silent repair — an epic pinned to a different revision, a bound
+container in another directory, and a duplicate live slot each refuse rather than
+rewrite (#7); no `.agentsroom` access (#8).
 
-## On the builder's self-flagged gap
+## Tracked follow-up (non-blocking)
 
-The builder honestly flagged that the five `placement_blocked` refusals have no
-dedicated end-to-end test.
+`observe_seat_binding` — the only writer of `last_attached_at`,
+`last_activity_at`, `runtime_reported`, `released_at` and
+`replaced_by_seat_binding_id` — still has no production caller; the callers are
+in `kontor-store/tests/operational_liveness.rs` only.
 
-Judged on the evidence, that gap **on its own would not have blocked the gate**:
-the refusals are pure functions of Kontor rows, the store tests cover the row
-semantics, and the failure mode is a fail-closed refusal-to-start rather than
-corruption. It would have passed with the gap tracked.
+Consequence: `last_attached_at` stays NULL, so `evaluate_seat_attachment`
+(`state.rs:225`) returns `Pending` inside the 10-minute grace and
+`AttachmentFailed` after it, never reaching the activity branch.
 
-It is moot. The refusals are not merely untested — they are unreachable (F2).
-No test could reach them through `Services::seat` as it currently stands. The
-self-assessment was honest but understated the problem.
+Bounded, and why it does not block:
 
-## What holds
+- `certify_task_progress_from_store` runs **only** on a transition to
+  `TaskState::InProgress` (`repository.rs:3256`), and `can_hold_progress()`
+  accepts `Pending`, so the admission-time transition succeeds normally.
+- The reachable failure is a *re-entry* to `InProgress` more than 10 minutes
+  after seat creation on an open team run, which would be refused with "every
+  open team run of this task has lost all of its seats". The legacy path
+  previously supplied `last_confirmed_at` as attachment evidence there, so this
+  is a narrow regression on the resume path.
+- It is fail-closed: it refuses a transition rather than placing work wrongly.
+- It violates none of the eight negative proofs. #5 is not violated — it errs
+  toward under-reporting attachment, the opposite of counting a dead seat as
+  capacity; #6 is not violated because nothing is treated as activity at all.
+- It is the seat watch/reap/stale observation path of ARCHITECTURE.md §4, not a
+  CP1–CP4 deliverable.
 
-- **CP1** — `ContainerRequest::validate` enforces projection exclusivity and the
-  exact parent for `native_child`; `PrepareProject` added across the paseo, codex
-  and ao adapters; fake-runtime coverage present.
-- **CP2** — migration 0026 preserves runtime kind, host, generation, native id,
-  canonical `cwd` and the binding/readback instants across restart/export/restore.
-  `conclude_seat_attachments` implements OP-REQ-039 correctly: orphanhood is read
-  from the owner's row, and a missing parent is treated as closed rather than
-  still open.
-- **CP3** — genuinely strong. Zero hard-coded Operational kind names in the
-  adapter (NP#3 clean); adoption by configured exact id only, with no
-  adopt-by-display-name branch (NP#2 clean); `child_ownership` keys on the label
-  into `ThisNode` / `AnotherNode` / `ForeignUnmanaged`, with the older
-  `kontor-team-` label correctly reading as `ForeignUnmanaged`; reconcile by
-  stored id; no fallback-to-configured-project branch for a child (NP#4 clean).
-- **CP4 live proof** — well designed and its assertion is real: adopt-not-create
-  because 0.3.1 can register a project but not delete one, the disposable unit is
-  the archivable child workspace, and host project-id set equality is asserted
-  before and after.
-- **NP#7** — no silent repair: `resolve_placement` reports and refuses, never
-  rewrites either side.
-- **NP#8** — no `.agentsroom` access: zero references; `list_team_runs_for_task`
-  is a Kontor store read, not a file read.
-
-## Remediation
-
-1. Consume the resolved placement: route the seat's container through
-   `prepare_container` rather than `prepare_workspace`.
-2. Persist the container binding and the `(topology_node_id, role_slot_id)`
-   SeatBinding on the production path, which is what retires
-   `read_legacy_seat_attachments`.
-3. Add the production topology-node writer, or record it explicitly as OP-01 open
-   debt that blocks OP-02 completion.
-4. The `placement_blocked` end-to-end fixture becomes reachable once the above
-   lands, and should ship with it.
+Recommend wiring the observation writer before OP-02 is called operationally
+complete. It is not disclosed in `REVIEW-REMEDIATION.md`; the disclosure should
+be added.

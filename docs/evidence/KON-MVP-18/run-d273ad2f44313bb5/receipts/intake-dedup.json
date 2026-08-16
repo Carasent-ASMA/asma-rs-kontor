@@ -1,0 +1,41 @@
+{
+  "dedup_pointers": [
+    "/kind",
+    "/external_id"
+  ],
+  "duplicate_carrying_work_is_invalid": "a duplicate must not create a second work graph",
+  "find_intake_receipt_returns_the_original": true,
+  "first": {
+    "dedup_key": "2a8e0e6e74d5422a092c38541b8908d8e1db1e05dd1db61e0a4cd24a2c91fb81",
+    "outcome": "recorded",
+    "receipt": "0192f0c0-0000-7000-8000-0000000000f4"
+  },
+  "renamed_identity_same_envelope": {
+    "is_the_original": true,
+    "outcome": "duplicate",
+    "returned_receipt": "0192f0c0-0000-7000-8000-0000000000f4"
+  },
+  "replayed_identity": {
+    "is_the_original": true,
+    "outcome": "duplicate",
+    "returned_receipt": "0192f0c0-0000-7000-8000-0000000000f4"
+  },
+  "row_census": {
+    "after_every_replay": {
+      "intake_receipts": 1,
+      "source_events": 1
+    },
+    "before_the_replays": {
+      "intake_receipts": 1,
+      "source_events": 1
+    },
+    "unchanged": true
+  },
+  "same_identity_different_envelope": {
+    "reason": "a repeated identity with a different digest is a conflict, never a duplicate",
+    "refused": true
+  },
+  "trigger": "pilot.intake",
+  "trigger_version": 1,
+  "unmerged_seam": "None for the domain. KON-MVP-22 merged the deciding half (`kontor_intake::evaluate`) and split the transaction in two, so the identity commits before anything evaluates it; the receipt is still assembled here because no transport (`kontor_api::query::STAGED[0]`) delivers an event yet"
+}
