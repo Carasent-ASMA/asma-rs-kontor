@@ -70,15 +70,16 @@ use kontor_core::repository::{
     IntakeOutcome, IntakeRepository, NewAccountProfile, NewAgentRun, NewCommandIntent,
     NewGateEvaluation, NewSourceEvent, NewTeamRun, ProjectRepository, RealmRepository,
     RepositoryError, RunRepository, RuntimeBinding, SpecRepository, TaskTransitionRequest,
-    TicketRepository, WorkflowRepository,
+    TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, ContextEnforcement, ContextPolicySnapshot,
-    EffectiveContextPolicy, IntakeReceipt, IntakeResult, ModelRung, RequestedContextPolicy,
-    SourceIdentity, SourceProcessingState, TeamRunSnapshot, TriggerSpec,
+    EffectiveContextPolicy, IntakeReceipt, IntakeResult, ModelRung, NodeProjectionCapability,
+    RequestedContextPolicy, SourceIdentity, SourceProcessingState, TeamRunSnapshot, TriggerSpec,
 };
 use kontor_core::state::{
-    GateVerdict, TaskState, TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome,
+    GateVerdict, SessionTopologyNode, TaskState, TaskTeamClosure, TerminalEvidenceSource,
+    TerminalOutcome,
 };
 use kontor_core::ticket::OwnershipAction;
 use kontor_integrations_asma::jira::SpecCatalog;
@@ -6046,6 +6047,13 @@ impl Services {
         });
         commit.map_err(|error| self.refuse(&error))?;
 
+        // Where this seat belongs is settled before the runtime is touched at
+        // all. A placement that cannot be resolved stops here, with nothing
+        // dispatched and nothing to undo.
+        let task_root = self.task_root(project_id, admitted.task_id)?;
+        let _placement =
+            self.resolve_placement(project_id, admitted.task_id, &ordered, &task_root)?;
+
         // A workspace is prepared *inside* the runtime's plane, so the plane has
         // to exist first. This is idempotent and re-attests a binding the
         // adapter already holds, so the cost of asking on every admission is one
@@ -6160,6 +6168,129 @@ impl Services {
             filled.push(self.fill_slot(&seating, role).await?);
         }
         Ok(filled)
+    }
+
+    /// Resolve where this task's seats belong, before anything is started.
+    ///
+    /// A project running an Operational topology places every accepted seat
+    /// through it. The task's node is the locator, and every check below is a
+    /// question about *where*, answered from Kontor's own rows: a node that
+    /// hosts no session, a parent with no bound native container, a working
+    /// directory that is not the bound one, or a slot that already holds a live
+    /// seat all stop here as `placement_blocked`, with nothing dispatched.
+    ///
+    /// A task with no node returns `Ok(None)`: a project that is not running an
+    /// Operational topology has no placement to resolve, and refusing it would
+    /// make every pre-topology task unrunnable rather than safer.
+    ///
+    /// Nothing here repairs a disagreement. Rewriting either side to match the
+    /// other is what turns "these two disagree about where the work is" into
+    /// "the work is now in two places".
+    fn resolve_placement(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        declared: &[RoleSlotId],
+        worktree: &kontor_runtime::workspace::WorkspaceRoot,
+    ) -> Result<Option<SessionTopologyNode>, ApiError> {
+        let state = self.state()?;
+        let Some(node) = state
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+
+        // The kind's capabilities come from the pinned specification revision,
+        // never from the kind's name: the vocabulary is data a revision owns,
+        // and a daemon holding its own copy of it is one no revision can
+        // correct.
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the node's pinned topology revision is not published in this project",
+                )
+            })?;
+        let kind = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == node.kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the node's kind is not declared by its pinned topology revision",
+                )
+            })?;
+        if !kind
+            .projection_capabilities
+            .contains(&NodeProjectionCapability::SessionHost)
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the task's node kind does not host sessions",
+            ));
+        }
+
+        // A child node's container lives below its parent's, so an unbound
+        // parent is a seat with nowhere to be. This is the refusal that stops a
+        // fallback container from being created beside the epic.
+        let parent_id = node.parent_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "a task's node is placed below a parent and this one has none",
+            )
+        })?;
+        if state
+            .with_store(|store| store.get_topology_node_container(project_id, parent_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_none()
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the parent node holds no native container to place this seat below",
+            ));
+        }
+
+        // Where the node is bound, compared against where the seat is about to
+        // work. A container bound elsewhere is not corrected to match the
+        // request; the disagreement is reported.
+        if let Some(bound) = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            && bound
+                .canonical_cwd
+                .as_ref()
+                .is_none_or(|cwd| cwd.as_str() != worktree.as_str())
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the node's bound container works in another directory than this task",
+            ));
+        }
+
+        // One live seat per `(node, slot)`. A second would give one role two
+        // sessions, and the runtime's own admission ledger cannot see the first
+        // one across a restart.
+        let held = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?;
+        for slot in declared {
+            if held
+                .iter()
+                .any(|binding| &binding.role_slot_id == slot && binding.is_non_terminal())
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a live seat already holds one of this team's role slots on that node",
+                ));
+            }
+        }
+        Ok(Some(node))
     }
 
     /// Fill one more declared slot inside a team run admission already committed.

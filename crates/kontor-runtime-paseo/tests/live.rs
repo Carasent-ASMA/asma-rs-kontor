@@ -223,3 +223,104 @@ async fn live_an_unknown_agent_is_refused_rather_than_answered_empty() {
     );
     assert!(answer.error.is_some(), "and named the refusal");
 }
+
+/// OP-02 checkpoint 4: adoption, child placement and archive against the real
+/// daemon, proving the run creates no project.
+///
+/// Paseo 0.3.1 can create a project and cannot delete one, so a "disposable
+/// epic" made by creation would be permanent residue and the project-id set
+/// could never come back equal. The disposable unit is therefore the *child*
+/// container, which `workspace archive` can remove, and the epic root is
+/// **adopted** — which is the path OP-02 wants exercised anyway.
+///
+/// The assertion is the point: the project-id set before and after must be
+/// identical. Any inequality means this run registered a project, which is the
+/// residue the checkpoint exists to forbid.
+#[tokio::test]
+#[ignore = "requires a live Paseo daemon; see the module docs"]
+async fn live_adopted_root_places_and_archives_a_child_and_registers_no_project() {
+    let transport = live!();
+
+    let project_ids = |listed: &PaseoProjectList| {
+        listed
+            .projects
+            .iter()
+            .map(|project| project.id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+
+    let request = PaseoRpc::project_list("kontor-op02-before".to_owned());
+    let frame = transport
+        .request(&request)
+        .await
+        .expect("the daemon lists projects");
+    let before: PaseoProjectList = frame
+        .resolve(&request, "PaseoProjectList")
+        .expect("a project list");
+    let before_ids = project_ids(&before);
+    println!("project ids BEFORE ({}):", before_ids.len());
+    for id in &before_ids {
+        println!("  {id}");
+    }
+    assert!(
+        !before_ids.is_empty(),
+        "this host holds no project to adopt as an epic root"
+    );
+
+    // Adopt: the root is read back by exact id and never registered. Which
+    // project is adopted is configuration, so the test takes the first id the
+    // host reports rather than matching a display name — a name is not identity.
+    let adopted = before_ids
+        .iter()
+        .next()
+        .expect("the host holds at least one project")
+        .clone();
+    println!("adopting existing project by exact id: {adopted}");
+
+    // The disposable child, labelled by a topology node exactly as the adapter
+    // labels one.
+    let node = "01890000-0000-7000-8000-00000000c001";
+    let title = format!("KON-OP-02 disposable [kontor-node-{node}]");
+    let cwd = std::env::var("KONTOR_PASEO_DISPOSABLE_CWD")
+        .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
+    let created = transport
+        .run(&PaseoCommand::workspace_create(&cwd, &adopted, &title))
+        .await
+        .expect("the child container is created inside the adopted root");
+    let created: kontor_runtime_paseo::wire::PaseoCliWorkspaceCreated = created
+        .parse("PaseoCliWorkspaceCreated")
+        .expect("the create is acknowledged");
+    println!(
+        "created disposable child workspace: {}",
+        created.workspace_id
+    );
+
+    // Archive it. This is the whole reason the disposable unit is a workspace.
+    let archived = transport
+        .run(&PaseoCommand::workspace_archive(&created.workspace_id))
+        .await;
+    assert!(
+        archived.is_ok(),
+        "the disposable child must be removable: {archived:?}"
+    );
+    println!("archived disposable child workspace");
+
+    let request = PaseoRpc::project_list("kontor-op02-after".to_owned());
+    let frame = transport
+        .request(&request)
+        .await
+        .expect("the daemon lists projects");
+    let after: PaseoProjectList = frame
+        .resolve(&request, "PaseoProjectList")
+        .expect("a project list");
+    let after_ids = project_ids(&after);
+    println!("project ids AFTER ({}):", after_ids.len());
+    for id in &after_ids {
+        println!("  {id}");
+    }
+
+    assert_eq!(
+        before_ids, after_ids,
+        "the run must register no project: adoption reads a root back, it never creates one"
+    );
+}
