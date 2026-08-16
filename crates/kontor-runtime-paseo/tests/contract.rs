@@ -1584,7 +1584,10 @@ async fn continuity_an_archived_binding_restores_for_terminal_inspection() {
     let (_, binding) = launched().await;
     let recorded = daemon();
     recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_ARCHIVED_ONLY));
-    recorded.set_answer_rpc("fetch_agent_request", v(AGENT_ARCHIVED));
+    // Paseo 0.3.1's fetch-one response can omit the archive stamp even though
+    // its include-archived directory returns it. The archive-aware directory
+    // must win for terminal inspection.
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT));
     let (restarted, _) = Plane::prepared(recorded).await;
 
     assert_eq!(

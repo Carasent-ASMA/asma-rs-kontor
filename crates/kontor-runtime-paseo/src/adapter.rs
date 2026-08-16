@@ -1121,6 +1121,29 @@ impl PaseoAdapter {
         Ok(agent)
     }
 
+    async fn fetch_agent_with_archive(
+        &self,
+        agent_id: &str,
+        correlation: &CorrelationLabel,
+    ) -> RuntimeResult<PaseoAgent> {
+        let agent = self.fetch_agent(agent_id).await?;
+        if agent.is_archived() {
+            return Ok(agent);
+        }
+        let correlation = correlation.to_string();
+        let labels = BTreeMap::from([(label::AGENT_RUN.to_owned(), correlation.clone())]);
+        Ok(self
+            .fetch_agents(&labels, true)
+            .await?
+            .into_iter()
+            .find(|candidate| {
+                candidate.id == agent_id
+                    && candidate.label(label::AGENT_RUN) == Some(correlation.as_str())
+                    && candidate.is_archived()
+            })
+            .unwrap_or(agent))
+    }
+
     // -- Placement ----------------------------------------------------------
 
     /// The epic project binding, or a refusal that names what is missing.
@@ -1750,7 +1773,10 @@ impl PaseoAdapter {
         }
         // The acknowledgement is not the evidence. A fresh readback carrying an
         // archive stamp is, and until it does no successor may be admitted.
-        let agent = self.fetch_agent(&native_id).await?;
+        let correlation = CorrelationLabel::for_run(binding.agent_run_id());
+        let agent = self
+            .fetch_agent_with_archive(&native_id, &correlation)
+            .await?;
         if !agent.is_archived() {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -2824,7 +2850,10 @@ impl RuntimeAdapter for PaseoAdapter {
         let native_id = binding.identity().native_id.as_str().to_owned();
         // Always a fresh session read. A cached answer is a description of the
         // past, and no previous observation may authorize a new edit or verdict.
-        let agent = self.fetch_agent(&native_id).await?;
+        let correlation = CorrelationLabel::for_run(binding.agent_run_id());
+        let agent = self
+            .fetch_agent_with_archive(&native_id, &correlation)
+            .await?;
         // An inspect is also the cheapest honest look at the permission
         // lifecycle, which on this wire lives in the agent snapshot rather than
         // in the transcript.
