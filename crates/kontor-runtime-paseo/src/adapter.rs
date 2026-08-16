@@ -1479,15 +1479,22 @@ impl PaseoAdapter {
         source: ObservationSource,
     ) -> RuntimeResult<ControlPlaneObservation> {
         let (state, contact) = Self::normalize_agent(agent);
+        let native_sequence = u64::try_from(observed_at.as_microsecond()).map_err(|_| {
+            DomainError::invalid(
+                "Paseo observation",
+                "timestamp cannot identify a current runtime read",
+            )
+        })?;
         Ok(ControlPlaneObservation {
             agent_run_id,
             contact,
             state,
             identity,
             native_event_id: None,
-            // A single agent readback has no position in the session's content.
-            // The canonical timeline is where ordering lives.
-            native_sequence: 0,
+            // Paseo exposes no revision for an agent readback. Use the read's
+            // timestamp as its control-plane order; content keeps its separate
+            // canonical timeline sequence.
+            native_sequence,
             observed_at,
             evidence: Self::agent_evidence(agent)?,
             source,

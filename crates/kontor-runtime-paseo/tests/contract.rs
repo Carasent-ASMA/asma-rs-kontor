@@ -1607,6 +1607,11 @@ async fn continuity_an_archived_binding_restores_for_terminal_inspection() {
         .await
         .expect("the restored archived seat is inspected by exact identity");
     assert_eq!(
+        observed.native_sequence,
+        u64::try_from(at("2026-08-10T09:32:00Z").as_microsecond()).unwrap(),
+        "each point-in-time read has a distinct control sequence"
+    );
+    assert_eq!(
         closes(&restarted.adapter, &observed, &binding).await,
         Some(TerminalOutcome::Cancelled)
     );
