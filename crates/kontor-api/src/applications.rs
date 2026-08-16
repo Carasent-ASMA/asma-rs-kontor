@@ -43,9 +43,16 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ExternalId, ExternalName, IdempotencyKey,
-    MiniProjectId, ProjectId, RuntimeKindKey, SpecVersion, TaskId, Timestamp,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
+    ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId,
+    QuickSessionId, RoleCatalogId, RoleCode, RuntimeKindKey, SeatBindingId, SpecVersion, TaskId,
+    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
+use kontor_core::spec::{
+    CodeCategory, CodeLifecycle, RoleSegment, ShareabilityClass, ShareabilityClassifier,
+    ShareabilityProvenance,
+};
+use kontor_core::state::{PlacementState, TopologyLifecycle};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -81,6 +88,444 @@ pub struct RevisionRefDto {
     /// The pinned revision.
     #[schema(value_type = u32)]
     pub version: SpecVersion,
+}
+
+/// What a caller supplies when a new seat selects a standard role.
+///
+/// It carries the catalog revision and the code, and deliberately nothing else.
+/// A request that could also state the standard title would be a second source
+/// for a fact the catalog already owns, and the two would disagree the first
+/// time a title was corrected — so the title is resolved, never accepted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RoleSelectionDto {
+    /// The exact catalog revision the code is read from.
+    pub catalog_revision: RevisionRefDto,
+    /// The stable role code.
+    #[schema(value_type = String)]
+    pub role_code: RoleCode,
+    /// A presentation-only label, when this seat is shown as something more
+    /// specific than its standard title.
+    #[schema(value_type = Option<String>)]
+    pub custom_display_name: Option<ExternalName>,
+}
+
+/// One role as the server resolved it, on every projection and every receipt.
+///
+/// The extra fields over [`RoleSelectionDto`] are exactly the ones the daemon
+/// looked up. A client renders these; it never derives them, and it never keeps
+/// its own table of what a code means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ResolvedRoleRefDto {
+    /// The catalog revision this was resolved against.
+    pub catalog_revision: RevisionRefDto,
+    /// The stable role code.
+    #[schema(value_type = String)]
+    pub role_code: RoleCode,
+    /// The catalog's standard title for that code.
+    #[schema(value_type = String)]
+    pub standard_title: ExternalName,
+    /// The segment the catalog files it under.
+    #[schema(value_type = String)]
+    pub segment: RoleSegment,
+    /// The presentation-only label, when one was selected.
+    #[schema(value_type = Option<String>)]
+    pub custom_display_name: Option<ExternalName>,
+}
+
+/// Server-owned help for one controlled code.
+///
+/// Keyed by `(category, code)`. Compatibility and retired codes stay present as
+/// explicit entries: a client reading old state has to render them honestly, and
+/// a projection that dropped them would force every client to keep the private
+/// dictionary this projection exists to replace. A code with no entry is
+/// rendered as unknown, because the server returned no definition for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CodeHelpEntryDto {
+    /// The code itself.
+    pub code: String,
+    /// Its expanded name.
+    #[schema(value_type = String)]
+    pub full_name: ExternalName,
+    /// One concise sentence saying what it means.
+    #[schema(value_type = String)]
+    pub meaning: BoundedText,
+    /// The family it belongs to.
+    #[schema(value_type = String)]
+    pub category: CodeCategory,
+    /// Whether new state may still use it.
+    #[schema(value_type = String)]
+    pub lifecycle: CodeLifecycle,
+    /// The revision this definition was read from.
+    pub source: RevisionRefDto,
+}
+
+/// The exact immutable topology specification a projection is pinned to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PinnedSpecDto {
+    /// Specification identity.
+    #[schema(value_type = String)]
+    pub id: TopologySpecId,
+    /// The published revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// Canonical hash of that exact document.
+    #[schema(value_type = String)]
+    pub canonical_hash: ContentHash,
+}
+
+/// The native shape the server derived for one node.
+///
+/// Derived, never supplied. It is what the daemon intends to materialize from
+/// the pinned specification's declared capabilities — which is why a caller can
+/// read it and cannot write it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct DesiredBindingDto {
+    /// The runtime family this node's container must come from.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// The projection capabilities the adapter must support, in declared order.
+    pub projection_capabilities: Vec<String>,
+}
+
+/// What a runtime actually reported for one node, at one instant.
+///
+/// Present only after an exact-id readback. Its absence is a fact — nothing has
+/// been observed — and is never filled in from the desired shape, because a
+/// desired value presented as an observation is how drift stops being visible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ObservedBindingDto {
+    /// The runtime family that answered.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// The native container identity it reported.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// The native display name it reported.
+    #[schema(value_type = Option<String>)]
+    pub native_name: Option<ExternalId>,
+    /// The working directory it reported.
+    #[schema(value_type = Option<String>)]
+    pub cwd: Option<ExternalId>,
+    /// When the readback happened.
+    #[schema(value_type = String, format = DateTime)]
+    pub observed_at: Timestamp,
+}
+
+/// One seat a topology node hosts, as a projection reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologySeatDto {
+    /// The exact binding identity, which is what an attention or retirement
+    /// addresses. Naming a seat any other way would be a scan.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// The stable role-slot address within the node.
+    pub role_slot_id: String,
+    /// The role, as the server resolved it.
+    pub role: ResolvedRoleRefDto,
+    /// Its lifecycle.
+    #[schema(value_type = String)]
+    pub lifecycle: TopologyLifecycle,
+}
+
+/// One node of a topology projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologyNodeDto {
+    /// Durable node identity. The only topology handle a caller may address
+    /// back, and only for the operations that take one.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// Logical parent; absent only for the root.
+    #[schema(value_type = Option<String>)]
+    pub parent_topology_node_id: Option<TopologyNodeId>,
+    /// The data-defined kind the pinned specification declares.
+    #[schema(value_type = String)]
+    pub kind_key: TopologyKindKey,
+    /// Logical lifecycle.
+    #[schema(value_type = String)]
+    pub lifecycle: TopologyLifecycle,
+    /// Derived native-placement condition.
+    #[schema(value_type = String)]
+    pub placement: PlacementState,
+    /// The native shape the server derived.
+    pub desired_binding: DesiredBindingDto,
+    /// The native identity last read back, when anything has been.
+    pub observed_binding: Option<ObservedBindingDto>,
+    /// The seats this node hosts, in stable slot order.
+    pub seats: Vec<TopologySeatDto>,
+}
+
+/// The scope a semantic topology operation acts on.
+///
+/// A closed tagged union of the semantic ids Kontor already owns. This is the
+/// whole of what a model may say about *where* it wants topology: it names a
+/// meaning, and the server derives the kind, the parent and the native shape
+/// from the pinned specification. Adding a published kind to a specification
+/// therefore needs no change here, and inventing a kind per call stays
+/// impossible — which is the same rule stated as a type rather than as a
+/// validation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum SemanticTopologyTargetDto {
+    /// The project's own root.
+    ProjectRoot,
+    /// One Quick session.
+    QuickSession {
+        /// The session.
+        #[schema(value_type = String)]
+        quick_session_id: QuickSessionId,
+    },
+    /// One epic.
+    Epic {
+        /// The epic.
+        #[schema(value_type = String)]
+        epic_id: MiniProjectId,
+    },
+    /// One epic's control plane.
+    EpicControl {
+        /// The epic whose control plane this is.
+        #[schema(value_type = String)]
+        epic_id: MiniProjectId,
+    },
+    /// One ticket.
+    Ticket {
+        /// The task the ticket is linked to.
+        #[schema(value_type = String)]
+        task_id: TaskId,
+    },
+    /// One Advisor consultation.
+    AdvisorConsultation {
+        /// The consultation.
+        #[schema(value_type = String)]
+        advisor_run_id: AdvisorRunId,
+    },
+    /// One Committee consultation.
+    CommitteeConsultation {
+        /// The consultation.
+        #[schema(value_type = String)]
+        committee_run_id: CommitteeRunId,
+    },
+}
+
+/// What every new mutation answers with, whatever else it adds.
+///
+/// A caller gets the receipt, whether this call was the one that wrote,
+/// the revision to present next, and the position the answer is consistent
+/// with. `applied` is what makes a replay legible: the same key returns the
+/// original receipt with `Unchanged`, so a retry is distinguishable from a
+/// second effect without diffing anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct MutationReceiptDto {
+    /// The Realm the effect happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The receipt this command was committed under.
+    pub receipt_id: String,
+    /// Whether this call wrote, or replayed one that already had.
+    pub applied: AppliedDto,
+    /// The affected aggregate's revision after the effect.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The control-plane position the answer is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// How one durable record was classified for leaving Kontor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ShareabilityDto {
+    /// Whether it may ever leave.
+    #[schema(value_type = String)]
+    pub class: ShareabilityClass,
+    /// Who classified it.
+    #[schema(value_type = String)]
+    pub classifier: ShareabilityClassifier,
+    /// Default rule versus a human's write-time override.
+    #[schema(value_type = String)]
+    pub provenance: ShareabilityProvenance,
+}
+
+// ---------------------------------------------------------------------------
+// Topology specification, catalog and reference
+// ---------------------------------------------------------------------------
+
+/// What `topology-specs:draft` is asked for.
+///
+/// The vocabulary is data, so it arrives as the declared node kinds rather than
+/// as a choice between server-known shapes. `base` names a revision to start
+/// from; without one the draft is built from nothing.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+pub struct DraftTopologySpecRequest {
+    /// The revision to start from, when this is an edit rather than a first draft.
+    pub base: Option<RevisionRefDto>,
+    /// Human name for the specification.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// The unique logical root kind.
+    #[schema(value_type = String)]
+    pub root_kind: TopologyKindKey,
+    /// The data-defined node-kind vocabulary, in declaration order.
+    #[schema(value_type = Vec<Object>)]
+    pub node_kinds: Vec<serde_json::Value>,
+    /// Codes this vocabulary explains but never declares as usable.
+    #[serde(default)]
+    #[schema(value_type = Vec<Object>)]
+    pub historical_codes: Vec<serde_json::Value>,
+}
+
+/// One complete candidate document, built by the server and stored nowhere.
+///
+/// Draft is deliberately pure. There is no durable draft aggregate to put this
+/// in, publication already revalidates the exact candidate it is given, and a
+/// store added solely to remember editor scratch state would widen the authority
+/// boundary without making anything safer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologySpecCandidateDto {
+    /// The Realm that built it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The complete candidate document.
+    #[schema(value_type = Object)]
+    pub candidate: serde_json::Value,
+    /// The canonical hash of that exact candidate.
+    #[schema(value_type = String)]
+    pub candidate_hash: ContentHash,
+}
+
+/// What `topology-specs:validate` is asked for.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+pub struct ValidateTopologySpecRequest {
+    /// One complete candidate document.
+    #[schema(value_type = Object)]
+    pub candidate: serde_json::Value,
+}
+
+/// The ordered verdict on one candidate.
+///
+/// Violations are ordered so two runs over the same candidate produce the same
+/// list, which is what lets a client diff them. An empty list is the only thing
+/// that makes the candidate publishable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologySpecValidationDto {
+    /// The Realm that validated it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Every violation, in a stable order. Empty means publishable.
+    pub violations: Vec<String>,
+    /// The canonical hash of the exact candidate that was validated.
+    #[schema(value_type = String)]
+    pub validation_hash: ContentHash,
+}
+
+/// What `topology-specs:publish` is asked for.
+///
+/// It names the hash validation returned, so the server can prove it is
+/// publishing the document that was judged rather than one edited after the
+/// verdict — and it revalidates anyway, because a hash proves identity and not
+/// currency.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+pub struct PublishTopologySpecRequest {
+    /// The complete candidate to publish.
+    #[schema(value_type = Object)]
+    pub candidate: serde_json::Value,
+    /// The hash the validation answered with.
+    #[schema(value_type = String)]
+    pub validation_hash: ContentHash,
+    /// The project revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One published, immutable specification revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PublishedTopologySpecDto {
+    /// Its identity, revision and canonical hash.
+    pub spec: PinnedSpecDto,
+    /// How it was classified for leaving Kontor.
+    pub shareability: ShareabilityDto,
+    /// The receipt this publication was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// One exact immutable specification document, as a caller reads it back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologySpecDocumentDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Its identity, revision and canonical hash.
+    pub spec: PinnedSpecDto,
+    /// The exact published document.
+    #[schema(value_type = Object)]
+    pub document: serde_json::Value,
+    /// How it was classified.
+    pub shareability: ShareabilityDto,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// One resolved role from a catalog revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RoleCatalogEntryDto {
+    /// The stable code.
+    #[schema(value_type = String)]
+    pub role_code: RoleCode,
+    /// The standard human title.
+    #[schema(value_type = String)]
+    pub standard_title: ExternalName,
+    /// Where the role may be selected.
+    #[schema(value_type = String)]
+    pub segment: RoleSegment,
+    /// Its bounded responsibility summary.
+    #[schema(value_type = String)]
+    pub responsibility_summary: BoundedText,
+    /// Whether new seats may still select it.
+    #[schema(value_type = String)]
+    pub lifecycle: CodeLifecycle,
+    /// Default capabilities a deployment may narrow later.
+    pub capability_defaults: Vec<String>,
+}
+
+/// One whole catalog revision, in its declared order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RoleCatalogDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The catalog identity and revision.
+    #[schema(value_type = String)]
+    pub catalog_id: RoleCatalogId,
+    /// The revision read.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// Human name.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// Every role, sorted in the catalog's declared order rather than in any
+    /// order this projection chose.
+    pub roles: Vec<RoleCatalogEntryDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Every controlled code one epic's pinned revisions define.
+///
+/// One combined projection rather than three, because a client rendering a
+/// transcript has one code in hand and does not know which family it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CodeHelpProjectionDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The epic whose pins were read.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Every definition, sorted by `(category, code)`.
+    pub entries: Vec<CodeHelpEntryDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
 }
 
 // ---------------------------------------------------------------------------
@@ -1830,6 +2275,58 @@ pub trait ApplicationOperations: Send + Sync {
     /// What every configured runtime family can currently prove.
     async fn runtime_capabilities(&self) -> Result<Vec<RuntimeCapabilityDto>, ApiError>;
 
+    /// Build one complete topology-specification candidate. Persists nothing.
+    fn draft_topology_spec(
+        &self,
+        project_id: ProjectId,
+        request: &DraftTopologySpecRequest,
+    ) -> Result<TopologySpecCandidateDto, ApiError>;
+
+    /// Judge one complete candidate. Persists nothing.
+    fn validate_topology_spec(
+        &self,
+        project_id: ProjectId,
+        request: &ValidateTopologySpecRequest,
+    ) -> Result<TopologySpecValidationDto, ApiError>;
+
+    /// Publish one revalidated candidate as an immutable revision.
+    async fn publish_topology_spec(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublishTopologySpecRequest,
+    ) -> Result<PublishedTopologySpecDto, ApiError>;
+
+    /// One exact immutable specification document.
+    fn topology_spec(
+        &self,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
+    ) -> Result<TopologySpecDocumentDto, ApiError>;
+
+    /// One whole role-catalog revision, in its declared order.
+    fn role_catalog(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> Result<RoleCatalogDto, ApiError>;
+
+    /// One resolved catalog entry. An unknown revision or code is never guessed.
+    fn role(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+        role_code: &str,
+    ) -> Result<RoleCatalogEntryDto, ApiError>;
+
+    /// Every controlled code one epic's pinned revisions define.
+    fn code_help(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<CodeHelpProjectionDto, ApiError>;
+
     /// Apply one whole epic — graph, links, selections — atomically.
     async fn apply_epic(
         &self,
@@ -2301,6 +2798,177 @@ pub async fn runtime_capabilities(
 ) -> Result<Json<Vec<RuntimeCapabilityDto>>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     Ok(Json(state.applications().runtime_capabilities().await?))
+}
+
+/// Build one complete topology-specification candidate.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology-specs:draft", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    request_body = DraftTopologySpecRequest,
+    responses(
+        (status = 200, body = TopologySpecCandidateDto, description = "A candidate, persisted nowhere"),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn draft_topology_spec(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<DraftTopologySpecRequest>,
+) -> Result<Json<TopologySpecCandidateDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state.applications().draft_topology_spec(project_id, &request)?,
+    ))
+}
+
+/// Judge one complete topology-specification candidate.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology-specs:validate", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    request_body = ValidateTopologySpecRequest,
+    responses(
+        (status = 200, body = TopologySpecValidationDto, description = "Ordered violations, empty when publishable"),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn validate_topology_spec(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ValidateTopologySpecRequest>,
+) -> Result<Json<TopologySpecValidationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .validate_topology_spec(project_id, &request)?,
+    ))
+}
+
+/// Publish one revalidated candidate as an immutable revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology-specs:publish", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = PublishTopologySpecRequest,
+    responses(
+        (status = 200, body = PublishedTopologySpecDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "A stale project revision, or the key was reused for different bytes")
+    )
+)]
+pub async fn publish_topology_spec(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<PublishTopologySpecRequest>,
+) -> Result<Json<PublishedTopologySpecDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .publish_topology_spec(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// One exact immutable topology-specification document.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("spec_id" = String, Path, description = "The specification identity"),
+        ("version" = u32, Path, description = "The published revision")
+    ),
+    responses((status = 200, body = TopologySpecDocumentDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn topology_spec(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, spec_id, version)): Path<(String, String, u32)>,
+) -> Result<Json<TopologySpecDocumentDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let spec_id = parse_id(&state, TopologySpecId::parse(&spec_id))?;
+    let version = parse_id(&state, SpecVersion::parse(version))?;
+    Ok(Json(
+        state.applications().topology_spec(project_id, spec_id, version)?,
+    ))
+}
+
+/// One whole role-catalog revision.
+#[utoipa::path(
+    get, path = "/v1/catalog/role-catalogs/{catalog_id}/{version}", tag = "applications",
+    params(
+        ("catalog_id" = String, Path, description = "The catalog identity"),
+        ("version" = u32, Path, description = "The revision")
+    ),
+    responses((status = 200, body = RoleCatalogDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn role_catalog(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((catalog_id, version)): Path<(String, u32)>,
+) -> Result<Json<RoleCatalogDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let catalog_id = parse_id(&state, RoleCatalogId::parse(&catalog_id))?;
+    let version = parse_id(&state, SpecVersion::parse(version))?;
+    Ok(Json(state.applications().role_catalog(catalog_id, version)?))
+}
+
+/// One resolved role from one catalog revision.
+#[utoipa::path(
+    get, path = "/v1/catalog/role-catalogs/{catalog_id}/{version}/roles/{role_code}", tag = "applications",
+    params(
+        ("catalog_id" = String, Path, description = "The catalog identity"),
+        ("version" = u32, Path, description = "The revision"),
+        ("role_code" = String, Path, description = "The stable role code")
+    ),
+    responses(
+        (status = 200, body = RoleCatalogEntryDto),
+        (status = 401), (status = 403),
+        (status = 404, description = "An unknown revision or code, never a guess")
+    )
+)]
+pub async fn role(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((catalog_id, version, role_code)): Path<(String, u32, String)>,
+) -> Result<Json<RoleCatalogEntryDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let catalog_id = parse_id(&state, RoleCatalogId::parse(&catalog_id))?;
+    let version = parse_id(&state, SpecVersion::parse(version))?;
+    Ok(Json(
+        state.applications().role(catalog_id, version, &role_code)?,
+    ))
+}
+
+/// Every controlled code one epic's pinned revisions define.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/epics/{epic_id}/code-help", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose pins are read")
+    ),
+    responses((status = 200, body = CodeHelpProjectionDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn code_help(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+) -> Result<Json<CodeHelpProjectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(state.applications().code_help(project_id, epic_id)?))
 }
 
 /// Apply one whole epic atomically.

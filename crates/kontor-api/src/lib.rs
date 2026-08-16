@@ -254,6 +254,37 @@ pub fn router(state: ApiState) -> Router {
             "/v1/runtime-capabilities",
             get(applications::runtime_capabilities),
         )
+        // The topology vocabulary: what kinds may exist, what roles may be
+        // selected, and what every controlled code means. Draft and validate are
+        // POSTs that persist nothing, so neither takes an idempotency key.
+        .route(
+            "/v1/projects/{project_id}/topology-specs:draft",
+            post(applications::draft_topology_spec),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology-specs:validate",
+            post(applications::validate_topology_spec),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology-specs:publish",
+            post(applications::publish_topology_spec),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}",
+            get(applications::topology_spec),
+        )
+        .route(
+            "/v1/catalog/role-catalogs/{catalog_id}/{version}",
+            get(applications::role_catalog),
+        )
+        .route(
+            "/v1/catalog/role-catalogs/{catalog_id}/{version}/roles/{role_code}",
+            get(applications::role),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/code-help",
+            get(applications::code_help),
+        )
         .route(
             "/v1/projects/{project_id}/provider-account-profiles",
             get(applications::account_profiles),

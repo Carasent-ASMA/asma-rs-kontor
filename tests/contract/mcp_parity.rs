@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        64,
+        71,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        66,
+        73,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -558,6 +558,21 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_teams_get", CallerTier::Observer),
         ("kontor_team_draft_save", CallerTier::Operator),
         ("kontor_team_publish", CallerTier::Operator),
+        // KON-OP-03: publishing or reading a topology specification decides what
+        // kinds may ever exist in this project, so the whole specification family
+        // is admin — including the two that persist nothing, because a builder
+        // that hands back a complete candidate is still describing the shape of
+        // the project's sessions. The catalog and code help are the opposite:
+        // they are the server's own dictionary, and a client that cannot read
+        // them has to keep a private one, which is the failure they exist to
+        // prevent.
+        ("kontor_topology_spec_draft", CallerTier::Admin),
+        ("kontor_topology_spec_validate", CallerTier::Admin),
+        ("kontor_topology_spec_publish", CallerTier::Admin),
+        ("kontor_topology_spec_get", CallerTier::Admin),
+        ("kontor_role_catalog_get", CallerTier::Observer),
+        ("kontor_role_get", CallerTier::Observer),
+        ("kontor_code_help_get", CallerTier::Observer),
     ]);
     for tool in REGISTRY {
         assert_eq!(

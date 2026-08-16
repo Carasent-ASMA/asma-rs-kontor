@@ -125,6 +125,119 @@
         }
       }
     },
+    "/v1/catalog/role-catalogs/{catalog_id}/{version}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One whole role-catalog revision.",
+        "operationId": "role_catalog",
+        "parameters": [
+          {
+            "name": "catalog_id",
+            "in": "path",
+            "description": "The catalog identity",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "The revision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleCatalogDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/catalog/role-catalogs/{catalog_id}/{version}/roles/{role_code}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One resolved role from one catalog revision.",
+        "operationId": "role",
+        "parameters": [
+          {
+            "name": "catalog_id",
+            "in": "path",
+            "description": "The catalog identity",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "The revision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "role_code",
+            "in": "path",
+            "description": "The stable role code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleCatalogEntryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": "An unknown revision or code, never a guess"
+          }
+        }
+      }
+    },
     "/v1/catalog/team-templates": {
       "get": {
         "tags": [
@@ -954,6 +1067,56 @@
             }
           },
           "401": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/code-help": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every controlled code one epic's pinned revisions define.",
+        "operationId": "code_help",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose pins are read",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeHelpProjectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
             "description": ""
           },
           "404": {
@@ -2883,6 +3046,232 @@
         }
       }
     },
+    "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One exact immutable topology-specification document.",
+        "operationId": "topology_spec",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "spec_id",
+            "in": "path",
+            "description": "The specification identity",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "The published revision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopologySpecDocumentDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology-specs:draft": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Build one complete topology-specification candidate.",
+        "operationId": "draft_topology_spec",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftTopologySpecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A candidate, persisted nowhere",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopologySpecCandidateDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology-specs:publish": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one revalidated candidate as an immutable revision.",
+        "operationId": "publish_topology_spec",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishTopologySpecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishedTopologySpecDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "A stale project revision, or the key was reused for different bytes"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology-specs:validate": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Judge one complete topology-specification candidate.",
+        "operationId": "validate_topology_spec",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateTopologySpecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Ordered violations, empty when publishable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopologySpecValidationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/triggers/{trigger}/{version}": {
       "get": {
         "tags": [
@@ -4230,6 +4619,76 @@
           }
         }
       },
+      "CodeHelpEntryDto": {
+        "type": "object",
+        "description": "Server-owned help for one controlled code.\n\nKeyed by `(category, code)`. Compatibility and retired codes stay present as\nexplicit entries: a client reading old state has to render them honestly, and\na projection that dropped them would force every client to keep the private\ndictionary this projection exists to replace. A code with no entry is\nrendered as unknown, because the server returned no definition for it.",
+        "required": [
+          "code",
+          "full_name",
+          "meaning",
+          "category",
+          "lifecycle",
+          "source"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "The family it belongs to."
+          },
+          "code": {
+            "type": "string",
+            "description": "The code itself."
+          },
+          "full_name": {
+            "type": "string",
+            "description": "Its expanded name."
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "Whether new state may still use it."
+          },
+          "meaning": {
+            "type": "string",
+            "description": "One concise sentence saying what it means."
+          },
+          "source": {
+            "$ref": "#/components/schemas/RevisionRefDto",
+            "description": "The revision this definition was read from."
+          }
+        }
+      },
+      "CodeHelpProjectionDto": {
+        "type": "object",
+        "description": "Every controlled code one epic's pinned revisions define.\n\nOne combined projection rather than three, because a client rendering a\ntranscript has one code in hand and does not know which family it came from.",
+        "required": [
+          "realm_id",
+          "epic_id",
+          "entries",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodeHelpEntryDto"
+            },
+            "description": "Every definition, sorted by `(category, code)`."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "The epic whose pins were read."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was read in."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
+          }
+        }
+      },
       "CommandRequest": {
         "type": "object",
         "description": "What a command asks for, as a caller states it.",
@@ -4615,6 +5074,27 @@
           }
         }
       },
+      "DesiredBindingDto": {
+        "type": "object",
+        "description": "The native shape the server derived for one node.\n\nDerived, never supplied. It is what the daemon intends to materialize from\nthe pinned specification's declared capabilities — which is why a caller can\nread it and cannot write it.",
+        "required": [
+          "runtime_kind",
+          "projection_capabilities"
+        ],
+        "properties": {
+          "projection_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The projection capabilities the adapter must support, in declared order."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The runtime family this node's container must come from."
+          }
+        }
+      },
       "DisarmRequest": {
         "type": "object",
         "description": "What `execution:disarm` is asked for.",
@@ -4635,6 +5115,50 @@
           "revoked_by": {
             "type": "string",
             "description": "The account profile acting as the revoking authority."
+          }
+        }
+      },
+      "DraftTopologySpecRequest": {
+        "type": "object",
+        "description": "What `topology-specs:draft` is asked for.\n\nThe vocabulary is data, so it arrives as the declared node kinds rather than\nas a choice between server-known shapes. `base` names a revision to start\nfrom; without one the draft is built from nothing.",
+        "required": [
+          "name",
+          "root_kind",
+          "node_kinds"
+        ],
+        "properties": {
+          "base": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RevisionRefDto",
+                "description": "The revision to start from, when this is an edit rather than a first draft."
+              }
+            ]
+          },
+          "historical_codes": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Codes this vocabulary explains but never declares as usable."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human name for the specification."
+          },
+          "node_kinds": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The data-defined node-kind vocabulary, in declaration order."
+          },
+          "root_kind": {
+            "type": "string",
+            "description": "The unique logical root kind."
           }
         }
       },
@@ -5521,6 +6045,80 @@
           }
         }
       },
+      "MutationReceiptDto": {
+        "type": "object",
+        "description": "What every new mutation answers with, whatever else it adds.\n\nA caller gets the receipt, whether this call was the one that wrote,\nthe revision to present next, and the position the answer is consistent\nwith. `applied` is what makes a replay legible: the same key returns the\noriginal receipt with `Unchanged`, so a retry is distinguishable from a\nsecond effect without diffing anything.",
+        "required": [
+          "realm_id",
+          "receipt_id",
+          "applied",
+          "revision",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call wrote, or replayed one that already had."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the effect happened in."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "The receipt this command was committed under."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The affected aggregate's revision after the effect.",
+            "minimum": 0
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The control-plane position the answer is consistent with."
+          }
+        }
+      },
+      "ObservedBindingDto": {
+        "type": "object",
+        "description": "What a runtime actually reported for one node, at one instant.\n\nPresent only after an exact-id readback. Its absence is a fact — nothing has\nbeen observed — and is never filled in from the desired shape, because a\ndesired value presented as an observation is how drift stops being visible.",
+        "required": [
+          "runtime_kind",
+          "native_id",
+          "observed_at"
+        ],
+        "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The working directory it reported."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The native container identity it reported."
+          },
+          "native_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The native display name it reported."
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the readback happened."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The runtime family that answered."
+          }
+        }
+      },
       "PermissionAckDto": {
         "type": "object",
         "description": "The runtime's answer to one permission response.",
@@ -5579,6 +6177,31 @@
           "decision": {
             "type": "string",
             "description": "The answer."
+          }
+        }
+      },
+      "PinnedSpecDto": {
+        "type": "object",
+        "description": "The exact immutable topology specification a projection is pinned to.",
+        "required": [
+          "id",
+          "version",
+          "canonical_hash"
+        ],
+        "properties": {
+          "canonical_hash": {
+            "type": "string",
+            "description": "Canonical hash of that exact document."
+          },
+          "id": {
+            "type": "string",
+            "description": "Specification identity."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The published revision.",
+            "minimum": 0
           }
         }
       },
@@ -5938,6 +6561,31 @@
           }
         }
       },
+      "PublishTopologySpecRequest": {
+        "type": "object",
+        "description": "What `topology-specs:publish` is asked for.\n\nIt names the hash validation returned, so the server can prove it is\npublishing the document that was judged rather than one edited after the\nverdict — and it revalidates anyway, because a hash proves identity and not\ncurrency.",
+        "required": [
+          "candidate",
+          "validation_hash",
+          "expected_revision"
+        ],
+        "properties": {
+          "candidate": {
+            "type": "object",
+            "description": "The complete candidate to publish."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller believes is current.",
+            "minimum": 0
+          },
+          "validation_hash": {
+            "type": "string",
+            "description": "The hash the validation answered with."
+          }
+        }
+      },
       "PublishedTeamRevisionDto": {
         "type": "object",
         "description": "One immutable published team-template revision.",
@@ -5976,6 +6624,29 @@
             "format": "int32",
             "description": "Monotonic version within `id`.",
             "minimum": 0
+          }
+        }
+      },
+      "PublishedTopologySpecDto": {
+        "type": "object",
+        "description": "One published, immutable specification revision.",
+        "required": [
+          "spec",
+          "shareability",
+          "receipt"
+        ],
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt this publication was committed under."
+          },
+          "shareability": {
+            "$ref": "#/components/schemas/ShareabilityDto",
+            "description": "How it was classified for leaving Kontor."
+          },
+          "spec": {
+            "$ref": "#/components/schemas/PinnedSpecDto",
+            "description": "Its identity, revision and canonical hash."
           }
         }
       },
@@ -6374,6 +7045,41 @@
           }
         }
       },
+      "ResolvedRoleRefDto": {
+        "type": "object",
+        "description": "One role as the server resolved it, on every projection and every receipt.\n\nThe extra fields over [`RoleSelectionDto`] are exactly the ones the daemon\nlooked up. A client renders these; it never derives them, and it never keeps\nits own table of what a code means.",
+        "required": [
+          "catalog_revision",
+          "role_code",
+          "standard_title",
+          "segment"
+        ],
+        "properties": {
+          "catalog_revision": {
+            "$ref": "#/components/schemas/RevisionRefDto",
+            "description": "The catalog revision this was resolved against."
+          },
+          "custom_display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The presentation-only label, when one was selected."
+          },
+          "role_code": {
+            "type": "string",
+            "description": "The stable role code."
+          },
+          "segment": {
+            "type": "string",
+            "description": "The segment the catalog files it under."
+          },
+          "standard_title": {
+            "type": "string",
+            "description": "The catalog's standard title for that code."
+          }
+        }
+      },
       "RevisionRefDto": {
         "type": "object",
         "description": "One immutable specification revision, as a caller pins it.",
@@ -6391,6 +7097,116 @@
             "format": "int32",
             "description": "The pinned revision.",
             "minimum": 0
+          }
+        }
+      },
+      "RoleCatalogDto": {
+        "type": "object",
+        "description": "One whole catalog revision, in its declared order.",
+        "required": [
+          "realm_id",
+          "catalog_id",
+          "version",
+          "name",
+          "roles",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "description": "The catalog identity and revision."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human name."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was read in."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoleCatalogEntryDto"
+            },
+            "description": "Every role, sorted in the catalog's declared order rather than in any\norder this projection chose."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The revision read.",
+            "minimum": 0
+          }
+        }
+      },
+      "RoleCatalogEntryDto": {
+        "type": "object",
+        "description": "One resolved role from a catalog revision.",
+        "required": [
+          "role_code",
+          "standard_title",
+          "segment",
+          "responsibility_summary",
+          "lifecycle",
+          "capability_defaults"
+        ],
+        "properties": {
+          "capability_defaults": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Default capabilities a deployment may narrow later."
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "Whether new seats may still select it."
+          },
+          "responsibility_summary": {
+            "type": "string",
+            "description": "Its bounded responsibility summary."
+          },
+          "role_code": {
+            "type": "string",
+            "description": "The stable code."
+          },
+          "segment": {
+            "type": "string",
+            "description": "Where the role may be selected."
+          },
+          "standard_title": {
+            "type": "string",
+            "description": "The standard human title."
+          }
+        }
+      },
+      "RoleSelectionDto": {
+        "type": "object",
+        "description": "What a caller supplies when a new seat selects a standard role.\n\nIt carries the catalog revision and the code, and deliberately nothing else.\nA request that could also state the standard title would be a second source\nfor a fact the catalog already owns, and the two would disagree the first\ntime a title was corrected — so the title is resolved, never accepted.",
+        "required": [
+          "catalog_revision",
+          "role_code"
+        ],
+        "properties": {
+          "catalog_revision": {
+            "$ref": "#/components/schemas/RevisionRefDto",
+            "description": "The exact catalog revision the code is read from."
+          },
+          "custom_display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A presentation-only label, when this seat is shown as something more\nspecific than its standard title."
+          },
+          "role_code": {
+            "type": "string",
+            "description": "The stable role code."
           }
         }
       },
@@ -6925,6 +7741,146 @@
           }
         }
       },
+      "SemanticTopologyTargetDto": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The project's own root.",
+            "required": [
+              "scope"
+            ],
+            "properties": {
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "project_root"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One Quick session.",
+            "required": [
+              "quick_session_id",
+              "scope"
+            ],
+            "properties": {
+              "quick_session_id": {
+                "type": "string",
+                "description": "The session."
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "quick_session"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One epic.",
+            "required": [
+              "epic_id",
+              "scope"
+            ],
+            "properties": {
+              "epic_id": {
+                "type": "string",
+                "description": "The epic."
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "epic"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One epic's control plane.",
+            "required": [
+              "epic_id",
+              "scope"
+            ],
+            "properties": {
+              "epic_id": {
+                "type": "string",
+                "description": "The epic whose control plane this is."
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "epic_control"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One ticket.",
+            "required": [
+              "task_id",
+              "scope"
+            ],
+            "properties": {
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "ticket"
+                ]
+              },
+              "task_id": {
+                "type": "string",
+                "description": "The task the ticket is linked to."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One Advisor consultation.",
+            "required": [
+              "advisor_run_id",
+              "scope"
+            ],
+            "properties": {
+              "advisor_run_id": {
+                "type": "string",
+                "description": "The consultation."
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "advisor_consultation"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One Committee consultation.",
+            "required": [
+              "committee_run_id",
+              "scope"
+            ],
+            "properties": {
+              "committee_run_id": {
+                "type": "string",
+                "description": "The consultation."
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "committee_consultation"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The scope a semantic topology operation acts on.\n\nA closed tagged union of the semantic ids Kontor already owns. This is the\nwhole of what a model may say about *where* it wants topology: it names a\nmeaning, and the server derives the kind, the parent and the native shape\nfrom the pinned specification. Adding a published kind to a specification\ntherefore needs no change here, and inventing a kind per call stays\nimpossible — which is the same rule stated as a type rather than as a\nvalidation."
+      },
       "SettleTurnRequest": {
         "type": "object",
         "description": "What `turns:settle` is asked for.\n\nIt settles **Kontor's** bounded turn in a persistent seat. There is no field\nhere for a runtime verdict, a terminal state or a native observation, and\nthat is the point: a seat is expected to still be sitting there when this\nreturns, ready for its next turn. Whether the *session* ever ended is a\nseparate question only the runtime can answer, and `runtime:settle` is where\nit is asked.",
@@ -7046,6 +8002,29 @@
             "format": "int32",
             "description": "Its position in that seat's sequence of turns.",
             "minimum": 0
+          }
+        }
+      },
+      "ShareabilityDto": {
+        "type": "object",
+        "description": "How one durable record was classified for leaving Kontor.",
+        "required": [
+          "class",
+          "classifier",
+          "provenance"
+        ],
+        "properties": {
+          "class": {
+            "type": "string",
+            "description": "Whether it may ever leave."
+          },
+          "classifier": {
+            "type": "string",
+            "description": "Who classified it."
+          },
+          "provenance": {
+            "type": "string",
+            "description": "Default rule versus a human's write-time override."
           }
         }
       },
@@ -8072,6 +9051,176 @@
           }
         }
       },
+      "TopologyNodeDto": {
+        "type": "object",
+        "description": "One node of a topology projection.",
+        "required": [
+          "topology_node_id",
+          "kind_key",
+          "lifecycle",
+          "placement",
+          "desired_binding",
+          "seats"
+        ],
+        "properties": {
+          "desired_binding": {
+            "$ref": "#/components/schemas/DesiredBindingDto",
+            "description": "The native shape the server derived."
+          },
+          "kind_key": {
+            "type": "string",
+            "description": "The data-defined kind the pinned specification declares."
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "Logical lifecycle."
+          },
+          "observed_binding": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ObservedBindingDto",
+                "description": "The native identity last read back, when anything has been."
+              }
+            ]
+          },
+          "parent_topology_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Logical parent; absent only for the root."
+          },
+          "placement": {
+            "type": "string",
+            "description": "Derived native-placement condition."
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TopologySeatDto"
+            },
+            "description": "The seats this node hosts, in stable slot order."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "Durable node identity. The only topology handle a caller may address\nback, and only for the operations that take one."
+          }
+        }
+      },
+      "TopologySeatDto": {
+        "type": "object",
+        "description": "One seat a topology node hosts, as a projection reports it.",
+        "required": [
+          "seat_binding_id",
+          "role_slot_id",
+          "role",
+          "lifecycle"
+        ],
+        "properties": {
+          "lifecycle": {
+            "type": "string",
+            "description": "Its lifecycle."
+          },
+          "role": {
+            "$ref": "#/components/schemas/ResolvedRoleRefDto",
+            "description": "The role, as the server resolved it."
+          },
+          "role_slot_id": {
+            "type": "string",
+            "description": "The stable role-slot address within the node."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The exact binding identity, which is what an attention or retirement\naddresses. Naming a seat any other way would be a scan."
+          }
+        }
+      },
+      "TopologySpecCandidateDto": {
+        "type": "object",
+        "description": "One complete candidate document, built by the server and stored nowhere.\n\nDraft is deliberately pure. There is no durable draft aggregate to put this\nin, publication already revalidates the exact candidate it is given, and a\nstore added solely to remember editor scratch state would widen the authority\nboundary without making anything safer.",
+        "required": [
+          "realm_id",
+          "candidate",
+          "candidate_hash"
+        ],
+        "properties": {
+          "candidate": {
+            "type": "object",
+            "description": "The complete candidate document."
+          },
+          "candidate_hash": {
+            "type": "string",
+            "description": "The canonical hash of that exact candidate."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that built it."
+          }
+        }
+      },
+      "TopologySpecDocumentDto": {
+        "type": "object",
+        "description": "One exact immutable specification document, as a caller reads it back.",
+        "required": [
+          "realm_id",
+          "spec",
+          "document",
+          "shareability",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "document": {
+            "type": "object",
+            "description": "The exact published document."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it belongs to."
+          },
+          "shareability": {
+            "$ref": "#/components/schemas/ShareabilityDto",
+            "description": "How it was classified."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
+          },
+          "spec": {
+            "$ref": "#/components/schemas/PinnedSpecDto",
+            "description": "Its identity, revision and canonical hash."
+          }
+        }
+      },
+      "TopologySpecValidationDto": {
+        "type": "object",
+        "description": "The ordered verdict on one candidate.\n\nViolations are ordered so two runs over the same candidate produce the same\nlist, which is what lets a client diff them. An empty list is the only thing\nthat makes the candidate publishable.",
+        "required": [
+          "realm_id",
+          "violations",
+          "validation_hash"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that validated it."
+          },
+          "validation_hash": {
+            "type": "string",
+            "description": "The canonical hash of the exact candidate that was validated."
+          },
+          "violations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every violation, in a stable order. Empty means publishable."
+          }
+        }
+      },
       "TriggerSpecDto": {
         "type": "object",
         "description": "One pinned trigger revision, as an operator reads it back.\n\nThe filter clauses and the dedup pointers are reported as *pointers*, never\nwith the values a matching event carried: a trigger is configuration, and an\nevent's contents belong to the event.",
@@ -8162,6 +9311,19 @@
           "to_role_slot": {
             "type": "string",
             "description": "The slot the work was handed to."
+          }
+        }
+      },
+      "ValidateTopologySpecRequest": {
+        "type": "object",
+        "description": "What `topology-specs:validate` is asked for.",
+        "required": [
+          "candidate"
+        ],
+        "properties": {
+          "candidate": {
+            "type": "object",
+            "description": "One complete candidate document."
           }
         }
       },

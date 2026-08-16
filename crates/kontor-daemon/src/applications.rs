@@ -47,6 +47,11 @@ use kontor_api::applications::{
     WaiveRoleSlotRequest, WorkProfileDetailDto,
 };
 use kontor_api::applications::{
+    CodeHelpProjectionDto, DraftTopologySpecRequest, PublishTopologySpecRequest,
+    PublishedTopologySpecDto, RoleCatalogDto, RoleCatalogEntryDto, TopologySpecCandidateDto,
+    TopologySpecDocumentDto, TopologySpecValidationDto, ValidateTopologySpecRequest,
+};
+use kontor_api::applications::{
     GateProjectionDto, GateVerdictDto, ProvenanceDto, RecordGateRequest, RedactionDto,
     ResolveContextRequest, ResolvedContextDto, RuntimeSettlementDto, SelectionDto,
     SelectionRequest, TicketFieldDiffDto, TicketReconcileAppliedDto, TicketReconcileApplyRequest,
@@ -60,9 +65,9 @@ use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CanonicalDocument,
     CommandReceiptId, ConnectorKey, ContentHash, CurrencyCode, ExecutionAuthorizationId,
     ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey,
-    Money, ProjectId, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId,
-    SourceEventId, SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
-    TriggerKey,
+    Money, ProjectId, RoleCatalogId, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION,
+    SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp,
+    TopologyNodeId, TopologySpecId, TriggerKey,
 };
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
@@ -2741,6 +2746,96 @@ impl ApplicationOperations for Services {
             }
         }
         Ok(reported)
+    }
+
+    // -- Topology specification, catalog and reference ----------------------
+    //
+    // The contract is fixed here so the registry, the generated clients and the
+    // authority rules are one decision rather than one per successor. The
+    // behaviour lands with the services that own it; until then every one of
+    // these refuses before any effect. A typed refusal is the honest answer: an
+    // empty projection would be indistinguishable from a project that really has
+    // no topology, which is exactly the lie that makes a missing service look
+    // like a working one.
+
+    fn draft_topology_spec(
+        &self,
+        _project_id: ProjectId,
+        _request: &DraftTopologySpecRequest,
+    ) -> Result<TopologySpecCandidateDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the topology-specification builder is not composed in this build",
+        ))
+    }
+
+    fn validate_topology_spec(
+        &self,
+        _project_id: ProjectId,
+        _request: &ValidateTopologySpecRequest,
+    ) -> Result<TopologySpecValidationDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the topology-specification validator is not composed in this build",
+        ))
+    }
+
+    async fn publish_topology_spec(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _request: &PublishTopologySpecRequest,
+    ) -> Result<PublishedTopologySpecDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "topology-specification publication is not composed in this build",
+        ))
+    }
+
+    fn topology_spec(
+        &self,
+        _project_id: ProjectId,
+        _spec_id: TopologySpecId,
+        _version: SpecVersion,
+    ) -> Result<TopologySpecDocumentDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "topology-specification reads are not composed in this build",
+        ))
+    }
+
+    fn role_catalog(
+        &self,
+        _catalog_id: RoleCatalogId,
+        _version: SpecVersion,
+    ) -> Result<RoleCatalogDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the role catalog is not composed in this build",
+        ))
+    }
+
+    fn role(
+        &self,
+        _catalog_id: RoleCatalogId,
+        _version: SpecVersion,
+        _role_code: &str,
+    ) -> Result<RoleCatalogEntryDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the role catalog is not composed in this build",
+        ))
+    }
+
+    fn code_help(
+        &self,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+    ) -> Result<CodeHelpProjectionDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "server-owned code help is not composed in this build",
+        ))
     }
 
     async fn apply_epic(

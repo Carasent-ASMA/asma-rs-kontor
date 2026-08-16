@@ -58,7 +58,11 @@ fn sample(ty: ArgType, name: &str) -> serde_json::Value {
         | ArgType::TaskId
         | ArgType::TeamRunId
         | ArgType::AgentRunId
-        | ArgType::AccountProfileId => serde_json::Value::String(UUID.to_owned()),
+        | ArgType::AccountProfileId
+        | ArgType::TopologySpecId
+        | ArgType::TopologyNodeId
+        | ArgType::SeatBindingId
+        | ArgType::RoleCatalogId => serde_json::Value::String(UUID.to_owned()),
         ArgType::IntakeReceiptId => serde_json::Value::String(UUID.to_owned()),
         ArgType::OpenKey => serde_json::Value::String("codex".to_owned()),
         ArgType::ExternalId => serde_json::Value::String("external-event-1".to_owned()),

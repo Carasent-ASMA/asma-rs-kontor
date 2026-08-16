@@ -10923,3 +10923,125 @@ async fn the_configured_capacity_and_not_a_compiled_one_decides_what_is_admitted
         started.body
     );
 }
+
+// ---------------------------------------------------------------------------
+// The topology vocabulary, before it has a service
+// ---------------------------------------------------------------------------
+
+/// A contract that exists before its service refuses; it does not improvise.
+///
+/// The whole topology vocabulary is registered, authorized and documented in one
+/// go so the route table, the registry, the generated clients and the authority
+/// rules are a single decision rather than one per successor. None of it has an
+/// application service yet, and the tempting failure is precise: answering an
+/// empty projection. A caller cannot tell that from a project that genuinely has
+/// no topology, so an empty success here would be a lie that reads as data. The
+/// honest answer is a typed refusal, and this pins it.
+#[tokio::test]
+async fn a_contract_only_topology_route_refuses_instead_of_reporting_success() {
+    let world = World::open().await;
+    let catalog = kontor_core::id::RoleCatalogId::generate();
+
+    for (call, tier) in [
+        (
+            Call::get(format!(
+                "/v1/catalog/role-catalogs/{catalog}/1"
+            )),
+            "observer",
+        ),
+        (
+            Call::get(format!(
+                "/v1/catalog/role-catalogs/{catalog}/1/roles/lsa"
+            )),
+            "observer",
+        ),
+        (
+            Call::get(format!(
+                "/v1/projects/{}/epics/{}/code-help",
+                world.project,
+                MiniProjectId::generate()
+            )),
+            "observer",
+        ),
+    ] {
+        let answer = call.signed_as(&world, tier).send(&world).await;
+        assert_eq!(
+            answer.status, 503,
+            "a read with no service behind it must refuse: {}",
+            answer.body
+        );
+        assert_eq!(answer.code(), "unavailable");
+    }
+
+    // The one write in this family refuses before it can commit anything, and
+    // says so with the same code rather than inventing a receipt.
+    let published = Call::post(
+        format!("/v1/projects/{}/topology-specs:publish", world.project),
+        &serde_json::json!({
+            "candidate": { "name": "Standard" },
+            "validation_hash": "0".repeat(64),
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("publish-before-the-service-exists")
+    .send(&world)
+    .await;
+    assert_eq!(published.status, 503, "{}", published.body);
+    assert_eq!(published.code(), "unavailable");
+    assert!(
+        published.json().get("receipt_id").is_none(),
+        "a refusal must not carry a receipt: {}",
+        published.body
+    );
+}
+
+/// The authority on these routes is real, not decoration.
+///
+/// Every one of them refuses today, so a tier that was never checked would look
+/// exactly like a tier that was. The difference is the code: an observer asking
+/// for an admin operation must be told `forbidden` *before* the service is found
+/// missing, which is the only evidence that the check runs at all.
+#[tokio::test]
+async fn the_specification_routes_check_authority_before_they_find_no_service() {
+    let world = World::open().await;
+
+    for call in [
+        Call::post(
+            format!("/v1/projects/{}/topology-specs:draft", world.project),
+            &serde_json::json!({
+                "name": "Standard",
+                "root_kind": "PSW",
+                "node_kinds": [],
+            }),
+        ),
+        Call::post(
+            format!("/v1/projects/{}/topology-specs:validate", world.project),
+            &serde_json::json!({ "candidate": {} }),
+        ),
+    ] {
+        let refused = call.signed_as(&world, "observer").send(&world).await;
+        assert_eq!(
+            refused.status, 403,
+            "an observer must be refused before the missing service is reached: {}",
+            refused.body
+        );
+        assert_eq!(refused.code(), "forbidden");
+    }
+
+    // The same route, at the authority it actually requires, gets past the check
+    // and lands on the honest "no service yet".
+    let drafted = Call::post(
+        format!("/v1/projects/{}/topology-specs:draft", world.project),
+        &serde_json::json!({
+            "name": "Standard",
+            "root_kind": "PSW",
+            "node_kinds": [],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(drafted.status, 503, "{}", drafted.body);
+    assert_eq!(drafted.code(), "unavailable");
+}

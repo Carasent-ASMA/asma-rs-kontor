@@ -224,6 +224,17 @@ entity_ids! {
     SeatBindingId,
     /// Identifies one server-owned role catalog across revisions.
     RoleCatalogId,
+    /// Identifies one Quick session: work that is being done before anyone has
+    /// decided it deserves an epic.
+    ///
+    /// It is a first-class identity rather than a scratch label because a Quick
+    /// session can be *promoted*, and a promotion has to name exactly what it is
+    /// promoting. A label would make that a search.
+    QuickSessionId,
+    /// Identifies one consultation of an Advisor.
+    AdvisorRunId,
+    /// Identifies one consultation of a Committee.
+    CommitteeRunId,
 }
 
 fn parse_entity_uuid(subject: &'static str, text: &str) -> DomainResult<Uuid> {

@@ -81,6 +81,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/catalog/role-catalogs/{catalog_id}/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One whole role-catalog revision. */
+        get: operations["role_catalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/catalog/role-catalogs/{catalog_id}/{version}/roles/{role_code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One resolved role from one catalog revision. */
+        get: operations["role"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/catalog/team-templates": {
         parameters: {
             query?: never;
@@ -418,6 +452,23 @@ export interface paths {
         };
         /** The whole of one epic, read at one control-plane position. */
         get: operations["read_epic"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/code-help": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every controlled code one epic's pinned revisions define. */
+        get: operations["code_help"];
         put?: never;
         post?: never;
         delete?: never;
@@ -994,6 +1045,74 @@ export interface paths {
          *     obligation the template imposed, on the template's own terms.
          */
         post: operations["waive_role_slot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One exact immutable topology-specification document. */
+        get: operations["topology_spec"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology-specs:draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Build one complete topology-specification candidate. */
+        post: operations["draft_topology_spec"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology-specs:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one revalidated candidate as an immutable revision. */
+        post: operations["publish_topology_spec"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology-specs:validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Judge one complete topology-specification candidate. */
+        post: operations["validate_topology_spec"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1656,6 +1775,48 @@ export interface components {
              */
             max_tokens: number;
         };
+        /**
+         * @description Server-owned help for one controlled code.
+         *
+         *     Keyed by `(category, code)`. Compatibility and retired codes stay present as
+         *     explicit entries: a client reading old state has to render them honestly, and
+         *     a projection that dropped them would force every client to keep the private
+         *     dictionary this projection exists to replace. A code with no entry is
+         *     rendered as unknown, because the server returned no definition for it.
+         */
+        CodeHelpEntryDto: {
+            /** @description The family it belongs to. */
+            category: string;
+            /** @description The code itself. */
+            code: string;
+            /** @description Its expanded name. */
+            full_name: string;
+            /** @description Whether new state may still use it. */
+            lifecycle: string;
+            /** @description One concise sentence saying what it means. */
+            meaning: string;
+            /** @description The revision this definition was read from. */
+            source: components["schemas"]["RevisionRefDto"];
+        };
+        /**
+         * @description Every controlled code one epic's pinned revisions define.
+         *
+         *     One combined projection rather than three, because a client rendering a
+         *     transcript has one code in hand and does not know which family it came from.
+         */
+        CodeHelpProjectionDto: {
+            /** @description Every definition, sorted by `(category, code)`. */
+            entries: components["schemas"]["CodeHelpEntryDto"][];
+            /** @description The epic whose pins were read. */
+            epic_id: string;
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
+        };
         /** @description What a command asks for, as a caller states it. */
         CommandRequest: {
             /** @description The desired run state, for the commands that carry one. */
@@ -1843,6 +2004,19 @@ export interface components {
             /** @description `total` | `growth_after_prefix`. */
             trigger_scope: string;
         };
+        /**
+         * @description The native shape the server derived for one node.
+         *
+         *     Derived, never supplied. It is what the daemon intends to materialize from
+         *     the pinned specification's declared capabilities — which is why a caller can
+         *     read it and cannot write it.
+         */
+        DesiredBindingDto: {
+            /** @description The projection capabilities the adapter must support, in declared order. */
+            projection_capabilities: string[];
+            /** @description The runtime family this node's container must come from. */
+            runtime_kind: string;
+        };
         /** @description What `execution:disarm` is asked for. */
         DisarmRequest: {
             /** @description The authorization to revoke. */
@@ -1851,6 +2025,24 @@ export interface components {
             reason: string;
             /** @description The account profile acting as the revoking authority. */
             revoked_by: string;
+        };
+        /**
+         * @description What `topology-specs:draft` is asked for.
+         *
+         *     The vocabulary is data, so it arrives as the declared node kinds rather than
+         *     as a choice between server-known shapes. `base` names a revision to start
+         *     from; without one the draft is built from nothing.
+         */
+        DraftTopologySpecRequest: {
+            base?: null | components["schemas"]["RevisionRefDto"];
+            /** @description Codes this vocabulary explains but never declares as usable. */
+            historical_codes?: Record<string, never>[];
+            /** @description Human name for the specification. */
+            name: string;
+            /** @description The data-defined node-kind vocabulary, in declaration order. */
+            node_kinds: Record<string, never>[];
+            /** @description The unique logical root kind. */
+            root_kind: string;
         };
         /**
          * @description What `provider-account-profiles:ensure` is asked for.
@@ -2289,6 +2481,55 @@ export interface components {
              */
             snapshot_cursor: number;
         };
+        /**
+         * @description What every new mutation answers with, whatever else it adds.
+         *
+         *     A caller gets the receipt, whether this call was the one that wrote,
+         *     the revision to present next, and the position the answer is consistent
+         *     with. `applied` is what makes a replay legible: the same key returns the
+         *     original receipt with `Unchanged`, so a retry is distinguishable from a
+         *     second effect without diffing anything.
+         */
+        MutationReceiptDto: {
+            /** @description Whether this call wrote, or replayed one that already had. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The Realm the effect happened in. */
+            realm_id: string;
+            /** @description The receipt this command was committed under. */
+            receipt_id: string;
+            /**
+             * Format: int64
+             * @description The affected aggregate's revision after the effect.
+             */
+            revision: number;
+            /**
+             * Format: int64
+             * @description The control-plane position the answer is consistent with.
+             */
+            snapshot_cursor: number;
+        };
+        /**
+         * @description What a runtime actually reported for one node, at one instant.
+         *
+         *     Present only after an exact-id readback. Its absence is a fact — nothing has
+         *     been observed — and is never filled in from the desired shape, because a
+         *     desired value presented as an observation is how drift stops being visible.
+         */
+        ObservedBindingDto: {
+            /** @description The working directory it reported. */
+            cwd?: string | null;
+            /** @description The native container identity it reported. */
+            native_id: string;
+            /** @description The native display name it reported. */
+            native_name?: string | null;
+            /**
+             * Format: date-time
+             * @description When the readback happened.
+             */
+            observed_at: string;
+            /** @description The runtime family that answered. */
+            runtime_kind: string;
+        };
         /** @description The runtime's answer to one permission response. */
         PermissionAckDto: {
             /**
@@ -2319,6 +2560,18 @@ export interface components {
         PermissionRequestBody: {
             /** @description The answer. */
             decision: string;
+        };
+        /** @description The exact immutable topology specification a projection is pinned to. */
+        PinnedSpecDto: {
+            /** @description Canonical hash of that exact document. */
+            canonical_hash: string;
+            /** @description Specification identity. */
+            id: string;
+            /**
+             * Format: int32
+             * @description The published revision.
+             */
+            version: number;
         };
         /** @description One artifact contract a work profile declares. */
         ProfileArtifactDto: {
@@ -2479,6 +2732,25 @@ export interface components {
             /** @description The source inside that layer. */
             source_id: string;
         };
+        /**
+         * @description What `topology-specs:publish` is asked for.
+         *
+         *     It names the hash validation returned, so the server can prove it is
+         *     publishing the document that was judged rather than one edited after the
+         *     verdict — and it revalidates anyway, because a hash proves identity and not
+         *     currency.
+         */
+        PublishTopologySpecRequest: {
+            /** @description The complete candidate to publish. */
+            candidate: Record<string, never>;
+            /**
+             * Format: int64
+             * @description The project revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The hash the validation answered with. */
+            validation_hash: string;
+        };
         /** @description One immutable published team-template revision. */
         PublishedTeamRevisionDto: {
             /** @description Stable logical template id. */
@@ -2494,6 +2766,15 @@ export interface components {
              * @description Monotonic version within `id`.
              */
             version: number;
+        };
+        /** @description One published, immutable specification revision. */
+        PublishedTopologySpecDto: {
+            /** @description The receipt this publication was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description How it was classified for leaving Kontor. */
+            shareability: components["schemas"]["ShareabilityDto"];
+            /** @description Its identity, revision and canonical hash. */
+            spec: components["schemas"]["PinnedSpecDto"];
         };
         Purge: {
             by: string;
@@ -2700,6 +2981,25 @@ export interface components {
             /** @description The task it was resolved for. */
             task_id: string;
         };
+        /**
+         * @description One role as the server resolved it, on every projection and every receipt.
+         *
+         *     The extra fields over [`RoleSelectionDto`] are exactly the ones the daemon
+         *     looked up. A client renders these; it never derives them, and it never keeps
+         *     its own table of what a code means.
+         */
+        ResolvedRoleRefDto: {
+            /** @description The catalog revision this was resolved against. */
+            catalog_revision: components["schemas"]["RevisionRefDto"];
+            /** @description The presentation-only label, when one was selected. */
+            custom_display_name?: string | null;
+            /** @description The stable role code. */
+            role_code: string;
+            /** @description The segment the catalog files it under. */
+            segment: string;
+            /** @description The catalog's standard title for that code. */
+            standard_title: string;
+        };
         /** @description One immutable specification revision, as a caller pins it. */
         RevisionRefDto: {
             /** @description The specification's stable id. */
@@ -2709,6 +3009,64 @@ export interface components {
              * @description The pinned revision.
              */
             version: number;
+        };
+        /** @description One whole catalog revision, in its declared order. */
+        RoleCatalogDto: {
+            /** @description The catalog identity and revision. */
+            catalog_id: string;
+            /** @description Human name. */
+            name: string;
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /**
+             * @description Every role, sorted in the catalog's declared order rather than in any
+             *     order this projection chose.
+             */
+            roles: components["schemas"]["RoleCatalogEntryDto"][];
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
+            /**
+             * Format: int32
+             * @description The revision read.
+             */
+            version: number;
+        };
+        /** @description One resolved role from a catalog revision. */
+        RoleCatalogEntryDto: {
+            /** @description Default capabilities a deployment may narrow later. */
+            capability_defaults: string[];
+            /** @description Whether new seats may still select it. */
+            lifecycle: string;
+            /** @description Its bounded responsibility summary. */
+            responsibility_summary: string;
+            /** @description The stable code. */
+            role_code: string;
+            /** @description Where the role may be selected. */
+            segment: string;
+            /** @description The standard human title. */
+            standard_title: string;
+        };
+        /**
+         * @description What a caller supplies when a new seat selects a standard role.
+         *
+         *     It carries the catalog revision and the code, and deliberately nothing else.
+         *     A request that could also state the standard title would be a second source
+         *     for a fact the catalog already owns, and the two would disagree the first
+         *     time a title was corrected — so the title is resolved, never accepted.
+         */
+        RoleSelectionDto: {
+            /** @description The exact catalog revision the code is read from. */
+            catalog_revision: components["schemas"]["RevisionRefDto"];
+            /**
+             * @description A presentation-only label, when this seat is shown as something more
+             *     specific than its standard title.
+             */
+            custom_display_name?: string | null;
+            /** @description The stable role code. */
+            role_code: string;
         };
         /** @description One recorded waiver. */
         RoleSlotWaiverDto: {
@@ -2957,6 +3315,51 @@ export interface components {
             work_profile_category?: string | null;
         };
         /**
+         * @description The scope a semantic topology operation acts on.
+         *
+         *     A closed tagged union of the semantic ids Kontor already owns. This is the
+         *     whole of what a model may say about *where* it wants topology: it names a
+         *     meaning, and the server derives the kind, the parent and the native shape
+         *     from the pinned specification. Adding a published kind to a specification
+         *     therefore needs no change here, and inventing a kind per call stays
+         *     impossible — which is the same rule stated as a type rather than as a
+         *     validation.
+         */
+        SemanticTopologyTargetDto: {
+            /** @enum {string} */
+            scope: "project_root";
+        } | {
+            /** @description The session. */
+            quick_session_id: string;
+            /** @enum {string} */
+            scope: "quick_session";
+        } | {
+            /** @description The epic. */
+            epic_id: string;
+            /** @enum {string} */
+            scope: "epic";
+        } | {
+            /** @description The epic whose control plane this is. */
+            epic_id: string;
+            /** @enum {string} */
+            scope: "epic_control";
+        } | {
+            /** @enum {string} */
+            scope: "ticket";
+            /** @description The task the ticket is linked to. */
+            task_id: string;
+        } | {
+            /** @description The consultation. */
+            advisor_run_id: string;
+            /** @enum {string} */
+            scope: "advisor_consultation";
+        } | {
+            /** @description The consultation. */
+            committee_run_id: string;
+            /** @enum {string} */
+            scope: "committee_consultation";
+        };
+        /**
          * @description What `turns:settle` is asked for.
          *
          *     It settles **Kontor's** bounded turn in a persistent seat. There is no field
@@ -3028,6 +3431,15 @@ export interface components {
              * @description Its position in that seat's sequence of turns.
              */
             turn_ordinal: number;
+        };
+        /** @description How one durable record was classified for leaving Kontor. */
+        ShareabilityDto: {
+            /** @description Whether it may ever leave. */
+            class: string;
+            /** @description Who classified it. */
+            classifier: string;
+            /** @description Default rule versus a human's write-time override. */
+            provenance: string;
         };
         /**
          * @description A point-in-time value and the position it is consistent with.
@@ -3506,6 +3918,88 @@ export interface components {
             expected_revision: number;
             reason: string;
         };
+        /** @description One node of a topology projection. */
+        TopologyNodeDto: {
+            /** @description The native shape the server derived. */
+            desired_binding: components["schemas"]["DesiredBindingDto"];
+            /** @description The data-defined kind the pinned specification declares. */
+            kind_key: string;
+            /** @description Logical lifecycle. */
+            lifecycle: string;
+            observed_binding?: null | components["schemas"]["ObservedBindingDto"];
+            /** @description Logical parent; absent only for the root. */
+            parent_topology_node_id?: string | null;
+            /** @description Derived native-placement condition. */
+            placement: string;
+            /** @description The seats this node hosts, in stable slot order. */
+            seats: components["schemas"]["TopologySeatDto"][];
+            /**
+             * @description Durable node identity. The only topology handle a caller may address
+             *     back, and only for the operations that take one.
+             */
+            topology_node_id: string;
+        };
+        /** @description One seat a topology node hosts, as a projection reports it. */
+        TopologySeatDto: {
+            /** @description Its lifecycle. */
+            lifecycle: string;
+            /** @description The role, as the server resolved it. */
+            role: components["schemas"]["ResolvedRoleRefDto"];
+            /** @description The stable role-slot address within the node. */
+            role_slot_id: string;
+            /**
+             * @description The exact binding identity, which is what an attention or retirement
+             *     addresses. Naming a seat any other way would be a scan.
+             */
+            seat_binding_id: string;
+        };
+        /**
+         * @description One complete candidate document, built by the server and stored nowhere.
+         *
+         *     Draft is deliberately pure. There is no durable draft aggregate to put this
+         *     in, publication already revalidates the exact candidate it is given, and a
+         *     store added solely to remember editor scratch state would widen the authority
+         *     boundary without making anything safer.
+         */
+        TopologySpecCandidateDto: {
+            /** @description The complete candidate document. */
+            candidate: Record<string, never>;
+            /** @description The canonical hash of that exact candidate. */
+            candidate_hash: string;
+            /** @description The Realm that built it. */
+            realm_id: string;
+        };
+        /** @description One exact immutable specification document, as a caller reads it back. */
+        TopologySpecDocumentDto: {
+            /** @description The exact published document. */
+            document: Record<string, never>;
+            /** @description The Realm it belongs to. */
+            realm_id: string;
+            /** @description How it was classified. */
+            shareability: components["schemas"]["ShareabilityDto"];
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
+            /** @description Its identity, revision and canonical hash. */
+            spec: components["schemas"]["PinnedSpecDto"];
+        };
+        /**
+         * @description The ordered verdict on one candidate.
+         *
+         *     Violations are ordered so two runs over the same candidate produce the same
+         *     list, which is what lets a client diff them. An empty list is the only thing
+         *     that makes the candidate publishable.
+         */
+        TopologySpecValidationDto: {
+            /** @description The Realm that validated it. */
+            realm_id: string;
+            /** @description The canonical hash of the exact candidate that was validated. */
+            validation_hash: string;
+            /** @description Every violation, in a stable order. Empty means publishable. */
+            violations: string[];
+        };
         /**
          * @description One pinned trigger revision, as an operator reads it back.
          *
@@ -3549,6 +4043,11 @@ export interface components {
             target_agent_run_id?: string | null;
             /** @description The slot the work was handed to. */
             to_role_slot: string;
+        };
+        /** @description What `topology-specs:validate` is asked for. */
+        ValidateTopologySpecRequest: {
+            /** @description One complete candidate document. */
+            candidate: Record<string, never>;
         };
         /**
          * @description Excuse one declared role slot that was never bound to a session.
@@ -3755,6 +4254,93 @@ export interface operations {
             };
             /** @description This revision is registered with different content */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    role_catalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The catalog identity */
+                catalog_id: string;
+                /** @description The revision */
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleCatalogDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    role: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The catalog identity */
+                catalog_id: string;
+                /** @description The revision */
+                version: number;
+                /** @description The stable role code */
+                role_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleCatalogEntryDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An unknown revision or code, never a guess */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4482,6 +5068,48 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    code_help: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose pins are read */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeHelpProjectionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5939,6 +6567,194 @@ export interface operations {
             };
             /** @description The slot cannot be waived on this template's terms */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    topology_spec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The specification identity */
+                spec_id: string;
+                /** @description The published revision */
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologySpecDocumentDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    draft_topology_spec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DraftTopologySpecRequest"];
+            };
+        };
+        responses: {
+            /** @description A candidate, persisted nowhere */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologySpecCandidateDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_topology_spec: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishTopologySpecRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishedTopologySpecDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A stale project revision, or the key was reused for different bytes */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    validate_topology_spec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ValidateTopologySpecRequest"];
+            };
+        };
+        responses: {
+            /** @description Ordered violations, empty when publishable */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologySpecValidationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

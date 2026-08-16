@@ -74,6 +74,19 @@ pub enum ArgType {
     AccountProfileId,
     /// A canonical v7 UUID naming one intake decision.
     IntakeReceiptId,
+    /// A canonical v7 UUID naming one topology specification across revisions.
+    TopologySpecId,
+    /// A canonical v7 UUID naming one durable node in a project session topology.
+    ///
+    /// A node id is only ever *returned* by a projection and then addressed back:
+    /// it is the one topology handle a model may hold, which is what lets it
+    /// retire a node it can see without ever naming a kind, a parent or a native
+    /// container.
+    TopologyNodeId,
+    /// A canonical v7 UUID naming one persistent seat binding.
+    SeatBindingId,
+    /// A canonical v7 UUID naming one server-owned role catalog across revisions.
+    RoleCatalogId,
     /// An open, deployment-defined key.
     ///
     /// Its lexical rule — lowercase ASCII, digits, `.`, `_`, `-` — is also what
@@ -125,6 +138,10 @@ impl ArgType {
             | Self::AgentRunId
             | Self::AccountProfileId
             | Self::IntakeReceiptId
+            | Self::TopologySpecId
+            | Self::TopologyNodeId
+            | Self::SeatBindingId
+            | Self::RoleCatalogId
             | Self::OpenKey
             | Self::ExternalName
             | Self::ExternalId
@@ -1997,6 +2014,214 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Irreversibly switch memory authority to Kontor after verification.",
+    },
+    // ---- The topology vocabulary: kinds, roles and what every code means ----
+    //
+    // Draft and validate are POSTs that commit nothing, so they are reads and
+    // take no key. Publication is the only write here, and it names both the
+    // hash it was judged at and the revision it expects.
+    ToolSpec {
+        name: "kontor_topology_spec_draft",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology-specs:draft",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            opt(
+                "base",
+                Place::Body,
+                ArgType::Json,
+                "An `{id, version}` revision to start from.",
+            ),
+            req(
+                "name",
+                Place::Body,
+                ArgType::ExternalName,
+                "Human name for the specification.",
+            ),
+            req(
+                "root_kind",
+                Place::Body,
+                ArgType::OpenKey,
+                "The unique logical root kind.",
+            ),
+            req(
+                "node_kinds",
+                Place::Body,
+                ArgType::Json,
+                "The data-defined node-kind vocabulary, in declaration order.",
+            ),
+            opt(
+                "historical_codes",
+                Place::Body,
+                ArgType::Json,
+                "Codes this vocabulary explains but never declares as usable.",
+            ),
+        ],
+        about: "Build one complete topology-specification candidate. Persists nothing.",
+    },
+    ToolSpec {
+        name: "kontor_topology_spec_validate",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology-specs:validate",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "candidate",
+                Place::Body,
+                ArgType::Json,
+                "One complete candidate document.",
+            ),
+        ],
+        about: "Judge one candidate and return its ordered violations. Persists nothing.",
+    },
+    ToolSpec {
+        name: "kontor_topology_spec_publish",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology-specs:publish",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "candidate",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate to publish.",
+            ),
+            req(
+                "validation_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the validation answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+        ],
+        about: "Publish one revalidated candidate as an immutable revision.",
+    },
+    ToolSpec {
+        name: "kontor_topology_spec_get",
+        tier: CallerTier::Admin,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "spec_id",
+                Place::Path,
+                ArgType::TopologySpecId,
+                "The specification identity.",
+            ),
+            req(
+                "version",
+                Place::Path,
+                ArgType::SpecVersion,
+                "The published revision.",
+            ),
+        ],
+        about: "One exact immutable topology-specification document and its canonical hash.",
+    },
+    ToolSpec {
+        name: "kontor_role_catalog_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/catalog/role-catalogs/{catalog_id}/{version}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "catalog_id",
+                Place::Path,
+                ArgType::RoleCatalogId,
+                "The catalog identity.",
+            ),
+            req(
+                "version",
+                Place::Path,
+                ArgType::SpecVersion,
+                "The revision.",
+            ),
+        ],
+        about: "One whole role-catalog revision, in its declared order.",
+    },
+    ToolSpec {
+        name: "kontor_role_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/catalog/role-catalogs/{catalog_id}/{version}/roles/{role_code}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "catalog_id",
+                Place::Path,
+                ArgType::RoleCatalogId,
+                "The catalog identity.",
+            ),
+            req(
+                "version",
+                Place::Path,
+                ArgType::SpecVersion,
+                "The revision.",
+            ),
+            req(
+                "role_code",
+                Place::Path,
+                ArgType::OpenKey,
+                "The stable role code.",
+            ),
+        ],
+        about: "One resolved catalog entry. An unknown revision or code is refused, never guessed.",
+    },
+    ToolSpec {
+        name: "kontor_code_help_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/code-help",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The epic whose pinned revisions are read.",
+            ),
+        ],
+        about: "Every controlled code one epic's pinned revisions define, sorted and server-owned.",
     },
 ];
 
