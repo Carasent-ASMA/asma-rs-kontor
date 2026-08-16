@@ -27,8 +27,9 @@ use kontor_core::id::{
     validate_open_key,
 };
 use kontor_core::spec::{
-    PersonaScenarioSnapshot, PersonaScenarioSpec, ResolvedWorkProfileSnapshot, RoleContextSeed,
-    TeamContextPolicySeed, TeamTemplateRevision, WorkProfileSpec,
+    PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
+    ResolvedWorkProfileSnapshot, RoleCatalogRevision, RoleContextSeed, TeamContextPolicySeed,
+    TeamTemplateRevision, WorkProfileSpec,
 };
 use kontor_core::state::{GateState, TaskClosureCertificate};
 use kontor_core::{DomainError, DomainResult};
@@ -211,6 +212,69 @@ pub struct ProfilePackSpec {
     /// standard fallback.
     #[serde(default)]
     pub role_context_seeds: Vec<RoleContextSeed>,
+}
+
+/// The Operational domain data bundled independently of Foundation profiles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationalDomainPack {
+    /// Schema generation of this data file.
+    pub schema_version: SchemaVersion,
+    /// Generic topology specification revisions.
+    pub topology_specs: Vec<ProjectSessionTopologySpec>,
+    /// Server-owned standard-role catalog revisions.
+    pub role_catalogs: Vec<RoleCatalogRevision>,
+}
+
+impl OperationalDomainPack {
+    /// Validate every document and prove revision identities are unique.
+    ///
+    /// # Errors
+    /// As the contained specifications, plus duplicate identities.
+    pub fn validate(&self) -> DomainResult<()> {
+        let mut topologies = BTreeSet::new();
+        for topology in &self.topology_specs {
+            topology.validate()?;
+            if !topologies.insert((topology.spec_id, topology.version)) {
+                return Err(DomainError::invalid(
+                    "OperationalDomainPack",
+                    "declares a duplicate topology specification revision",
+                ));
+            }
+        }
+        let mut catalogs = BTreeSet::new();
+        for catalog in &self.role_catalogs {
+            catalog.validate()?;
+            if !catalogs.insert((catalog.catalog_id, catalog.version)) {
+                return Err(DomainError::invalid(
+                    "OperationalDomainPack",
+                    "declares a duplicate role catalog revision",
+                ));
+            }
+        }
+        if self.topology_specs.is_empty() || self.role_catalogs.is_empty() {
+            return Err(DomainError::invalid(
+                "OperationalDomainPack",
+                "must carry topology and role-catalog data",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Parse and validate Operational domain data.
+///
+/// # Errors
+/// Returns [`DomainError`] when the document shape or any contained revision is
+/// invalid.
+pub fn parse_operational_domain_pack(json: &str) -> DomainResult<OperationalDomainPack> {
+    let pack: OperationalDomainPack = serde_json::from_str(json).map_err(|_| {
+        DomainError::invalid(
+            "OperationalDomainPack",
+            "is not a valid Operational domain document",
+        )
+    })?;
+    pack.validate()?;
+    Ok(pack)
 }
 
 impl ProfilePackSpec {

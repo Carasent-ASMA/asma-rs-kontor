@@ -25,8 +25,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::{
     AgentRunId, AggregateRevision, CommandReceiptId, ContentHash, EventCursor, ExternalId,
-    ExternalName, RuntimeKindKey, TeamRunId, Timestamp,
+    ExternalName, MiniProjectId, ProjectId, RoleSlotId, RuntimeKindKey, SeatBindingId, TaskId,
+    TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId,
 };
+use crate::spec::{CatalogRoleRef, TopologySnapshot};
 use crate::{DomainError, DomainResult};
 
 closed_enum! {
@@ -1350,6 +1352,151 @@ impl RunProjection {
     pub fn ensure_open(&self, subject: &'static str) -> DomainResult<()> {
         if self.is_closed() {
             return Err(DomainError::Terminal { subject });
+        }
+        Ok(())
+    }
+}
+
+closed_enum! {
+    /// Durable lifecycle shared by topology nodes and their seat bindings.
+    TopologyLifecycle, "TopologyLifecycle" {
+        /// Available for materialization and reconciliation.
+        Active => "active",
+        /// Preserved but no longer eligible for new work.
+        Retired => "retired",
+        /// Historical and immutable.
+        Archived => "archived",
+    }
+}
+
+impl TopologyLifecycle {
+    /// Whether the lifecycle may still be mutated.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Archived)
+    }
+}
+
+closed_enum! {
+    /// Derived placement condition of one logical topology node.
+    PlacementState, "PlacementState" {
+        /// No native container is bound yet.
+        Unbound => "unbound",
+        /// Exact native identity has been read back.
+        Bound => "bound",
+        /// Desired and observed native state differ.
+        Drifted => "drifted",
+        /// Placement refused and requires explicit reconciliation.
+        PlacementBlocked => "placement_blocked",
+    }
+}
+
+/// One durable logical element in a project session-topology instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTopologyNode {
+    /// Durable node identity.
+    pub id: TopologyNodeId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic/goal scope when this node belongs to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mini_project_id: Option<MiniProjectId>,
+    /// Exact immutable topology specification revision/hash.
+    pub topology: TopologySnapshot,
+    /// Data-defined kind declared by that specification.
+    pub kind: TopologyKindKey,
+    /// Logical parent; absent only for the root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<TopologyNodeId>,
+    /// Logical lifecycle.
+    pub lifecycle: TopologyLifecycle,
+    /// Derived native-placement state.
+    pub placement: PlacementState,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+/// One persistent role session owned by a topology node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatBinding {
+    /// Binding identity.
+    pub id: SeatBindingId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Hosting topology node.
+    pub topology_node_id: TopologyNodeId,
+    /// Stable role-slot address within that node.
+    pub role_slot_id: RoleSlotId,
+    /// Typed standard role snapshot.
+    pub role: CatalogRoleRef,
+    /// Optional delivery task reference for TSW seats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    /// Optional delivery TeamRun reference for TSW seats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_run_id: Option<TeamRunId>,
+    /// Binding lifecycle.
+    pub lifecycle: TopologyLifecycle,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+impl SeatBinding {
+    /// Whether this binding occupies the unique `(node, role slot)` key.
+    #[must_use]
+    pub const fn is_non_terminal(&self) -> bool {
+        matches!(self.lifecycle, TopologyLifecycle::Active)
+    }
+}
+
+/// Persisted adaptive-admission state for one MiniProject.
+///
+/// The scheduler still owns the decision. This record only makes its current
+/// window and replay cursor survive restart/export/restore.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdaptiveAdmissionState {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// MiniProject whose active TeamRun envelope budget this controls.
+    pub mini_project_id: MiniProjectId,
+    /// Current maximum new admissions for one scheduling pass.
+    pub current_window: u32,
+    /// Distinct clean observations accumulated at this width.
+    pub clean_observation_streak: u32,
+    /// Last observation already applied; replay must not advance state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observation_id: Option<ExternalId>,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+impl AdaptiveAdmissionState {
+    /// Validate persisted bounds without re-implementing scheduler policy.
+    ///
+    /// # Errors
+    /// Rejects a zero/out-of-range window or a streak larger than the two
+    /// observations Operational requires before growth.
+    pub fn validate(&self, floor: u32, ceiling: u32) -> DomainResult<()> {
+        if floor == 0
+            || floor > ceiling
+            || self.current_window < floor
+            || self.current_window > ceiling
+            || self.clean_observation_streak > 1
+        {
+            return Err(DomainError::invalid(
+                "AdaptiveAdmissionState",
+                "is outside the configured window or streak bounds",
+            ));
         }
         Ok(())
     }

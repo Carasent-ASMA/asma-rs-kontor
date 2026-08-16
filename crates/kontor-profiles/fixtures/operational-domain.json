@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "topology_specs": [
+    {
+      "schema_version": 1,
+      "spec_id": "01936f5a-1000-7000-8000-000000000001",
+      "version": 1,
+      "name": "Operational project session topology",
+      "root_kind": "PSW",
+      "node_kinds": [
+        {
+          "kind": "PSW",
+          "allowed_parents": [],
+          "cardinality": { "minimum": 1, "maximum": 1 },
+          "projection_capabilities": ["native_root"],
+          "read_only": false,
+          "name_template": "Project Session Workspace"
+        },
+        {
+          "kind": "QSW",
+          "allowed_parents": ["PSW"],
+          "cardinality": { "minimum": 0 },
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": false,
+          "name_template": "Quotidian Session Workspace"
+        },
+        {
+          "kind": "ESW",
+          "allowed_parents": ["PSW"],
+          "cardinality": { "minimum": 0 },
+          "projection_capabilities": ["native_root"],
+          "read_only": false,
+          "name_template": "Epic Session Workspace"
+        },
+        {
+          "kind": "LSA",
+          "allowed_parents": ["ESW"],
+          "cardinality": { "minimum": 1, "maximum": 1 },
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": false,
+          "name_template": "Lead Software Architect"
+        },
+        {
+          "kind": "TPM",
+          "allowed_parents": ["ESW"],
+          "cardinality": { "minimum": 1, "maximum": 1 },
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": false,
+          "name_template": "Technical Program Manager"
+        },
+        {
+          "kind": "TSW",
+          "allowed_parents": ["ESW"],
+          "cardinality": { "minimum": 0 },
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": false,
+          "name_template": "Ticket Session Workspace"
+        },
+        {
+          "kind": "ASW",
+          "allowed_parents": ["ESW"],
+          "cardinality": { "minimum": 0 },
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": true,
+          "name_template": "Advice Session Workspace"
+        },
+        {
+          "kind": "CSW",
+          "allowed_parents": ["ESW"],
+          "cardinality": { "minimum": 0 },
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": true,
+          "name_template": "Committee Session Workspace"
+        }
+      ]
+    }
+  ],
+  "role_catalogs": [
+    {
+      "schema_version": 1,
+      "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+      "version": 1,
+      "name": "Operational standard roles",
+      "roles": [
+        { "role_code": "PM", "standard_title": "Product Manager", "segment": "product_delivery", "responsibility_summary": "Product Manager", "capability_defaults": [] },
+        { "role_code": "PO", "standard_title": "Product Owner", "segment": "product_delivery", "responsibility_summary": "Product Owner", "capability_defaults": [] },
+        { "role_code": "BA", "standard_title": "Business Analyst", "segment": "product_delivery", "responsibility_summary": "Business Analyst", "capability_defaults": [] },
+        { "role_code": "TPM", "standard_title": "Technical Program Manager", "segment": "product_delivery", "responsibility_summary": "Technical Program Manager", "capability_defaults": [] },
+        { "role_code": "SM", "standard_title": "Scrum Master", "segment": "product_delivery", "responsibility_summary": "Scrum Master", "capability_defaults": [] },
+        { "role_code": "RM", "standard_title": "Release Manager", "segment": "product_delivery", "responsibility_summary": "Release Manager", "capability_defaults": [] },
+        { "role_code": "LSA", "standard_title": "Lead Software Architect", "segment": "architecture", "responsibility_summary": "Lead Software Architect", "capability_defaults": [] },
+        { "role_code": "SA", "standard_title": "Software Architect", "segment": "architecture", "responsibility_summary": "Software Architect", "capability_defaults": [] },
+        { "role_code": "TA", "standard_title": "Technical Architect", "segment": "architecture", "responsibility_summary": "Technical Architect", "capability_defaults": [] },
+        { "role_code": "TL", "standard_title": "Technical Lead", "segment": "architecture", "responsibility_summary": "Technical Lead", "capability_defaults": [] },
+        { "role_code": "EA", "standard_title": "Enterprise Architect", "segment": "architecture", "responsibility_summary": "Enterprise Architect", "capability_defaults": [] },
+        { "role_code": "IA", "standard_title": "Integration Architect", "segment": "architecture", "responsibility_summary": "Integration Architect", "capability_defaults": [] },
+        { "role_code": "UXD", "standard_title": "UX Designer", "segment": "design_research", "responsibility_summary": "UX Designer", "capability_defaults": [] },
+        { "role_code": "UID", "standard_title": "UI Designer", "segment": "design_research", "responsibility_summary": "UI Designer", "capability_defaults": [] },
+        { "role_code": "UXR", "standard_title": "UX Researcher", "segment": "design_research", "responsibility_summary": "UX Researcher", "capability_defaults": [] },
+        { "role_code": "IXD", "standard_title": "Interaction Designer", "segment": "design_research", "responsibility_summary": "Interaction Designer", "capability_defaults": [] },
+        { "role_code": "A11Y", "standard_title": "Accessibility Specialist", "segment": "design_research", "responsibility_summary": "Accessibility Specialist", "capability_defaults": [] },
+        { "role_code": "DSYS", "standard_title": "Design Systems Specialist", "segment": "design_research", "responsibility_summary": "Design Systems Specialist", "capability_defaults": [] },
+        { "role_code": "SWE", "standard_title": "Software Engineer", "segment": "development", "responsibility_summary": "Software Engineer", "capability_defaults": [] },
+        { "role_code": "FE", "standard_title": "Frontend Engineer", "segment": "development", "responsibility_summary": "Frontend Engineer", "capability_defaults": [] },
+        { "role_code": "BE", "standard_title": "Backend Engineer", "segment": "development", "responsibility_summary": "Backend Engineer", "capability_defaults": [] },
+        { "role_code": "FSE", "standard_title": "Full-Stack Engineer", "segment": "development", "responsibility_summary": "Full-Stack Engineer", "capability_defaults": [] },
+        { "role_code": "API", "standard_title": "API Engineer", "segment": "development", "responsibility_summary": "API Engineer", "capability_defaults": [] },
+        { "role_code": "INT", "standard_title": "Integration Engineer", "segment": "development", "responsibility_summary": "Integration Engineer", "capability_defaults": [] },
+        { "role_code": "MOB", "standard_title": "Mobile Engineer", "segment": "development", "responsibility_summary": "Mobile Engineer", "capability_defaults": [] },
+        { "role_code": "PLAT", "standard_title": "Platform Engineer", "segment": "development", "responsibility_summary": "Platform Engineer", "capability_defaults": [] },
+        { "role_code": "DX", "standard_title": "Developer Experience Engineer", "segment": "development", "responsibility_summary": "Developer Experience Engineer", "capability_defaults": [] },
+        { "role_code": "DE", "standard_title": "Data Engineer", "segment": "data_ai", "responsibility_summary": "Data Engineer", "capability_defaults": [] },
+        { "role_code": "DA", "standard_title": "Data Analyst", "segment": "data_ai", "responsibility_summary": "Data Analyst", "capability_defaults": [] },
+        { "role_code": "DSCI", "standard_title": "Data Scientist", "segment": "data_ai", "responsibility_summary": "Data Scientist", "capability_defaults": [] },
+        { "role_code": "MLE", "standard_title": "Machine Learning Engineer", "segment": "data_ai", "responsibility_summary": "Machine Learning Engineer", "capability_defaults": [] },
+        { "role_code": "AIE", "standard_title": "AI Engineer", "segment": "data_ai", "responsibility_summary": "AI Engineer", "capability_defaults": [] },
+        { "role_code": "DBA", "standard_title": "Database Administrator", "segment": "data_ai", "responsibility_summary": "Database Administrator", "capability_defaults": [] },
+        { "role_code": "QA", "standard_title": "Quality Assurance Engineer", "segment": "quality_testing", "responsibility_summary": "Quality Assurance Engineer", "capability_defaults": [] },
+        { "role_code": "QE", "standard_title": "Quality Engineer", "segment": "quality_testing", "responsibility_summary": "Quality Engineer", "capability_defaults": [] },
+        { "role_code": "SDET", "standard_title": "Software Development Engineer in Test", "segment": "quality_testing", "responsibility_summary": "Software Development Engineer in Test", "capability_defaults": [] },
+        { "role_code": "UAT", "standard_title": "User Acceptance Test Specialist", "segment": "quality_testing", "responsibility_summary": "User Acceptance Test Specialist", "capability_defaults": [] },
+        { "role_code": "PERF", "standard_title": "Performance Test Engineer", "segment": "quality_testing", "responsibility_summary": "Performance Test Engineer", "capability_defaults": [] },
+        { "role_code": "TSTLEAD", "standard_title": "Test Lead", "segment": "quality_testing", "responsibility_summary": "Test Lead", "capability_defaults": [] },
+        { "role_code": "AUD", "standard_title": "Auditor", "segment": "security_compliance", "responsibility_summary": "Auditor", "capability_defaults": [] },
+        { "role_code": "SEC", "standard_title": "Security Engineer", "segment": "security_compliance", "responsibility_summary": "Security Engineer", "capability_defaults": [] },
+        { "role_code": "APPSEC", "standard_title": "Application Security Engineer", "segment": "security_compliance", "responsibility_summary": "Application Security Engineer", "capability_defaults": [] },
+        { "role_code": "IAM", "standard_title": "Identity and Access Management Engineer", "segment": "security_compliance", "responsibility_summary": "Identity and Access Management Engineer", "capability_defaults": [] },
+        { "role_code": "PEN", "standard_title": "Penetration Tester", "segment": "security_compliance", "responsibility_summary": "Penetration Tester", "capability_defaults": [] },
+        { "role_code": "GRC", "standard_title": "Governance, Risk and Compliance Specialist", "segment": "security_compliance", "responsibility_summary": "Governance, Risk and Compliance Specialist", "capability_defaults": [] },
+        { "role_code": "PRIV", "standard_title": "Privacy Specialist", "segment": "security_compliance", "responsibility_summary": "Privacy Specialist", "capability_defaults": [] },
+        { "role_code": "DEVOPS", "standard_title": "DevOps Engineer", "segment": "platform_operations", "responsibility_summary": "DevOps Engineer", "capability_defaults": [] },
+        { "role_code": "SRE", "standard_title": "Site Reliability Engineer", "segment": "platform_operations", "responsibility_summary": "Site Reliability Engineer", "capability_defaults": [] },
+        { "role_code": "CLOUD", "standard_title": "Cloud Engineer", "segment": "platform_operations", "responsibility_summary": "Cloud Engineer", "capability_defaults": [] },
+        { "role_code": "OBS", "standard_title": "Observability Engineer", "segment": "platform_operations", "responsibility_summary": "Observability Engineer", "capability_defaults": [] },
+        { "role_code": "INC", "standard_title": "Incident Manager", "segment": "platform_operations", "responsibility_summary": "Incident Manager", "capability_defaults": [] },
+        { "role_code": "SUP", "standard_title": "Support Engineer", "segment": "platform_operations", "responsibility_summary": "Support Engineer", "capability_defaults": [] },
+        { "role_code": "TW", "standard_title": "Technical Writer", "segment": "documentation_enablement", "responsibility_summary": "Technical Writer", "capability_defaults": [] },
+        { "role_code": "DOC", "standard_title": "Documentation Engineer", "segment": "documentation_enablement", "responsibility_summary": "Documentation Engineer", "capability_defaults": [] },
+        { "role_code": "KNOW", "standard_title": "Knowledge Manager", "segment": "documentation_enablement", "responsibility_summary": "Knowledge Manager", "capability_defaults": [] },
+        { "role_code": "TRN", "standard_title": "Technical Trainer", "segment": "documentation_enablement", "responsibility_summary": "Technical Trainer", "capability_defaults": [] }
+      ]
+    }
+  ]
+}

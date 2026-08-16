@@ -110,9 +110,10 @@ use crate::id::{
     AccountProfileId, ArtifactKey, CalendarProfileId, CanonicalDocument, ConnectorKey, ContentHash,
     EventSchemaKey, ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName,
     ExternalProjectKey, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, Money, PersonaKey,
-    PersonaScenarioId, PhaseKey, ProjectId, RoleKey, RuntimeKindKey, SchemaVersion, SkillKey,
-    SourceConnectionKey, SourceEventId, SourceKindKey, SpecVersion, TaskId, TeamTemplateId,
-    Timestamp, TriggerKey, WorkProfileKey,
+    PersonaScenarioId, PhaseKey, ProjectId, RoleCatalogId, RoleCode, RoleKey, RuntimeKindKey,
+    SchemaVersion, SkillKey, SourceConnectionKey, SourceEventId, SourceKindKey, SpecVersion,
+    TaskId, TeamTemplateId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
+    WorkProfileKey,
 };
 use crate::state::{GateState, TaskClosureCertificate};
 use crate::{DomainError, DomainResult};
@@ -133,6 +134,492 @@ pub struct RoleRef {
     pub role: RoleKey,
     /// The pinned revision of that role.
     pub version: SpecVersion,
+}
+
+/// Where a standard role may be selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleSegment {
+    /// Product and delivery management.
+    ProductDelivery,
+    /// Architecture and technical leadership.
+    Architecture,
+    /// Design and user research.
+    DesignResearch,
+    /// Software development.
+    Development,
+    /// Data and artificial intelligence.
+    DataAi,
+    /// Quality and testing.
+    QualityTesting,
+    /// Security and compliance.
+    SecurityCompliance,
+    /// Platform and operations.
+    PlatformOperations,
+    /// Documentation and enablement.
+    DocumentationEnablement,
+}
+
+/// One server-owned role in a catalog revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleCatalogEntry {
+    /// Stable code used by every machine-facing projection.
+    pub role_code: RoleCode,
+    /// Standard human title.
+    pub standard_title: ExternalName,
+    /// Where the role may be selected.
+    pub segment: RoleSegment,
+    /// Bounded responsibility summary shown to operators and agents.
+    pub responsibility_summary: crate::id::BoundedText,
+    /// Default skills/capabilities. Deployments may narrow them later.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_defaults: Vec<SkillKey>,
+}
+
+/// One immutable, server-owned standard-role catalog revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleCatalogRevision {
+    /// Schema generation of this document.
+    pub schema_version: SchemaVersion,
+    /// Catalog identity shared by every revision.
+    pub catalog_id: RoleCatalogId,
+    /// This immutable revision.
+    pub version: SpecVersion,
+    /// Human name.
+    pub name: ExternalName,
+    /// Standard roles selectable by new seats.
+    pub roles: Vec<RoleCatalogEntry>,
+}
+
+impl RoleCatalogRevision {
+    /// Validate uniqueness and bounded defaults.
+    ///
+    /// # Errors
+    /// Rejects an empty catalog, duplicate codes or duplicate capability
+    /// defaults. Values are never echoed in an error.
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.roles.is_empty() {
+            return Err(DomainError::invalid(
+                "RoleCatalogRevision",
+                "must declare at least one role",
+            ));
+        }
+        let mut codes = BTreeSet::new();
+        for role in &self.roles {
+            if !codes.insert(&role.role_code) {
+                return Err(DomainError::invalid(
+                    "RoleCatalogRevision",
+                    "declares a duplicate role code",
+                ));
+            }
+            let capabilities: BTreeSet<&SkillKey> = role.capability_defaults.iter().collect();
+            if capabilities.len() != role.capability_defaults.len() {
+                return Err(DomainError::invalid(
+                    "RoleCatalogRevision",
+                    "declares a duplicate capability default",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate and canonicalize this immutable revision.
+    ///
+    /// # Errors
+    /// As [`Self::validate`], plus canonical-document limits.
+    pub fn canonicalize(&self) -> DomainResult<CanonicalDocument> {
+        self.validate()?;
+        CanonicalDocument::from_serializable(self)
+    }
+
+    /// Find one role by its stable code.
+    #[must_use]
+    pub fn role(&self, code: &RoleCode) -> Option<&RoleCatalogEntry> {
+        self.roles.iter().find(|entry| &entry.role_code == code)
+    }
+}
+
+/// The typed role selected for one Operational seat.
+///
+/// This is deliberately separate from the older [`RoleRef`], which pins the
+/// open logical roles used by Foundation work profiles. Keeping both meanings
+/// distinct preserves existing snapshots while new seats use standard codes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogRoleRef {
+    /// Pinned catalog identity.
+    pub catalog_id: RoleCatalogId,
+    /// Pinned catalog revision.
+    pub catalog_revision: SpecVersion,
+    /// Stable role code.
+    pub role_code: RoleCode,
+    /// Standard title copied into the immutable seat snapshot.
+    pub standard_title: ExternalName,
+    /// Optional presentation-only label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_display_name: Option<ExternalName>,
+}
+
+impl CatalogRoleRef {
+    /// Prove this reference is an exact projection of its pinned catalog.
+    ///
+    /// # Errors
+    /// Rejects an unknown revision/code or a changed standard title.
+    pub fn validate_against(&self, catalog: &RoleCatalogRevision) -> DomainResult<()> {
+        if self.catalog_id != catalog.catalog_id || self.catalog_revision != catalog.version {
+            return Err(DomainError::invalid(
+                "CatalogRoleRef",
+                "pins a different catalog revision",
+            ));
+        }
+        let role = catalog.role(&self.role_code).ok_or(DomainError::Invalid {
+            subject: "CatalogRoleRef",
+            rule: "names a role code absent from the pinned catalog",
+        })?;
+        if self.standard_title != role.standard_title {
+            return Err(DomainError::invalid(
+                "CatalogRoleRef",
+                "standard title differs from the catalog",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Human label; presentation never changes machine identity.
+    #[must_use]
+    pub fn display_name(&self) -> &ExternalName {
+        self.custom_display_name
+            .as_ref()
+            .unwrap_or(&self.standard_title)
+    }
+}
+
+crate::closed_enum! {
+    /// A closed runtime projection capability a specification may assign to a
+    /// data-defined node kind.
+    NodeProjectionCapability, "NodeProjectionCapability" {
+        /// The node has no native container.
+        LogicalOnly => "logical_only",
+        /// The node materializes as a native root/project.
+        NativeRoot => "native_root",
+        /// The node materializes below a native root.
+        NativeChild => "native_child",
+        /// The node may own persistent native sessions.
+        SessionHost => "session_host",
+    }
+}
+
+/// Per-parent cardinality for one topology kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCardinality {
+    /// Required instances under each allowed parent.
+    pub minimum: u32,
+    /// Maximum instances, or no finite maximum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum: Option<u32>,
+}
+
+impl NodeCardinality {
+    fn validate(self) -> DomainResult<()> {
+        if self
+            .maximum
+            .is_some_and(|maximum| maximum == 0 || maximum < self.minimum)
+        {
+            return Err(DomainError::invalid(
+                "NodeCardinality",
+                "must satisfy minimum <= maximum and maximum > 0",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One node kind declared by a project topology specification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopologyNodeKindSpec {
+    /// Stable data-defined kind key.
+    pub kind: TopologyKindKey,
+    /// Kinds this kind may be parented by. Empty only for the root kind.
+    pub allowed_parents: Vec<TopologyKindKey>,
+    /// Instances allowed below each parent.
+    pub cardinality: NodeCardinality,
+    /// Projection capabilities the selected runtime adapter must support.
+    pub projection_capabilities: Vec<NodeProjectionCapability>,
+    /// Whether seats hosted by this kind are necessarily read-only.
+    pub read_only: bool,
+    /// Deterministic display-name template interpreted by the adapter layer.
+    pub name_template: ExternalName,
+}
+
+/// A generic, immutable project session-topology specification revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectSessionTopologySpec {
+    /// Schema generation of this document.
+    pub schema_version: SchemaVersion,
+    /// Specification identity shared by every revision.
+    pub spec_id: TopologySpecId,
+    /// This immutable revision.
+    pub version: SpecVersion,
+    /// Human name.
+    pub name: ExternalName,
+    /// The unique logical root kind.
+    pub root_kind: TopologyKindKey,
+    /// Data-defined node-kind vocabulary and rules.
+    pub node_kinds: Vec<TopologyNodeKindSpec>,
+}
+
+/// One node address used to validate a complete topology instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopologyNodeDeclaration {
+    /// Durable node id.
+    pub id: TopologyNodeId,
+    /// Declared kind.
+    pub kind: TopologyKindKey,
+    /// Logical parent; absent only for the root.
+    pub parent_id: Option<TopologyNodeId>,
+}
+
+/// The immutable specification reference pinned by one epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopologySnapshot {
+    /// Specification identity.
+    pub spec_id: TopologySpecId,
+    /// Published revision.
+    pub version: SpecVersion,
+    /// Canonical hash of the exact published document.
+    pub canonical_hash: ContentHash,
+}
+
+impl ProjectSessionTopologySpec {
+    /// Validate the generic kind graph and each projection/cardinality rule.
+    ///
+    /// # Errors
+    /// Rejects duplicate/undeclared/cyclic kinds, an ambiguous root, a Seat
+    /// kind, and impossible capability or cardinality sets.
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.node_kinds.is_empty() || self.node_kinds.len() > 64 {
+            return Err(DomainError::invalid(
+                "ProjectSessionTopologySpec",
+                "must declare between one and 64 node kinds",
+            ));
+        }
+        let mut kinds = BTreeMap::new();
+        for declared in &self.node_kinds {
+            if declared.kind.as_str() == "SEAT" {
+                return Err(DomainError::invalid(
+                    "ProjectSessionTopologySpec",
+                    "a Seat is a binding and must not be a node kind",
+                ));
+            }
+            if kinds.insert(&declared.kind, declared).is_some() {
+                return Err(DomainError::invalid(
+                    "ProjectSessionTopologySpec",
+                    "declares a duplicate node kind",
+                ));
+            }
+            declared.cardinality.validate()?;
+            Self::validate_capabilities(&declared.projection_capabilities)?;
+            let parents: BTreeSet<&TopologyKindKey> = declared.allowed_parents.iter().collect();
+            if parents.len() != declared.allowed_parents.len() {
+                return Err(DomainError::invalid(
+                    "ProjectSessionTopologySpec",
+                    "declares a duplicate allowed parent",
+                ));
+            }
+        }
+
+        let roots: Vec<&TopologyNodeKindSpec> = self
+            .node_kinds
+            .iter()
+            .filter(|kind| kind.allowed_parents.is_empty())
+            .collect();
+        if roots.len() != 1 || roots[0].kind != self.root_kind {
+            return Err(DomainError::invalid(
+                "ProjectSessionTopologySpec",
+                "must declare exactly one root kind",
+            ));
+        }
+        if roots[0].cardinality.minimum != 1 || roots[0].cardinality.maximum != Some(1) {
+            return Err(DomainError::invalid(
+                "ProjectSessionTopologySpec",
+                "the root kind must have cardinality exactly one",
+            ));
+        }
+
+        for declared in &self.node_kinds {
+            for parent in &declared.allowed_parents {
+                if parent == &declared.kind || !kinds.contains_key(parent) {
+                    return Err(DomainError::invalid(
+                        "ProjectSessionTopologySpec",
+                        "an allowed parent is self or undeclared",
+                    ));
+                }
+            }
+        }
+
+        let mut indegree: BTreeMap<&TopologyKindKey, usize> = self
+            .node_kinds
+            .iter()
+            .map(|kind| (&kind.kind, kind.allowed_parents.len()))
+            .collect();
+        let mut queue = vec![&self.root_kind];
+        let mut visited = 0usize;
+        while let Some(parent) = queue.pop() {
+            visited += 1;
+            for child in &self.node_kinds {
+                if child.allowed_parents.contains(parent) {
+                    let degree = indegree.get_mut(&child.kind).expect("kind declared");
+                    *degree -= 1;
+                    if *degree == 0 {
+                        queue.push(&child.kind);
+                    }
+                }
+            }
+        }
+        if visited != self.node_kinds.len() {
+            return Err(DomainError::invalid(
+                "ProjectSessionTopologySpec",
+                "the kind graph is cyclic or unreachable from its root",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_capabilities(capabilities: &[NodeProjectionCapability]) -> DomainResult<()> {
+        let distinct: BTreeSet<NodeProjectionCapability> = capabilities.iter().copied().collect();
+        if distinct.is_empty() || distinct.len() != capabilities.len() {
+            return Err(DomainError::invalid(
+                "ProjectSessionTopologySpec",
+                "projection capabilities must be non-empty and unique",
+            ));
+        }
+        if distinct.contains(&NodeProjectionCapability::LogicalOnly) && distinct.len() != 1 {
+            return Err(DomainError::invalid(
+                "ProjectSessionTopologySpec",
+                "logical_only is exclusive",
+            ));
+        }
+        if distinct.contains(&NodeProjectionCapability::NativeRoot)
+            && distinct.contains(&NodeProjectionCapability::NativeChild)
+        {
+            return Err(DomainError::invalid(
+                "ProjectSessionTopologySpec",
+                "a kind cannot be both native_root and native_child",
+            ));
+        }
+        if distinct.contains(&NodeProjectionCapability::SessionHost)
+            && !distinct.contains(&NodeProjectionCapability::NativeRoot)
+            && !distinct.contains(&NodeProjectionCapability::NativeChild)
+        {
+            return Err(DomainError::invalid(
+                "ProjectSessionTopologySpec",
+                "a session_host must materialize as a native container",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate one complete node tree against this published vocabulary.
+    ///
+    /// # Errors
+    /// In addition to [`Self::validate`], rejects duplicate ids, undeclared
+    /// kinds, dangling/illegal parents, cycles and cardinality violations.
+    pub fn validate_nodes(&self, nodes: &[TopologyNodeDeclaration]) -> DomainResult<()> {
+        self.validate()?;
+        let kinds: BTreeMap<&TopologyKindKey, &TopologyNodeKindSpec> = self
+            .node_kinds
+            .iter()
+            .map(|kind| (&kind.kind, kind))
+            .collect();
+        let mut by_id = BTreeMap::new();
+        for node in nodes {
+            if !kinds.contains_key(&node.kind) || by_id.insert(node.id, node).is_some() {
+                return Err(DomainError::invalid(
+                    "SessionTopology",
+                    "contains an undeclared kind or duplicate node id",
+                ));
+            }
+        }
+
+        let roots: Vec<&TopologyNodeDeclaration> = nodes
+            .iter()
+            .filter(|node| node.parent_id.is_none())
+            .collect();
+        if roots.len() != 1 || roots[0].kind != self.root_kind {
+            return Err(DomainError::invalid(
+                "SessionTopology",
+                "must contain exactly one declared root",
+            ));
+        }
+
+        for node in nodes {
+            if let Some(parent_id) = node.parent_id {
+                let parent = by_id.get(&parent_id).ok_or(DomainError::Invalid {
+                    subject: "SessionTopology",
+                    rule: "contains a dangling parent",
+                })?;
+                let rule = kinds.get(&node.kind).expect("kind checked above");
+                if !rule.allowed_parents.contains(&parent.kind) {
+                    return Err(DomainError::invalid(
+                        "SessionTopology",
+                        "contains a parent relation the specification forbids",
+                    ));
+                }
+            }
+
+            let mut seen = BTreeSet::new();
+            let mut current = Some(node.id);
+            while let Some(id) = current {
+                if !seen.insert(id) {
+                    return Err(DomainError::invalid(
+                        "SessionTopology",
+                        "contains a parent cycle",
+                    ));
+                }
+                current = by_id.get(&id).and_then(|entry| entry.parent_id);
+            }
+        }
+
+        for parent in nodes {
+            for rule in &self.node_kinds {
+                if !rule.allowed_parents.contains(&parent.kind) {
+                    continue;
+                }
+                let count = nodes
+                    .iter()
+                    .filter(|node| node.parent_id == Some(parent.id) && node.kind == rule.kind)
+                    .count();
+                if count < rule.cardinality.minimum as usize
+                    || rule
+                        .cardinality
+                        .maximum
+                        .is_some_and(|maximum| count > maximum as usize)
+                {
+                    return Err(DomainError::invalid(
+                        "SessionTopology",
+                        "violates a declared node cardinality",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate and canonicalize this immutable revision.
+    ///
+    /// # Errors
+    /// As [`Self::validate`], plus canonical-document limits.
+    pub fn canonicalize(&self) -> DomainResult<CanonicalDocument> {
+        self.validate()?;
+        CanonicalDocument::from_serializable(self)
+    }
+
+    /// Find one declared node-kind rule.
+    #[must_use]
+    pub fn node_kind(&self, kind: &TopologyKindKey) -> Option<&TopologyNodeKindSpec> {
+        self.node_kinds
+            .iter()
+            .find(|declared| &declared.kind == kind)
+    }
 }
 
 /// A pinned reference to one revision of a skill definition.

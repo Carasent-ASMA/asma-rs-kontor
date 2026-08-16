@@ -536,6 +536,80 @@ exported_tables! {
         revision: i64,
         created_at: String,
     }
+    topology_specs: TopologySpecsRow from "topology_specs" key(project_id, spec_id, version) {
+        project_id: String,
+        spec_id: String,
+        version: i64,
+        name: String,
+        root_kind: String,
+        definition: String,
+        definition_hash: String,
+        published_at: String,
+    }
+    project_topology_defaults: ProjectTopologyDefaultsRow from "project_topology_defaults" key(project_id) {
+        project_id: String,
+        spec_id: String,
+        version: i64,
+        canonical_hash: String,
+        selected_at: String,
+    }
+    mini_project_topology_snapshots: MiniProjectTopologySnapshotsRow from "mini_project_topology_snapshots" key(mini_project_id) {
+        mini_project_id: String,
+        project_id: String,
+        spec_id: String,
+        version: i64,
+        canonical_hash: String,
+        pinned_at: String,
+    }
+    role_catalog_revisions: RoleCatalogRevisionsRow from "role_catalog_revisions" key(catalog_id, version) {
+        catalog_id: String,
+        version: i64,
+        name: String,
+        definition: String,
+        definition_hash: String,
+        published_at: String,
+    }
+    topology_nodes: TopologyNodesRow from "topology_nodes" key(id) {
+        id: String,
+        project_id: String,
+        mini_project_id: Option<String>,
+        spec_id: String,
+        spec_version: i64,
+        spec_hash: String,
+        kind: String,
+        parent_id: Option<String>,
+        lifecycle: String,
+        placement: String,
+        revision: i64,
+        created_at: String,
+        updated_at: String,
+    }
+    seat_bindings: SeatBindingsRow from "seat_bindings" key(id) {
+        id: String,
+        project_id: String,
+        topology_node_id: String,
+        role_slot_id: String,
+        role_catalog_id: String,
+        role_catalog_version: i64,
+        role_code: String,
+        standard_title: String,
+        custom_display_name: Option<String>,
+        task_id: Option<String>,
+        team_run_id: Option<String>,
+        lifecycle: String,
+        revision: i64,
+        created_at: String,
+        updated_at: String,
+    }
+    adaptive_admission_state: AdaptiveAdmissionStateRow from "adaptive_admission_state" key(mini_project_id) {
+        project_id: String,
+        mini_project_id: String,
+        current_window: i64,
+        clean_observation_streak: i64,
+        last_observation_id: Option<String>,
+        revision: i64,
+        updated_at: String,
+    }
     tasks: TasksRow from "tasks" key(id) {
         id: String,
         project_id: String,

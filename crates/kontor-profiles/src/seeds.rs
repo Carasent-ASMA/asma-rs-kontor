@@ -12,10 +12,14 @@
 
 use kontor_core::DomainResult;
 
-use crate::pack::{ProfilePackSpec, parse_pack_with_teams};
+use crate::pack::{
+    OperationalDomainPack, ProfilePackSpec, parse_operational_domain_pack, parse_pack_with_teams,
+};
 
 /// The profiles, manifest and personas this build ships, as data.
 const BUNDLED_PACK: &str = include_str!("../fixtures/mvp-profile-pack.json");
+/// The Operational topology and standard-role catalog this build ships.
+const OPERATIONAL_DOMAIN: &str = include_str!("../fixtures/operational-domain.json");
 
 /// The pack bundled with this build.
 ///
@@ -29,4 +33,13 @@ const BUNDLED_PACK: &str = include_str!("../fixtures/mvp-profile-pack.json");
 pub fn bundled_pack() -> DomainResult<ProfilePackSpec> {
     let teams = kontor_teams::spec::bundled_teams()?;
     parse_pack_with_teams(BUNDLED_PACK, teams.teams)
+}
+
+/// The bundled Operational topology and standard-role catalog.
+///
+/// # Errors
+/// Returns [`kontor_core::DomainError`] when the checked-in data does not parse
+/// or validate.
+pub fn bundled_operational_domain() -> DomainResult<OperationalDomainPack> {
+    parse_operational_domain_pack(OPERATIONAL_DOMAIN)
 }

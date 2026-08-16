@@ -26,6 +26,7 @@ use tempfile::TempDir;
 /// spelled out so that adding or removing one is a deliberate, reviewed change.
 const EXPECTED_TABLES: &[&str] = &[
     "account_profiles",
+    "adaptive_admission_state",
     "agent_runs",
     "approval_receipts",
     "artifact_evidence",
@@ -76,9 +77,11 @@ const EXPECTED_TABLES: &[&str] = &[
     "memory_revisions",
     "memory_tombstones",
     "mini_projects",
+    "mini_project_topology_snapshots",
     "persona_scenarios",
     "policy_evaluations",
     "projects",
+    "project_topology_defaults",
     "realm_idempotency_bindings",
     "realm_metadata",
     "recovery_episodes",
@@ -86,6 +89,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "registered_profile_packs",
     "resource_leases",
     "role_slot_waivers",
+    "role_catalog_revisions",
     "role_turns",
     "run_context_policies",
     "run_park_closures",
@@ -103,6 +107,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "source_events",
     "status_conflicts",
     "status_transition_receipts",
+    "seat_bindings",
     "task_account_selections",
     "task_dependencies",
     "task_gate_evaluations",
@@ -119,6 +124,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "ticket_field_specs",
     "ticket_sync_projections",
     "trigger_specs",
+    "topology_nodes",
+    "topology_specs",
     "turn_dispatches",
     "work_calendars",
     "work_profiles",
@@ -220,7 +227,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 22);
+    assert_eq!(SCHEMA_VERSION, 23);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
