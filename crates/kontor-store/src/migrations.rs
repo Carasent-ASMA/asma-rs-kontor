@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 27;
 
 /// The bounded busy timeout applied to every connection.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -110,6 +110,19 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0020_role_slot_waivers.sql"),
     include_str!("../migrations/0021_native_memory.sql"),
     include_str!("../migrations/0022_teams_editor.sql"),
+    include_str!("../migrations/0023_operational_topology.sql"),
+    include_str!("../migrations/0024_replace_seat_command.sql"),
+    include_str!("../migrations/0025_document_shareability.sql"),
+    // Schema v26. The durable native container binding per topology node, and
+    // the OP-REQ-039 attachment evidence a logical seat is concluded from —
+    // the deadline fixed at creation, the last observed attachment, the last
+    // observed *activity*, the owning epic seat, and the runtime's self-report
+    // as quotable evidence.
+    include_str!("../migrations/0026_operational_liveness.sql"),
+    // Schema v27. The delivery task a task-scoped node serves, so admission can
+    // locate the node before it creates the seat binding that would otherwise
+    // have been the only way to find it.
+    include_str!("../migrations/0027_task_topology_node.sql"),
 ];
 
 const _: () = assert!(

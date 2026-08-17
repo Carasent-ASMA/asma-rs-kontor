@@ -101,6 +101,12 @@ pub const UNSUPPORTED: &[(RuntimeCapability, &str)] = &[
          canonical path, so Kontor cannot verify a shared task workspace",
     ),
     (
+        RuntimeCapability::PrepareProject,
+        "AO owns no container above a session: there is no project object to create, name \
+         or read back, so a native root a seat could be placed below could only be \
+         asserted and never proven",
+    ),
+    (
         RuntimeCapability::Adopt,
         "AO cannot plant Kontor's full immutable correlation label into a branch that \
          already exists, so an existing session cannot be proven to belong to a run",
@@ -1154,7 +1160,7 @@ impl AoAdapter {
                 autonomous: true,
                 account_pinned: request.account_profile_id().is_some(),
                 binding: None,
-                workspace: Some(request.workspace_claim()),
+                placement: Some(request.placement_claim()),
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::ConcurrentSessions(
                     u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
@@ -1371,7 +1377,7 @@ impl RuntimeAdapter for AoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1446,7 +1452,7 @@ impl RuntimeAdapter for AoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::MessageBytes(request.body_bytes())),
                 context_policy: None,
@@ -1559,7 +1565,7 @@ impl RuntimeAdapter for AoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1605,7 +1611,7 @@ impl RuntimeAdapter for AoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1631,7 +1637,7 @@ impl RuntimeAdapter for AoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: None,
-                workspace: None,
+                placement: None,
                 current_generation: None,
                 demand: None,
                 context_policy: None,

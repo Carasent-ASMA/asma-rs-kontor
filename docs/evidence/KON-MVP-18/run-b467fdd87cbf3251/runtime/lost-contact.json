@@ -1,0 +1,14 @@
+{
+  "binding_id": "0192f0c0-0000-7000-8000-000000000069",
+  "control_terminal_over_a_live_channel": "Succeeded",
+  "lost_contact_is_terminal": false,
+  "lost_contact_is_uncertain": true,
+  "rule": "an observation closes a run only when the channel was reachable, the evidence class is allowed to prove state at the binding's frozen trust grade, and the observation is fresh",
+  "stream_closed_without_terminal": true,
+  "terminal_over_a_closed_stream": null,
+  "vanished_session": {
+    "action": "ProposeLostContactReview",
+    "finding": "MissingSession { agent_run_id: AgentRunId(0192f0c0-0000-7000-8000-000000000068), binding_id: RuntimeBindingId(0192f0c0-0000-7000-8000-000000000069), bound: NativeRuntimeIdentity { runtime_kind: RuntimeKindKey(\"fake.runtime\"), host: ExternalName(\"fake-host\"), generation: 1, native_id: ExternalId(\"native-session-2\") } }",
+    "proposed_state": "lost_contact"
+  }
+}

@@ -888,7 +888,7 @@ mod tests {
             role_slot_id: slot.role_slot_id.clone(),
             task_id: TaskId::generate(),
             binding_id,
-            workspace: None,
+            placement: None,
             cwd: WorkspaceRoot::parse("/w/task-1").expect("an absolute path"),
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),

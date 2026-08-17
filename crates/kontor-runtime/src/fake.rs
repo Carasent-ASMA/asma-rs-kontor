@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus, CompactionTelemetry};
 use kontor_core::id::{
     AgentRunId, CanonicalDocument, CompactionReceiptId, ContentHash, ExternalId, ExternalName,
-    RuntimeBindingId, RuntimeKindKey, TeamRunId, Timestamp, parse_utc_timestamp,
+    RuntimeBindingId, RuntimeKindKey, TeamRunId, Timestamp, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
@@ -35,6 +35,10 @@ use crate::admission::{
 use crate::capability::{
     IssuedBinding, LimitDemand, OperationContext, RuntimeBindingSnapshot, RuntimeCapabilities,
     RuntimeCapability, RuntimeLimits, preflight,
+};
+use crate::container::{
+    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
+    ContainerProjection, ContainerRequest,
 };
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -145,6 +149,8 @@ pub enum RequestKey {
     Run(AgentRunId),
     /// Exactly this team run — workspace preparation.
     TeamRun(TeamRunId),
+    /// Exactly this topology node — container preparation.
+    Node(TopologyNodeId),
     /// Exactly this binding — resume, cancel, inspect, history and live events.
     Binding(RuntimeBindingId),
     /// Exactly this message or response — send and permission response.
@@ -159,6 +165,7 @@ impl RequestKey {
             Self::Capabilities | Self::Sessions => "discovery",
             Self::Run(_) => "run",
             Self::TeamRun(_) => "team run",
+            Self::Node(_) => "topology node",
             Self::Binding(_) => "binding",
             Self::Message(_) => "message",
         }
@@ -261,6 +268,8 @@ pub enum AdapterCall {
     DiscoverCapabilities,
     /// A team run's task workspace was prepared.
     PrepareWorkspace(TeamRunId),
+    /// A topology node's native container was prepared.
+    PrepareContainer(TopologyNodeId),
     /// A run was launched.
     Launch(AgentRunId),
     /// A binding was resumed.
@@ -434,6 +443,16 @@ struct FakeState {
     /// retry from re-grading a workspace against whatever the runtime happens
     /// to advertise later.
     workspaces: BTreeMap<TeamRunId, WorkspaceBindingSnapshot>,
+    /// One native container per topology node, held as the frozen snapshot for
+    /// the same reasons as `workspaces` above.
+    ///
+    /// Deliberately *not* cleared by
+    /// [`ScriptedFakeRuntime::rebuild_adapter_state`]: a native project outlives
+    /// the daemon that asked for it, so a restart has to be modelled as Kontor
+    /// losing its ledger while the container is still there. A fake that forgot
+    /// the container too would make "re-find it by its stored native id"
+    /// untestable, and that path is the whole of the restart contract.
+    containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
     /// Every binding this runtime has issued, held as the frozen snapshot it
     /// handed back. It is the only copy nobody outside can edit, which is what
     /// makes it — and not a caller's clone — the thing terminal evidence is
@@ -657,7 +676,7 @@ impl FakeState {
                 autonomous: true,
                 account_pinned: request.account_profile_id().is_some(),
                 binding: None,
-                workspace: Some(request.workspace_claim()),
+                placement: Some(request.placement_claim()),
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::ConcurrentSessions(
                     self.sessions.len() as u32 + 1,
@@ -770,6 +789,7 @@ impl ScriptedFakeRuntime {
                 runtime_root: WorkspaceRoot::parse("/fake-runtime-root")
                     .expect("valid runtime root"),
                 workspaces: BTreeMap::new(),
+                containers: BTreeMap::new(),
                 bindings: BTreeMap::new(),
                 permissions: PermissionLedger::new(),
                 compactions: BTreeMap::new(),
@@ -827,6 +847,7 @@ impl ScriptedFakeRuntime {
         let mut state = self.lock();
         state.bindings.clear();
         state.placements.clear();
+        state.admissions = AdmissionLedger::new();
     }
 
     /// Forget that the plane was ever prepared.
@@ -1297,7 +1318,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: true,
                 account_pinned: false,
                 binding: None,
-                workspace: None,
+                placement: None,
                 current_generation: None,
                 demand: None,
                 context_policy: None,
@@ -1369,6 +1390,112 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         })
     }
 
+    async fn prepare_container(
+        &self,
+        request: &ContainerRequest,
+    ) -> RuntimeResult<ContainerOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        // The shape is settled before anything is minted, and it is settled from
+        // the pinned specification's capabilities. Nothing below reads the
+        // node's kind.
+        let projection = request.validate()?;
+        let operation = match projection {
+            ContainerProjection::NativeRoot => RuntimeCapability::PrepareProject,
+            ContainerProjection::NativeChild => RuntimeCapability::PrepareWorkspace,
+            // A logical node has no native container by definition. Answering
+            // one with a binding would hand back a native id for something that
+            // does not exist, which is the one answer no caller can detect as
+            // wrong.
+            ContainerProjection::LogicalOnly => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a logical_only node has no native container to prepare",
+                });
+            }
+        };
+        if let Some(canonical) = &state.canonical_root
+            && let Some(requested) = &request.cwd
+            && requested != canonical
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the requested root is not the canonical task worktree of this plane",
+            });
+        }
+        // As for a workspace: a retry is governed by the capabilities its
+        // container was frozen under, not by whatever the runtime advertises
+        // today.
+        let governing = state
+            .containers
+            .get(&request.topology_node_id)
+            .map_or_else(|| state.capabilities.clone(), |it| it.capabilities.clone());
+        preflight(
+            &governing,
+            &OperationContext {
+                operation,
+                autonomous: true,
+                account_pinned: false,
+                binding: None,
+                placement: None,
+                current_generation: None,
+                demand: None,
+                context_policy: None,
+            },
+        )?;
+        state.take_step(operation, RequestKey::Node(request.topology_node_id))?;
+        state
+            .calls
+            .push(AdapterCall::PrepareContainer(request.topology_node_id));
+
+        // Idempotent per *node*, and a contradiction is a contradiction rather
+        // than a second container: the same node asked for at a different root,
+        // or as a different shape, is not the retry it looks like.
+        if let Some(existing) = state.containers.get(&request.topology_node_id) {
+            if existing.binding.root != request.cwd {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "this topology node already has a native container at another root",
+                });
+            }
+            if existing.binding.projection != projection {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "this topology node already has a native container of another shape",
+                });
+            }
+            return Ok(ContainerOutcome {
+                snapshot: existing.clone(),
+                created: false,
+            });
+        }
+
+        state.minted += 1;
+        let native_id = ExternalId::parse(&format!("native-container-{}", state.minted))?;
+        let identity = state.identity(native_id);
+        let correlation = ContainerCorrelationEvidence::establish(
+            request.topology_node_id,
+            &request.correlation().to_string(),
+            identity.clone(),
+            request.requested_at,
+        )?;
+        let snapshot = ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: request.topology_node_id,
+                projection,
+                identity,
+                root: request.cwd.clone(),
+                bound_at: request.requested_at,
+            },
+            capabilities: state.capabilities.clone(),
+            correlation,
+        };
+        state
+            .containers
+            .insert(request.topology_node_id, snapshot.clone());
+        Ok(ContainerOutcome {
+            snapshot,
+            created: true,
+        })
+    }
+
     /// Admission is bookkeeping about seats, not an operation on a session: it
     /// starts nothing, reaches no native surface, and is deliberately not
     /// recorded in [`ScriptedFakeRuntime::calls`], so "the runtime was never
@@ -1419,7 +1546,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&request.binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1455,7 +1582,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&request.binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::MessageBytes(request.body_bytes())),
                 context_policy: None,
@@ -1526,7 +1653,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&request.binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1569,7 +1696,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&request.binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1616,7 +1743,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: true,
                 account_pinned: false,
                 binding: None,
-                workspace: None,
+                placement: None,
                 current_generation: None,
                 demand: None,
                 context_policy: None,
@@ -1711,7 +1838,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: false,
                 account_pinned: false,
                 binding: None,
-                workspace: None,
+                placement: None,
                 current_generation: None,
                 demand: None,
                 context_policy: None,
@@ -1774,7 +1901,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&request.binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::HistoryPage(request.page_size)),
                 context_policy: None,
@@ -1833,7 +1960,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&request.binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1876,7 +2003,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&request.binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1943,7 +2070,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&request.binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,

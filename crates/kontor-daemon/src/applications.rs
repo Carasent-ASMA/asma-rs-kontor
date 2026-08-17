@@ -39,8 +39,9 @@ use kontor_api::applications::{
     TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
-    ConnectorSpecDto, IntakeReceiptDto, ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto,
-    ProfilePhaseDto, ProfileValidationDto, RegisterPackRequest, ResolveConflictRequest,
+    AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
+    ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto, ProfilePhaseDto, ProfileValidationDto,
+    RegisterPackRequest, ReplaceSeatRequest, ReplacedSeatDto, ResolveConflictRequest,
     RoleSlotWaiverDto, SettleTurnRequest, SettledTurnDto, SubmitIntakeRequest, TicketClaimDto,
     TicketCommentDto, TicketCommentPullDto, TicketConflictDto, TriggerSpecDto, TurnFollowUpDto,
     WaiveRoleSlotRequest, WorkProfileDetailDto,
@@ -54,38 +55,51 @@ use kontor_api::applications::{
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
+use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CanonicalDocument,
     CommandReceiptId, ConnectorKey, ContentHash, CurrencyCode, ExecutionAuthorizationId,
     ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey,
-    Money, ProjectId, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SourceEventId,
-    SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp, TriggerKey,
+    Money, ProjectId, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId,
+    SourceEventId, SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
+    TriggerKey,
 };
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     CalendarRepository, CommandRepository, CredentialReference, CredentialReferenceKind,
-    IntakeOutcome, IntakeRepository, NewAccountProfile, NewAgentRun, NewCommandIntent,
-    NewGateEvaluation, NewSourceEvent, NewTeamRun, ProjectRepository, RealmRepository,
-    RepositoryError, RunRepository, RuntimeBinding, SpecRepository, TaskTransitionRequest,
-    TicketRepository, WorkflowRepository,
+    IntakeOutcome, IntakeRepository, MiniProjectTopologySnapshot, NewAccountProfile, NewAgentRun,
+    NewCommandIntent, NewGateEvaluation, NewNativeContainerBinding, NewSeatBinding,
+    NewSessionTopologyNode, NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault,
+    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
+    SpecRepository, TaskTransitionRequest, TicketRepository, TopologyRepository,
+    WorkflowRepository,
 };
 use kontor_core::spec::{
-    AutoArmPolicy, CanonicalSourceEvent, ContextPolicySnapshot, EffectiveContextPolicy,
-    IntakeReceipt, IntakeResult, ModelRung, RequestedContextPolicy, SourceIdentity,
-    SourceProcessingState, TeamRunSnapshot, TriggerSpec,
+    AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, ContextEnforcement, ContextPolicySnapshot,
+    EffectiveContextPolicy, IntakeReceipt, IntakeResult, ModelRung, NodeProjectionCapability,
+    RequestedContextPolicy, Shareability, ShareabilityTier, SourceIdentity, SourceProcessingState,
+    TeamRunSnapshot, TopologySnapshot, TriggerSpec,
 };
-use kontor_core::state::{GateVerdict, TaskState, TaskTeamClosure};
+use kontor_core::state::{
+    GateVerdict, ObservedContainerKind, SessionTopologyNode, TaskState, TaskTeamClosure,
+    TerminalEvidenceSource, TerminalOutcome,
+};
 use kontor_core::ticket::OwnershipAction;
 use kontor_integrations_asma::jira::SpecCatalog;
 use kontor_profiles::pack::{
-    PackAvailability, PackCategoryKey, ProfilePackSpec, ResolvedProfileBundle, parse_pack,
-    resolve_profile, validate_pack,
+    OperationalDomainPack, PackAvailability, PackCategoryKey, ProfilePackSpec,
+    ResolvedProfileBundle, parse_pack, resolve_profile, validate_pack,
 };
+use kontor_runtime::adapter::{RuntimeAdapter, RuntimeError};
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
-use kontor_runtime::request::LaunchParts;
-use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
+use kontor_runtime::container::{
+    ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
+    ContainerRequest,
+};
+use kontor_runtime::request::{LaunchParts, LaunchPlacement};
+use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
     AuthorizationEvidence, CalendarAdmission, Candidate, CandidateDecision, CapacityConfig,
@@ -97,7 +111,7 @@ use kontor_store::{
     IdempotencyBinding, NewRoleTurn, ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore,
     StoredConflict, StoredTeamDraft, StoredTeamsProjection, TurnDispatch,
 };
-use kontor_teams::run::{TeamClosureCertificate, TeamRunLease, TeamRunSlots};
+use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 
 /// The realm-scoped operation a pack registration binds its key to.
 ///
@@ -108,6 +122,13 @@ const REGISTER_PACK: &str = "register_profile_pack";
 
 /// How long a scheduler-held module or worktree lease lives, in seconds.
 const LEASE_SECONDS: i64 = 3_600;
+
+/// How long after creation a seat must have been observed attached (OP-REQ-039a).
+///
+/// Fixed at creation and stored, never recomputed from the row's age: a deadline
+/// derived at read time moves every time the row is read, which is the defect
+/// the persisted column exists to remove.
+const SEAT_ATTACH_SECONDS: i64 = 600;
 
 /// The composed services, and the one process state they run against.
 ///
@@ -120,6 +141,13 @@ pub struct Services {
     realm_id: kontor_core::id::RealmId,
     state: OnceLock<ApiState>,
     pack: ProfilePackSpec,
+    /// The Operational topology vocabulary and delivery binding this build
+    /// ships.
+    ///
+    /// Held beside the profile pack for the same reason: it is seeded data the
+    /// build carries, so admission reads *which* kinds and role codes delivery
+    /// uses rather than knowing them.
+    domain: OperationalDomainPack,
     /// The connector specifications this build ships, parsed on first use.
     connectors: OnceLock<SpecCatalog>,
     /// How many simultaneous runs this Realm admits, from its configuration.
@@ -167,6 +195,7 @@ impl Services {
             realm_id,
             state: OnceLock::new(),
             pack: kontor_profiles::seeds::bundled_pack()?,
+            domain: kontor_profiles::bundled_operational_domain()?,
             connectors: OnceLock::new(),
             capacity,
         }))
@@ -201,6 +230,73 @@ impl Services {
     /// A refusal about this Realm with a static rule.
     const fn deny(&self, code: ApiErrorCode, rule: &'static str) -> ApiError {
         ApiError::new(self.realm_id, code, rule)
+    }
+
+    fn artifact_keys(&self, values: &[String]) -> Result<BTreeSet<ArtifactKey>, ApiError> {
+        values
+            .iter()
+            .map(|value| {
+                ArtifactKey::parse(value).map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "artifact keys may contain only lowercase ASCII letters, digits, '.', '_' and '-'",
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn latest_handoff_receipt(
+        &self,
+        project_id: ProjectId,
+        run: &kontor_core::repository::AgentRun,
+    ) -> Result<Option<CompactionReceipt>, ApiError> {
+        let Some(binding) = run.binding.as_ref() else {
+            return Ok(None);
+        };
+        let receipt = self
+            .state()?
+            .with_store(|store| store.latest_compaction_receipt(project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(receipt.filter(|receipt| {
+            receipt.binding_id == binding.id
+                && receipt.native_before == binding.identity
+                && receipt.handoff_hash.is_some()
+        }))
+    }
+
+    fn best_effort_handoff_receipt(
+        &self,
+        project_id: ProjectId,
+        run: &kontor_core::repository::AgentRun,
+    ) -> Result<Option<CompactionReceipt>, ApiError> {
+        Ok(self
+            .latest_handoff_receipt(project_id, run)?
+            .filter(|receipt| {
+                receipt.requested.policy.enforcement == ContextEnforcement::BestEffort
+                    && receipt.status == CompactionStatus::NotEnforced
+            }))
+    }
+
+    fn role_slot_has_disposition(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        run: &kontor_core::repository::AgentRun,
+        role_slot: &RoleSlotId,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        let has_turn = state
+            .with_store(|store| store.list_settled_turns(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .iter()
+            .any(|turn| turn.agent_run_id == run.id && turn.role_slot_id == *role_slot);
+        let has_waiver = state
+            .with_store(|store| store.list_role_slot_waivers(project_id, run.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .iter()
+            .any(|waiver| waiver.role_slot_id == *role_slot);
+        Ok(has_turn || has_waiver)
     }
 
     /// Resolve one advertised profile category into its frozen bundle.
@@ -1007,14 +1103,19 @@ impl Services {
         team_run_id: TeamRunId,
         slot: &RoleSlotId,
     ) -> Result<Option<AgentRunId>, ApiError> {
-        let state = self.state()?;
         let role = slot.clone().into_role_key();
-        Ok(state
-            .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
-            .map_err(|error| self.refuse(&error))?
+        let mut live = self
+            .team_members(project_id, team_run_id)?
             .into_iter()
-            .find(|seat| seat.role == role)
-            .map(|seat| seat.agent_run_id))
+            .filter(|run| run.role == role && run.terminal.is_none());
+        let seat = live.next().map(|run| run.id);
+        if live.next().is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the role slot has more than one non-terminal successor",
+            ));
+        }
+        Ok(seat)
     }
 
     /// Give one already-materialized seat its follow-up work.
@@ -1791,6 +1892,14 @@ struct Seating<'a> {
     roots: &'a BTreeSet<RoleSlotId>,
     /// The runtime that issues the sessions.
     adapter: &'a std::sync::Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+    /// The node-keyed container every seat of this team run is placed in.
+    ///
+    /// Prepared once, by `seat`, and carried rather than re-prepared. One
+    /// container per node is the invariant; a seat that prepared its own would
+    /// be asserting a second answer to "where is this task's work".
+    container: &'a ContainerBindingSnapshot,
+    /// Where every seat of this team run works.
+    cwd: &'a kontor_runtime::workspace::WorkspaceRoot,
     /// The instant every seat of this start is dated at.
     now: Timestamp,
 }
@@ -3213,6 +3322,65 @@ impl ApplicationOperations for Services {
                 "startup reconciliation has not finished, so nothing may be admitted",
             ));
         }
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "scheduler_start",
+            "epic_id": epic_id.to_string(),
+            "plan_hash": request.plan_hash,
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+
+        // Admission is durable before the runtime is contacted. If that native
+        // call failed, a fresh plan correctly says `task_already_in_flight`; it
+        // cannot be the input for recovering the already-recorded launch. An
+        // exact command replay therefore resumes only the immutable admissions
+        // whose launch keys were derived from this scheduler key.
+        if replayed {
+            let tasks = state
+                .with_store(|store| store.list_epic_tasks(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?;
+            let mut admitted = Vec::new();
+            for task in tasks {
+                let launch_key = IdempotencyKey::parse(&format!("{}-{}", key.as_str(), task.id))
+                    .map_err(|error| self.refuse_domain(&error))?;
+                if let Some(candidate) = state
+                    .with_store(|store| {
+                        store.admitted_candidate_by_launch_key(project_id, &launch_key)
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    admitted.push(candidate);
+                }
+            }
+            if !admitted.is_empty() {
+                let mut started = Vec::new();
+                let mut blocked = Vec::new();
+                for candidate in &admitted {
+                    match self.seat(key, project_id, candidate).await {
+                        Ok(seats) => started.extend(seats),
+                        Err(refusal) => blocked.push(BlockedTaskDto {
+                            task_id: candidate.task_id,
+                            code: refusal.code.as_str().to_owned(),
+                            evidence: vec![serde_json::json!({
+                                "kind": "seat",
+                                "rule": refusal.rule,
+                            })],
+                        }),
+                    }
+                }
+                self.mark_started_tasks_in_progress(project_id, &started)?;
+                state.signals().appended();
+                return Ok(SchedulerStartDto {
+                    realm_id: state.realm_id(),
+                    plan_hash: request.plan_hash.clone(),
+                    started,
+                    blocked,
+                });
+            }
+        }
         let snapshot = self.snapshot(project_id, epic_id).await?;
         let plan =
             kontor_scheduler::ready::plan(&snapshot).map_err(|error| self.refuse_domain(&error))?;
@@ -3232,16 +3400,7 @@ impl ApplicationOperations for Services {
         // plan is a conflict rather than a second batch. The per-seat launch
         // intents below are derived from this key and are the admission path's own
         // idempotency, which is a different question from this one.
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "scheduler_start",
-            "epic_id": epic_id.to_string(),
-            "plan_hash": request.plan_hash,
-        }))?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: epic_id,
-        };
-        if self.replayed(key, &intent, Some(&target))?.is_none() {
+        if !replayed {
             let epic = self.epic_row(project_id, epic_id)?;
             self.record(
                 key,
@@ -3294,32 +3453,13 @@ impl ApplicationOperations for Services {
         // task there would make the admission check depend on its own write — so
         // the transition belongs here, after the seat exists.
         //
-        // Without it a started task stays `ready` forever, which is not a
-        // cosmetic problem: `ready → done` is not in the transition table, so a
-        // task could be started and could never legally be completed.
-        let seated: BTreeSet<TaskId> = started.iter().map(|seat| seat.task_id).collect();
-        for task_id in seated {
-            let task = self.task_row(project_id, task_id)?;
-            if task.state != TaskState::Ready {
-                continue;
-            }
-            state
-                .with_store(|store| {
-                    store.transition_task(&TaskTransitionRequest {
-                        project_id,
-                        task_id,
-                        expected_revision: task.revision,
-                        to: TaskState::InProgress,
-                        resume_receipt: None,
-                        run_outcome: None,
-                        produced_artifacts: BTreeSet::new(),
-                        completed_phases: BTreeSet::new(),
-                        team_closure: TaskTeamClosure::NoTeam,
-                        occurred_at: kontor_api::now(),
-                    })
-                })
-                .map_err(|error| self.refuse(&error))?;
-        }
+        // Without it a started task stays `ready` forever. That used to be
+        // unrecoverable — `ready → done` was not in the transition table, so a
+        // started task could never legally be completed. It is now legal, on the
+        // same closure certificate `in_progress` needs, so a task that misses
+        // this transition is merely mislabelled rather than stuck. Moving it
+        // here is still the point: a task being worked on should say so.
+        self.mark_started_tasks_in_progress(project_id, &started)?;
         state.signals().appended();
         Ok(SchedulerStartDto {
             realm_id: state.realm_id(),
@@ -4016,7 +4156,11 @@ impl ApplicationOperations for Services {
                         project.project_id,
                         &settled,
                         &handoff,
-                        row.target_agent_run,
+                        self.seat_for_slot(
+                            project.project_id,
+                            row.team_run_id,
+                            &row.to_role_slot_id,
+                        )?,
                         message_id,
                         now,
                     )
@@ -4235,12 +4379,7 @@ impl ApplicationOperations for Services {
         // attribution. A run with none contributes none; nothing is invented.
         let account_profile = run.account_profile_id;
 
-        let artifacts: BTreeSet<ArtifactKey> = request
-            .artifacts
-            .iter()
-            .map(|key| ArtifactKey::parse(key))
-            .collect::<Result<_, _>>()
-            .map_err(|error| self.refuse_domain(&error))?;
+        let artifacts = self.artifact_keys(&request.artifacts)?;
         // The digest covers exactly what identifies this turn, so a replay under
         // the same key with different content is a conflict and not a second
         // position in the seat's sequence.
@@ -4279,6 +4418,24 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?;
 
+        // A settled turn is the one thing that proves *activity*: the seat took
+        // a turn and it landed. An inspect that merely finds the session alive
+        // is attachment, recorded elsewhere and deliberately not here — a seat
+        // that answers `running` forever while doing nothing must read as
+        // stalled, not as busy.
+        self.observe_seat(
+            project_id,
+            task_id,
+            team_run_id,
+            &role_slot,
+            &SeatLivenessObservation {
+                attached_at: Some(now),
+                activity_at: Some(now),
+                ..SeatLivenessObservation::default()
+            },
+            now,
+        )?;
+
         // The postcondition, asserted rather than assumed: settling a turn must
         // leave the seat's session live. If this process no longer holds the
         // frozen snapshot the seat is not reusable, and saying so is the honest
@@ -4315,6 +4472,438 @@ impl ApplicationOperations for Services {
         })
     }
 
+    async fn attest_late_handoff(
+        &self,
+        key: &IdempotencyKey,
+        authority: kontor_api::auth::CallerCapability,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &AttestLateHandoffRequest,
+    ) -> Result<LateHandoffAttestationDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such agent run exists in this project",
+                )
+            })?;
+        let binding = run.binding.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the run has no immutable native binding to attest",
+            )
+        })?;
+        let terminal = run.terminal.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::RevisionConflict,
+                "late handoff attestation requires a terminal run",
+            )
+        })?;
+        if terminal.outcome != TerminalOutcome::Cancelled
+            || !matches!(
+                terminal.source,
+                TerminalEvidenceSource::RuntimeObservation { .. }
+            )
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "late handoff attestation is limited to runtime-observed cancellation",
+            ));
+        }
+        if request.binding_generation != binding.identity.generation {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the immutable binding generation differs from the attestation",
+            ));
+        }
+
+        let role_slot =
+            RoleSlotId::parse(&request.role_slot).map_err(|error| self.refuse_domain(&error))?;
+        if run.role != role_slot.clone().into_role_key() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "this run did not hold the attested role slot",
+            ));
+        }
+        let task_id = self.task_for_team_run(project_id, run.team_run_id)?;
+        let task = self.task_row(project_id, task_id)?;
+        if task.revision != request.expected_task_revision {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the task moved since the handoff was produced",
+            ));
+        }
+
+        let handoff_hash = ContentHash::parse(&request.handoff_hash).map_err(|_| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "handoff_hash must be a lowercase 64-character SHA-256 digest",
+            )
+        })?;
+        let receipt = self
+            .best_effort_handoff_receipt(project_id, &run)?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the run has no matching best-effort handoff compaction receipt",
+                )
+            })?;
+        if receipt.handoff_hash.as_ref() != Some(&handoff_hash) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the attested handoff hash differs from the durable receipt",
+            ));
+        }
+        let artifacts = self.artifact_keys(&request.artifacts)?;
+        let evidence = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "attest_late_handoff",
+            "task_id": task_id.to_string(),
+            "team_run_id": run.team_run_id.to_string(),
+            "agent_run_id": agent_run_id.to_string(),
+            "role_slot": role_slot.as_role_key().as_str(),
+            "task_revision": task.revision.get(),
+            "binding_generation": binding.identity.generation,
+            "terminal_outcome": terminal.outcome.as_str(),
+            "compaction_receipt_id": receipt.id.to_string(),
+            "handoff_hash": handoff_hash.as_str(),
+            "authority_tier": authority.as_str(),
+            "artifacts": artifacts.iter().map(|key| key.as_str()).collect::<Vec<_>>(),
+        }))?;
+        let (settled, applied) = state
+            .with_store(|store| {
+                store.attest_late_role_turn(&NewRoleTurn {
+                    id: RoleTurnId::generate(),
+                    project_id,
+                    task_id,
+                    team_run_id: run.team_run_id,
+                    agent_run_id,
+                    role_slot_id: role_slot.clone(),
+                    idempotency_key: key.as_str().to_owned(),
+                    task_revision: task.revision,
+                    binding_generation: binding.identity.generation,
+                    authority_tier: authority.as_str(),
+                    account_profile: run.account_profile_id,
+                    artifacts: artifacts.clone(),
+                    evidence_hash: evidence.hash().clone(),
+                    settled_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let (team_run_closed, _) = self.settle_team(project_id, &run, now)?;
+        let follow_ups = self.derive_follow_ups(project_id, &settled, now).await?;
+
+        Ok(LateHandoffAttestationDto {
+            realm_id: state.realm_id(),
+            turn_id: settled.id.to_string(),
+            task_id,
+            agent_run_id: agent_run_id.to_string(),
+            role_slot: settled.role_slot_id.as_role_key().as_str().to_owned(),
+            binding_generation: settled.binding_generation,
+            compaction_receipt_id: receipt.id.to_string(),
+            handoff_hash: handoff_hash.as_str().to_owned(),
+            artifacts: settled
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.as_str().to_owned())
+                .collect(),
+            terminal_outcome: terminal.outcome.as_str().to_owned(),
+            seat_live: false,
+            applied: applied_dto(applied),
+            attested_by: authority.as_str().to_owned(),
+            team_run_closed,
+            follow_ups,
+        })
+    }
+
+    async fn replace_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &ReplaceSeatRequest,
+    ) -> Result<ReplacedSeatDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let predecessor = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such predecessor run exists in this project",
+                )
+            })?;
+        let binding = predecessor.binding.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the predecessor has no immutable native binding to replace",
+            )
+        })?;
+        if request.binding_generation != binding.identity.generation {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the immutable binding generation differs from the replacement request",
+            ));
+        }
+        let terminal = predecessor.terminal.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the predecessor is not terminal, so its seat cannot be replaced",
+            )
+        })?;
+        if terminal.outcome != TerminalOutcome::Cancelled
+            || !matches!(
+                terminal.source,
+                TerminalEvidenceSource::RuntimeObservation { .. }
+            )
+        {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "seat replacement requires runtime-observed cancellation",
+            ));
+        }
+        if state.sessions().get(binding.id).is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the predecessor seat is still live and must be reused",
+            ));
+        }
+
+        let role_slot =
+            RoleSlotId::parse(&request.role_slot).map_err(|error| self.refuse_domain(&error))?;
+        if predecessor.role != role_slot.clone().into_role_key() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the predecessor did not hold the requested role slot",
+            ));
+        }
+        let task_id = self.task_for_team_run(project_id, predecessor.team_run_id)?;
+        let task = self.task_row(project_id, task_id)?;
+        if task.revision != request.expected_task_revision {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the task moved since the replacement was authorized",
+            ));
+        }
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, predecessor.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the team run no longer exists"))?;
+        if team.lifecycle.is_terminal() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the team run is terminal and cannot receive a successor",
+            ));
+        }
+
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "replace_seat",
+            "predecessor_agent_run_id": agent_run_id.to_string(),
+            "team_run_id": predecessor.team_run_id.to_string(),
+            "role_slot": role_slot.as_role_key().as_str(),
+            "task_revision": task.revision.get(),
+            "binding_generation": binding.identity.generation,
+        }))?;
+        let target = AggregateRef::TeamRun {
+            team_run_id: predecessor.team_run_id,
+        };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+        if !replayed {
+            self.record(
+                key,
+                project_id,
+                CommandKind::ReplaceSeat,
+                target,
+                team.revision,
+                &intent,
+            )?;
+        }
+
+        let members = self.team_members(project_id, predecessor.team_run_id)?;
+        let recorded_successor = members
+            .iter()
+            .find(|run| run.parent_agent_run_id == Some(agent_run_id));
+        if let Some((successor, successor_binding)) = recorded_successor.and_then(|successor| {
+            successor
+                .binding
+                .as_ref()
+                .map(|binding| (successor, binding))
+        }) {
+            return Ok(ReplacedSeatDto {
+                realm_id: state.realm_id(),
+                task_id,
+                team_run_id: predecessor.team_run_id.to_string(),
+                predecessor_agent_run_id: agent_run_id.to_string(),
+                successor_agent_run_id: successor.id.to_string(),
+                role_slot: role_slot.as_role_key().as_str().to_owned(),
+                runtime_kind: successor_binding.identity.runtime_kind.as_str().to_owned(),
+                native_id: successor_binding.identity.native_id.as_str().to_owned(),
+                applied: AppliedDto::Unchanged,
+            });
+        }
+
+        let recorded_successor_id = recorded_successor.map(|successor| successor.id);
+        let slot_members = recorded_successor_id.map_or_else(
+            || members.clone(),
+            |successor_id| {
+                members
+                    .iter()
+                    .filter(|run| run.id != successor_id)
+                    .cloned()
+                    .collect()
+            },
+        );
+
+        let bindings: Vec<_> = members
+            .iter()
+            .filter_map(|run| run.binding.as_ref())
+            .filter_map(|held| state.sessions().get(held.id))
+            .collect();
+        let lease = TeamRunLease::acquire(predecessor.team_run_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let mut slots = TeamRunSlots::hydrate(lease, &team.snapshot, &slot_members, &bindings)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let closed = slots
+            .latest_closed(&role_slot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if closed.agent_run_id() != agent_run_id {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the predecessor is not the role slot's latest closed attempt",
+            ));
+        }
+
+        let successor_agent_run_id = recorded_successor_id.unwrap_or_else(AgentRunId::generate);
+        let permit = slots
+            .reserve_successor(closed, successor_agent_run_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        // The run id is durable before runtime launch. Derive a distinct UUIDv7
+        // binding id from it so a retry can reclaim the runtime's exact admission.
+        let mut binding_id = successor_agent_run_id.to_string();
+        let last = binding_id.pop().expect("an entity id is not empty");
+        binding_id.push(
+            char::from_digit(
+                last.to_digit(16).expect("an entity id is hexadecimal") ^ 1,
+                16,
+            )
+            .expect("a hexadecimal digit remains hexadecimal"),
+        );
+        let binding_id = kontor_core::id::RuntimeBindingId::parse(&binding_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this daemon is not configured with the predecessor's runtime",
+                )
+            })?;
+        if recorded_successor_id.is_none() {
+            let successor_row = permit
+                .new_agent_run(project_id, predecessor.account_profile_id, None, now)
+                .map_err(|error| self.refuse_domain(&error))?;
+            state
+                .with_store(|store| store.create_agent_run(&successor_row))
+                .map_err(|error| self.refuse(&error))?;
+        }
+
+        adapter
+            .prepare_plane()
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        // The replacement is placed in the *same* container as the seat it
+        // replaces. Preparing a fresh one keyed by anything else is how a
+        // successor ends up working somewhere its predecessor never was.
+        let task_root = self.task_root(project_id, task_id)?;
+        let node = self.ensure_task_node(project_id, task_id)?;
+        let workspace = self
+            .ensure_container(project_id, &node, &task_root, adapter.as_ref())
+            .await?;
+        let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let launch = SlotLaunch {
+            task_id,
+            binding_id,
+            placement: Some(LaunchPlacement::Container(workspace.clone())),
+            cwd: task_root.clone(),
+            account_profile_id: predecessor.account_profile_id,
+            prompt: slot_prompt(&role_slot, &eligible_roots(slots.template()))
+                .map_err(|error| self.refuse_domain(&error))?,
+            model_rung: freeze_seat_model_rung(&team.snapshot, &role_slot)
+                .map_err(|error| self.refuse_domain(&error))?,
+            context_policy: context_policy.clone(),
+            requested_at: now,
+        };
+        let admission = permit.admission_request(&launch);
+        let admitted = match adapter.admit_launch(&admission).await {
+            Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "this seat holds no session to replace",
+            }) => {
+                adapter
+                    .admit_launch(&AdmissionRequest {
+                        replaces: None,
+                        ..admission
+                    })
+                    .await
+            }
+            answer => answer,
+        };
+        let authority = admitted
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+            .into_authority()
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let prepared = permit.launch_request(authority, launch);
+        let outcome = adapter
+            .launch(prepared.request())
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        slots
+            .bind(prepared, &outcome.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let successor_binding = RuntimeBinding {
+            id: outcome.snapshot.binding_id(),
+            agent_run_id: successor_agent_run_id,
+            identity: outcome.snapshot.identity().clone(),
+            bound_at: now,
+        };
+        state
+            .with_store(|store| {
+                store.bind_agent_run(project_id, successor_agent_run_id, &successor_binding)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state
+            .with_store(|store| {
+                store.record_run_context_policy(project_id, successor_agent_run_id, &context_policy)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        self.hold(&outcome.snapshot)?;
+        self.retry_undelivered_dispatches().await?;
+
+        Ok(ReplacedSeatDto {
+            realm_id: state.realm_id(),
+            task_id,
+            team_run_id: predecessor.team_run_id.to_string(),
+            predecessor_agent_run_id: agent_run_id.to_string(),
+            successor_agent_run_id: successor_agent_run_id.to_string(),
+            role_slot: role_slot.as_role_key().as_str().to_owned(),
+            runtime_kind: successor_binding.identity.runtime_kind.as_str().to_owned(),
+            native_id: successor_binding.identity.native_id.as_str().to_owned(),
+            applied: if recorded_successor_id.is_some() {
+                AppliedDto::Unchanged
+            } else {
+                AppliedDto::Created
+            },
+        })
+    }
+
     async fn settle_runtime(
         &self,
         key: &IdempotencyKey,
@@ -4342,6 +4931,17 @@ impl ApplicationOperations for Services {
                 "this run was never bound to a native session, so there is nothing to settle",
             )
         })?;
+
+        if run.terminal.is_none() && self.latest_handoff_receipt(project_id, &run)?.is_some() {
+            let task_id = self.task_for_team_run(project_id, run.team_run_id)?;
+            let role_slot = RoleSlotId::new(run.role.clone());
+            if !self.role_slot_has_disposition(project_id, task_id, &run, &role_slot)? {
+                return Err(self.deny(
+                    ApiErrorCode::HandoffUnsettled,
+                    "a durable handoff must be settled or attested before runtime settlement",
+                ));
+            }
+        }
 
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
@@ -4474,6 +5074,24 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?;
         state.signals().appended();
+
+        // (3b) The same readback, against the seat's own binding. A successful
+        // inspect proves the session is *there*, so it records attachment and
+        // quotes what the runtime said about itself — and it deliberately
+        // records no activity. Treating `running` as activity is the shortcut
+        // that makes a hung seat look busy for as long as its process survives.
+        self.observe_seat(
+            project_id,
+            self.task_for_team_run(project_id, run.team_run_id)?,
+            run.team_run_id,
+            &RoleSlotId::new(run.role.clone()),
+            &SeatLivenessObservation {
+                attached_at: Some(observation.observed_at),
+                runtime_reported: Some(observation.state),
+                ..SeatLivenessObservation::default()
+            },
+            now,
+        )?;
 
         // (4) The only place an outcome comes from. It is derived from the
         // observation against the *issued* binding, and it refuses every uncertain
@@ -5245,6 +5863,38 @@ impl ApplicationOperations for Services {
 }
 
 impl Services {
+    fn mark_started_tasks_in_progress(
+        &self,
+        project_id: ProjectId,
+        started: &[StartedSeatDto],
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let seated: BTreeSet<TaskId> = started.iter().map(|seat| seat.task_id).collect();
+        for task_id in seated {
+            let task = self.task_row(project_id, task_id)?;
+            if task.state != TaskState::Ready {
+                continue;
+            }
+            state
+                .with_store(|store| {
+                    store.transition_task(&TaskTransitionRequest {
+                        project_id,
+                        task_id,
+                        expected_revision: task.revision,
+                        to: TaskState::InProgress,
+                        resume_receipt: None,
+                        run_outcome: None,
+                        produced_artifacts: BTreeSet::new(),
+                        completed_phases: BTreeSet::new(),
+                        team_closure: TaskTeamClosure::NoTeam,
+                        occurred_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        Ok(())
+    }
+
     /// Create or reuse every seat one admitted task's team declares.
     ///
     /// The order is the whole point. `admit_candidate` commits the team run, the
@@ -5356,7 +6006,20 @@ impl Services {
             .map(|(id, _)| id);
 
         let team_run_id = existing.unwrap_or_else(TeamRunId::generate);
-        let agent_run_id = AgentRunId::generate();
+        let launch_key = IdempotencyKey::parse(&format!("{}-{}", key.as_str(), admitted.task_id))
+            .map_err(|error| self.refuse_domain(&error))?;
+        let agent_run_id = state
+            .with_store(|store| store.get_receipt_by_key(&launch_key))
+            .map_err(|error| self.refuse(&error))?
+            .map(|receipt| match receipt.target {
+                AggregateRef::AgentRun { agent_run_id } => Ok(agent_run_id),
+                _ => Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the admission launch key already names another operation",
+                )),
+            })
+            .transpose()?
+            .unwrap_or_else(AgentRunId::generate);
         let binding_id = kontor_core::id::RuntimeBindingId::generate();
         let adapter = state
             .runtimes()
@@ -5385,9 +6048,6 @@ impl Services {
             .checked_add(jiff::SignedDuration::from_secs(LEASE_SECONDS))
             .unwrap_or(now);
         let holder = ExternalId::parse("kontord").map_err(|error| self.refuse_domain(&error))?;
-        let launch_key = IdempotencyKey::parse(&format!("{}-{}", key.as_str(), admitted.task_id))
-            .map_err(|error| self.refuse_domain(&error))?;
-
         // Frozen once, here: every seat of this team run resolves its context
         // window against this copy, so the answer cannot drift as packs change.
         let seeded_roles: BTreeSet<kontor_core::id::RoleKey> = team
@@ -5454,7 +6114,14 @@ impl Services {
         });
         commit.map_err(|error| self.refuse(&error))?;
 
-        // A workspace is prepared *inside* the runtime's plane, so the plane has
+        // Where this seat belongs is settled before the runtime is touched at
+        // all. A placement that cannot be resolved stops here, with nothing
+        // dispatched and nothing to undo.
+        let task_root = self.task_root(project_id, admitted.task_id)?;
+        let placement =
+            self.resolve_placement(project_id, admitted.task_id, &ordered, &task_root)?;
+
+        // A container is prepared *inside* the runtime's plane, so the plane has
         // to exist first. This is idempotent and re-attests a binding the
         // adapter already holds, so the cost of asking on every admission is one
         // readback — and the cost of not asking is a seat that can never be
@@ -5463,82 +6130,123 @@ impl Services {
             .prepare_plane()
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let workspace = adapter
-            .prepare_workspace(&WorkspacePrepareRequest {
+        let workspace = self
+            .ensure_container(project_id, &placement, &task_root, adapter.as_ref())
+            .await?;
+        // The seat that owns this task's seats, opened once per epic. Every
+        // delivery binding names it, so closing it orphans them all at once
+        // instead of leaving each to be judged on its own liveness.
+        let owner = self.ensure_epic_control_seat(project_id, &placement)?;
+        for slot in &ordered {
+            self.ensure_seat_binding(
+                project_id,
+                &placement,
+                admitted.task_id,
                 team_run_id,
+                slot,
+                owner,
+            )?;
+        }
+        let existing_binding = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .and_then(|run| run.binding);
+        let first = if let Some(binding) = existing_binding {
+            StartedSeatDto {
                 task_id: admitted.task_id,
-                workspace_binding_id: WorkspaceBindingId::generate(),
-                root: self.task_root(project_id, admitted.task_id)?,
-                requested_at: now,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-            .snapshot;
-        let authority = adapter
-            .admit_launch(&AdmissionRequest {
-                slot: RoleSlotKey::new(team_run_id, slot.clone()),
-                agent_run_id,
-                binding_id,
-                replaces: None,
-                requested_at: now,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-            .into_authority()
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let model_rung = freeze_seat_model_rung(&team_snapshot, &slot)
-            .map_err(|error| self.refuse_domain(&error))?;
-        let outcome = adapter
-            .launch(&authority.into_request(LaunchParts {
-                agent_run_id,
-                team_run_id,
-                role_slot_id: slot.clone(),
-                task_id: admitted.task_id,
-                binding_id,
-                workspace: Some(workspace.clone()),
-                cwd: workspace.root().clone(),
-                account_profile_id: admitted.account_profile_id,
-                prompt: slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
-                model_rung,
-                context_policy: context_policy.clone(),
-                requested_at: now,
-            }))
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                team_run_id: team_run_id.to_string(),
+                agent_run_id: agent_run_id.to_string(),
+                role_slot: slot.as_role_key().as_str().to_owned(),
+                runtime_kind: binding.identity.runtime_kind,
+                native_id: binding.identity.native_id.as_str().to_owned(),
+                applied: AppliedDto::Unchanged,
+            }
+        } else {
+            let authority = adapter
+                .admit_launch(&AdmissionRequest {
+                    slot: RoleSlotKey::new(team_run_id, slot.clone()),
+                    agent_run_id,
+                    binding_id,
+                    replaces: None,
+                    requested_at: now,
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+                .into_authority()
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let model_rung = freeze_seat_model_rung(&team_snapshot, &slot)
+                .map_err(|error| self.refuse_domain(&error))?;
+            let outcome = adapter
+                .launch(&authority.into_request(LaunchParts {
+                    agent_run_id,
+                    team_run_id,
+                    role_slot_id: slot.clone(),
+                    task_id: admitted.task_id,
+                    binding_id,
+                    placement: Some(LaunchPlacement::Container(workspace.clone())),
+                    cwd: task_root.clone(),
+                    account_profile_id: admitted.account_profile_id,
+                    prompt:
+                        slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
+                    model_rung,
+                    context_policy: context_policy.clone(),
+                    requested_at: now,
+                }))
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
 
-        let binding = RuntimeBinding {
-            id: outcome.snapshot.binding_id(),
-            agent_run_id,
-            identity: outcome.snapshot.identity().clone(),
-            bound_at: now,
+            let binding = RuntimeBinding {
+                id: outcome.snapshot.binding_id(),
+                agent_run_id,
+                identity: outcome.snapshot.identity().clone(),
+                bound_at: now,
+            };
+            state
+                .with_store(|store| store.bind_agent_run(project_id, agent_run_id, &binding))
+                .map_err(|error| self.refuse(&error))?;
+            state
+                .with_store(|store| {
+                    store.record_run_context_policy(project_id, agent_run_id, &context_policy)
+                })
+                .map_err(|error| self.refuse(&error))?;
+            // The launch read a native session back for this seat: it is
+            // attached, and starting is itself an observed runtime event, so it
+            // is the seat's first activity. Recording only attachment here would
+            // make every seat read as stalled from the instant it started until
+            // its first turn, because never-observed activity is deliberately
+            // not a pass.
+            //
+            // This is a discrete event with its own native session id, not a
+            // generic confirmation: a seat that starts and then does nothing
+            // still stalls once the idle window closes.
+            self.observe_seat(
+                project_id,
+                admitted.task_id,
+                team_run_id,
+                &slot,
+                &SeatLivenessObservation {
+                    attached_at: Some(now),
+                    activity_at: Some(now),
+                    ..SeatLivenessObservation::default()
+                },
+                now,
+            )?;
+            self.hold(&outcome.snapshot)?;
+            StartedSeatDto {
+                task_id: admitted.task_id,
+                team_run_id: team_run_id.to_string(),
+                agent_run_id: agent_run_id.to_string(),
+                role_slot: slot.as_role_key().as_str().to_owned(),
+                runtime_kind: binding.identity.runtime_kind,
+                native_id: binding.identity.native_id.as_str().to_owned(),
+                applied: AppliedDto::Created,
+            }
         };
-        state
-            .with_store(|store| store.bind_agent_run(project_id, agent_run_id, &binding))
-            .map_err(|error| self.refuse(&error))?;
-        // Freeze the requested/effective pair onto the run, beside the binding.
-        // The record of what a seat was launched under has to outlive this
-        // process, or an audit after a restart has only the session to go on.
-        state
-            .with_store(|store| {
-                store.record_run_context_policy(project_id, agent_run_id, &context_policy)
-            })
-            .map_err(|error| self.refuse(&error))?;
-        // The frozen snapshot lives in this process: it is what lets the session
-        // routes address the seat at the evidence quality it was bound at.
-        self.hold(&outcome.snapshot)?;
 
-        let mut filled = vec![StartedSeatDto {
-            task_id: admitted.task_id,
-            team_run_id: team_run_id.to_string(),
-            agent_run_id: agent_run_id.to_string(),
-            role_slot: slot.as_role_key().as_str().to_owned(),
-            runtime_kind: binding.identity.runtime_kind.clone(),
-            native_id: binding.identity.native_id.as_str().to_owned(),
-            applied: AppliedDto::Created,
-        }];
+        let mut filled = vec![first];
         // The remaining declared slots join the team run admission already
         // committed. They are additional runs inside an admitted team rather than
         // additional admissions: the leases, the capacity and the launch intent
@@ -5549,12 +6257,848 @@ impl Services {
             team_run_id,
             roots: &roots,
             adapter: &adapter,
+            container: &workspace,
+            cwd: &task_root,
             now,
         };
         for role in ordered.iter().skip(1) {
             filled.push(self.fill_slot(&seating, role).await?);
         }
         Ok(filled)
+    }
+
+    /// Resolve where this task's seats belong, before anything is started.
+    ///
+    /// Every accepted seat is placed through the Operational topology, so this
+    /// is total: it answers with a node or it refuses. The task's node is the
+    /// locator, and every check below is a question about *where*, answered from
+    /// Kontor's own rows — a node that hosts no session, a working directory
+    /// that is not the bound one, or a slot that already holds a live seat all
+    /// stop here as `placement_blocked`, with nothing dispatched.
+    ///
+    /// **There is deliberately no escape for a project that has no topology
+    /// yet.** An earlier revision answered `Ok(None)` there and let admission
+    /// fall back to a TeamRun-keyed task workspace. That escape existed only
+    /// because nothing wrote topology nodes; now [`Self::ensure_task_node`]
+    /// does, seeding the project's revision and creating the chain on first
+    /// admission. Keeping the escape would mean keeping a second, TeamRun-keyed
+    /// way to place a production seat, which is the whole defect OP-02 removes.
+    ///
+    /// The worry the escape answered is still answered — a project that never
+    /// selected a topology is given one rather than refused, so no task becomes
+    /// unrunnable by not having been configured. What changed is *how*: by
+    /// seeding, not by placing the seat somewhere unmodelled.
+    ///
+    /// Nothing here repairs a disagreement. Rewriting either side to match the
+    /// other is what turns "these two disagree about where the work is" into
+    /// "the work is now in two places".
+    fn resolve_placement(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        declared: &[RoleSlotId],
+        worktree: &kontor_runtime::workspace::WorkspaceRoot,
+    ) -> Result<SessionTopologyNode, ApiError> {
+        let state = self.state()?;
+        let node = self.ensure_task_node(project_id, task_id)?;
+
+        // The kind's capabilities come from the pinned specification revision,
+        // never from the kind's name: the vocabulary is data a revision owns,
+        // and a daemon holding its own copy of it is one no revision can
+        // correct.
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the node's pinned topology revision is not published in this project",
+                )
+            })?;
+        let kind = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == node.kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the node's kind is not declared by its pinned topology revision",
+                )
+            })?;
+        if !kind
+            .projection_capabilities
+            .contains(&NodeProjectionCapability::SessionHost)
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the task's node kind does not host sessions",
+            ));
+        }
+
+        // A child node's container lives below its parent's, so a node with no
+        // parent is a seat with nowhere to be.
+        //
+        // Whether that parent *holds* a container is deliberately not asked
+        // here. Preparation walks the lineage from the root down and presents
+        // each level's exact binding to the next, so by the time a child is
+        // created its parent is bound or the whole preparation failed loudly.
+        // Asking before preparation would refuse the ordinary first admission of
+        // an epic; asking after it would be asking whether the call that just
+        // returned had returned.
+        if node.parent_id.is_none() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "a task's node is placed below a parent and this one has none",
+            ));
+        }
+
+        // Where the node is bound, compared against where the seat is about to
+        // work. A container bound elsewhere is not corrected to match the
+        // request; the disagreement is reported.
+        if let Some(bound) = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            && bound
+                .canonical_cwd
+                .as_ref()
+                .is_none_or(|cwd| cwd.as_str() != worktree.as_str())
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the node's bound container works in another directory than this task",
+            ));
+        }
+
+        // One live seat per `(node, slot)`. A second would give one role two
+        // sessions, and the runtime's own admission ledger cannot see the first
+        // one across a restart.
+        let held = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?;
+        for slot in declared {
+            if held
+                .iter()
+                .any(|binding| &binding.role_slot_id == slot && binding.is_non_terminal())
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a live seat already holds one of this team's role slots on that node",
+                ));
+            }
+        }
+        Ok(node)
+    }
+
+    /// The exact Operational topology revision this project places against,
+    /// publishing and selecting the bundled one the first time it is asked for.
+    ///
+    /// Seeding here rather than at project creation is what gives every project
+    /// a topology, including the ones created before there was one to give.
+    /// Publication is by `(spec_id, version)` and selection is an upsert, so a
+    /// project that already chose a revision keeps it: this never re-points a
+    /// project at the bundled data.
+    fn project_topology(&self, project_id: ProjectId) -> Result<TopologySnapshot, ApiError> {
+        let state = self.state()?;
+        if let Some(selected) = state
+            .with_store(|store| store.get_project_topology_default(project_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Ok(selected.topology);
+        }
+
+        let now = kontor_api::now();
+        let spec =
+            self.domain.topology_specs.first().ok_or_else(|| {
+                self.deny(ApiErrorCode::Unavailable, "this build ships no topology")
+            })?;
+        let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "this build ships no role catalog",
+            )
+        })?;
+        let stamp = Shareability::default_for(ShareabilityTier::ProjectKnowledge)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let canonical_hash = if let Some(published) = state
+            .with_store(|store| store.get_topology_spec(project_id, spec.spec_id, spec.version))
+            .map_err(|error| self.refuse(&error))?
+        {
+            published
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?
+                .hash()
+                .clone()
+        } else {
+            state
+                .with_store(|store| store.publish_topology_spec(project_id, spec, &stamp, now))
+                .map_err(|error| self.refuse(&error))?
+        };
+        if state
+            .with_store(|store| store.get_role_catalog(catalog.catalog_id, catalog.version))
+            .map_err(|error| self.refuse(&error))?
+            .is_none()
+        {
+            state
+                .with_store(|store| store.publish_role_catalog(catalog, &stamp, now))
+                .map_err(|error| self.refuse(&error))?;
+        }
+        let topology = TopologySnapshot {
+            spec_id: spec.spec_id,
+            version: spec.version,
+            canonical_hash,
+        };
+        state
+            .with_store(|store| {
+                store.set_project_topology_default(&ProjectTopologyDefault {
+                    project_id,
+                    topology: topology.clone(),
+                    selected_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(topology)
+    }
+
+    /// The node one delivery task is placed on, creating the chain above it the
+    /// first time the task is admitted.
+    ///
+    /// The chain is project root, then the task's epic, then the task itself.
+    /// Every kind comes from data — the specification's own `root_kind` and the
+    /// seeded delivery binding — because several kinds in the bundled vocabulary
+    /// are `native_child` session hosts below an epic, so which one serves a task
+    /// is a choice the data makes and not one derivable from capabilities.
+    ///
+    /// Idempotent by construction: each level is looked up before it is created,
+    /// and the task level is unique per `(project, task)` in the schema, so a
+    /// concurrent admission loses the insert rather than producing a second node.
+    fn ensure_task_node(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<SessionTopologyNode, ApiError> {
+        let state = self.state()?;
+        if let Some(node) = state
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Ok(node);
+        }
+
+        // A task outside an epic has no place in this topology: the delivery
+        // kind is declared below the epic kind, and inventing an epic for it
+        // would be Kontor deciding what work an operator grouped together.
+        //
+        // Every admission reaches this through an epic-scoped start, so no
+        // caller can currently arrive here without one. It is kept as the guard
+        // that says so rather than as an `expect`: the day a second admission
+        // route exists, this refuses instead of placing the work at a guess.
+        let epic_id = self
+            .task_row(project_id, task_id)?
+            .mini_project_id
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this task belongs to no epic, so it has no place in the session topology",
+                )
+            })?;
+        let topology = self.project_topology(project_id)?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, topology.spec_id, topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the selected topology revision is not published in this project",
+                )
+            })?;
+        let now = kontor_api::now();
+
+        // An epic-scoped node may only carry the revision its epic is pinned to,
+        // so the pin has to exist before the node does. A pin already there is
+        // never rewritten: repinning an epic to a different revision would
+        // silently move every node already placed under it.
+        match state
+            .with_store(|store| store.get_mini_project_topology(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            Some(pinned) if pinned.topology != topology => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this epic is pinned to another topology revision than the project selects",
+                ));
+            }
+            Some(_) => {}
+            None => state
+                .with_store(|store| {
+                    store.pin_mini_project_topology(&MiniProjectTopologySnapshot {
+                        project_id,
+                        mini_project_id: epic_id,
+                        topology: topology.clone(),
+                        pinned_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?,
+        }
+
+        // Two reads, because the listing is scoped: the project root carries no
+        // epic and every epic-scoped node carries exactly this one.
+        let unscoped = state
+            .with_store(|store| store.list_topology_nodes(project_id, None))
+            .map_err(|error| self.refuse(&error))?;
+        let scoped = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?;
+
+        let root = self.ensure_node(
+            unscoped
+                .iter()
+                .find(|node| node.kind == spec.root_kind && node.parent_id.is_none()),
+            NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: None,
+                topology: topology.clone(),
+                kind: spec.root_kind.clone(),
+                parent_id: None,
+                task_id: None,
+                created_at: now,
+            },
+        )?;
+        let epic = self.ensure_node(
+            scoped
+                .iter()
+                .find(|node| node.kind == self.domain.delivery.epic_kind),
+            NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology: topology.clone(),
+                kind: self.domain.delivery.epic_kind.clone(),
+                parent_id: Some(root.id),
+                task_id: None,
+                created_at: now,
+            },
+        )?;
+        // The epic's control plane, which is what a delivery seat belongs to.
+        // Created with the task's node rather than lazily beside it: the seat
+        // that owns this task's seats has to exist before they can name it.
+        self.ensure_node(
+            scoped
+                .iter()
+                .find(|node| node.kind == self.domain.delivery.control_kind),
+            NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology: topology.clone(),
+                kind: self.domain.delivery.control_kind.clone(),
+                parent_id: Some(epic.id),
+                task_id: None,
+                created_at: now,
+            },
+        )?;
+
+        self.ensure_node(
+            None,
+            NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology,
+                kind: self.domain.delivery.task_kind.clone(),
+                parent_id: Some(epic.id),
+                task_id: Some(task_id),
+                created_at: now,
+            },
+        )
+    }
+
+    /// The seat that owns one epic's delivery seats, opened once per epic.
+    ///
+    /// OP-REQ-039 derives orphanhood from the *owner's* Kontor lifecycle, so
+    /// every delivery seat needs an exact owning seat to name. That owner is a
+    /// control-plane seat: an epic node materializes as a native root and hosts
+    /// no sessions, so it cannot be the owner itself.
+    ///
+    /// A released owner is not reused and not repaired. Releasing retires the
+    /// row, which frees the `(node, role slot)` key, so a reopened epic opens a
+    /// fresh control seat while the seats the old one owned stay orphaned —
+    /// which is true: their owner is gone.
+    fn ensure_epic_control_seat(
+        &self,
+        project_id: ProjectId,
+        task_node: &SessionTopologyNode,
+    ) -> Result<Option<SeatBindingId>, ApiError> {
+        let state = self.state()?;
+        let Some(epic_id) = task_node.mini_project_id else {
+            return Ok(None);
+        };
+        let Some(control) = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|node| node.kind == self.domain.delivery.control_kind)
+        else {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this epic has no control plane for its delivery seats to belong to",
+            ));
+        };
+        let slot = self.control_slot()?;
+        if let Some(held) = state
+            .with_store(|store| store.list_seat_bindings(project_id, control.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|binding| binding.role_slot_id == slot && binding.is_non_terminal())
+        {
+            return Ok(Some(held.id));
+        }
+        let role = self.catalog_role_for_code(&self.domain.delivery.control_role_code)?;
+        let now = kontor_api::now();
+        let deadline = now
+            .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
+            .unwrap_or(now);
+        let opened = state
+            .with_store(|store| {
+                store.create_seat_binding(&NewSeatBinding {
+                    id: SeatBindingId::generate(),
+                    project_id,
+                    topology_node_id: control.id,
+                    role_slot_id: slot.clone(),
+                    role: role.clone(),
+                    // The control seat serves the epic, not one delivery. Naming
+                    // a task here would make it look like one task's seat and
+                    // put it in that task's progress evidence.
+                    task_id: None,
+                    team_run_id: None,
+                    attach_deadline: deadline,
+                    // The control seat is the root of the ownership chain, and a
+                    // root is not an orphan.
+                    parent_seat_binding_id: None,
+                    created_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(Some(opened.id))
+    }
+
+    /// Record what was observed about one seat's own binding.
+    ///
+    /// The counterpart to the seat-binding writer: without this, `last_attached_at`
+    /// and `last_activity_at` stay null for the life of every seat, so every
+    /// binding passes its attachment deadline and `certify_task_progress` refuses
+    /// work that is plainly running. The rows exist to be written, and this is
+    /// what writes them.
+    ///
+    /// **What counts as what is the requirement, not a detail.** A readback
+    /// proves the seat is *attached*; only an observed runtime event or turn
+    /// position proves *activity* (OP-REQ-039). Calling this with `activity_at`
+    /// from a generic confirmation would be exactly the shortcut the negative
+    /// proofs forbid, and would make a hung seat read as healthy forever.
+    ///
+    /// A seat with no binding is not an error. A team run whose slots the seeded
+    /// delivery data does not spell has no rows to observe, and observing
+    /// nothing is the honest outcome rather than a refused settle.
+    fn observe_seat(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        team_run_id: TeamRunId,
+        slot: &RoleSlotId,
+        observation: &SeatLivenessObservation,
+        observed_at: Timestamp,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let Some(node) = state
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(());
+        };
+        let Some(binding) = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|binding| {
+                &binding.role_slot_id == slot
+                    && binding.team_run_id == Some(team_run_id)
+                    && binding.is_non_terminal()
+            })
+        else {
+            return Ok(());
+        };
+        state
+            .with_store(|store| {
+                store.observe_seat_binding(project_id, binding.id, observation, observed_at)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
+    /// Release the seat that owns one epic's delivery seats.
+    ///
+    /// The live half of parent-derived orphanhood. Until something closes the
+    /// owner, every delivery seat reads as owned by an open seat and nothing can
+    /// ever conclude `Orphaned` — the derivation would be correct and never
+    /// exercised. Closing the epic is what closes its control plane.
+    ///
+    /// Only the owner is touched. The delivery seats are not rewritten to say
+    /// they are orphans; they are read as orphans, from their owner's row, which
+    /// is the difference between recording a conclusion and deriving one.
+    fn release_epic_control_seat(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let Some(control) = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|node| node.kind == self.domain.delivery.control_kind)
+        else {
+            // An epic nothing was ever admitted under has no control plane, and
+            // closing it is not the moment to build one.
+            return Ok(());
+        };
+        let slot = self.control_slot()?;
+        let now = kontor_api::now();
+        for binding in state
+            .with_store(|store| store.list_seat_bindings(project_id, control.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .filter(|binding| binding.role_slot_id == slot && binding.is_non_terminal())
+        {
+            state
+                .with_store(|store| {
+                    store.observe_seat_binding(
+                        project_id,
+                        binding.id,
+                        &SeatLivenessObservation {
+                            released_at: Some(now),
+                            ..SeatLivenessObservation::default()
+                        },
+                        now,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        Ok(())
+    }
+
+    /// The role slot an epic's control seat occupies.
+    fn control_slot(&self) -> Result<RoleSlotId, ApiError> {
+        let code = self.domain.delivery.control_role_code.as_str();
+        RoleSlotId::parse(&code.to_ascii_lowercase()).map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Return the node already there, or create the requested one.
+    fn ensure_node(
+        &self,
+        found: Option<&SessionTopologyNode>,
+        request: NewSessionTopologyNode,
+    ) -> Result<SessionTopologyNode, ApiError> {
+        if let Some(node) = found {
+            return Ok(node.clone());
+        }
+        let state = self.state()?;
+        state
+            .with_store(|store| store.create_topology_node(&request))
+            .map_err(|error| self.refuse(&error))
+    }
+
+    /// Record the `(topology node, role slot)` seat this admission is filling.
+    ///
+    /// The deadline is fixed here and never recomputed, which is the whole
+    /// point of persisting it: derived from `created_at` at read time it would
+    /// move every time the row was read (OP-REQ-039a).
+    ///
+    /// A role slot the seeded delivery data does not spell as a standard code
+    /// gets no binding, and says so. Recording one under a guessed standard role
+    /// would be worse evidence than recording nothing: the whole value of the
+    /// row is that the code in it came from a published catalog.
+    ///
+    /// Skipping rather than refusing is deliberate. The correspondence is seeded
+    /// data an operator's own team templates can outrun, and a slot with no
+    /// entry is a gap in that data — not a reason the work cannot run.
+    fn ensure_seat_binding(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        task_id: TaskId,
+        team_run_id: TeamRunId,
+        slot: &RoleSlotId,
+        parent: Option<SeatBindingId>,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let Some(role) = self.catalog_role(slot)? else {
+            tracing::warn!(
+                role_slot = %slot.as_str(),
+                "no seeded standard role for this slot, so its seat is not recorded in the topology"
+            );
+            return Ok(());
+        };
+        let held = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?;
+        if held
+            .iter()
+            .any(|binding| &binding.role_slot_id == slot && binding.is_non_terminal())
+        {
+            return Ok(());
+        }
+        let now = kontor_api::now();
+        let deadline = now
+            .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
+            .unwrap_or(now);
+        state
+            .with_store(|store| {
+                store.create_seat_binding(&NewSeatBinding {
+                    id: SeatBindingId::generate(),
+                    project_id,
+                    topology_node_id: node.id,
+                    role_slot_id: slot.clone(),
+                    role: role.clone(),
+                    task_id: Some(task_id),
+                    team_run_id: Some(team_run_id),
+                    attach_deadline: deadline,
+                    // The exact owning seat, so orphanhood is read from that
+                    // row's lifecycle rather than guessed. `None` here would
+                    // make every delivery seat a root, and a root is never
+                    // orphaned however dead its epic is.
+                    parent_seat_binding_id: parent,
+                    created_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
+    /// The standard catalog role one Foundation slot is recorded under, when the
+    /// seeded delivery data spells one for it.
+    fn catalog_role(&self, slot: &RoleSlotId) -> Result<Option<CatalogRoleRef>, ApiError> {
+        let Some(code) = self.domain.delivery.role_code(slot.as_role_key()) else {
+            return Ok(None);
+        };
+        self.catalog_role_for_code(code).map(Some)
+    }
+
+    /// The pinned catalog projection of one standard role code.
+    fn catalog_role_for_code(
+        &self,
+        code: &kontor_core::id::RoleCode,
+    ) -> Result<CatalogRoleRef, ApiError> {
+        let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "this build ships no role catalog",
+            )
+        })?;
+        // A code the catalog does not declare *is* a refusal rather than a gap:
+        // the seeded data contradicts itself, and a seat placed under it would
+        // be recorded against a role no revision defines.
+        let entry = catalog.role(code).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the seeded delivery binding names a role the catalog does not declare",
+            )
+        })?;
+        Ok(CatalogRoleRef {
+            catalog_id: catalog.catalog_id,
+            catalog_revision: catalog.version,
+            role_code: entry.role_code.clone(),
+            standard_title: entry.standard_title.clone(),
+            custom_display_name: None,
+        })
+    }
+
+    /// Make one node's native container exist, and persist what came back.
+    ///
+    /// The chain is prepared from the root down rather than recursively from the
+    /// leaf, because a `native_child` must present the *exact* parent binding and
+    /// the only way to have one is to have already prepared the parent. Depth is
+    /// bounded by the specification's own kind graph.
+    ///
+    /// Every preparation carries the native id Kontor already holds for that
+    /// node, when it holds one. That is the whole restart contract: a daemon
+    /// restart destroys the adapter's ledger while the native container carries
+    /// on existing, and the persisted id is the only way back to it.
+    async fn ensure_container(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        cwd: &kontor_runtime::workspace::WorkspaceRoot,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<ContainerBindingSnapshot, ApiError> {
+        let state = self.state()?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the node's pinned topology revision is not published in this project",
+                )
+            })?;
+
+        // Walk to the root first, then build downwards. Reading the ancestry
+        // from stored rows rather than from the request is what stops a child
+        // being placed below "whatever the adapter last touched".
+        let mut known = state
+            .with_store(|store| store.list_topology_nodes(project_id, None))
+            .map_err(|error| self.refuse(&error))?;
+        if let Some(epic_id) = node.mini_project_id {
+            known.extend(
+                state
+                    .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+                    .map_err(|error| self.refuse(&error))?,
+            );
+        }
+        let mut lineage = vec![node.clone()];
+        while let Some(parent_id) = lineage.last().and_then(|node| node.parent_id) {
+            let parent = known
+                .iter()
+                .find(|known| known.id == parent_id)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the node's parent is not in this project's topology",
+                    )
+                })?;
+            lineage.push(parent.clone());
+        }
+        lineage.reverse();
+
+        let mut parent: Option<ContainerBinding> = None;
+        let mut prepared = None;
+        for level in &lineage {
+            let capabilities = spec
+                .node_kinds
+                .iter()
+                .find(|declared| declared.kind == level.kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "a node's kind is not declared by its pinned topology revision",
+                    )
+                })?
+                .projection_capabilities
+                .clone();
+            let bound = state
+                .with_store(|store| store.get_topology_node_container(project_id, level.id))
+                .map_err(|error| self.refuse(&error))?;
+            let leaf = level.id == node.id;
+            // Only a `native_child` is created below anything. A `native_root`
+            // is its own root even when it sits below another node logically —
+            // handing it the ancestor's binding would be asking the runtime to
+            // nest something it declared unnestable.
+            let projection = ContainerProjection::resolve(&capabilities)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let request = ContainerRequest {
+                container_binding_id: ContainerBindingId::generate(),
+                topology_node_id: level.id,
+                topology: level.topology.clone(),
+                capabilities,
+                display_name: self.container_name(&spec, level)?,
+                parent: match projection {
+                    ContainerProjection::NativeChild => parent.clone(),
+                    ContainerProjection::NativeRoot | ContainerProjection::LogicalOnly => None,
+                },
+                // Only the seat's own container needs a working directory. An
+                // epic or a project root is a place to put things, not a tree to
+                // edit in.
+                cwd: leaf.then(|| cwd.clone()),
+                bound_native_id: bound.map(|binding| binding.identity.native_id),
+                task_id: level.task_id,
+                team_run_id: None,
+                requested_at: kontor_api::now(),
+            };
+            let outcome = adapter
+                .prepare_container(&request)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            outcome
+                .snapshot
+                .ensure_node(level.id)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            outcome
+                .snapshot
+                .ensure_correlated()
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            self.bind_container(project_id, level.id, &outcome.snapshot)?;
+            parent = Some(outcome.snapshot.binding.clone());
+            prepared = Some(outcome.snapshot);
+        }
+        prepared.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the node has no lineage to prepare a container along",
+            )
+        })
+    }
+
+    /// The display name one node's container carries, from its kind's template.
+    fn container_name(
+        &self,
+        spec: &kontor_core::spec::ProjectSessionTopologySpec,
+        node: &SessionTopologyNode,
+    ) -> Result<ExternalName, ApiError> {
+        let template = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == node.kind)
+            .map(|declared| declared.name_template.as_str())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a node's kind is not declared by its pinned topology revision",
+                )
+            })?;
+        ExternalName::parse(&format!("{template} · {}", node.id))
+            .map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Persist the native container a runtime read back for one node.
+    fn bind_container(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        snapshot: &ContainerBindingSnapshot,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let observed_kind = match snapshot.binding.projection {
+            ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
+            _ => ObservedContainerKind::Project,
+        };
+        let canonical_cwd = snapshot
+            .binding
+            .root
+            .as_ref()
+            .map(|root| ExternalName::parse(root.as_str()))
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+        let binding_id = ExternalId::parse(&snapshot.binding.id.to_string())
+            .map_err(|error| self.refuse_domain(&error))?;
+        state
+            .with_store(|store| {
+                store.bind_topology_node_container(&NewNativeContainerBinding {
+                    topology_node_id,
+                    project_id,
+                    container_binding_id: binding_id.clone(),
+                    identity: snapshot.binding.identity.clone(),
+                    observed_kind,
+                    canonical_cwd: canonical_cwd.clone(),
+                    observed_at: snapshot.binding.bound_at,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
     }
 
     /// Fill one more declared slot inside a team run admission already committed.
@@ -5569,6 +7113,8 @@ impl Services {
             team_run_id,
             roots,
             adapter,
+            container,
+            cwd,
             now,
         } = *seating;
         let state = self.state()?;
@@ -5578,7 +7124,7 @@ impl Services {
             .map_err(|error| self.refuse(&error))?
             .into_iter()
             .find(|seat| &seat.role == slot.as_role_key());
-        if let Some(seat) = existing
+        if let Some(seat) = existing.as_ref()
             && let (Some(kind), Some(native)) = (seat.runtime_kind.clone(), seat.native_id.clone())
         {
             return Ok(StartedSeatDto {
@@ -5592,22 +7138,26 @@ impl Services {
             });
         }
 
-        let agent_run_id = AgentRunId::generate();
+        let agent_run_id = existing
+            .as_ref()
+            .map_or_else(AgentRunId::generate, |seat| seat.agent_run_id);
         let binding_id = kontor_core::id::RuntimeBindingId::generate();
-        state
-            .with_store(|store| {
-                store.create_agent_run(&NewAgentRun {
-                    id: agent_run_id,
-                    project_id,
-                    team_run_id,
-                    parent_agent_run_id: None,
-                    role: slot.clone().into_role_key(),
-                    account_profile_id: admitted.account_profile_id,
-                    binding: None,
-                    created_at: now,
+        if existing.is_none() {
+            state
+                .with_store(|store| {
+                    store.create_agent_run(&NewAgentRun {
+                        id: agent_run_id,
+                        project_id,
+                        team_run_id,
+                        parent_agent_run_id: None,
+                        role: slot.clone().into_role_key(),
+                        account_profile_id: admitted.account_profile_id,
+                        binding: None,
+                        created_at: now,
+                    })
                 })
-            })
-            .map_err(|error| self.refuse(&error))?;
+                .map_err(|error| self.refuse(&error))?;
+        }
 
         // The seat resolves its context window against the team run's own frozen
         // inputs, read back from storage rather than recomposed from whatever
@@ -5623,25 +7173,11 @@ impl Services {
             })?
             .snapshot;
 
-        // The plane is deliberately *not* prepared again here. `fill_slot` is
-        // reached from `seat` and from nowhere else, and `seat` prepares it
-        // immediately before the first slot — so a second call could never
-        // observe a different answer, and a line no test can kill is worse than
-        // no line.
-        //
-        // The workspace is idempotent per team run, so every seat of the team
-        // lands in the one verified root rather than each preparing its own.
-        let workspace = adapter
-            .prepare_workspace(&WorkspacePrepareRequest {
-                team_run_id,
-                task_id: admitted.task_id,
-                workspace_binding_id: WorkspaceBindingId::generate(),
-                root: self.task_root(project_id, admitted.task_id)?,
-                requested_at: now,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?
-            .snapshot;
+        // Neither the plane nor the container is prepared again here.
+        // `fill_slot` is reached from `seat` and from nowhere else, and `seat`
+        // prepares both immediately before the first slot — so a second call
+        // could never observe a different answer, and a line no test can kill is
+        // worse than no line.
         let authority = adapter
             .admit_launch(&AdmissionRequest {
                 slot: RoleSlotKey::new(team_run_id, slot.clone()),
@@ -5666,8 +7202,8 @@ impl Services {
                 role_slot_id: slot.clone(),
                 task_id: admitted.task_id,
                 binding_id,
-                workspace: Some(workspace.clone()),
-                cwd: workspace.root().clone(),
+                placement: Some(LaunchPlacement::Container(container.clone())),
+                cwd: cwd.clone(),
                 account_profile_id: admitted.account_profile_id,
                 prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
                 model_rung,
@@ -5690,6 +7226,20 @@ impl Services {
                 store.record_run_context_policy(project_id, agent_run_id, &context_policy)
             })
             .map_err(|error| self.refuse(&error))?;
+        // As in `seat`: the launch read a session back, and starting is the
+        // seat's first observed activity.
+        self.observe_seat(
+            project_id,
+            admitted.task_id,
+            team_run_id,
+            slot,
+            &SeatLivenessObservation {
+                attached_at: Some(now),
+                activity_at: Some(now),
+                ..SeatLivenessObservation::default()
+            },
+            now,
+        )?;
         self.hold(&outcome.snapshot)?;
         Ok(StartedSeatDto {
             task_id: admitted.task_id,
@@ -5914,6 +7464,15 @@ impl Services {
                 &intent,
             )?
         };
+        // A closed epic's control seat is released, which is what makes its
+        // delivery seats orphans rather than seats that merely stopped being
+        // observed. It runs after the receipt so the release cites a transition
+        // that is already recorded, and it is idempotent: `released_at` is only
+        // ever filled in once.
+        if request.action == LifecycleAction::CloseEpic {
+            self.release_epic_control_seat(project_id, epic.id)?;
+        }
+
         state.signals().appended();
         Ok(LifecycleOutcomeDto {
             realm_id: state.realm_id(),

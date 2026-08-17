@@ -438,6 +438,81 @@
         }
       }
     },
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Reconcile one durable handoff after its run was cancelled by runtime observation.",
+        "operationId": "attest_late_handoff",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The terminal agent run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttestLateHandoffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Attested, or replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LateHandoffAttestationDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid artifact key or handoff digest"
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The task, binding, terminal state, or disposition moved"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle": {
       "post": {
         "tags": [
@@ -503,6 +578,84 @@
           },
           "503": {
             "description": "The runtime could not be reached"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Replace one runtime-terminal unusable seat with a linked successor.",
+        "operationId": "replace_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The terminal predecessor run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceSeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Created, or replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplacedSeatDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid role slot"
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The task, binding, run, team, or successor lineage moved"
+          },
+          "422": {
+            "description": "The predecessor is not runtime-terminal and unusable"
           }
         }
       }
@@ -3712,6 +3865,46 @@
           }
         }
       },
+      "AttestLateHandoffRequest": {
+        "type": "object",
+        "description": "What the Admin-only late-handoff reconciliation is asked for.",
+        "required": [
+          "role_slot",
+          "expected_task_revision",
+          "binding_generation",
+          "handoff_hash",
+          "artifacts"
+        ],
+        "properties": {
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Valid artifact keys proving the bounded handoff."
+          },
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The immutable native binding generation recorded by the run.",
+            "minimum": 0
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The task revision the handoff was produced against.",
+            "minimum": 0
+          },
+          "handoff_hash": {
+            "type": "string",
+            "description": "The handoff digest carried by the run's durable compaction receipt."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "The role slot whose completed handoff is being reconciled."
+          }
+        }
+      },
       "AuthorizationProjectionDto": {
         "type": "object",
         "description": "One arming decision, as the projection reports it.",
@@ -4913,6 +5106,99 @@
           }
         }
       },
+      "LateHandoffAttestationDto": {
+        "type": "object",
+        "description": "One immutable late-handoff disposition recorded after runtime cancellation.",
+        "required": [
+          "realm_id",
+          "turn_id",
+          "task_id",
+          "agent_run_id",
+          "role_slot",
+          "binding_generation",
+          "compaction_receipt_id",
+          "handoff_hash",
+          "artifacts",
+          "terminal_outcome",
+          "seat_live",
+          "applied",
+          "attested_by",
+          "follow_ups"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The terminal run whose handoff was reconciled."
+          },
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call created or replayed the evidence row."
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The artifacts recorded on the disposition."
+          },
+          "attested_by": {
+            "type": "string",
+            "description": "The Admin tier proven by the caller credential."
+          },
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The immutable binding generation.",
+            "minimum": 0
+          },
+          "compaction_receipt_id": {
+            "type": "string",
+            "description": "The durable compaction receipt that carried the handoff."
+          },
+          "follow_ups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TurnFollowUpDto"
+            },
+            "description": "Normal follow-ups derived from the recorded handoff."
+          },
+          "handoff_hash": {
+            "type": "string",
+            "description": "The attested handoff digest."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was recorded in."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "The reconciled role slot."
+          },
+          "seat_live": {
+            "type": "boolean",
+            "description": "Always false; the operation never reopens or restores the native seat."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task it served."
+          },
+          "team_run_closed": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team run if this disposition completed its closure proof."
+          },
+          "terminal_outcome": {
+            "type": "string",
+            "description": "Always `cancelled`; the attestation cannot change the runtime verdict."
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "The immutable turn evidence row."
+          }
+        }
+      },
       "LifecycleAction": {
         "type": "string",
         "description": "The closed set of lifecycle transitions a Lead may ask for.\n\nOne endpoint and an enum rather than six routes: the transitions share every\ninput — an expected revision, a reason, the evidence the domain demands — and\nsplitting them would make it possible for one to drift out of agreement with\nthe transition table the others are judged by.",
@@ -5779,6 +6065,86 @@
           "pack": {
             "type": "object",
             "description": "The pack document. Validated in full before anything is stored."
+          }
+        }
+      },
+      "ReplaceSeatRequest": {
+        "type": "object",
+        "description": "What the Admin-only unusable-seat replacement is asked for.",
+        "required": [
+          "role_slot",
+          "expected_task_revision",
+          "binding_generation"
+        ],
+        "properties": {
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The immutable binding generation of the terminal predecessor.",
+            "minimum": 0
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The task revision the replacement is reconciled against.",
+            "minimum": 0
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "The role slot whose terminal attempt is being replaced."
+          }
+        }
+      },
+      "ReplacedSeatDto": {
+        "type": "object",
+        "description": "One linked successor created for an unusable persistent seat.",
+        "required": [
+          "realm_id",
+          "task_id",
+          "team_run_id",
+          "predecessor_agent_run_id",
+          "successor_agent_run_id",
+          "role_slot",
+          "runtime_kind",
+          "native_id",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call created the successor or replayed it."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The successor's new native identity."
+          },
+          "predecessor_agent_run_id": {
+            "type": "string",
+            "description": "The terminal predecessor; it remains immutable."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was created in."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "The role slot retained by the successor."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The successor's runtime family."
+          },
+          "successor_agent_run_id": {
+            "type": "string",
+            "description": "The linked successor run."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task whose team owns the seat."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "The preserved team run."
           }
         }
       },

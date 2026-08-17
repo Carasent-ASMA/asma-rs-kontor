@@ -24,9 +24,10 @@ use crate::id::{
     CredentialAlias, EventCursor, ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey,
     ExternalName, ExternalProjectKey, GateKey, GuardrailEvaluationId, IdempotencyKey,
     IntakeDecisionId, IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey,
-    ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId,
-    SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
-    TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId, WorkProfileKey,
+    ProjectId, RealmId, RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
+    ScheduleOverrideId, SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId,
+    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -34,13 +35,16 @@ use crate::receipt::{
     NoEffectEvidence,
 };
 use crate::spec::{
-    CanonicalSourceEvent, ExecutionCapability, IntakeReceipt, PersonaScenarioSnapshot,
-    PersonaScenarioSpec, ResolvedWorkProfileSnapshot, SourceIdentity, TeamRunSnapshot,
-    TeamTemplateRevision, TriggerSpec, WorkProfileSpec,
+    CanonicalSourceEvent, CatalogRoleRef, ExecutionCapability, IntakeReceipt,
+    PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
+    ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability, SourceIdentity,
+    TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use crate::state::{
-    DesiredRunState, GateState, GateVerdict, NativeRuntimeIdentity, RunLifecycle, RunProjection,
-    TaskState, TaskTeamClosure, TeamTerminalEvidence, TerminalEvidence, TerminalOutcome,
+    AdaptiveAdmissionState, DesiredRunState, GateState, GateVerdict, NativeContainerBinding,
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RunLifecycle, RunProjection,
+    SeatAttachment, SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure,
+    TeamTerminalEvidence, TerminalEvidence, TerminalOutcome,
 };
 use crate::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -162,6 +166,159 @@ pub struct NewMiniProject {
     pub name: ExternalName,
     /// Creation instant.
     pub created_at: Timestamp,
+}
+
+/// The selected topology revision for future project scopes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectTopologyDefault {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Exact published revision and hash.
+    pub topology: TopologySnapshot,
+    /// Selection instant.
+    pub selected_at: Timestamp,
+}
+
+/// One immutable topology snapshot pinned to a MiniProject/epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MiniProjectTopologySnapshot {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Target MiniProject.
+    pub mini_project_id: MiniProjectId,
+    /// Exact published revision and hash.
+    pub topology: TopologySnapshot,
+    /// Pinning instant.
+    pub pinned_at: Timestamp,
+}
+
+/// A new logical topology node. Native placement is owned by the runtime ticket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSessionTopologyNode {
+    /// Node identity.
+    pub id: TopologyNodeId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Optional epic/MiniProject scope.
+    pub mini_project_id: Option<MiniProjectId>,
+    /// Exact published topology revision/hash.
+    pub topology: TopologySnapshot,
+    /// Data-defined kind.
+    pub kind: TopologyKindKey,
+    /// Logical parent.
+    pub parent_id: Option<TopologyNodeId>,
+    /// The delivery task this node serves, for the task-scoped kinds.
+    pub task_id: Option<TaskId>,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// A new logical seat binding. Native identities are added by the placement
+/// boundary, not by this repository request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSeatBinding {
+    /// Binding identity.
+    pub id: SeatBindingId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Hosting logical node.
+    pub topology_node_id: TopologyNodeId,
+    /// Stable role-slot address.
+    pub role_slot_id: RoleSlotId,
+    /// Typed catalog role snapshot.
+    pub role: CatalogRoleRef,
+    /// Optional delivery task reference.
+    pub task_id: Option<TaskId>,
+    /// Optional delivery TeamRun reference.
+    pub team_run_id: Option<TeamRunId>,
+    /// The instant this seat must be observed attached by (OP-REQ-039a).
+    ///
+    /// Supplied by the caller rather than computed here, and then never
+    /// recomputed: fixing it at creation is the whole point of the column.
+    pub attach_deadline: Timestamp,
+    /// The exact owning epic seat, when this seat has one.
+    pub parent_seat_binding_id: Option<SeatBindingId>,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// One observed change to a seat's OP-REQ-039 evidence.
+///
+/// Every field is `None` for "nothing observed about this", so one call records
+/// exactly what was seen and silently overwrites nothing else. The separation
+/// between `attached_at` and `activity_at` is the requirement, not a
+/// convenience: a readback may prove attachment, and only an observed runtime
+/// event or turn position may prove activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SeatLivenessObservation {
+    /// The seat was observed attached at this instant.
+    pub attached_at: Option<Timestamp>,
+    /// The seat was observed *doing something* at this instant.
+    ///
+    /// Only an observed runtime event or turn position may fill this in. A
+    /// successful inspect belongs in `attached_at`.
+    pub activity_at: Option<Timestamp>,
+    /// The runtime's self-report, recorded so an escalation can quote it.
+    pub runtime_reported: Option<ObservedRunState>,
+    /// The seat was deliberately released or reaped at this instant.
+    pub released_at: Option<Timestamp>,
+    /// The seat was replaced by this one.
+    pub replaced_by: Option<SeatBindingId>,
+}
+
+/// A native container to bind to one topology node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewNativeContainerBinding {
+    /// The node that owns the container.
+    pub topology_node_id: TopologyNodeId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The runtime-issued binding id this placement was made under.
+    pub container_binding_id: ExternalId,
+    /// The exact native identity read back from the runtime.
+    pub identity: NativeRuntimeIdentity,
+    /// What the runtime said the container is.
+    pub observed_kind: ObservedContainerKind,
+    /// The container's canonical working directory, where it has one.
+    pub canonical_cwd: Option<ExternalName>,
+    /// When the binding was established or last confirmed.
+    pub observed_at: Timestamp,
+}
+
+/// Initial persisted adaptive-admission state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAdaptiveAdmissionState {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Target MiniProject.
+    pub mini_project_id: MiniProjectId,
+    /// Initial/current scheduler-decided window.
+    pub current_window: u32,
+    /// Current clean-observation streak.
+    pub clean_observation_streak: u32,
+    /// Last applied observation, if any.
+    pub last_observation_id: Option<ExternalId>,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// Compare-and-swap update of persisted adaptive-admission state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdaptiveAdmissionAdvance {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Target MiniProject.
+    pub mini_project_id: MiniProjectId,
+    /// Scheduler-decided new window.
+    pub current_window: u32,
+    /// Scheduler-decided clean-observation streak.
+    pub clean_observation_streak: u32,
+    /// Last observation already applied.
+    pub last_observation_id: Option<ExternalId>,
+    /// Expected persisted revision.
+    pub expected_revision: AggregateRevision,
+    /// Mutation instant.
+    pub updated_at: Timestamp,
 }
 
 /// A task.
@@ -1401,6 +1558,266 @@ pub trait ProjectRepository {
         id: AccountProfileId,
         expected_revision: AggregateRevision,
     ) -> RepositoryResult<()>;
+}
+
+/// Generic topology, typed seat and persisted adaptive-window state.
+pub trait TopologyRepository {
+    /// Publish one immutable project topology specification revision.
+    ///
+    /// A published topology specification is project configuration, so it is
+    /// tier B and always carries a write-time classification. The stamp lives
+    /// beside the document rather than inside it: the canonical hash keeps
+    /// identifying the specification text alone, so withholding a revision
+    /// never changes the hash an epic pinned.
+    ///
+    /// # Errors
+    /// Refuses an invalid document or stamp, dangling project or duplicate
+    /// revision.
+    fn publish_topology_spec(
+        &self,
+        project_id: ProjectId,
+        spec: &ProjectSessionTopologySpec,
+        shareability: &Shareability,
+        published_at: Timestamp,
+    ) -> RepositoryResult<ContentHash>;
+
+    /// Read one topology specification revision's immutable classification.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_topology_spec_shareability(
+        &self,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<Shareability>>;
+
+    /// Read one topology specification revision and re-prove its digest.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_topology_spec(
+        &self,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<ProjectSessionTopologySpec>>;
+
+    /// Select an already-published topology revision for future project scopes.
+    ///
+    /// # Errors
+    /// Refuses a missing/hash-mismatched revision.
+    fn set_project_topology_default(
+        &self,
+        selection: &ProjectTopologyDefault,
+    ) -> RepositoryResult<()>;
+
+    /// Read the selected project default.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_project_topology_default(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Option<ProjectTopologyDefault>>;
+
+    /// Pin one immutable topology revision/hash to a MiniProject.
+    ///
+    /// # Errors
+    /// Refuses a cross-project/missing MiniProject, missing revision, changed
+    /// hash or a second pin.
+    fn pin_mini_project_topology(
+        &self,
+        snapshot: &MiniProjectTopologySnapshot,
+    ) -> RepositoryResult<()>;
+
+    /// Read one MiniProject's pinned topology revision.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_mini_project_topology(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<MiniProjectTopologySnapshot>>;
+
+    /// Publish one immutable standard-role catalog revision.
+    ///
+    /// A published role catalog is project configuration, so it is tier B and
+    /// always carries a write-time classification.
+    ///
+    /// # Errors
+    /// Refuses an invalid or duplicate revision, or an invalid stamp.
+    fn publish_role_catalog(
+        &self,
+        catalog: &RoleCatalogRevision,
+        shareability: &Shareability,
+        published_at: Timestamp,
+    ) -> RepositoryResult<ContentHash>;
+
+    /// Read one role catalog revision's immutable classification.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_role_catalog_shareability(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<Shareability>>;
+
+    /// Read one standard-role catalog revision and re-prove its digest.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_role_catalog(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<RoleCatalogRevision>>;
+
+    /// Create one logical topology node in the declared tree.
+    ///
+    /// # Errors
+    /// Refuses undeclared kinds, illegal/dangling parents, cross-project
+    /// references and maximum-cardinality violations.
+    fn create_topology_node(
+        &self,
+        request: &NewSessionTopologyNode,
+    ) -> RepositoryResult<SessionTopologyNode>;
+
+    /// List all logical nodes in one project and optional MiniProject scope.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_topology_nodes(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: Option<MiniProjectId>,
+    ) -> RepositoryResult<Vec<SessionTopologyNode>>;
+
+    /// Create one active logical seat binding.
+    ///
+    /// # Errors
+    /// Refuses a dangling/cross-project node, role/catalog mismatch, optional
+    /// task/TeamRun mismatch or duplicate non-terminal `(node, slot)` key.
+    fn create_seat_binding(&self, request: &NewSeatBinding) -> RepositoryResult<SeatBinding>;
+
+    /// List seat bindings hosted by one logical node.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_seat_bindings(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+    ) -> RepositoryResult<Vec<SeatBinding>>;
+
+    /// The active topology node serving one delivery task.
+    ///
+    /// The read admission makes before it places anything. `None` means this
+    /// task has no node, which is a refusal for a project running an
+    /// Operational topology and simply normal for one that is not.
+    ///
+    /// # Errors
+    /// Backend failures only. A second active node for one task cannot be
+    /// stored, so this never has to choose between two.
+    fn get_task_topology_node(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<SessionTopologyNode>>;
+
+    /// Record what was observed about one seat's attachment.
+    ///
+    /// Advances only the fields the observation carries, so recording an
+    /// attachment cannot silently clear an activity instant, and neither can
+    /// overwrite a release.
+    ///
+    /// # Errors
+    /// Refuses an unknown seat and a replacement citing the seat itself.
+    fn observe_seat_binding(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+        observation: &SeatLivenessObservation,
+        observed_at: Timestamp,
+    ) -> RepositoryResult<SeatBinding>;
+
+    /// Bind one topology node to the native container read back for it.
+    ///
+    /// Idempotent per node *for the same native identity*: re-confirming a
+    /// binding advances its readback instant and creates nothing. A node whose
+    /// stored identity differs is a disagreement to report, never a rebinding
+    /// to perform silently — reconciliation refuses invalid state rather than
+    /// making one side match the other.
+    ///
+    /// # Errors
+    /// Refuses a dangling/cross-project node, a native container already bound
+    /// to a different node, and a rebinding of a node that already holds
+    /// another identity.
+    fn bind_topology_node_container(
+        &self,
+        request: &NewNativeContainerBinding,
+    ) -> RepositoryResult<NativeContainerBinding>;
+
+    /// Conclude the attachment of every seat hosted by one topology node.
+    ///
+    /// The read a watch, reap or stale path uses: it resolves exact Kontor
+    /// bindings and concludes from recorded evidence, and it consults no
+    /// runtime and no AgentsRoom file to do it.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_seat_attachments(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        now: Timestamp,
+    ) -> RepositoryResult<Vec<SeatAttachment>>;
+
+    /// Read the current native container binding of one topology node.
+    ///
+    /// # Errors
+    /// Backend failures only. An unbound node is `None` rather than an error:
+    /// "not placed yet" is a normal state, and the caller that must refuse it
+    /// says so in its own words.
+    fn get_topology_node_container(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+    ) -> RepositoryResult<Option<NativeContainerBinding>>;
+
+    /// Create one MiniProject's persisted adaptive-admission state.
+    ///
+    /// # Errors
+    /// Refuses invalid values, a dangling/cross-project MiniProject or a
+    /// duplicate state row.
+    fn create_adaptive_admission_state(
+        &self,
+        request: &NewAdaptiveAdmissionState,
+    ) -> RepositoryResult<AdaptiveAdmissionState>;
+
+    /// Advance adaptive-admission state under compare-and-swap.
+    ///
+    /// The scheduler owns the decision; this operation only persists it and
+    /// refuses replay of the last observation id.
+    ///
+    /// # Errors
+    /// Refuses a stale revision, replayed observation or invalid bounds.
+    fn advance_adaptive_admission_state(
+        &self,
+        request: &AdaptiveAdmissionAdvance,
+    ) -> RepositoryResult<AdaptiveAdmissionState>;
+
+    /// Read persisted adaptive-admission state.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_adaptive_admission_state(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<AdaptiveAdmissionState>>;
 }
 
 /// Immutable specification revisions.

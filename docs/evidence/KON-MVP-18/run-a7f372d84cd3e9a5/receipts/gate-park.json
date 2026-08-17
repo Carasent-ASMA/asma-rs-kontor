@@ -1,0 +1,11 @@
+{
+  "closure_receipt_id": "0192f0c0-0000-7000-8000-00000000009e",
+  "evaluation_id": "0192f0c0-0000-7000-8000-00000000009c",
+  "gate": "design-review-gate",
+  "parked_agent_run_id": "0192f0c0-0000-7000-8000-00000000009b",
+  "recovery_episode_id": "0192f0c0-0000-7000-8000-00000000009d",
+  "rejections_before_park": 2,
+  "reviewer_principal": "pilot-reviewer-alpha",
+  "run_lifecycle_after": "parked",
+  "task_state_after": "parked"
+}

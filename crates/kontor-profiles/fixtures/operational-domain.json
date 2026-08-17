@@ -1,0 +1,681 @@
+{
+  "schema_version": 1,
+  "topology_specs": [
+    {
+      "schema_version": 1,
+      "spec_id": "01936f5a-1000-7000-8000-000000000001",
+      "version": 1,
+      "name": "Operational project session topology",
+      "root_kind": "PSW",
+      "node_kinds": [
+        {
+          "kind": "PSW",
+          "allowed_parents": [],
+          "cardinality": {
+            "minimum": 1,
+            "maximum": 1
+          },
+          "projection_capabilities": [
+            "native_root"
+          ],
+          "read_only": false,
+          "name_template": "Project Session Workspace",
+          "code_help": {
+            "full_name": "Project Session Workspace",
+            "meaning": "Logical root grouping the Quick and Epic session scopes of one Kontor Project.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "QSW",
+          "allowed_parents": [
+            "PSW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": false,
+          "name_template": "Quick Session Workspace",
+          "code_help": {
+            "full_name": "Quick Session Workspace",
+            "meaning": "Ad-hoc single-role session scope that may later provide an epic promotion handoff.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "ESW",
+          "allowed_parents": [
+            "PSW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_root"
+          ],
+          "read_only": false,
+          "name_template": "Epic Session Workspace",
+          "code_help": {
+            "full_name": "Epic Session Workspace",
+            "meaning": "Complete logical boundary for one concrete epic; Paseo projects it as one epic project.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "ECP",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 1,
+            "maximum": 1
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": false,
+          "name_template": "ECP \u00b7 <Jira epic> \u00b7 <short title>",
+          "code_help": {
+            "full_name": "Epic Control Plane",
+            "meaning": "Specification-defined ESW child grouping persistent epic leadership, coordination and authorized ad-hoc seats in one runtime session host.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "TSW",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": false,
+          "name_template": "Ticket Session Workspace",
+          "code_help": {
+            "full_name": "Ticket Session Workspace",
+            "meaning": "Delivery workspace for one ticket and all persistent seats in that ticket's TeamRun.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "ASW",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": true,
+          "name_template": "Advisor Session Workspace",
+          "code_help": {
+            "full_name": "Advisor Session Workspace",
+            "meaning": "Read-only workspace for one Advisor consultation and one Advisor seat.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "CSW",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": true,
+          "name_template": "Committee Session Workspace",
+          "code_help": {
+            "full_name": "Committee Session Workspace",
+            "meaning": "Read-only workspace for one Committee run or topic and its template-declared seats.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        }
+      ],
+      "historical_codes": [
+        {
+          "kind": "TSC",
+          "help": {
+            "full_name": "Ticket Session Committee",
+            "meaning": "Historical name accepted only at read or import boundaries and normalized to CSW.",
+            "category": "session_topology",
+            "lifecycle": "compatibility"
+          }
+        },
+        {
+          "kind": "PASE",
+          "help": {
+            "full_name": "Removed historical topology term",
+            "meaning": "Obsolete term that must not be emitted or seeded by new state.",
+            "category": "session_topology",
+            "lifecycle": "retired"
+          }
+        }
+      ]
+    }
+  ],
+  "role_catalogs": [
+    {
+      "schema_version": 1,
+      "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+      "version": 1,
+      "name": "Operational standard roles",
+      "roles": [
+        {
+          "role_code": "PM",
+          "standard_title": "Product Manager",
+          "segment": "product_delivery",
+          "responsibility_summary": "Owns product direction, outcomes and prioritization.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "PO",
+          "standard_title": "Product Owner",
+          "segment": "product_delivery",
+          "responsibility_summary": "Owns backlog value, acceptance intent and product decisions for delivery.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "BA",
+          "standard_title": "Business Analyst",
+          "segment": "product_delivery",
+          "responsibility_summary": "Clarifies business processes, requirements and rules.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "TPM",
+          "standard_title": "Technical Program Manager",
+          "segment": "product_delivery",
+          "responsibility_summary": "Coordinates epic-wide routing, admission, dependencies, evidence and delivery flow.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "SM",
+          "standard_title": "Scrum Master",
+          "segment": "product_delivery",
+          "responsibility_summary": "Facilitates one delivery team's process and removes impediments.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "RM",
+          "standard_title": "Release Manager",
+          "segment": "product_delivery",
+          "responsibility_summary": "Coordinates release readiness, sequencing and evidence.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "LSA",
+          "standard_title": "Lead Software Architect",
+          "segment": "architecture",
+          "responsibility_summary": "Owns concrete-epic architecture, scope coherence, cross-ticket decisions and remediation design.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "SA",
+          "standard_title": "Software Architect",
+          "segment": "architecture",
+          "responsibility_summary": "Performs non-lead architecture work and cannot satisfy the mandatory LSA slot.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "TA",
+          "standard_title": "Technical Architect",
+          "segment": "architecture",
+          "responsibility_summary": "Designs technical structures and implementation boundaries.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "TL",
+          "standard_title": "Technical Lead",
+          "segment": "architecture",
+          "responsibility_summary": "Leads technical execution for a bounded delivery scope.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "EA",
+          "standard_title": "Enterprise Architect",
+          "segment": "architecture",
+          "responsibility_summary": "Aligns architecture across organizational systems and portfolios.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "IA",
+          "standard_title": "Integration Architect",
+          "segment": "architecture",
+          "responsibility_summary": "Designs system-to-system integration boundaries and contracts.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "UXD",
+          "standard_title": "UX Designer",
+          "segment": "design_research",
+          "responsibility_summary": "Designs end-to-end user experience and interaction flows.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "UID",
+          "standard_title": "UI Designer",
+          "segment": "design_research",
+          "responsibility_summary": "Designs visual interface composition and presentation.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "UXR",
+          "standard_title": "UX Researcher",
+          "segment": "design_research",
+          "responsibility_summary": "Investigates user needs and validates experience assumptions.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "IXD",
+          "standard_title": "Interaction Designer",
+          "segment": "design_research",
+          "responsibility_summary": "Defines detailed behavior and interaction patterns.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "A11Y",
+          "standard_title": "Accessibility Specialist",
+          "segment": "design_research",
+          "responsibility_summary": "Ensures inclusive and standards-compliant access.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "DSYS",
+          "standard_title": "Design Systems Specialist",
+          "segment": "design_research",
+          "responsibility_summary": "Owns reusable design-system patterns and consistency.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "SWE",
+          "standard_title": "Software Engineer",
+          "segment": "development",
+          "responsibility_summary": "Implements and maintains software within the declared scope.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "FE",
+          "standard_title": "Frontend Engineer",
+          "segment": "development",
+          "responsibility_summary": "Implements browser and client-side interfaces.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "BE",
+          "standard_title": "Backend Engineer",
+          "segment": "development",
+          "responsibility_summary": "Implements server-side services and domain behavior.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "FSE",
+          "standard_title": "Full-Stack Engineer",
+          "segment": "development",
+          "responsibility_summary": "Works across frontend and backend boundaries.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "API",
+          "standard_title": "API Engineer",
+          "segment": "development",
+          "responsibility_summary": "Designs and implements service interfaces and contracts.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "INT",
+          "standard_title": "Integration Engineer",
+          "segment": "development",
+          "responsibility_summary": "Implements external and internal system integrations.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "MOB",
+          "standard_title": "Mobile Engineer",
+          "segment": "development",
+          "responsibility_summary": "Implements mobile applications and platform integrations.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "PLAT",
+          "standard_title": "Platform Engineer",
+          "segment": "development",
+          "responsibility_summary": "Builds shared engineering and runtime platforms.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "DX",
+          "standard_title": "Developer Experience Engineer",
+          "segment": "development",
+          "responsibility_summary": "Improves developer workflows, tooling and feedback loops.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "DE",
+          "standard_title": "Data Engineer",
+          "segment": "data_ai",
+          "responsibility_summary": "Builds reliable data movement and transformation systems.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "DA",
+          "standard_title": "Data Analyst",
+          "segment": "data_ai",
+          "responsibility_summary": "Interprets data and produces decision-supporting analysis.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "DSCI",
+          "standard_title": "Data Scientist",
+          "segment": "data_ai",
+          "responsibility_summary": "Builds statistical models and evidence from data.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "MLE",
+          "standard_title": "Machine Learning Engineer",
+          "segment": "data_ai",
+          "responsibility_summary": "Productionizes and operates machine-learning systems.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "AIE",
+          "standard_title": "AI Engineer",
+          "segment": "data_ai",
+          "responsibility_summary": "Builds applications and systems using AI models.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "DBA",
+          "standard_title": "Database Administrator",
+          "segment": "data_ai",
+          "responsibility_summary": "Operates, secures and tunes databases.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "QA",
+          "standard_title": "Quality Assurance Engineer",
+          "segment": "quality_testing",
+          "responsibility_summary": "Assesses whether delivered behavior satisfies quality expectations.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "QE",
+          "standard_title": "Quality Engineer",
+          "segment": "quality_testing",
+          "responsibility_summary": "Engineers preventive quality controls and testability.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "SDET",
+          "standard_title": "Software Development Engineer in Test",
+          "segment": "quality_testing",
+          "responsibility_summary": "Builds automated test systems and test-supporting code.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "UAT",
+          "standard_title": "User Acceptance Test Specialist",
+          "segment": "quality_testing",
+          "responsibility_summary": "Validates behavior from the intended user's acceptance perspective.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "PERF",
+          "standard_title": "Performance Test Engineer",
+          "segment": "quality_testing",
+          "responsibility_summary": "Tests and improves latency, throughput and resource behavior.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "TSTLEAD",
+          "standard_title": "Test Lead",
+          "segment": "quality_testing",
+          "responsibility_summary": "Owns test strategy and coordinates test execution.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "AUD",
+          "standard_title": "Auditor",
+          "segment": "security_compliance",
+          "responsibility_summary": "Independently checks evidence against declared requirements or controls.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "SEC",
+          "standard_title": "Security Engineer",
+          "segment": "security_compliance",
+          "responsibility_summary": "Designs and verifies technical security controls.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "APPSEC",
+          "standard_title": "Application Security Engineer",
+          "segment": "security_compliance",
+          "responsibility_summary": "Focuses on security within application design and implementation.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "IAM",
+          "standard_title": "Identity and Access Management Engineer",
+          "segment": "security_compliance",
+          "responsibility_summary": "Owns identity, authentication and authorization controls.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "PEN",
+          "standard_title": "Penetration Tester",
+          "segment": "security_compliance",
+          "responsibility_summary": "Performs authorized adversarial security testing.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "GRC",
+          "standard_title": "Governance, Risk and Compliance Specialist",
+          "segment": "security_compliance",
+          "responsibility_summary": "Aligns controls with governance, risk and compliance requirements.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "PRIV",
+          "standard_title": "Privacy Specialist",
+          "segment": "security_compliance",
+          "responsibility_summary": "Assesses and protects privacy obligations and data handling.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "DEVOPS",
+          "standard_title": "DevOps Engineer",
+          "segment": "platform_operations",
+          "responsibility_summary": "Improves delivery automation and development/operations collaboration.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "SRE",
+          "standard_title": "Site Reliability Engineer",
+          "segment": "platform_operations",
+          "responsibility_summary": "Engineers production reliability through measurable service objectives.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "CLOUD",
+          "standard_title": "Cloud Engineer",
+          "segment": "platform_operations",
+          "responsibility_summary": "Builds and operates cloud infrastructure and services.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "OBS",
+          "standard_title": "Observability Engineer",
+          "segment": "platform_operations",
+          "responsibility_summary": "Builds telemetry and diagnostic capabilities.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "INC",
+          "standard_title": "Incident Manager",
+          "segment": "platform_operations",
+          "responsibility_summary": "Coordinates incident response and recovery.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "SUP",
+          "standard_title": "Support Engineer",
+          "segment": "platform_operations",
+          "responsibility_summary": "Diagnoses and resolves user or operational support issues.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "TW",
+          "standard_title": "Technical Writer",
+          "segment": "documentation_enablement",
+          "responsibility_summary": "Produces clear technical documentation for defined audiences.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "DOC",
+          "standard_title": "Documentation Engineer",
+          "segment": "documentation_enablement",
+          "responsibility_summary": "Organizes and maintains documentation systems and content.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "KNOW",
+          "standard_title": "Knowledge Manager",
+          "segment": "documentation_enablement",
+          "responsibility_summary": "Curates durable organizational knowledge and retrieval.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        },
+        {
+          "role_code": "TRN",
+          "standard_title": "Technical Trainer",
+          "segment": "documentation_enablement",
+          "responsibility_summary": "Builds learning material and adoption support.",
+          "capability_defaults": [],
+          "lifecycle": "current"
+        }
+      ]
+    }
+  ],
+  "delivery": {
+    "epic_kind": "ESW",
+    "control_kind": "ECP",
+    "task_kind": "TSW",
+    "control_role_code": "TPM",
+    "role_bindings": [
+      {
+        "role": "architect",
+        "role_code": "SA"
+      },
+      {
+        "role": "builder",
+        "role_code": "SWE"
+      },
+      {
+        "role": "tester",
+        "role_code": "QA"
+      },
+      {
+        "role": "inspector",
+        "role_code": "AUD"
+      },
+      {
+        "role": "therapist-verifier",
+        "role_code": "UAT"
+      },
+      {
+        "role": "researcher",
+        "role_code": "BA"
+      },
+      {
+        "role": "judge",
+        "role_code": "AUD"
+      },
+      {
+        "role": "synthesizer",
+        "role_code": "TW"
+      },
+      {
+        "role": "reviewer",
+        "role_code": "AUD"
+      }
+    ]
+  }
+}

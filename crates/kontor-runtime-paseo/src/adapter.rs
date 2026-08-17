@@ -49,7 +49,7 @@ use async_trait::async_trait;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{
     AgentRunId, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId, Timestamp,
+    RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId, Timestamp, TopologyNodeId,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::ModelRung;
@@ -66,6 +66,10 @@ use kontor_runtime::capability::{
     IssuedBinding, IssuedBindingRegistry, LimitDemand, OperationContext, RuntimeBindingSnapshot,
     RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
 };
+use kontor_runtime::container::{
+    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerLabel,
+    ContainerOutcome, ContainerProjection, ContainerRequest,
+};
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
     ReconciliationFinding, ReconciliationReport, reconcile,
@@ -80,11 +84,13 @@ use kontor_runtime::timeline::{
     PermissionLedger, SessionEvent, TimelineBreak, TimelinePosition,
 };
 use kontor_runtime::workspace::{
-    WorkspaceBinding, WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspaceCorrelationEvidence,
-    WorkspaceLabel, WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot,
+    WorkspaceBinding, WorkspaceBindingSnapshot, WorkspaceCorrelationEvidence, WorkspaceLabel,
+    WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot,
 };
 
-use crate::client::{PaseoCommand, PaseoRpc, PaseoTransport, ensure_frame_bounded};
+use crate::client::{
+    PaseoCommand, PaseoRpc, PaseoTransport, ensure_frame_bounded, permission_mode,
+};
 use crate::wire::{
     MAX_DIRECTORY_PAGE, MAX_DIRECTORY_PAGES, MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES,
     PASEO_APP_VERSION, PaseoAgent, PaseoAgentAnswer, PaseoAgentPage, PaseoAgentStatus,
@@ -100,6 +106,10 @@ use crate::wire::{
 const SUPPORTED: &[RuntimeCapability] = &[
     RuntimeCapability::Discovery,
     RuntimeCapability::PrepareWorkspace,
+    // 0.3.1's `project.add` registers a project from a directory and the
+    // project list reads it back by exact id, which is what a native root
+    // needs: something to create and something to prove afterwards.
+    RuntimeCapability::PrepareProject,
     RuntimeCapability::Launch,
     RuntimeCapability::Resume,
     RuntimeCapability::SendMessage,
@@ -167,6 +177,12 @@ pub struct PaseoExecutionScope {
     pub project_root_cwd: WorkspaceRoot,
     /// The filesystem-canonical task worktree. Authority, never display data.
     pub canonical_worktree_cwd: WorkspaceRoot,
+    /// Explicit ticket scopes served by this epic runtime.
+    ///
+    /// Empty preserves the original single-ticket configuration. Once present,
+    /// every task must be named so one runtime family can serve several TSWs
+    /// without silently falling back to another ticket's worktree or titles.
+    pub task_scopes: BTreeMap<TaskId, PaseoTaskScope>,
     /// The persisted Orchestrator agent every role of this ticket launches
     /// under.
     ///
@@ -179,7 +195,37 @@ pub struct PaseoExecutionScope {
     pub orchestrator_agent_id: ExternalId,
 }
 
+/// The ticket-specific half of one epic-scoped Paseo runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaseoTaskScope {
+    /// The Kontor plan item.
+    pub plan_item_key: ExternalId,
+    /// The Jira issue for the ticket.
+    pub jira_issue_key: ExternalId,
+    /// The runtime-neutral short ticket code.
+    pub ticket_short_code: ExternalId,
+    /// The filesystem-canonical task worktree.
+    pub canonical_worktree_cwd: WorkspaceRoot,
+}
+
 impl PaseoExecutionScope {
+    fn task_scope(&self, task_id: TaskId) -> RuntimeResult<PaseoTaskScope> {
+        if self.task_scopes.is_empty() {
+            return Ok(PaseoTaskScope {
+                plan_item_key: self.plan_item_key.clone(),
+                jira_issue_key: self.jira_issue_key.clone(),
+                ticket_short_code: self.ticket_short_code.clone(),
+                canonical_worktree_cwd: self.canonical_worktree_cwd.clone(),
+            });
+        }
+        self.task_scopes
+            .get(&task_id)
+            .cloned()
+            .ok_or(RuntimeError::WorkspaceMismatch {
+                rule: "the task has no configured Paseo workspace scope",
+            })
+    }
+
     /// `Epic · {jira_epic_key} · {mini_project_short_title}`.
     #[must_use]
     pub fn project_display_name(&self) -> String {
@@ -200,12 +246,29 @@ impl PaseoExecutionScope {
         )
     }
 
+    fn workspace_display_name_for(&self, task_id: TaskId) -> RuntimeResult<String> {
+        let task = self.task_scope(task_id)?;
+        Ok(format!(
+            "TSW · {} · {}",
+            task.jira_issue_key.as_str(),
+            task.ticket_short_code.as_str()
+        ))
+    }
+
     /// `{role} · {ticket_short_code} [· {stable_slot_suffix}]`.
     ///
     /// # Errors
     /// Returns [`RuntimeError::LaunchNotAdmitted`] when the configured ticket
     /// did not provide a visible name for the requested role slot.
     pub fn agent_display_name(&self, role_slot_id: &RoleSlotId) -> RuntimeResult<String> {
+        self.agent_display_name_for(role_slot_id, None)
+    }
+
+    fn agent_display_name_for(
+        &self,
+        role_slot_id: &RoleSlotId,
+        task_id: Option<TaskId>,
+    ) -> RuntimeResult<String> {
         let display =
             self.seat_display_roles
                 .get(role_slot_id)
@@ -222,24 +285,27 @@ impl PaseoExecutionScope {
             });
         }
         let (role, suffix) = display;
+        let ticket_short_code = match task_id {
+            Some(task_id) => self.task_scope(task_id)?.ticket_short_code,
+            None => self.ticket_short_code.clone(),
+        };
         Ok(match suffix {
             Some(suffix) => format!(
                 "{} · {} · {}",
                 role.as_str(),
-                self.ticket_short_code.as_str(),
+                ticket_short_code.as_str(),
                 suffix.as_str()
             ),
-            None => format!("{} · {}", role.as_str(), self.ticket_short_code.as_str()),
+            None => format!("{} · {}", role.as_str(), ticket_short_code.as_str()),
         })
     }
 }
 
-/// One configured Paseo execution plane: one host, one epic, one task worktree.
+/// One configured Paseo execution plane: one host, one epic, many task worktrees.
 ///
-/// Scoped to a ticket rather than to a daemon because the placement rules are
-/// about *this* task worktree. A second ticket in the same epic is a second
-/// adapter sharing the same [`PaseoProjectBinding`], which is exactly how one
-/// project comes to hold many task workspaces.
+/// Ticket scope stays explicit inside the adapter because the runtime registry
+/// has one authority entry per runtime family. The task id selects the exact
+/// worktree and display metadata before any native effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaseoConfig {
     /// The Kontor runtime-kind key, e.g. `paseo.agent`.
@@ -254,6 +320,34 @@ pub struct PaseoConfig {
     pub scope: PaseoExecutionScope,
     /// The most sessions Kontor will hold open on this plane at once.
     pub max_concurrent_sessions: u32,
+    /// Native containers this plane **adopts** rather than creates, by the
+    /// topology node each one already belongs to.
+    ///
+    /// Keyed by node id and not by kind, because the kind vocabulary belongs to
+    /// the pinned specification and an adapter holding a copy of it is one no
+    /// specification revision can correct. The configured project workspace is
+    /// simply one row here.
+    ///
+    /// Adoption is by **exact readback of the configured id** and carries no
+    /// authority over the container: it is never renamed, never archived, and
+    /// children of it that carry no Kontor label are left alone as
+    /// [`PaseoChildOwnership::ForeignUnmanaged`] rather than absorbed.
+    pub adopted_containers: BTreeMap<TopologyNodeId, ExternalId>,
+}
+
+/// What a child container inside a bound root belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaseoChildOwnership {
+    /// It carries this node's Kontor label.
+    ThisNode,
+    /// It carries another node's Kontor label.
+    AnotherNode(TopologyNodeId),
+    /// It carries no Kontor label at all.
+    ///
+    /// Somebody else's work living in a container Kontor adopted. It is never
+    /// adopted, never renamed and never archived — Kontor's authority over an
+    /// adopted root does not extend to the things it already contained.
+    ForeignUnmanaged,
 }
 
 impl PaseoConfig {
@@ -374,6 +468,17 @@ pub enum PaseoCompaction {
     Pending,
 }
 
+/// The native place a launch resolved to, and the Kontor binding that made it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LaunchPlace {
+    /// The native workspace the seat is placed in.
+    workspace_id: String,
+    /// The directory that workspace must be rooted at.
+    root: WorkspaceRoot,
+    /// The Kontor binding this place was made under, in canonical text.
+    binding: String,
+}
+
 /// The whole correlation chain one seat is persisted under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaseoSeatRecord {
@@ -393,8 +498,13 @@ pub struct PaseoSeatRecord {
     pub agent_run_id: AgentRunId,
     /// The Kontor session binding.
     pub binding_id: RuntimeBindingId,
-    /// The Kontor workspace binding.
-    pub workspace_binding_id: WorkspaceBindingId,
+    /// The Kontor binding this seat's place was made under, in canonical text.
+    ///
+    /// Text rather than one of the two binding id types, because a seat may be
+    /// placed in a TeamRun-keyed workspace or in a topology-node-keyed
+    /// container and this record is evidence about *which place*, not about
+    /// which keying produced it.
+    pub placement_binding_id: String,
     /// The canonical task worktree.
     pub canonical_worktree_cwd: WorkspaceRoot,
     /// The non-secret host key.
@@ -654,6 +764,12 @@ struct PaseoState {
     server: Option<PaseoServerInfo>,
     project: Option<PaseoProjectBinding>,
     workspaces: BTreeMap<TeamRunId, WorkspaceBindingSnapshot>,
+    /// One native container per topology node.
+    ///
+    /// Keyed by node rather than by team run: a node outlives every TeamRun
+    /// inside it, so a ledger keyed by the run would make the second run of one
+    /// ticket look like a new place to put things.
+    containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
     bindings: IssuedBindingRegistry,
     admissions: AdmissionLedger,
     records: BTreeMap<RuntimeBindingId, PaseoSeatRecord>,
@@ -824,6 +940,12 @@ impl PaseoAdapter {
                     .iter()
                     .map(|snapshot| (snapshot.binding.team_run_id, snapshot.clone()))
                     .collect(),
+                // Deliberately empty on every build, including a restore: a
+                // rebuilt adapter has no container ledger, and the way back to
+                // a node's container is the id Kontor persisted, not a copy
+                // this process kept. Seeding it from a checkpoint would hide
+                // the one path the restart fixture exists to exercise.
+                containers: BTreeMap::new(),
                 placements: checkpoint.placements.iter().cloned().collect(),
                 bindings: {
                     let mut registry = IssuedBindingRegistry::new();
@@ -917,6 +1039,17 @@ impl PaseoAdapter {
     #[must_use]
     pub fn placement(&self, binding_id: RuntimeBindingId) -> Option<ExternalId> {
         self.lock().placements.get(&binding_id).cloned()
+    }
+
+    /// The container binding this plane currently holds for one topology node.
+    ///
+    /// Absent after a restart even while the container exists, which is the
+    /// distinction the whole reconcile-by-stored-id path rests on: this answers
+    /// "does *this process* know where the node is", never "does the node have
+    /// a container".
+    #[must_use]
+    pub fn container_binding(&self, node: TopologyNodeId) -> Option<ContainerBindingSnapshot> {
+        self.lock().containers.get(&node).cloned()
     }
 
     /// The epic project binding, once preparation has established one.
@@ -1078,6 +1211,7 @@ impl PaseoAdapter {
     async fn fetch_project_agents(
         &self,
         project: &PaseoProjectBinding,
+        include_archived: bool,
     ) -> RuntimeResult<Vec<PaseoAgent>> {
         let workspaces: BTreeSet<String> = self
             .fetch_workspaces(project.project_id.as_str())
@@ -1086,7 +1220,7 @@ impl PaseoAdapter {
             .map(|workspace| workspace.id)
             .collect();
         Ok(self
-            .fetch_agents(&BTreeMap::new(), false)
+            .fetch_agents(&BTreeMap::new(), include_archived)
             .await?
             .into_iter()
             .filter(|agent| {
@@ -1120,6 +1254,29 @@ impl PaseoAdapter {
         Ok(agent)
     }
 
+    async fn fetch_agent_with_archive(
+        &self,
+        agent_id: &str,
+        correlation: &CorrelationLabel,
+    ) -> RuntimeResult<PaseoAgent> {
+        let agent = self.fetch_agent(agent_id).await?;
+        if agent.is_archived() {
+            return Ok(agent);
+        }
+        let correlation = correlation.to_string();
+        let project = self.require_project()?;
+        Ok(self
+            .fetch_project_agents(&project, true)
+            .await?
+            .into_iter()
+            .find(|candidate| {
+                candidate.id == agent_id
+                    && candidate.label(label::AGENT_RUN) == Some(correlation.as_str())
+                    && candidate.is_archived()
+            })
+            .unwrap_or(agent))
+    }
+
     // -- Placement ----------------------------------------------------------
 
     /// The epic project binding, or a refusal that names what is missing.
@@ -1144,6 +1301,7 @@ impl PaseoAdapter {
         &self,
         workspace: &PaseoWorkspace,
         project: &PaseoProjectBinding,
+        expected_root: &WorkspaceRoot,
     ) -> RuntimeResult<()> {
         if workspace.id.is_empty() {
             return Err(RuntimeError::WorkspaceMismatch {
@@ -1156,7 +1314,7 @@ impl PaseoAdapter {
             });
         }
         let reported = WorkspaceRoot::parse(&workspace.workspace_directory)?;
-        if reported != self.config.scope.canonical_worktree_cwd {
+        if &reported != expected_root {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the workspace is not the canonical task worktree",
             });
@@ -1174,6 +1332,74 @@ impl PaseoAdapter {
         Ok(())
     }
 
+    /// The native workspace a launch will be placed in, and the directory it
+    /// must be rooted at.
+    ///
+    /// A node-keyed container is resolved by the node it names, so a second
+    /// delivery attempt at the same ticket lands in the same place and the
+    /// TeamRun never participates in finding it. The workspace-keyed branch
+    /// below it is the older path; no Kontor application service reaches it any
+    /// more, and it is kept for direct adapter callers — contract fixtures and
+    /// the runtimes that prepare workspaces but not projects — which have no
+    /// topology to place against.
+    ///
+    /// The expected root is read off the binding rather than recomputed from the
+    /// configured task scope: the container was created at a directory this
+    /// adapter read back, and re-deriving it here would compare the scope
+    /// against itself.
+    fn launch_placement(&self, request: &LaunchRequest) -> RuntimeResult<LaunchPlace> {
+        if let Some(presented) = request.container() {
+            let prepared = self
+                .lock()
+                .containers
+                .get(&presented.topology_node_id())
+                .cloned()
+                .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+            if &prepared != presented {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "this is not the container this runtime prepared for that node",
+                });
+            }
+            let root = prepared
+                .binding
+                .root
+                .clone()
+                .ok_or(RuntimeError::WorkspaceMismatch {
+                    rule: "the bound container has no working directory to launch a seat in",
+                })?;
+            return Ok(LaunchPlace {
+                workspace_id: prepared.binding.identity.native_id.as_str().to_owned(),
+                root,
+                binding: prepared.binding_id().to_string(),
+            });
+        }
+
+        let presented = request
+            .workspace()
+            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+        let prepared = self
+            .lock()
+            .workspaces
+            .get(&request.team_run_id())
+            .cloned()
+            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+        if &prepared != presented {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "this is not the task workspace this runtime prepared",
+            });
+        }
+        Ok(LaunchPlace {
+            workspace_id: prepared.binding.identity.native_id.as_str().to_owned(),
+            root: self
+                .config
+                .scope
+                .task_scope(request.task_id())?
+                .canonical_worktree_cwd
+                .clone(),
+            binding: prepared.binding_id().to_string(),
+        })
+    }
+
     /// The full label set one seat's agent must carry, exactly.
     fn seat_labels(
         &self,
@@ -1183,14 +1409,15 @@ impl PaseoAdapter {
         task_id: TaskId,
         project: &PaseoProjectBinding,
         workspace_id: &str,
-    ) -> BTreeMap<String, String> {
+    ) -> RuntimeResult<BTreeMap<String, String>> {
         let scope = &self.config.scope;
-        [
+        let task = scope.task_scope(task_id)?;
+        Ok([
             (
                 label::AGENT_RUN,
                 CorrelationLabel::for_run(agent_run_id).to_string(),
             ),
-            (label::JIRA_ISSUE, scope.jira_issue_key.as_str().to_owned()),
+            (label::JIRA_ISSUE, task.jira_issue_key.as_str().to_owned()),
             (label::JIRA_EPIC, scope.jira_epic_key.as_str().to_owned()),
             (
                 label::PROJECT_ID,
@@ -1210,7 +1437,7 @@ impl PaseoAdapter {
             (label::WORKSPACE_ID, workspace_id.to_owned()),
             (
                 label::WORKTREE,
-                scope.canonical_worktree_cwd.as_str().to_owned(),
+                task.canonical_worktree_cwd.as_str().to_owned(),
             ),
             (
                 label::PARENT_AGENT,
@@ -1219,7 +1446,7 @@ impl PaseoAdapter {
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
-        .collect()
+        .collect())
     }
 
     /// The one label every seat of a team run carries, for a run-wide census.
@@ -1267,7 +1494,11 @@ impl PaseoAdapter {
         workspace_id: &str,
         wanted_labels: &BTreeMap<String, String>,
     ) -> RuntimeResult<()> {
-        self.verify_agent_location(agent, workspace_id)?;
+        let expected_root = wanted_labels
+            .get(label::WORKTREE)
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let expected_root = WorkspaceRoot::parse(expected_root)?;
+        self.verify_agent_location(agent, workspace_id, &expected_root)?;
         // `paseo.parent-agent-id` is part of `wanted_labels`, so the exact-label
         // census below already covers it; this line is what makes the refusal
         // legible when the parent is the half that is wrong.
@@ -1293,7 +1524,12 @@ impl PaseoAdapter {
     /// this agent must be in being verified as the bound project's — which is
     /// why every caller of this pairs it with
     /// [`PaseoAdapter::verify_workspace_placement`] on the same workspace id.
-    fn verify_agent_location(&self, agent: &PaseoAgent, workspace_id: &str) -> RuntimeResult<()> {
+    fn verify_agent_location(
+        &self,
+        agent: &PaseoAgent,
+        workspace_id: &str,
+        expected_root: &WorkspaceRoot,
+    ) -> RuntimeResult<()> {
         if agent.id.is_empty() {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -1303,7 +1539,7 @@ impl PaseoAdapter {
             });
         }
         let reported = WorkspaceRoot::parse(&agent.cwd)?;
-        if reported != self.config.scope.canonical_worktree_cwd {
+        if &reported != expected_root {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the agent is working outside the canonical task worktree",
             });
@@ -1333,11 +1569,15 @@ impl PaseoAdapter {
         let workspace_id = self
             .placement(binding.binding_id())
             .ok_or(RuntimeError::WorkspaceBindingRequired)?;
-        self.verify_agent_location(agent, workspace_id.as_str())?;
+        let expected_root = agent
+            .label(label::WORKTREE)
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let expected_root = WorkspaceRoot::parse(expected_root)?;
+        self.verify_agent_location(agent, workspace_id.as_str(), &expected_root)?;
         // …and the workspace itself, which is where the project half of the
         // agent's placement is proved on this wire.
         let workspace = self.fetch_workspace(workspace_id.as_str()).await?;
-        self.verify_workspace_placement(&workspace, &project)?;
+        self.verify_workspace_placement(&workspace, &project, &expected_root)?;
         // A live launch/adoption owns a full seat record and therefore freezes
         // its route. Restart restoration deliberately reconstructs only facts
         // Paseo can re-attest; its launch-time route remains in observation
@@ -1360,6 +1600,14 @@ impl PaseoAdapter {
             && agent.effective_thinking_option_id.as_deref() != Some(effort.as_str())
         {
             return Err(RuntimeError::CorrelationFailed);
+        }
+        let expected_mode = permission_mode(&requested.provider.0)?;
+        if agent.current_mode_id.as_deref() != expected_mode {
+            return Err(RuntimeError::PermissionModeMismatch {
+                provider: requested.provider.0.clone(),
+                expected: expected_mode.map(str::to_owned),
+                found: agent.current_mode_id.clone(),
+            });
         }
         Ok(())
     }
@@ -1427,6 +1675,7 @@ impl PaseoAdapter {
                 "model": agent.model,
                 "thinking": agent.thinking_option_id,
                 "effective_thinking": agent.effective_thinking_option_id,
+                "permission_mode": agent.current_mode_id,
                 "workspace_id": agent.workspace_id,
                 "status": format!("{:?}", agent.status),
                 "archived_at": agent.archived_at,
@@ -1455,15 +1704,22 @@ impl PaseoAdapter {
         source: ObservationSource,
     ) -> RuntimeResult<ControlPlaneObservation> {
         let (state, contact) = Self::normalize_agent(agent);
+        let native_sequence = u64::try_from(observed_at.as_microsecond()).map_err(|_| {
+            DomainError::invalid(
+                "Paseo observation",
+                "timestamp cannot identify a current runtime read",
+            )
+        })?;
         Ok(ControlPlaneObservation {
             agent_run_id,
             contact,
             state,
             identity,
             native_event_id: None,
-            // A single agent readback has no position in the session's content.
-            // The canonical timeline is where ordering lives.
-            native_sequence: 0,
+            // Paseo exposes no revision for an agent readback. Use the read's
+            // timestamp as its control-plane order; content keeps its separate
+            // canonical timeline sequence.
+            native_sequence,
             observed_at,
             evidence: Self::agent_evidence(agent)?,
             source,
@@ -1582,6 +1838,238 @@ impl PaseoAdapter {
         Ok(self.settle_project(project_id, project.display_name, desired))
     }
 
+    /// Re-attest the container a node is already bound to, by its exact id.
+    ///
+    /// The only question asked is "is *this* container still there". A readback
+    /// that comes back empty is a refusal, never a licence to create a
+    /// replacement: the container may be perfectly alive and merely unreachable,
+    /// and a second one created beside it is not recoverable by observing it
+    /// afterwards.
+    async fn reconcile_container_by_id(
+        &self,
+        request: &ContainerRequest,
+        projection: ContainerProjection,
+        native_id: &ExternalId,
+        scope: Option<&ExternalId>,
+        declared: &RuntimeCapabilities,
+        generation: u64,
+    ) -> RuntimeResult<ContainerBindingSnapshot> {
+        let (identity, correlation) = match projection {
+            ContainerProjection::NativeRoot => {
+                let project = self.read_project_by_id(native_id.as_str()).await?;
+                let identity = self.identity(ExternalId::parse(&project.id)?, generation);
+                // A project carries no label surface, so the readback of the
+                // exact id *is* the correlation. Its display name is compared
+                // nowhere: an operator who renamed it did not move it.
+                (
+                    identity.clone(),
+                    ContainerCorrelationEvidence::by_exact_id(
+                        request.topology_node_id,
+                        identity,
+                        request.requested_at,
+                    ),
+                )
+            }
+            ContainerProjection::NativeChild => {
+                let project_id = scope.ok_or(RuntimeError::WorkspaceMismatch {
+                    rule: "a native_child requires the exact native parent binding",
+                })?;
+                let workspace = self
+                    .fetch_workspaces(project_id.as_str())
+                    .await?
+                    .into_iter()
+                    .find(|workspace| workspace.id == native_id.as_str())
+                    .ok_or(RuntimeError::StaleBinding {
+                        rule: "the bound container is not in the parent this node is placed under",
+                    })?;
+                let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
+                // A child *does* carry a label, so the collision is checkable:
+                // the container Kontor stored for this node now reporting
+                // another node's label is a disagreement, not a rebinding.
+                (
+                    identity.clone(),
+                    ContainerCorrelationEvidence::establish(
+                        request.topology_node_id,
+                        workspace.reported_label().unwrap_or_default(),
+                        identity,
+                        request.requested_at,
+                    )?,
+                )
+            }
+            ContainerProjection::LogicalOnly => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a logical_only node has no native container to reconcile",
+                });
+            }
+        };
+        Ok(ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: request.topology_node_id,
+                projection,
+                identity,
+                root: request.cwd.clone(),
+                bound_at: request.requested_at,
+            },
+            capabilities: declared.clone(),
+            correlation,
+        })
+    }
+
+    /// Bind a node to a native project for the first time.
+    ///
+    /// Adoption happens **only** by configured exact id. There is no
+    /// adopt-by-display-name branch, because a project's name is a mutable
+    /// string: matching on it would let this node take over a project somebody
+    /// else named the same way, and the failure is silent in both directions.
+    async fn bind_native_root(
+        &self,
+        request: &ContainerRequest,
+        declared: &RuntimeCapabilities,
+        generation: u64,
+    ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
+        let _ = declared;
+        if let Some(adopted) = self
+            .config
+            .adopted_containers
+            .get(&request.topology_node_id)
+            .cloned()
+        {
+            // Adopted by exact readback and nothing else. A configured id the
+            // daemon does not hold is a configuration error to report, not a
+            // project to create.
+            let project = self.read_project_by_id(adopted.as_str()).await?;
+            let identity = self.identity(ExternalId::parse(&project.id)?, generation);
+            return Ok((
+                identity.clone(),
+                ContainerCorrelationEvidence::by_exact_id(
+                    request.topology_node_id,
+                    identity,
+                    request.requested_at,
+                ),
+                false,
+            ));
+        }
+
+        let cwd = request
+            .cwd
+            .as_ref()
+            .ok_or(RuntimeError::WorkspaceMismatch {
+                rule: "a native_root must say which directory it is registered from",
+            })?;
+        let command = PaseoRpc::project_add(self.next_request_id(), cwd.as_str());
+        let frame = self.transport.request(&command).await?;
+        let added: PaseoProjectAdded = frame.resolve(&command, "PaseoProjectAdded")?;
+        let added = added.project.ok_or(RuntimeError::Transport {
+            rule: "runtime refused to register this node's project",
+        })?;
+        // The answer to `add` is an acknowledgement. A binding is made from a
+        // readback.
+        let project = self.read_project_by_id(&added.id).await?;
+        let identity = self.identity(ExternalId::parse(&project.id)?, generation);
+        Ok((
+            identity.clone(),
+            ContainerCorrelationEvidence::by_exact_id(
+                request.topology_node_id,
+                identity,
+                request.requested_at,
+            ),
+            true,
+        ))
+    }
+
+    /// Bind a node to a container below the exact bound parent.
+    ///
+    /// Candidates are selected by **this node's label** and by nothing else. A
+    /// workspace at the right path carrying another node's label belongs to that
+    /// node; one carrying no label at all is somebody else's work that happens
+    /// to live in a container Kontor adopted.
+    async fn bind_native_child(
+        &self,
+        request: &ContainerRequest,
+        project_id: &ExternalId,
+        generation: u64,
+    ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
+        let label = request.correlation().to_string();
+        let existing = self.fetch_workspaces(project_id.as_str()).await?;
+        let mut mine = existing
+            .iter()
+            .filter(|workspace| {
+                self.child_ownership(workspace, request) == PaseoChildOwnership::ThisNode
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let (workspace, created) = match mine.len() {
+            // A prior effect of ours whose answer we lost. Adopting it is what
+            // stops a lost acknowledgement from leaving two containers behind.
+            1 => (mine.remove(0), false),
+            0 => {
+                let command = PaseoCommand::workspace_create(
+                    request
+                        .cwd
+                        .as_ref()
+                        .ok_or(RuntimeError::WorkspaceMismatch {
+                            rule: "a native_child must say which directory it works in",
+                        })?
+                        .as_str(),
+                    project_id.as_str(),
+                    &workspace_label_suffix(request.display_name.as_str(), &label),
+                );
+                let output = self.transport.run(&command).await?;
+                let created: PaseoCliWorkspaceCreated = output.parse("PaseoCliWorkspaceCreated")?;
+                // The CLI answer omits `projectId`, so the readback is what says
+                // which project this actually landed in.
+                let workspace = self
+                    .fetch_workspaces(project_id.as_str())
+                    .await?
+                    .into_iter()
+                    .find(|workspace| workspace.id == created.workspace_id)
+                    .ok_or(RuntimeError::CorrelationFailed)?;
+                (workspace, true)
+            }
+            // Two containers carrying one node's label is a hierarchy that has
+            // diverged. Choosing one would put half of a node's seats in each.
+            _ => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "several Paseo workspaces carry this topology node's label",
+                });
+            }
+        };
+
+        if workspace.project_id != project_id.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the container was not created inside the bound parent project",
+            });
+        }
+        let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
+        let correlation = ContainerCorrelationEvidence::establish(
+            request.topology_node_id,
+            workspace.reported_label().unwrap_or_default(),
+            identity.clone(),
+            request.requested_at,
+        )?;
+        Ok((identity, correlation, created))
+    }
+
+    /// Who a child container inside a bound root belongs to.
+    #[must_use]
+    fn child_ownership(
+        &self,
+        workspace: &PaseoWorkspace,
+        request: &ContainerRequest,
+    ) -> PaseoChildOwnership {
+        match workspace.reported_label().map(ContainerLabel::parse) {
+            Some(Ok(label)) if label.topology_node_id() == request.topology_node_id => {
+                PaseoChildOwnership::ThisNode
+            }
+            Some(Ok(label)) => PaseoChildOwnership::AnotherNode(label.topology_node_id()),
+            // No Kontor node label at all — including a workspace carrying the
+            // older team-run label, which names a run and not a place.
+            Some(Err(_)) | None => PaseoChildOwnership::ForeignUnmanaged,
+        }
+    }
+
     async fn read_project_by_id(&self, project_id: &str) -> RuntimeResult<PaseoProject> {
         self.fetch_projects()
             .await?
@@ -1657,9 +2145,10 @@ impl PaseoAdapter {
         let task_workspace = match &prepared {
             Some(workspace_id) => {
                 let workspace = self.fetch_workspace(workspace_id).await?;
-                self.verify_workspace_placement(&workspace, &project)
+                let root = WorkspaceRoot::parse(&workspace.workspace_directory)?;
+                self.verify_workspace_placement(&workspace, &project, &root)
                     .is_ok()
-                    .then(|| workspace_id.clone())
+                    .then(|| (workspace_id.clone(), root))
             }
             None => None,
         };
@@ -1670,7 +2159,7 @@ impl PaseoAdapter {
                 // Nothing may be planned into a place that is not the task
                 // worktree — not a reuse, and not a materialize either, since
                 // materializing is how a seat would be created there.
-                let Some(workspace_id) = &task_workspace else {
+                let Some((workspace_id, expected_root)) = &task_workspace else {
                     return PaseoSlotPlan::Blocked {
                         slot,
                         rule: "this team run has no proven task workspace to plan a seat in",
@@ -1685,7 +2174,10 @@ impl PaseoAdapter {
                 // still answers this census wearing the right name — and reusing
                 // it would drive the seat's next turn in the wrong repository.
                 let (placed, misplaced): (Vec<_>, Vec<_>) =
-                    live.partition(|agent| self.verify_agent_location(agent, workspace_id).is_ok());
+                    live.partition(|agent| {
+                        self.verify_agent_location(agent, workspace_id, expected_root)
+                            .is_ok()
+                    });
                 match (placed.as_slice(), misplaced.is_empty()) {
                     // Two live agents for one seat is the state AC-4 forbids.
                     // Picking one would bind a run to a session that may belong
@@ -1749,7 +2241,10 @@ impl PaseoAdapter {
         }
         // The acknowledgement is not the evidence. A fresh readback carrying an
         // archive stamp is, and until it does no successor may be admitted.
-        let agent = self.fetch_agent(&native_id).await?;
+        let correlation = CorrelationLabel::for_run(binding.agent_run_id());
+        let agent = self
+            .fetch_agent_with_archive(&native_id, &correlation)
+            .await?;
         if !agent.is_archived() {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -2119,7 +2614,7 @@ impl PaseoAdapter {
                 // working directory that is not the bound root — before the
                 // session exists, because a wrong-tree edit is not recoverable
                 // by noticing it afterwards.
-                workspace: Some(request.workspace_claim()),
+                placement: Some(request.placement_claim()),
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::ConcurrentSessions(
                     u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
@@ -2129,32 +2624,20 @@ impl PaseoAdapter {
         )?;
 
         let project = self.require_project()?;
-        let workspace_snapshot = request
-            .workspace()
-            .cloned()
-            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
-        // The presented workspace binding must be the one *this* adapter
-        // prepared, not merely a self-consistent value naming the right team
-        // run. Preflight compares a snapshot against itself and is satisfied by
-        // any coherent forgery.
-        let prepared = self
-            .lock()
-            .workspaces
-            .get(&request.team_run_id())
-            .cloned()
-            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
-        if prepared != workspace_snapshot {
-            return Err(RuntimeError::WorkspaceMismatch {
-                rule: "this is not the task workspace this runtime prepared",
-            });
-        }
-        let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
+        // Whichever way the place was keyed, the presented binding must be the
+        // one *this* adapter prepared, not merely a self-consistent value naming
+        // the right thing. Preflight compares a snapshot against itself and is
+        // satisfied by any coherent forgery; only the adapter's own ledger
+        // distinguishes a binding it made from one that merely looks like it.
+        let place = self.launch_placement(request)?;
+        let workspace_id = place.workspace_id.clone();
+        let task_scope = self.config.scope.task_scope(request.task_id())?;
 
         // Rerun the placement checks against a *fresh* readback. A binding made
         // ten minutes ago is evidence about ten minutes ago, and the whole point
         // of this gate is that nothing has moved since.
         let workspace = self.fetch_workspace(&workspace_id).await?;
-        self.verify_workspace_placement(&workspace, &project)?;
+        self.verify_workspace_placement(&workspace, &project, &place.root)?;
 
         let labels = self.seat_labels(
             request.agent_run_id(),
@@ -2163,17 +2646,26 @@ impl PaseoAdapter {
             request.task_id(),
             &project,
             &workspace_id,
-        );
+        )?;
         let slot_labels = self.slot_labels(request.team_run_id(), request.role_slot_id());
 
-        // A native census before the first effect. The admission ledger knows
-        // what *this* adapter admitted; it cannot know about an agent a previous
-        // process left behind, and launching over one is how a seat acquires two
-        // live sessions.
+        // A native census before the first effect. An exact full-label match is
+        // a launch whose acknowledgement was lost; adopt it before the broader
+        // occupied-slot guard so a retry never creates a second session.
         let census = self.fetch_agents(&slot_labels, false).await?;
-        if census
+        let exact = census
             .iter()
-            .any(|agent| agent.matches_labels(&slot_labels) && !agent.is_archived())
+            .filter(|agent| agent.matches_labels(&labels) && !agent.is_archived())
+            .collect::<Vec<_>>();
+        let recovered_id = match exact.as_slice() {
+            [agent] => Some(agent.id.clone()),
+            [] => None,
+            _ => return Err(RuntimeError::CorrelationFailed),
+        };
+        if recovered_id.is_none()
+            && census
+                .iter()
+                .any(|agent| agent.matches_labels(&slot_labels) && !agent.is_archived())
         {
             return Err(RuntimeError::SlotAlreadyAdmitted {
                 rule: "a live Paseo agent already carries this role slot's labels",
@@ -2183,26 +2675,29 @@ impl PaseoAdapter {
         let agent_display_name = self
             .config
             .scope
-            .agent_display_name(request.role_slot_id())?;
+            .agent_display_name_for(request.role_slot_id(), Some(request.task_id()))?;
         let command = PaseoCommand::agent_run(
             &workspace_id,
-            self.config.scope.canonical_worktree_cwd.as_str(),
+            task_scope.canonical_worktree_cwd.as_str(),
             request.model_rung(),
             &agent_display_name,
             &labels,
             self.config.scope.orchestrator_agent_id.as_str(),
             request.prompt().as_str(),
-        );
-        let native_id = match self.transport.run(&command).await {
-            Ok(output) => {
-                let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
-                started.agent_id
-            }
-            // The command may have landed. An exact-label census before deciding
-            // anything is the whole of the recovery rule; running `agent run`
-            // again would be how one seat acquires two agents.
-            Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
-            Err(other) => return Err(other),
+        )?;
+        let native_id = match recovered_id {
+            Some(native_id) => native_id,
+            None => match self.transport.run(&command).await {
+                Ok(output) => {
+                    let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
+                    started.agent_id
+                }
+                // The command may have landed. An exact-label census before deciding
+                // anything is the whole of the recovery rule; running `agent run`
+                // again would be how one seat acquires two agents.
+                Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
+                Err(other) => return Err(other),
+            },
         };
 
         // The CLI's answer is an id, a status, a provider and two display
@@ -2233,14 +2728,14 @@ impl PaseoAdapter {
         let record = PaseoSeatRecord {
             mini_project_id: self.config.mini_project_id.clone(),
             jira_epic_key: self.config.scope.jira_epic_key.clone(),
-            plan_item_key: self.config.scope.plan_item_key.clone(),
+            plan_item_key: task_scope.plan_item_key.clone(),
             task_id: request.task_id(),
             team_run_id: request.team_run_id(),
             role_slot_id: request.role_slot_id().clone(),
             agent_run_id: request.agent_run_id(),
             binding_id: request.binding_id(),
-            workspace_binding_id: prepared.binding_id(),
-            canonical_worktree_cwd: self.config.scope.canonical_worktree_cwd.clone(),
+            placement_binding_id: place.binding.clone(),
+            canonical_worktree_cwd: task_scope.canonical_worktree_cwd.clone(),
             host_key: self.config.host_key.clone(),
             project_id: project.project_id.clone(),
             workspace_id: ExternalId::parse(&workspace_id)?,
@@ -2347,7 +2842,24 @@ impl RuntimeAdapter for PaseoAdapter {
         // Two independent sources of runtime truth, both read before anything is
         // recorded: what sessions this daemon actually holds right now, and what
         // this runtime can currently prove.
-        let live = self.discover_sessions().await?;
+        let project = self.require_project()?;
+        let generation = self.generation();
+        let live = self
+            .fetch_project_agents(&project, true)
+            .await?
+            .into_iter()
+            .map(|agent| {
+                let (state, _) = Self::normalize_agent(&agent);
+                Ok(NativeSession {
+                    identity: self.identity(ExternalId::parse(&agent.id)?, generation),
+                    correlation: agent
+                        .label(label::AGENT_RUN)
+                        .and_then(|value| CorrelationLabel::parse(value).ok()),
+                    state,
+                    observed_at: Timestamp::now(),
+                })
+            })
+            .collect::<RuntimeResult<Vec<_>>>()?;
         let declared = self.declared().await?;
         // Placement is re-proved from the live agents, not remembered: an agent
         // reports which workspace it sits in, and that workspace is checked
@@ -2415,6 +2927,132 @@ impl RuntimeAdapter for PaseoAdapter {
         state.admissions.admit(request, &facts)
     }
 
+    async fn prepare_container(
+        &self,
+        request: &ContainerRequest,
+    ) -> RuntimeResult<ContainerOutcome> {
+        // Capabilities decide the shape, and they decide it before anything is
+        // dispatched. Nothing below this line reads the node's kind key.
+        let projection = request.validate()?;
+        let operation = match projection {
+            ContainerProjection::NativeRoot => RuntimeCapability::PrepareProject,
+            ContainerProjection::NativeChild => RuntimeCapability::PrepareWorkspace,
+            ContainerProjection::LogicalOnly => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a logical_only node has no native container to prepare",
+                });
+            }
+        };
+        let declared = self.declared().await?;
+        if !declared.supports(operation) {
+            return Err(self.refuse(operation, &declared));
+        }
+        let generation = self.generation();
+
+        // An in-ledger binding is answered from state, so a retry after a lost
+        // answer never reaches the wire at all.
+        if let Some(existing) = self
+            .lock()
+            .containers
+            .get(&request.topology_node_id)
+            .cloned()
+            && existing.binding.identity.generation == generation
+        {
+            return Ok(ContainerOutcome {
+                snapshot: existing,
+                created: false,
+            });
+        }
+
+        // Everything below reconciles or binds against the *exact* native id,
+        // and never against a display name or a path. A name is validation
+        // evidence: it can disagree and still be the right container, and it
+        // can agree while naming somebody else's.
+        let scope = match projection {
+            ContainerProjection::LogicalOnly => None,
+            ContainerProjection::NativeRoot => None,
+            ContainerProjection::NativeChild => {
+                // The exact bound parent, or nothing. There is deliberately no
+                // branch here that reaches for "the project this plane is
+                // configured with": a child whose root is missing must stop,
+                // because creating one beside the epic is how a task's work
+                // ends up in a project nobody is watching.
+                let parent = request
+                    .parent
+                    .as_ref()
+                    .ok_or(RuntimeError::WorkspaceMismatch {
+                        rule: "a native_child requires the exact native parent binding",
+                    })?;
+                Some(parent.identity.native_id.clone())
+            }
+        };
+
+        // A binding Kontor already holds is reconciled by its stored id, which
+        // is the whole of the restart path: the adapter's ledger is gone, the
+        // container is not.
+        let stored = request.bound_native_id.clone().or_else(|| {
+            self.lock()
+                .containers
+                .get(&request.topology_node_id)
+                .map(|it| it.binding.identity.native_id.clone())
+        });
+        if let Some(native_id) = stored {
+            let snapshot = self
+                .reconcile_container_by_id(
+                    request,
+                    projection,
+                    &native_id,
+                    scope.as_ref(),
+                    &declared,
+                    generation,
+                )
+                .await?;
+            self.lock()
+                .containers
+                .insert(request.topology_node_id, snapshot.clone());
+            return Ok(ContainerOutcome {
+                snapshot,
+                created: false,
+            });
+        }
+
+        let (identity, correlation, created) = match projection {
+            ContainerProjection::LogicalOnly => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a logical_only node has no native container to prepare",
+                });
+            }
+            ContainerProjection::NativeRoot => {
+                self.bind_native_root(request, &declared, generation)
+                    .await?
+            }
+            ContainerProjection::NativeChild => {
+                let project_id = scope.ok_or(RuntimeError::WorkspaceMismatch {
+                    rule: "a native_child requires the exact native parent binding",
+                })?;
+                self.bind_native_child(request, &project_id, generation)
+                    .await?
+            }
+        };
+
+        let snapshot = ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: request.topology_node_id,
+                projection,
+                identity,
+                root: request.cwd.clone(),
+                bound_at: request.requested_at,
+            },
+            capabilities: declared,
+            correlation,
+        };
+        self.lock()
+            .containers
+            .insert(request.topology_node_id, snapshot.clone());
+        Ok(ContainerOutcome { snapshot, created })
+    }
+
     async fn prepare_workspace(
         &self,
         request: &WorkspacePrepareRequest,
@@ -2443,7 +3081,8 @@ impl RuntimeAdapter for PaseoAdapter {
         // The requested root is compared against the canonical worktree this
         // plane serves. `WorkspaceRoot` already refuses `.`, `..` and repeated
         // separators, so two spellings of one place cannot compare unequal here.
-        if request.root != self.config.scope.canonical_worktree_cwd {
+        let task_scope = self.config.scope.task_scope(request.task_id)?;
+        if request.root != task_scope.canonical_worktree_cwd {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the requested root is not the canonical task worktree of this plane",
             });
@@ -2465,7 +3104,10 @@ impl RuntimeAdapter for PaseoAdapter {
         // `wire::workspace_label_suffix` for why that is a real round trip and
         // not a fabricated one.
         let workspace_title = workspace_label_suffix(
-            &self.config.scope.workspace_display_name(),
+            &self
+                .config
+                .scope
+                .workspace_display_name_for(request.task_id)?,
             &WorkspaceLabel::for_team_run(request.team_run_id).to_string(),
         );
         let (workspace, created) = match exact.len() {
@@ -2492,7 +3134,7 @@ impl RuntimeAdapter for PaseoAdapter {
             }
         };
 
-        self.verify_workspace_placement(&workspace, &project)?;
+        self.verify_workspace_placement(&workspace, &project, &task_scope.canonical_worktree_cwd)?;
 
         let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
         // What Paseo *reported*, extracted from the title it returned. A
@@ -2572,7 +3214,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -2641,7 +3283,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::MessageBytes(request.body_bytes())),
                 context_policy: None,
@@ -2754,7 +3396,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -2797,7 +3439,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -2806,7 +3448,10 @@ impl RuntimeAdapter for PaseoAdapter {
         let native_id = binding.identity().native_id.as_str().to_owned();
         // Always a fresh session read. A cached answer is a description of the
         // past, and no previous observation may authorize a new edit or verdict.
-        let agent = self.fetch_agent(&native_id).await?;
+        let correlation = CorrelationLabel::for_run(binding.agent_run_id());
+        let agent = self
+            .fetch_agent_with_archive(&native_id, &correlation)
+            .await?;
         // An inspect is also the cheapest honest look at the permission
         // lifecycle, which on this wire lives in the agent snapshot rather than
         // in the transcript.
@@ -2848,6 +3493,7 @@ impl RuntimeAdapter for PaseoAdapter {
             .cloned()
             .ok_or(RuntimeError::WorkspaceBindingRequired)?;
         let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
+        let task_scope = self.config.scope.task_scope(intent.task_id)?;
 
         let before = self.fetch_agent(&native_id).await?;
         // An orphan, and only an orphan: a session already carrying a Kontor run
@@ -2863,7 +3509,7 @@ impl RuntimeAdapter for PaseoAdapter {
             });
         }
         if before.workspace_id.as_deref() != Some(workspace_id.as_str())
-            || WorkspaceRoot::parse(&before.cwd)? != self.config.scope.canonical_worktree_cwd
+            || WorkspaceRoot::parse(&before.cwd)? != task_scope.canonical_worktree_cwd
         {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the session is not placed in this ticket's task workspace",
@@ -2876,7 +3522,7 @@ impl RuntimeAdapter for PaseoAdapter {
         // not one Paseo provisioned for itself — before the labels, because a
         // label write is the theft this whole path exists to gate.
         let workspace = self.fetch_workspace(&workspace_id).await?;
-        self.verify_workspace_placement(&workspace, &project)?;
+        self.verify_workspace_placement(&workspace, &project, &task_scope.canonical_worktree_cwd)?;
 
         let slot = RoleSlotKey::new(intent.team_run_id, intent.role_slot_id.clone());
         {
@@ -2901,7 +3547,7 @@ impl RuntimeAdapter for PaseoAdapter {
             intent.task_id,
             &project,
             &workspace_id,
-        );
+        )?;
         let command = PaseoCommand::agent_update_labels(&native_id, &labels);
         let output = self.transport.run(&command).await?;
         let updated: PaseoCliAgentUpdated = output.parse("PaseoCliAgentUpdated")?;
@@ -2947,14 +3593,14 @@ impl RuntimeAdapter for PaseoAdapter {
         let record = PaseoSeatRecord {
             mini_project_id: self.config.mini_project_id.clone(),
             jira_epic_key: self.config.scope.jira_epic_key.clone(),
-            plan_item_key: self.config.scope.plan_item_key.clone(),
+            plan_item_key: task_scope.plan_item_key.clone(),
             task_id: intent.task_id,
             team_run_id: intent.team_run_id,
             role_slot_id: intent.role_slot_id.clone(),
             agent_run_id: request.agent_run_id,
             binding_id: request.binding_id,
-            workspace_binding_id: prepared.binding_id(),
-            canonical_worktree_cwd: self.config.scope.canonical_worktree_cwd.clone(),
+            placement_binding_id: prepared.binding_id().to_string(),
+            canonical_worktree_cwd: task_scope.canonical_worktree_cwd.clone(),
             host_key: self.config.host_key.clone(),
             project_id: project.project_id.clone(),
             workspace_id: ExternalId::parse(&workspace_id)?,
@@ -3000,7 +3646,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: None,
-                workspace: None,
+                placement: None,
                 current_generation: None,
                 demand: None,
                 context_policy: None,
@@ -3009,7 +3655,7 @@ impl RuntimeAdapter for PaseoAdapter {
         let project = self.require_project()?;
         let generation = self.generation();
         let mut found = Vec::new();
-        for agent in self.fetch_project_agents(&project).await? {
+        for agent in self.fetch_project_agents(&project, false).await? {
             let (state, _) = Self::normalize_agent(&agent);
             found.push(NativeSession {
                 identity: self.identity(ExternalId::parse(&agent.id)?, generation),
@@ -3077,7 +3723,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::HistoryPage(request.page_size)),
                 context_policy: None,
@@ -3148,7 +3794,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -3268,7 +3914,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -3375,7 +4021,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(self.generation()),
                 demand: None,
                 context_policy: None,
@@ -3595,15 +4241,24 @@ impl PaseoAdapter {
             let Some(workspace_id) = agent.workspace_id.clone() else {
                 continue;
             };
+            let Some(root) = agent
+                .label(label::WORKTREE)
+                .and_then(|root| WorkspaceRoot::parse(root).ok())
+            else {
+                continue;
+            };
             // Both halves, exactly as `verify_seat_placement` asks them.
-            if self.verify_agent_location(&agent, &workspace_id).is_err() {
+            if self
+                .verify_agent_location(&agent, &workspace_id, &root)
+                .is_err()
+            {
                 continue;
             }
             let Ok(workspace) = self.fetch_workspace(&workspace_id).await else {
                 continue;
             };
             if self
-                .verify_workspace_placement(&workspace, &project)
+                .verify_workspace_placement(&workspace, &project, &root)
                 .is_err()
             {
                 continue;
@@ -3613,5 +4268,70 @@ impl PaseoAdapter {
             }
         }
         Ok(placements)
+    }
+}
+
+#[cfg(test)]
+mod task_scope_tests {
+    use super::*;
+
+    fn task(value: &str) -> TaskId {
+        TaskId::parse(value).expect("a canonical task id")
+    }
+
+    #[test]
+    fn one_epic_runtime_routes_each_task_to_its_own_worktree() {
+        let first = task("01a0074f-671a-7420-b395-163d160d9792");
+        let second = task("01a0074f-671d-7560-8a66-6a21972e78ae");
+        let mut scope = PaseoExecutionScope {
+            jira_epic_key: ExternalId::parse("ASMA-7869").expect("epic"),
+            mini_project_short_title: ExternalName::parse("Kontor Operational MVP").expect("title"),
+            plan_item_key: ExternalId::parse("OP-01").expect("plan item"),
+            jira_issue_key: ExternalId::parse("ASMA-7870").expect("ticket"),
+            ticket_short_code: ExternalId::parse("OP-01").expect("short code"),
+            seat_display_roles: BTreeMap::new(),
+            project_root_cwd: WorkspaceRoot::parse("/repo").expect("root"),
+            canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-01").expect("worktree"),
+            task_scopes: BTreeMap::new(),
+            orchestrator_agent_id: ExternalId::parse("orchestrator").expect("agent"),
+        };
+        scope.task_scopes.insert(
+            first,
+            PaseoTaskScope {
+                plan_item_key: ExternalId::parse("OP-01").expect("plan item"),
+                jira_issue_key: ExternalId::parse("ASMA-7870").expect("ticket"),
+                ticket_short_code: ExternalId::parse("OP-01").expect("short code"),
+                canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-01").expect("worktree"),
+            },
+        );
+        scope.task_scopes.insert(
+            second,
+            PaseoTaskScope {
+                plan_item_key: ExternalId::parse("OP-02").expect("plan item"),
+                jira_issue_key: ExternalId::parse("ASMA-7871").expect("ticket"),
+                ticket_short_code: ExternalId::parse("OP-02").expect("short code"),
+                canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-02").expect("worktree"),
+            },
+        );
+
+        assert_eq!(
+            scope
+                .task_scope(first)
+                .expect("first task")
+                .canonical_worktree_cwd,
+            WorkspaceRoot::parse("/repo/op-01").expect("worktree")
+        );
+        assert_eq!(
+            scope
+                .task_scope(second)
+                .expect("second task")
+                .canonical_worktree_cwd,
+            WorkspaceRoot::parse("/repo/op-02").expect("worktree")
+        );
+        assert!(
+            scope
+                .task_scope(task("01a0074f-6721-7333-b205-4d0108e157b0"))
+                .is_err()
+        );
     }
 }

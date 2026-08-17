@@ -1,0 +1,83 @@
+{
+  "native_sessions": [],
+  "native_sessions_reason": "empty: this section opens no runtime session. It never constructs a runtime binding, never dispatches a run and never touches a socket — the scripted in-process runtimes and the `tower::oneshot` daemon belong to the runtime and session sections",
+  "processes": [
+    {
+      "argv": [
+        "jira",
+        "sync",
+        "--request-json",
+        "-"
+      ],
+      "ended": "exit 0, reaped",
+      "kind": "/bin/sh script standing in for the `asma` executable",
+      "purpose": "jira observe without a principal",
+      "spawned_by": "AsmaExecutable::run_json -> tokio::process::Command (kill_on_drop)"
+    },
+    {
+      "argv": [
+        "jira",
+        "sync",
+        "--request-json",
+        "-"
+      ],
+      "ended": "exit 0, reaped",
+      "kind": "/bin/sh script standing in for the `asma` executable",
+      "purpose": "jira apply without confirmation",
+      "spawned_by": "AsmaExecutable::run_json -> tokio::process::Command (kill_on_drop)"
+    },
+    {
+      "argv": [
+        "jira",
+        "sync",
+        "--request-json",
+        "-"
+      ],
+      "ended": "exit 0, reaped",
+      "kind": "/bin/sh script standing in for the `asma` executable",
+      "purpose": "jira apply with confirmation",
+      "spawned_by": "AsmaExecutable::run_json -> tokio::process::Command (kill_on_drop)"
+    }
+  ],
+  "processes_retained": [],
+  "processes_retained_reason": "none: every child of this section is a one-shot `asma` double that is reaped by `Child::wait` inside `AsmaExecutable::run_json` before the call returns, and the handle is `kill_on_drop`",
+  "resolved_but_never_spawned": [
+    {
+      "purpose": "ownership refusals",
+      "reason": "`build_write_request` refuses at jira.rs:1082-1113, before `exchange` at jira.rs:1178 can spawn anything; `contract.rs:1012` asserts the same argv stays empty"
+    }
+  ],
+  "section": "domain",
+  "temp_directories": [
+    {
+      "owner": "tempfile::TempDir",
+      "purpose": "intake dedup store",
+      "removed": true
+    },
+    {
+      "owner": "tempfile::TempDir",
+      "purpose": "intake decisions store",
+      "removed": true
+    },
+    {
+      "owner": "tempfile::TempDir",
+      "purpose": "asma double: anonymous observe",
+      "removed": true
+    },
+    {
+      "owner": "tempfile::TempDir",
+      "purpose": "asma double: unconfirmed apply",
+      "removed": true
+    },
+    {
+      "owner": "tempfile::TempDir",
+      "purpose": "asma double: confirmed apply",
+      "removed": true
+    },
+    {
+      "owner": "tempfile::TempDir",
+      "purpose": "inbound comment store",
+      "removed": true
+    }
+  ]
+}

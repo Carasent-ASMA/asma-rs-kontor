@@ -85,6 +85,24 @@ pub enum RuntimeError {
     /// The runtime did not prove that the native session belongs to the run.
     #[error("native session is not correlated with the requested run")]
     CorrelationFailed,
+    /// The selected provider has no permission mode Kontor knows how to pin.
+    #[error("provider {provider} has no pinned runtime permission mode")]
+    PermissionModeUnsupported {
+        /// Provider whose mutable default was refused.
+        provider: String,
+    },
+    /// The runtime did not apply the permission mode Kontor selected.
+    #[error(
+        "runtime permission mode mismatch for {provider}: expected {expected:?}, found {found:?}"
+    )]
+    PermissionModeMismatch {
+        /// Provider whose mode was checked.
+        provider: String,
+        /// Mode Kontor pinned; `None` means this provider exposes no modes.
+        expected: Option<String>,
+        /// Mode the runtime read back.
+        found: Option<String>,
+    },
     /// The seat is already spoken for: it holds a live native session, or a
     /// reservation issued to someone else.
     ///
@@ -353,6 +371,44 @@ pub trait RuntimeAdapter: Send + Sync {
         &self,
         request: &WorkspacePrepareRequest,
     ) -> RuntimeResult<WorkspaceOutcome>;
+
+    /// Make one topology node's native container exist and be usable.
+    ///
+    /// This is the placement path every accepted production seat travels.
+    /// [`RuntimeAdapter::prepare_workspace`] above is the TeamRun-shaped
+    /// predecessor, kept only so the older contract fixtures still describe the
+    /// runtime they were written against.
+    ///
+    /// It is **idempotent per topology node**: preparing the same node again
+    /// returns the original binding and creates nothing. That is a stronger
+    /// promise than the workspace path's, and deliberately so — a node outlives
+    /// every TeamRun inside it, so a retry after a lost answer must find the
+    /// same container a week later, not a second one.
+    ///
+    /// An implementation dispatches on
+    /// [`crate::container::ContainerProjection`], never on the node's kind key:
+    /// the kind vocabulary belongs to the pinned specification revision, and an
+    /// adapter holding its own copy of it is an adapter no specification change
+    /// can correct.
+    ///
+    /// The default refuses. A runtime that cannot place a container must say so
+    /// rather than let a caller believe an unbound node was bound.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::UnsupportedCapability`] by default, and in an
+    /// implementation: [`RuntimeError::WorkspaceMismatch`] for a request whose
+    /// shape it cannot build or whose parent it cannot confirm, and
+    /// [`RuntimeError::CorrelationFailed`] when the container it read back does
+    /// not carry this node's label.
+    async fn prepare_container(
+        &self,
+        request: &crate::container::ContainerRequest,
+    ) -> RuntimeResult<crate::container::ContainerOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareProject,
+        })
+    }
 
     /// Decide, atomically, whether one seat may be filled — and say so once.
     ///

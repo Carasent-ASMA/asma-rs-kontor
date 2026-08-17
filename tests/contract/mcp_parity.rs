@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        61,
+        63,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        63,
+        65,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -526,6 +526,8 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // A bounded role turn is Kontor's own decision about its own work, so it
         // is an operator act like every other seat-driving one.
         ("kontor_turn_settle", CallerTier::Operator),
+        ("kontor_late_handoff_attest", CallerTier::Admin),
+        ("kontor_seat_replace", CallerTier::Admin),
         ("kontor_profile_packs_list", CallerTier::Observer),
         ("kontor_profile_pack_register", CallerTier::Admin),
         // KON-24: the context-window preview reads and changes nothing; the

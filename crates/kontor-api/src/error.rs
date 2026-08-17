@@ -64,6 +64,19 @@ closed_enum! {
         /// under the frozen template's own policy. Recording "could not" as an
         /// accounting source is exactly what this code exists to avoid.
         RoleSlotUnbound => "role_slot_unbound",
+        /// A durable handoff exists but its turn disposition has not yet been
+        /// recorded, so runtime settlement must not terminalize the run.
+        HandoffUnsettled => "handoff_unsettled",
+        /// The seat's placement in the session topology is not resolvable, so
+        /// nothing was started.
+        ///
+        /// Every case is a disagreement about *where* work belongs: no node for
+        /// the task, a node whose kind hosts no session, a parent with no bound
+        /// container, a working directory that is not the bound one, or a slot
+        /// that already holds a live seat. None of them is repaired here —
+        /// placing the seat anyway is how a team's roles end up split across two
+        /// containers, and the repair is a decision a human makes.
+        PlacementBlocked => "placement_blocked",
         /// A dependency could not be reached. A fact about the channel only.
         Unavailable => "unavailable",
         /// The addressed thing does not exist in this Realm.
@@ -94,13 +107,19 @@ impl ApiErrorCode {
             | Self::TimelineRefetchRequired => StatusCode::CONFLICT,
             // The request is well formed and understood; this runtime simply
             // cannot do it. That is not a server defect, so it is not a 5xx.
-            Self::UnsupportedCapability => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::UnsupportedCapability | Self::HandoffUnsettled => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             // The position the caller wants is genuinely gone.
             Self::ResnapshotRequired => StatusCode::GONE,
             // The request is well formed and the state it presented is current;
             // what is missing is an accounting the caller must supply or excuse.
             // Same reasoning as `UnsupportedCapability`: not a server defect.
             Self::RoleSlotUnbound => StatusCode::UNPROCESSABLE_ENTITY,
+            // Understood, well formed, and refused on the state of the world.
+            // A retry against a fresh revision never clears it; a placement
+            // decision does.
+            Self::PlacementBlocked => StatusCode::CONFLICT,
             // Nothing is wrong with the request or the state it presented, so a
             // 4xx that blames either would misdirect. "Too many requests" is
             // what a spent ceiling is, and it is the status a client already

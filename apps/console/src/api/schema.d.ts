@@ -264,6 +264,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reconcile one durable handoff after its run was cancelled by runtime observation. */
+        post: operations["attest_late_handoff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle": {
         parameters: {
             query?: never;
@@ -287,6 +304,23 @@ export interface paths {
          *     second observation is taken.
          */
         post: operations["settle_runtime"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replace one runtime-terminal unusable seat with a linked successor. */
+        post: operations["replace_seat"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1426,6 +1460,25 @@ export interface components {
             /** @description The tasks to arm. Empty arms the whole epic. */
             tasks?: string[];
         };
+        /** @description What the Admin-only late-handoff reconciliation is asked for. */
+        AttestLateHandoffRequest: {
+            /** @description Valid artifact keys proving the bounded handoff. */
+            artifacts: string[];
+            /**
+             * Format: int64
+             * @description The immutable native binding generation recorded by the run.
+             */
+            binding_generation: number;
+            /**
+             * Format: int64
+             * @description The task revision the handoff was produced against.
+             */
+            expected_task_revision: number;
+            /** @description The handoff digest carried by the run's durable compaction receipt. */
+            handoff_hash: string;
+            /** @description The role slot whose completed handoff is being reconciled. */
+            role_slot: string;
+        };
         /** @description One arming decision, as the projection reports it. */
         AuthorizationProjectionDto: {
             /**
@@ -2038,6 +2091,42 @@ export interface components {
             /** @description The trigger that decided, at the revision it decided under. */
             trigger: components["schemas"]["RevisionRefDto"];
         };
+        /** @description One immutable late-handoff disposition recorded after runtime cancellation. */
+        LateHandoffAttestationDto: {
+            /** @description The terminal run whose handoff was reconciled. */
+            agent_run_id: string;
+            /** @description Whether this call created or replayed the evidence row. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The artifacts recorded on the disposition. */
+            artifacts: string[];
+            /** @description The Admin tier proven by the caller credential. */
+            attested_by: string;
+            /**
+             * Format: int64
+             * @description The immutable binding generation.
+             */
+            binding_generation: number;
+            /** @description The durable compaction receipt that carried the handoff. */
+            compaction_receipt_id: string;
+            /** @description Normal follow-ups derived from the recorded handoff. */
+            follow_ups: components["schemas"]["TurnFollowUpDto"][];
+            /** @description The attested handoff digest. */
+            handoff_hash: string;
+            /** @description The Realm it was recorded in. */
+            realm_id: string;
+            /** @description The reconciled role slot. */
+            role_slot: string;
+            /** @description Always false; the operation never reopens or restores the native seat. */
+            seat_live: boolean;
+            /** @description The task it served. */
+            task_id: string;
+            /** @description The team run if this disposition completed its closure proof. */
+            team_run_closed?: string | null;
+            /** @description Always `cancelled`; the attestation cannot change the runtime verdict. */
+            terminal_outcome: string;
+            /** @description The immutable turn evidence row. */
+            turn_id: string;
+        };
         /**
          * @description The closed set of lifecycle transitions a Lead may ask for.
          *
@@ -2457,6 +2546,42 @@ export interface components {
         RegisterPackRequest: {
             /** @description The pack document. Validated in full before anything is stored. */
             pack: Record<string, never>;
+        };
+        /** @description What the Admin-only unusable-seat replacement is asked for. */
+        ReplaceSeatRequest: {
+            /**
+             * Format: int64
+             * @description The immutable binding generation of the terminal predecessor.
+             */
+            binding_generation: number;
+            /**
+             * Format: int64
+             * @description The task revision the replacement is reconciled against.
+             */
+            expected_task_revision: number;
+            /** @description The role slot whose terminal attempt is being replaced. */
+            role_slot: string;
+        };
+        /** @description One linked successor created for an unusable persistent seat. */
+        ReplacedSeatDto: {
+            /** @description Whether this call created the successor or replayed it. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The successor's new native identity. */
+            native_id: string;
+            /** @description The terminal predecessor; it remains immutable. */
+            predecessor_agent_run_id: string;
+            /** @description The Realm it was created in. */
+            realm_id: string;
+            /** @description The role slot retained by the successor. */
+            role_slot: string;
+            /** @description The successor's runtime family. */
+            runtime_kind: string;
+            /** @description The linked successor run. */
+            successor_agent_run_id: string;
+            /** @description The task whose team owns the seat. */
+            task_id: string;
+            /** @description The preserved team run. */
+            team_run_id: string;
         };
         /** @description What `ticket:resolve-conflict` is asked for. */
         ResolveConflictRequest: {
@@ -3851,6 +3976,70 @@ export interface operations {
             };
         };
     };
+    attest_late_handoff: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The terminal agent run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttestLateHandoffRequest"];
+            };
+        };
+        responses: {
+            /** @description Attested, or replayed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LateHandoffAttestationDto"];
+                };
+            };
+            /** @description Invalid artifact key or handoff digest */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The task, binding, terminal state, or disposition moved */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     settle_runtime: {
         parameters: {
             query?: never;
@@ -3911,6 +4100,77 @@ export interface operations {
             };
             /** @description The runtime could not be reached */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    replace_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The terminal predecessor run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceSeatRequest"];
+            };
+        };
+        responses: {
+            /** @description Created, or replayed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplacedSeatDto"];
+                };
+            };
+            /** @description Invalid role slot */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The task, binding, run, team, or successor lineage moved */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The predecessor is not runtime-terminal and unusable */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5761,7 +6021,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description An unsafe trigger, a missing handoff, or a runtime that cannot compact */
+            /** @description An unsafe trigger or a missing handoff */
             422: {
                 headers: {
                     [name: string]: unknown;

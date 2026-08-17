@@ -46,9 +46,9 @@ use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
 use kontor_runtime::observation::{ReconciliationAction, ReconciliationFinding};
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchParts, LaunchRequest,
-    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
-    SendMessageRequest,
+    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchParts, LaunchPlacement,
+    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
+    ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::timeline::{HistoryCursor, TimelineBreak, TimelinePosition};
 use kontor_runtime::workspace::{
@@ -59,6 +59,12 @@ use kontor_tests_contract::{
     drain_history, reconciliation_contract, session_content_contract, text,
 };
 
+use kontor_core::id::{ContentHash, TopologyNodeId};
+use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
+use kontor_core::state::NativeRuntimeIdentity;
+use kontor_runtime::container::{
+    ContainerBinding, ContainerBindingId, ContainerProjection, ContainerRequest,
+};
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,
     PaseoDelivery, PaseoExecutionScope, PaseoProjectOutcome, PaseoSlotPlan,
@@ -293,6 +299,7 @@ fn scope() -> PaseoExecutionScope {
         // project registered from the worktree would be one project per task.
         project_root_cwd: WorkspaceRoot::parse("/w/epic").expect("absolute"),
         canonical_worktree_cwd: root(),
+        task_scopes: BTreeMap::new(),
         orchestrator_agent_id: external(ORCHESTRATOR),
     }
 }
@@ -304,6 +311,7 @@ fn config() -> PaseoConfig {
         mini_project_id: external(MINI_PROJECT),
         scope: scope(),
         max_concurrent_sessions: 8,
+        adopted_containers: BTreeMap::new(),
     }
 }
 
@@ -331,6 +339,7 @@ fn any_agent_run() -> PaseoCommand {
         ORCHESTRATOR,
         "p",
     )
+    .expect("the fixture provider has a pinned permission mode")
 }
 
 /// A daemon scripted for the whole happy path: create the workspace, launch one
@@ -438,7 +447,7 @@ impl Plane {
             role_slot_id: slot_id.clone(),
             task_id: task(),
             binding_id,
-            workspace: Some(workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(workspace.clone())),
             cwd: root(),
             account_profile_id: None,
             prompt: text("bootstrap the role"),
@@ -1086,6 +1095,28 @@ async fn prelaunch_refuses_a_route_the_readback_did_not_apply() {
 }
 
 #[tokio::test]
+async fn prelaunch_refuses_a_permission_mode_the_readback_did_not_apply() {
+    let recorded = daemon();
+    let mut wrong = v(AGENT);
+    wrong["agent"]["currentModeId"] = serde_json::json!("default");
+    recorded.set_answer_rpc("fetch_agent_request", wrong);
+    let (plane, workspace) = Plane::prepared(recorded).await;
+
+    let error = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect_err("Paseo must apply the pinned permission mode");
+    assert_eq!(
+        error,
+        RuntimeError::PermissionModeMismatch {
+            provider: "claude".to_owned(),
+            expected: Some("auto".to_owned()),
+            found: Some("default".to_owned()),
+        }
+    );
+}
+
+#[tokio::test]
 async fn prelaunch_refuses_an_effort_the_readback_did_not_apply() {
     let recorded = daemon();
     let mut wrong = v(AGENT);
@@ -1182,7 +1213,7 @@ async fn role_slot_a_same_slot_race_yields_one_permit_and_one_agent() {
             role_slot_id: slot("implement-a"),
             task_id: task(),
             binding_id: RuntimeBindingId::generate(),
-            workspace: Some(workspace),
+            placement: Some(LaunchPlacement::Workspace(workspace)),
             cwd: root(),
             account_profile_id: None,
             prompt: text("bootstrap"),
@@ -1227,6 +1258,24 @@ async fn lost_launch_ack_binds_the_one_correlated_agent_without_a_second_run() {
         plane.daemon.count("agent run"),
         1,
         "recovery is a census, never a second launch"
+    );
+}
+
+#[tokio::test]
+async fn lost_launch_ack_retry_adopts_the_exact_existing_agent_without_relaunching() {
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+    let (plane, workspace) = Plane::prepared(recorded).await;
+
+    let outcome = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the exact agent from the lost acknowledgement is adopted");
+    assert_eq!(outcome.snapshot.identity().native_id.as_str(), AGENT_ID);
+    assert_eq!(
+        plane.daemon.count("agent run"),
+        0,
+        "retry adoption must not create a second agent"
     );
 }
 
@@ -1577,6 +1626,44 @@ async fn freshness_only_a_fresh_archived_readback_is_terminal_evidence() {
         Some(TerminalOutcome::Cancelled)
     );
     assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 1);
+}
+
+#[tokio::test]
+async fn continuity_an_archived_binding_restores_for_terminal_inspection() {
+    let (_, binding) = launched().await;
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_ARCHIVED_ONLY));
+    // Paseo 0.3.1's fetch-one response can omit the archive stamp even though
+    // its include-archived directory returns it. The archive-aware directory
+    // must win for terminal inspection.
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT));
+    let (restarted, _) = Plane::prepared(recorded).await;
+
+    assert_eq!(
+        restarted
+            .adapter
+            .restore_bindings(std::slice::from_ref(&binding))
+            .await
+            .expect("an archived binding remains inspectable after restart"),
+        vec![binding.clone()]
+    );
+    let observed = restarted
+        .adapter
+        .inspect(&InspectRequest {
+            binding: binding.clone(),
+            requested_at: at("2026-08-10T09:32:00Z"),
+        })
+        .await
+        .expect("the restored archived seat is inspected by exact identity");
+    assert_eq!(
+        observed.native_sequence,
+        u64::try_from(at("2026-08-10T09:32:00Z").as_microsecond()).unwrap(),
+        "each point-in-time read has a distinct control sequence"
+    );
+    assert_eq!(
+        closes(&restarted.adapter, &observed, &binding).await,
+        Some(TerminalOutcome::Cancelled)
+    );
 }
 
 #[tokio::test]
@@ -3325,4 +3412,435 @@ async fn a_required_policy_cannot_be_frozen_for_a_seat_this_daemon_runs() {
         refused,
         kontor_core::DomainError::MissingEvidence { .. }
     ));
+}
+
+// ---------------------------------------------------------------------------
+// OP-02 · container projection
+// ---------------------------------------------------------------------------
+
+const NODE_A: &str = "01890000-0000-7000-8000-0000000000b1";
+const NODE_B: &str = "01890000-0000-7000-8000-0000000000b2";
+const WORKSPACE_LIST_NODE: &str = fixture!("protocol/workspace-list-node.json");
+const WORKSPACE_LIST_OTHER_NODE: &str = fixture!("protocol/workspace-list-other-node.json");
+const WORKSPACE_NODE_OTHER_PROJECT: &str = fixture!("protocol/workspace-node-other-project.json");
+
+fn node(text: &str) -> TopologyNodeId {
+    TopologyNodeId::parse(text).expect("a canonical node id")
+}
+
+fn topology() -> TopologySnapshot {
+    TopologySnapshot {
+        spec_id: kontor_core::id::TopologySpecId::generate(),
+        version: kontor_core::id::SpecVersion::FIRST,
+        canonical_hash: ContentHash::parse(&"b".repeat(64)).expect("a canonical hash"),
+    }
+}
+
+/// The bound epic project every child below is placed in.
+fn bound_root(node_id: TopologyNodeId) -> ContainerBinding {
+    ContainerBinding {
+        id: ContainerBindingId::generate(),
+        topology_node_id: node_id,
+        projection: ContainerProjection::NativeRoot,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("a runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(PROJECT_ID),
+        },
+        root: None,
+        bound_at: at("2026-08-16T09:00:00Z"),
+    }
+}
+
+fn child_request(node_id: TopologyNodeId, parent: Option<ContainerBinding>) -> ContainerRequest {
+    ContainerRequest {
+        container_binding_id: ContainerBindingId::generate(),
+        topology_node_id: node_id,
+        topology: topology(),
+        capabilities: vec![
+            NodeProjectionCapability::NativeChild,
+            NodeProjectionCapability::SessionHost,
+        ],
+        display_name: name("TSW · ASMA-7755 · KON-11"),
+        parent,
+        cwd: Some(WorkspaceRoot::parse(CWD).expect("an absolute path")),
+        bound_native_id: None,
+        task_id: None,
+        team_run_id: None,
+        requested_at: at("2026-08-16T09:05:00Z"),
+    }
+}
+
+/// A container is addressed by the node that owns it, and the label Paseo
+/// reports back is that node's — not the team run's.
+#[tokio::test]
+async fn a_container_is_keyed_by_topology_node_and_not_by_team_run() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let node_id = node(NODE_A);
+
+    let outcome = plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the child container is prepared");
+
+    assert!(outcome.created, "an empty project had nothing to adopt");
+    assert_eq!(outcome.snapshot.topology_node_id(), node_id);
+    assert_eq!(
+        outcome.snapshot.correlation.label.topology_node_id(),
+        node_id,
+        "the correlation Paseo reported names the node, not a run"
+    );
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
+    );
+
+    // A second preparation of the same node is answered from the ledger and
+    // never reaches the wire.
+    let before = plane.daemon.mutations().len();
+    let again = plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the same node is idempotent");
+    assert!(!again.created);
+    assert_eq!(plane.daemon.mutations().len(), before);
+}
+
+/// A lost acknowledgement must not leave two containers behind.
+///
+/// The create reached Paseo and the answer did not come back. On the retry the
+/// workspace is already there carrying this node's label, so it is adopted
+/// rather than made a second time — which is the whole reason correlation is by
+/// label and not by name.
+#[tokio::test]
+async fn a_lost_acknowledgement_adopts_the_container_it_already_made() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE))
+        .losing_acknowledgement(&any_workspace_create());
+    let plane = Plane::fresh(recorded);
+    let node_id = node(NODE_A);
+
+    plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect_err("the acknowledgement never arrived");
+
+    let creates = plane
+        .daemon
+        .count(PaseoCommand::workspace_create(CWD, PROJECT_ID, "t").route());
+    let outcome = plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the retry finds the container it already made");
+
+    assert!(
+        !outcome.created,
+        "the container existed; a second one must not be created"
+    );
+    assert_eq!(
+        plane
+            .daemon
+            .count(PaseoCommand::workspace_create(CWD, PROJECT_ID, "t").route()),
+        creates,
+        "the retry issued no second create"
+    );
+}
+
+/// A restart loses the adapter's ledger and not the container.
+///
+/// The way back is the id Kontor persisted. Nothing is created, and nothing is
+/// searched for by name.
+#[tokio::test]
+async fn a_restart_reconciles_by_the_stored_native_id() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+
+    let mut request = child_request(node(NODE_A), Some(bound_root(node(NODE_B))));
+    request.bound_native_id = Some(external(WORKSPACE_ID));
+    let outcome = plane
+        .adapter
+        .prepare_container(&request)
+        .await
+        .expect("the stored container is re-attested");
+
+    assert!(!outcome.created);
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "re-attesting a binding changes nothing: {:?}",
+        plane.daemon.mutations()
+    );
+}
+
+/// A stored container that now reports another node's label is a collision.
+#[tokio::test]
+async fn a_stored_container_reporting_another_nodes_label_is_refused() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_OTHER_NODE));
+    let plane = Plane::fresh(recorded);
+
+    let mut request = child_request(node(NODE_A), Some(bound_root(node(NODE_B))));
+    request.bound_native_id = Some(external(WORKSPACE_ID));
+    let refusal = plane
+        .adapter
+        .prepare_container(&request)
+        .await
+        .expect_err("the container belongs to another node");
+    assert_eq!(refusal, RuntimeError::CorrelationFailed);
+}
+
+/// A container already carrying another node's label is never adopted, however
+/// exactly its path and name match.
+#[tokio::test]
+async fn a_container_owned_by_another_node_is_never_adopted() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        // The census shows a workspace at exactly this path and title — owned by
+        // another node. The readback after the create shows ours.
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_OTHER_NODE))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+
+    let outcome = plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("this node gets its own container");
+    assert!(
+        outcome.created,
+        "another node's container is not this node's to take"
+    );
+}
+
+/// A workspace carrying no Kontor node label is somebody else's work.
+///
+/// The team-run label the older contract planted is exactly that: it names a
+/// run, not a place, so a node must not read it as its own prior effect.
+#[tokio::test]
+async fn an_unlabelled_child_is_foreign_and_unmanaged() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        // WORKSPACE_LIST_ONE carries a `kontor-team-` label.
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_ONE))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+
+    let outcome = plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the foreign workspace is left alone");
+    assert!(
+        outcome.created,
+        "a team-run label is not a node label and must not be adopted"
+    );
+    assert!(
+        !plane
+            .daemon
+            .mutations()
+            .iter()
+            .any(|call| call.contains("archive") || call.contains("rename")),
+        "an unmanaged child is never renamed or archived: {:?}",
+        plane.daemon.mutations()
+    );
+}
+
+/// A child with no bound parent stops, and never falls back to a project of its
+/// own.
+#[tokio::test]
+async fn a_child_without_its_parent_binding_never_falls_back_to_a_new_project() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST));
+    let plane = Plane::fresh(recorded);
+
+    let refusal = plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), None))
+        .await
+        .expect_err("a child whose root is missing has nowhere to be");
+    assert_eq!(
+        refusal,
+        RuntimeError::WorkspaceMismatch {
+            rule: "a native_child requires the exact native parent binding"
+        }
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "nothing is created when the parent binding is absent: {:?}",
+        plane.daemon.mutations()
+    );
+}
+
+/// A configured root is adopted by exact readback, and never registered again.
+#[tokio::test]
+async fn a_configured_root_is_adopted_by_exact_id_and_never_created() {
+    let mut configured = config();
+    let root_node = node(NODE_B);
+    configured
+        .adopted_containers
+        .insert(root_node, external(PROJECT_ID));
+    let recorded = Arc::new(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST)),
+    );
+    let adapter = PaseoAdapter::new(
+        configured,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("the plane builds");
+
+    let outcome = adapter
+        .prepare_container(&ContainerRequest {
+            container_binding_id: ContainerBindingId::generate(),
+            topology_node_id: root_node,
+            topology: topology(),
+            capabilities: vec![NodeProjectionCapability::NativeRoot],
+            display_name: name("Epic · ASMA-7871"),
+            parent: None,
+            cwd: Some(WorkspaceRoot::parse("/w/epic").expect("an absolute path")),
+            bound_native_id: None,
+            task_id: None,
+            team_run_id: None,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        })
+        .await
+        .expect("the configured project is adopted");
+
+    assert!(!outcome.created, "an adopted root is not registered again");
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        PROJECT_ID
+    );
+    assert!(
+        recorded.mutations().is_empty(),
+        "adoption is a readback and nothing else: {:?}",
+        recorded.mutations()
+    );
+}
+
+/// The shape comes from the pinned capabilities, and an undeclared one produces
+/// no native effect at all.
+#[tokio::test]
+async fn an_undeclared_capability_reaches_no_paseo_surface() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO_DEGRADED))
+        .answering_rpc("project.list.request", v(PROJECT_LIST));
+    let plane = Plane::fresh(recorded);
+
+    let refusal = plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect_err("a degraded daemon prepares nothing");
+    assert!(
+        matches!(
+            refusal,
+            RuntimeError::UnsupportedCapability { .. } | RuntimeError::InsufficientTrust { .. }
+        ),
+        "{refusal:?}"
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "an undeclared capability produces no effect: {:?}",
+        plane.daemon.mutations()
+    );
+}
+
+/// A `logical_only` node has no native container, and asking for one is a
+/// refusal rather than an empty success.
+#[tokio::test]
+async fn a_logical_only_node_is_never_given_a_native_container() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST));
+    let plane = Plane::fresh(recorded);
+
+    let mut request = child_request(node(NODE_A), None);
+    request.capabilities = vec![NodeProjectionCapability::LogicalOnly];
+    request.cwd = None;
+    let refusal = plane
+        .adapter
+        .prepare_container(&request)
+        .await
+        .expect_err("a logical node has nothing to place");
+    assert_eq!(
+        refusal,
+        RuntimeError::WorkspaceMismatch {
+            rule: "a logical_only node has no native container to prepare"
+        }
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// A container that landed in a project other than the bound parent is refused.
+///
+/// This is the rule the request validator cannot enforce: the parent binding is
+/// present and correct, and Paseo still put the workspace somewhere else. The
+/// create's own answer omits `projectId`, so only the readback can catch it —
+/// accepting it would place a node's work in a project nobody is watching.
+#[tokio::test]
+async fn a_container_created_outside_the_bound_parent_is_refused() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        // The readback: our label, another project.
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_NODE_OTHER_PROJECT));
+    let plane = Plane::fresh(recorded);
+
+    let refusal = plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect_err("a container in another project is not this node's place");
+    assert!(
+        matches!(refusal, RuntimeError::CorrelationFailed)
+            || matches!(refusal, RuntimeError::WorkspaceMismatch { .. }),
+        "{refusal:?}"
+    );
+    assert!(
+        plane.adapter.container_binding(node(NODE_A)).is_none(),
+        "a refused placement leaves no binding behind"
+    );
 }

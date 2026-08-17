@@ -37,12 +37,18 @@ use std::sync::Arc;
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{AgentRunId, CanonicalDocument, ProjectId, TaskId};
-use kontor_core::repository::{
-    NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunRepository,
-    WorkflowRepository,
+use kontor_core::id::{
+    AgentRunId, CanonicalDocument, ContentHash, MiniProjectId, ProjectId, TaskId, TeamRunId,
+    TopologyNodeId,
 };
-use kontor_core::state::{Freshness, ObservedRunState, RuntimeContact};
+use kontor_core::repository::{
+    NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunClosure,
+    RunRepository, TopologyRepository, WorkflowRepository,
+};
+use kontor_core::state::{
+    Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
+    TerminalOutcome,
+};
 use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
@@ -2294,6 +2300,19 @@ async fn arming_disarming_and_planning_are_scoped_authority_decisions() {
         "reason": "Bootstrap the epic"
     });
 
+    // Axum's default JSON extractor answers malformed bodies as plain text.
+    // This route is an MCP contract, so even schema rejection stays typed JSON.
+    let malformed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({"expected_revision": epic_revision, "budget": {}}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("arm-malformed")
+    .send(&world)
+    .await;
+    assert_eq!(malformed.status, 400, "{}", malformed.body);
+    assert_eq!(malformed.code(), "invalid_request");
+
     // Arming is admin authority: an operator credential does not reach it.
     let refused = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
@@ -2326,6 +2345,21 @@ async fn arming_disarming_and_planning_are_scoped_authority_decisions() {
             .len(),
         1,
         "arming names exactly the scope it was asked for"
+    );
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &arm_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("arm-admin")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["authorization_id"],
+        armed.json()["authorization_id"],
+        "the same key replays the original grant"
     );
 
     // The planner explains itself, and writes nothing while doing it.
@@ -2748,6 +2782,43 @@ async fn starting_a_named_plan_creates_one_seat_through_admission_and_reuses_it_
     .await;
     assert_eq!(stale.status, 409, "{}", stale.body);
 
+    // The admission commits before the runtime is called. A workspace failure
+    // therefore leaves one durable TeamRun with an unbound first seat.
+    world.fake.verifying_placement_at(
+        kontor_runtime::workspace::WorkspaceRoot::parse("/tmp/another-worktree")
+            .expect("a valid root"),
+    );
+    let failed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("start-run")
+    .send(&world)
+    .await;
+    assert_eq!(failed.status, 200, "{}", failed.body);
+    assert_eq!(
+        failed.json()["blocked"][0]["code"],
+        "unsupported_capability"
+    );
+    let after_failure = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        after_failure.json()["tasks"][0]["team_runs"]
+            .as_array()
+            .expect("runs")
+            .len(),
+        1,
+        "the failed native call preserves exactly one durable admission"
+    );
+
+    // The same scheduler command resumes that admission. A fresh plan would
+    // reject it as already in flight, so recovery must use the stored decision.
+    world.fake.verifying_placement_at(
+        kontor_runtime::workspace::WorkspaceRoot::parse("/w/started-epic/0").expect("a valid root"),
+    );
     let started = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
         &serde_json::json!({"plan_hash": plan_hash}),
@@ -4304,6 +4375,29 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
     .await;
     assert_eq!(closed.status, 200, "{}", closed.body);
     assert_eq!(closed.json()["state"], "closed");
+
+    // Closing the epic closes its control plane. That release is what every
+    // delivery seat of this epic reads its orphanhood from, so it is asserted
+    // here on the real close path rather than assumed.
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&seed.epic).expect("an epic id");
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    world.daemon.state().with_store(|store| {
+        let control = store
+            .list_topology_nodes(project_id, Some(epic_id))
+            .expect("the epic's nodes read")
+            .into_iter()
+            .find(|node| node.kind == domain.delivery.control_kind)
+            .expect("admission opened the epic's control plane");
+        let seats = store
+            .list_seat_bindings(project_id, control.id)
+            .expect("the control seats read");
+        assert!(!seats.is_empty(), "the epic had a control seat to close");
+        assert!(
+            seats.iter().all(|seat| seat.released_at.is_some()),
+            "closing the epic released its control seat"
+        );
+    });
 }
 
 #[tokio::test]
@@ -5708,6 +5802,510 @@ async fn a_seat_is_prepared_at_the_worktree_the_task_declares() {
     );
 }
 
+/// A delivery seat whose owning control seat closed is concluded orphaned, and
+/// an orphaned seat cannot hold the task's progress.
+///
+/// The whole point of `parent_seat_binding_id`: orphanhood is a fact about the
+/// *owner's* row, so it is derived rather than recorded. Admission opens one
+/// control seat per epic and every delivery seat of that epic names it, which is
+/// what makes closing the owner conclude all of them at once.
+///
+/// The owner is closed here through the same store observation the production
+/// close path makes (`Services::release_epic_control_seat`);
+/// `settlement_closes_the_team_and_unlocks_the_whole_epic_close_out` proves that
+/// path actually runs on `close_epic`.
+#[tokio::test]
+async fn a_delivery_seat_whose_owner_closed_is_orphaned_and_holds_no_progress() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "orphan").await;
+    let seated = seats.as_array().expect("the seated roster");
+    assert!(!seated.is_empty(), "the start produced seats: {seats}");
+    let task = seated[0]["task_id"].as_str().expect("a task id").to_owned();
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+
+    let (node_id, owner_id) = world.daemon.state().with_store(|store| {
+        let node = store
+            .get_task_topology_node(project_id, task_id)
+            .expect("the node reads")
+            .expect("admission placed the task on a node");
+        let control = store
+            .list_topology_nodes(project_id, Some(epic_id))
+            .expect("the epic's nodes read")
+            .into_iter()
+            .find(|it| it.kind == domain.delivery.control_kind)
+            .expect("admission opened the epic's control plane");
+        let owners: Vec<_> = store
+            .list_seat_bindings(project_id, control.id)
+            .expect("the control seats read");
+        let owner = owners.first().expect("one control seat owns this epic");
+
+        // Every delivery seat names that exact owner. `None` here is the defect
+        // this test exists for: a seat with no owner is a root, and a root is
+        // never orphaned however dead its epic is.
+        let delivery = store
+            .list_seat_bindings(project_id, node.id)
+            .expect("the delivery seats read");
+        assert!(
+            !delivery.is_empty(),
+            "admission recorded the delivery seats it started"
+        );
+        for seat in &delivery {
+            assert_eq!(
+                seat.parent_seat_binding_id,
+                Some(owner.id),
+                "delivery seat `{}` names the epic's control seat as its owner",
+                seat.role_slot_id.as_str()
+            );
+        }
+        (node.id, owner.id)
+    });
+
+    // While the owner is open, the seats are attached and the task's progress
+    // stands on them.
+    let now = kontor_api::now();
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .list_seat_attachments(project_id, node_id, now)
+            .expect("the attachments read")
+    });
+    assert!(
+        before
+            .iter()
+            .all(|seat| *seat == kontor_core::state::SeatAttachment::Attached),
+        "a launched seat is attached: {before:?}"
+    );
+    assert!(
+        kontor_core::state::certify_task_progress(
+            kontor_core::state::RunLifecycle::Running,
+            &before
+        )
+        .is_ok(),
+        "an attached seat holds progress"
+    );
+
+    // Close the owner. Nothing about the delivery seats is rewritten.
+    world.daemon.state().with_store(|store| {
+        store
+            .observe_seat_binding(
+                project_id,
+                owner_id,
+                &kontor_core::repository::SeatLivenessObservation {
+                    released_at: Some(now),
+                    ..kontor_core::repository::SeatLivenessObservation::default()
+                },
+                now,
+            )
+            .expect("the owner is released");
+    });
+
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .list_seat_attachments(project_id, node_id, now)
+            .expect("the attachments read")
+    });
+    assert!(
+        after
+            .iter()
+            .all(|seat| *seat == kontor_core::state::SeatAttachment::Orphaned),
+        "every seat of a closed owner is orphaned: {after:?}"
+    );
+    assert!(
+        kontor_core::state::certify_task_progress(
+            kontor_core::state::RunLifecycle::Running,
+            &after
+        )
+        .is_err(),
+        "an orphaned seat is not progress"
+    );
+}
+
+/// A project that never selected a topology is given one, not excused from one.
+///
+/// This is the claim that replaced the old `Ok(None)` escape. Admission used to
+/// answer "this project runs no Operational topology, so there is nothing to
+/// place against" and fall back to a TeamRun-keyed task workspace. It now seeds
+/// the project's revision and creates the node chain instead, so the worry the
+/// escape answered — that an unconfigured project becomes unrunnable — is
+/// answered without a second way to place a production seat.
+///
+/// Both halves are asserted: nothing is configured before the start, and after
+/// it the seat is live *and* the topology exists to explain where it is.
+#[tokio::test]
+async fn a_project_with_no_topology_is_seeded_one_rather_than_placed_outside_it() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project(&world, "seeded", "Kontor", "/tmp/kontor-seeded").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("seeded-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Unconfigured epic",
+            &category,
+            serde_json::json!([{"title": "Unconfigured task", "worktree": "/w/seeded"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("seeded-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+
+    // Nothing about a topology exists yet. This is the state the removed escape
+    // was written for.
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .get_project_topology_default(project_id)
+                .expect("the default reads")
+                .is_none(),
+            "the project has selected no topology revision"
+        );
+        assert!(
+            store
+                .get_task_topology_node(project_id, task_id)
+                .expect("the node reads")
+                .is_none(),
+            "the task has no node to be placed on"
+        );
+    });
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Run an unconfigured project"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("seeded-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("seeded-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert!(
+        !started.json()["started"]
+            .as_array()
+            .expect("seats")
+            .is_empty(),
+        "an unconfigured project still runs its work: {}",
+        started.body
+    );
+
+    // And it ran *inside* the topology rather than beside it: the revision is
+    // selected, the task has a node of the seeded delivery kind, and that node
+    // holds the native container the seat was placed in.
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .get_project_topology_default(project_id)
+                .expect("the default reads")
+                .is_some(),
+            "admission selected a topology revision for the project"
+        );
+        let node = store
+            .get_task_topology_node(project_id, task_id)
+            .expect("the node reads")
+            .expect("admission created the task's node");
+        assert_eq!(node.kind, domain.delivery.task_kind);
+        assert!(
+            node.parent_id.is_some(),
+            "the task's node hangs below its epic"
+        );
+        assert!(
+            store
+                .get_topology_node_container(project_id, node.id)
+                .expect("the container reads")
+                .is_some(),
+            "the node holds the native container the seat was placed in"
+        );
+    });
+
+    // The seat was placed by node, not by team run: the runtime was asked to
+    // prepare containers and never a task workspace.
+    let calls = world.fake.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+        "admission prepared the node's container"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareWorkspace(_))),
+        "no accepted seat falls back to a TeamRun-keyed workspace"
+    );
+}
+
+/// A task whose node cannot host sessions is refused before any native effect.
+///
+/// The refusal has to be reachable to be worth anything. Admission resolves the
+/// task's node from the session topology, so seeding that task a node of a kind
+/// the pinned specification declares *without* `session_host` is exactly the
+/// disagreement `placement_blocked` exists to report — and reporting it is the
+/// whole difference between a seat that never starts and a seat that starts in
+/// a place nothing declared it could run.
+///
+/// The node is seeded directly rather than through admission on purpose:
+/// admission's own writer only ever creates the delivery kind, so nothing it
+/// produces could reach this branch.
+#[tokio::test]
+async fn a_task_placed_on_a_node_that_hosts_no_session_is_refused_before_anything_starts() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project(&world, "nohost", "Kontor", "/tmp/kontor-nohost").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("nohost-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Unhostable epic",
+            &category,
+            serde_json::json!([{"title": "Unhostable task", "worktree": "/w/nohost"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("nohost-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // Seed the task a node of a kind that materializes as a native root and
+    // hosts nothing. Admission will find it before it creates one of its own.
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    let topology_spec = domain.topology_specs.first().expect("a topology").clone();
+    let stamp = kontor_core::spec::Shareability::default_for(
+        kontor_core::spec::ShareabilityTier::ProjectKnowledge,
+    )
+    .expect("a default stamp");
+    let at = kontor_api::now();
+    world.daemon.state().with_store(|store| {
+        let canonical_hash = store
+            .publish_topology_spec(project_id, &topology_spec, &stamp, at)
+            .expect("the topology publishes");
+        let topology = kontor_core::spec::TopologySnapshot {
+            spec_id: topology_spec.spec_id,
+            version: topology_spec.version,
+            canonical_hash,
+        };
+        store
+            .set_project_topology_default(&kontor_core::repository::ProjectTopologyDefault {
+                project_id,
+                topology: topology.clone(),
+                selected_at: at,
+            })
+            .expect("the project default is selected");
+        store
+            .pin_mini_project_topology(&kontor_core::repository::MiniProjectTopologySnapshot {
+                project_id,
+                mini_project_id: epic_id,
+                topology: topology.clone(),
+                pinned_at: at,
+            })
+            .expect("the epic is pinned");
+        let root = store
+            .create_topology_node(&kontor_core::repository::NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: None,
+                topology: topology.clone(),
+                kind: topology_spec.root_kind.clone(),
+                parent_id: None,
+                task_id: None,
+                created_at: at,
+            })
+            .expect("the project root is created");
+        store
+            .create_topology_node(&kontor_core::repository::NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology,
+                // The epic kind: a native root that hosts no seats.
+                kind: domain.delivery.epic_kind.clone(),
+                parent_id: Some(root.id),
+                task_id: Some(task_id),
+                created_at: at,
+            })
+            .expect("the unhostable node is created");
+    });
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Try to place the unplaceable"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("nohost-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("nohost-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert!(
+        started.json()["started"]
+            .as_array()
+            .expect("seats")
+            .is_empty(),
+        "nothing may start on a node that hosts no session: {}",
+        started.body
+    );
+    assert_eq!(
+        started.json()["blocked"][0]["code"],
+        serde_json::json!("placement_blocked"),
+        "{}",
+        started.body
+    );
+    assert_eq!(
+        started.json()["blocked"][0]["evidence"][0]["rule"],
+        serde_json::json!("the task's node kind does not host sessions"),
+        "{}",
+        started.body
+    );
+
+    // Nothing was dispatched: the refusal is decided from Kontor's own rows, so
+    // the runtime was never asked to build anything for this task.
+    assert!(
+        !world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+        "a blocked placement reaches no native surface"
+    );
+}
+
 /// The other half of BLK-003: a task nobody placed is refused rather than placed
 /// at a guess, and a task placed somewhere the runtime will not work reports what
 /// actually happened instead of a bare "the runtime refused the operation" —
@@ -6506,6 +7104,426 @@ async fn seated_turns(
     (project, epic, account, seats)
 }
 
+#[tokio::test]
+async fn a_runtime_cancelled_run_accepts_one_guarded_late_handoff_without_reopening() {
+    let world = World::open_with(capabilities_without(&[RuntimeCapability::Compact])).await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (run_id, snapshot) = world.launch().await;
+    let handoff_hash = ContentHash::of(b"late handoff");
+    let policy = kontor_core::spec::ContextPolicySnapshot::standard(
+        &kontor_core::spec::ContextWindowBounds::unknown(),
+        false,
+        kontor_core::id::SCHEMA_VERSION,
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("best effort freezes against an incapable runtime");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_run_context_policy(world.project, run_id, &policy)
+            .expect("the launch policy is durable");
+    });
+
+    let compacted = Call::post(
+        format!("/v1/sessions/{run_id}/compact"),
+        &serde_json::json!({
+            "trigger": "scope_boundary",
+            "context_pack_hash": ContentHash::of(b"context pack").as_str(),
+            "handoff_hash": handoff_hash.as_str(),
+            "active_tool": false,
+            "unresolved_permission": false,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(kontor_core::id::CompactionReceiptId::generate().to_string())
+    .send(&world)
+    .await;
+    assert_eq!(compacted.status, 200, "{}", compacted.body);
+    assert_eq!(compacted.json()["value"]["status"], "not_enforced");
+
+    finish_natively(&world, &run_id.to_string()).await;
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run_id}/runtime:settle",
+            world.project
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("late-handoff-runtime-settle")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    assert_eq!(refused.code(), "handoff_unsettled");
+
+    // Reconstruct the already-observed historical failure: the runtime
+    // cancellation is durable before this new operator surface is called.
+    let payload = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "observed_state": "cancelled",
+        "contact": "reachable",
+        "native_sequence": 1,
+        "observed_at": "2026-08-10T09:10:00Z"
+    }))
+    .expect("control metadata");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let projection = world.daemon.state().with_store(|store| {
+        store
+            .record_observation(&NewObservation {
+                event: NewRuntimeEvent {
+                    project_id: world.project,
+                    agent_run_id: run_id,
+                    identity: snapshot.identity().clone(),
+                    native_event_id: None,
+                    native_sequence: 1,
+                    payload: payload.clone(),
+                    observed_at: at("2026-08-10T09:10:00Z"),
+                },
+                observed: ObservedRunState::Cancelled,
+                contact: RuntimeContact::Reachable,
+                freshness: Freshness::Fresh,
+                expected_revision: run.revision,
+            })
+            .expect("the cancellation observation is durable")
+    });
+    let cursor = projection
+        .last_cursor
+        .expect("the observation has a cursor");
+    let observed = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    world.daemon.state().with_store(|store| {
+        store
+            .close_agent_run(&RunClosure {
+                project_id: world.project,
+                agent_run_id: run_id,
+                expected_revision: observed.revision,
+                evidence: TerminalEvidence {
+                    outcome: TerminalOutcome::Cancelled,
+                    source: TerminalEvidenceSource::RuntimeObservation { cursor },
+                    evidence_hash: payload.hash().clone(),
+                    closed_at: at("2026-08-10T09:11:00Z"),
+                },
+            })
+            .expect("the run is runtime-terminal")
+    });
+    world
+        .daemon
+        .state()
+        .sessions()
+        .forget(snapshot.binding_id());
+
+    let task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(world.project, world.task)
+            .expect("the task reads")
+            .expect("the task exists")
+    });
+    let body = serde_json::json!({
+        "role_slot": "harness-seat",
+        "expected_task_revision": task.revision.get(),
+        "binding_generation": snapshot.identity().generation,
+        "handoff_hash": handoff_hash.as_str(),
+        "artifacts": ["handoff-sha256-deadbeef", "wip-unverified"]
+    });
+    let attested = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run_id}/handoffs:attest-late",
+            world.project
+        ),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("late-handoff-attestation")
+    .send(&world)
+    .await;
+    assert_eq!(attested.status, 200, "{}", attested.body);
+    assert_eq!(attested.json()["terminal_outcome"], "cancelled");
+    assert_eq!(attested.json()["seat_live"], false);
+    assert_eq!(attested.json()["applied"], "created");
+
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    assert_eq!(
+        after.terminal.expect("the run stays terminal").outcome,
+        TerminalOutcome::Cancelled
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(snapshot.binding_id())
+            .is_none()
+    );
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_settled_turns(world.project, world.task))
+            .expect("the disposition reads")
+            .len(),
+        1
+    );
+
+    let replayed = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run_id}/handoffs:attest-late",
+            world.project
+        ),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("late-handoff-attestation")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+
+    let duplicate = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run_id}/handoffs:attest-late",
+            world.project
+        ),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("late-handoff-second-disposition")
+    .send(&world)
+    .await;
+    assert_eq!(duplicate.status, 409, "{}", duplicate.body);
+}
+
+#[tokio::test]
+async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "replace-seat").await;
+    let seat = seats.as_array().expect("the seated roster")[1].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let team_run = seat["team_run_id"].as_str().expect("the team run");
+
+    finish_natively(&world, predecessor).await;
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-seat-runtime-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["observed"], "cancelled");
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("a canonical run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let old_binding = before.binding.as_ref().expect("the predecessor was bound");
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": task_revision,
+        "binding_generation": old_binding.identity.generation,
+    });
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-seat-successor")
+    .send(&world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    assert_eq!(replaced.json()["applied"], "created");
+    assert_eq!(replaced.json()["team_run_id"], team_run);
+
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the successor id"),
+    )
+    .expect("a canonical successor id");
+    let successor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor_id)
+            .expect("the successor reads")
+            .expect("the successor exists")
+    });
+    assert_eq!(successor.parent_agent_run_id, Some(predecessor_id));
+    assert_eq!(successor.team_run_id.to_string(), team_run);
+    let successor_binding = successor.binding.expect("the successor is bound");
+    assert_ne!(successor_binding.id, old_binding.id);
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(old_binding.id)
+            .is_none()
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(successor_binding.id)
+            .is_some()
+    );
+
+    let replay = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-seat-successor")
+    .send(&world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    assert_eq!(
+        replay.json()["successor_agent_run_id"],
+        successor_id.to_string()
+    );
+
+    let retry_seat = seats.as_array().expect("the seated roster")[2].clone();
+    let retry_predecessor = retry_seat["agent_run_id"]
+        .as_str()
+        .expect("the retry run id");
+    let retry_role_slot = retry_seat["role_slot"]
+        .as_str()
+        .expect("the retry role slot");
+    finish_natively(&world, retry_predecessor).await;
+    let retry_settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{retry_predecessor}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-seat-retry-runtime-settle")
+    .send(&world)
+    .await;
+    assert_eq!(retry_settled.status, 200, "{}", retry_settled.body);
+
+    let retry_predecessor_id =
+        AgentRunId::parse(retry_predecessor).expect("a canonical retry predecessor id");
+    let retry_before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, retry_predecessor_id)
+            .expect("the retry predecessor reads")
+            .expect("the retry predecessor exists")
+    });
+    let retry_body = serde_json::json!({
+        "role_slot": retry_role_slot,
+        "expected_task_revision": task_revision,
+        "binding_generation": retry_before
+            .binding
+            .as_ref()
+            .expect("the retry predecessor was bound")
+            .identity
+            .generation,
+    });
+    // The first native call a replacement makes is the container chain above the
+    // seat, so that is where a channel failure lands now.
+    world.script(r#"{"steps":[{"step":"transport_failure","operation":"prepare_project"}]}"#);
+    let failed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{retry_predecessor}/successors:replace"),
+        &retry_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-seat-successor-retry")
+    .send(&world)
+    .await;
+    assert_eq!(failed.status, 503, "{}", failed.body);
+
+    let team_run_id = TeamRunId::parse(team_run).expect("a canonical team run id");
+    let recorded = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, team_run_id)
+            .expect("the team members read")
+            .into_iter()
+            .map(|seat| {
+                store
+                    .get_agent_run(project_id, seat.agent_run_id)
+                    .expect("the member reads")
+                    .expect("the member exists")
+            })
+            .find(|run| run.parent_agent_run_id == Some(retry_predecessor_id))
+            .expect("the failed launch recorded one successor")
+    });
+    assert!(recorded.binding.is_none());
+
+    // A process restart loses the runtime adapter's in-memory seat ledger. The
+    // archived predecessor is then genuinely absent, so replacement falls back
+    // from the stale citation to a vacant-seat admission.
+    world.fake.rebuild_adapter_state();
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{retry_predecessor}/successors:replace"),
+        &retry_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-seat-successor-retry")
+    .send(&world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["applied"], "unchanged");
+    assert_eq!(
+        recovered.json()["successor_agent_run_id"],
+        recorded.id.to_string()
+    );
+    let recovered_members = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, team_run_id)
+            .expect("the recovered team members read")
+            .into_iter()
+            .map(|seat| {
+                store
+                    .get_agent_run(project_id, seat.agent_run_id)
+                    .expect("the recovered member reads")
+                    .expect("the recovered member exists")
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        recovered_members
+            .iter()
+            .filter(|run| run.parent_agent_run_id == Some(retry_predecessor_id))
+            .count(),
+        1
+    );
+    assert!(
+        recovered_members
+            .iter()
+            .find(|run| run.id == recorded.id)
+            .expect("the same successor remains")
+            .binding
+            .is_some()
+    );
+}
+
 /// BLK-009. A bounded Kontor role turn settles on Kontor's own authority, and
 /// the seat it was taken in stays live: settling a turn is not a claim that the
 /// runtime ended anything, and the persistent Paseo session is expected to still
@@ -6528,6 +7546,25 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     let revision = projection.json()["tasks"][0]["revision"]
         .as_u64()
         .expect("a revision");
+
+    let invalid_artifact = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "artifacts": ["report:_docs/context.md"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-live-invalid-artifact")
+    .send(&world)
+    .await;
+    assert_eq!(invalid_artifact.status, 400, "{}", invalid_artifact.body);
+    assert_eq!(invalid_artifact.code(), "invalid_request");
+    assert_eq!(
+        invalid_artifact.json()["rule"],
+        "artifact keys may contain only lowercase ASCII letters, digits, '.', '_' and '-'"
+    );
 
     let settled = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),

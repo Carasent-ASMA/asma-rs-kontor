@@ -107,6 +107,8 @@ closed_enum! {
         /// *asking*, and what comes back is the runtime's answer. A kind that
         /// carried an outcome would be an operator declaring one.
         SettleRuntime => "settle_runtime",
+        /// Replace one runtime-terminal persistent seat with its linked successor.
+        ReplaceSeat => "replace_seat",
         /// Bring a provider-account profile into existence, or prove the one
         /// with that label matches.
         ///
@@ -340,6 +342,7 @@ impl CommandKind {
             // `run_intent`: those carry a desired state, and asking a runtime what
             // is already true desires nothing.
             Self::SettleRuntime => witness(matches!(target, A::AgentRun)),
+            Self::ReplaceSeat => witness(matches!(target, A::TeamRun)),
         }
     }
 

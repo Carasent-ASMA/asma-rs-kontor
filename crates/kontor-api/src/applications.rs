@@ -39,6 +39,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::Json;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use kontor_core::id::{
@@ -51,7 +52,7 @@ use utoipa::ToSchema;
 use crate::Caller;
 use crate::auth::CallerCapability;
 use crate::control::{idempotency_key, parse_id};
-use crate::error::ApiError;
+use crate::error::{ApiError, ApiErrorCode};
 use crate::state::ApiState;
 
 // ---------------------------------------------------------------------------
@@ -1259,6 +1260,34 @@ pub struct SettleTurnRequest {
     pub artifacts: Vec<String>,
 }
 
+/// What the Admin-only late-handoff reconciliation is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct AttestLateHandoffRequest {
+    /// The role slot whose completed handoff is being reconciled.
+    pub role_slot: String,
+    /// The task revision the handoff was produced against.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// The immutable native binding generation recorded by the run.
+    pub binding_generation: u64,
+    /// The handoff digest carried by the run's durable compaction receipt.
+    pub handoff_hash: String,
+    /// Valid artifact keys proving the bounded handoff.
+    pub artifacts: Vec<String>,
+}
+
+/// What the Admin-only unusable-seat replacement is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct ReplaceSeatRequest {
+    /// The role slot whose terminal attempt is being replaced.
+    pub role_slot: String,
+    /// The task revision the replacement is reconciled against.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// The immutable binding generation of the terminal predecessor.
+    pub binding_generation: u64,
+}
+
 /// One follow-up a settled turn derived.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TurnFollowUpDto {
@@ -1371,6 +1400,68 @@ pub struct SettledTurnDto {
     pub team_run_closed: Option<String>,
     /// The follow-ups this settlement derived, in slot order.
     pub follow_ups: Vec<TurnFollowUpDto>,
+}
+
+/// One immutable late-handoff disposition recorded after runtime cancellation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct LateHandoffAttestationDto {
+    /// The Realm it was recorded in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The immutable turn evidence row.
+    pub turn_id: String,
+    /// The task it served.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The terminal run whose handoff was reconciled.
+    pub agent_run_id: String,
+    /// The reconciled role slot.
+    pub role_slot: String,
+    /// The immutable binding generation.
+    pub binding_generation: u64,
+    /// The durable compaction receipt that carried the handoff.
+    pub compaction_receipt_id: String,
+    /// The attested handoff digest.
+    pub handoff_hash: String,
+    /// The artifacts recorded on the disposition.
+    pub artifacts: Vec<String>,
+    /// Always `cancelled`; the attestation cannot change the runtime verdict.
+    pub terminal_outcome: String,
+    /// Always false; the operation never reopens or restores the native seat.
+    pub seat_live: bool,
+    /// Whether this call created or replayed the evidence row.
+    pub applied: AppliedDto,
+    /// The Admin tier proven by the caller credential.
+    pub attested_by: String,
+    /// The team run if this disposition completed its closure proof.
+    pub team_run_closed: Option<String>,
+    /// Normal follow-ups derived from the recorded handoff.
+    pub follow_ups: Vec<TurnFollowUpDto>,
+}
+
+/// One linked successor created for an unusable persistent seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ReplacedSeatDto {
+    /// The Realm it was created in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task whose team owns the seat.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The preserved team run.
+    pub team_run_id: String,
+    /// The terminal predecessor; it remains immutable.
+    pub predecessor_agent_run_id: String,
+    /// The linked successor run.
+    pub successor_agent_run_id: String,
+    /// The role slot retained by the successor.
+    pub role_slot: String,
+    /// The successor's runtime family.
+    pub runtime_kind: String,
+    /// The successor's new native identity.
+    pub native_id: String,
+    /// Whether this call created the successor or replayed it.
+    pub applied: AppliedDto,
 }
 
 // ---------------------------------------------------------------------------
@@ -1848,6 +1939,25 @@ pub trait ApplicationOperations: Send + Sync {
         request: &SettleTurnRequest,
     ) -> Result<SettledTurnDto, ApiError>;
 
+    /// Record a bounded handoff after runtime cancellation without reopening.
+    async fn attest_late_handoff(
+        &self,
+        key: &IdempotencyKey,
+        authority: CallerCapability,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &AttestLateHandoffRequest,
+    ) -> Result<LateHandoffAttestationDto, ApiError>;
+
+    /// Replace one runtime-terminal unusable seat with a linked successor.
+    async fn replace_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &ReplaceSeatRequest,
+    ) -> Result<ReplacedSeatDto, ApiError>;
+
     /// Settle one run against a fresh reading of its runtime.
     async fn settle_runtime(
         &self,
@@ -2205,9 +2315,15 @@ pub async fn arm(
     caller: Caller,
     Path((project_id, epic_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(request): Json<ArmRequest>,
+    request: Result<Json<ArmRequest>, JsonRejection>,
 ) -> Result<Json<AuthorizationProjectionDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
+    let Json(request) = request.map_err(|_| {
+        state.refuse(
+            ApiErrorCode::InvalidRequest,
+            "execution:arm requires a JSON body matching the documented budget contract",
+        )
+    })?;
     let (project_id, epic_id, key) = scope(&state, &project_id, &epic_id, &headers)?;
     Ok(Json(
         state
@@ -2681,6 +2797,81 @@ pub async fn settle_turn(
         state
             .applications()
             .settle_turn(&key, caller.0, project_id, agent_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Reconcile one durable handoff after its run was cancelled by runtime observation.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The terminal agent run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = AttestLateHandoffRequest,
+    responses(
+        (status = 200, body = LateHandoffAttestationDto, description = "Attested, or replayed"),
+        (status = 400, description = "Invalid artifact key or handoff digest"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The task, binding, terminal state, or disposition moved")
+    )
+)]
+pub async fn attest_late_handoff(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AttestLateHandoffRequest>,
+) -> Result<Json<LateHandoffAttestationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .attest_late_handoff(&key, caller.0, project_id, agent_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Replace one runtime-terminal unusable seat with a linked successor.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The terminal predecessor run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ReplaceSeatRequest,
+    responses(
+        (status = 200, body = ReplacedSeatDto, description = "Created, or replayed"),
+        (status = 400, description = "Invalid role slot"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The task, binding, run, team, or successor lineage moved"),
+        (status = 422, description = "The predecessor is not runtime-terminal and unusable")
+    )
+)]
+pub async fn replace_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ReplaceSeatRequest>,
+) -> Result<Json<ReplacedSeatDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .replace_seat(&key, project_id, agent_run_id, &request)
             .await?,
     ))
 }
