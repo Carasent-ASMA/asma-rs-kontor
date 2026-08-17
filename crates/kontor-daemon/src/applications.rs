@@ -58,10 +58,10 @@ use kontor_api::applications::{
     SettleConsultationRequest,
 };
 use kontor_api::applications::{
-    AppliedTopologyUpgradeDto, DesiredBindingDto, PinnedSpecDto, SemanticTopologyRequest,
-    SemanticTopologyTargetDto, TopologyMutationDto, TopologyNodeDto, TopologyNodeRequest,
-    TopologyProjectionDto, TopologyUpgradeApplyRequest, TopologyUpgradePreviewDto,
-    TopologyUpgradePreviewRequest,
+    AppliedTopologyUpgradeDto, CodeHelpEntryDto, DesiredBindingDto, PinnedSpecDto,
+    SemanticTopologyRequest, SemanticTopologyTargetDto, ShareabilityDto, TopologyMutationDto,
+    TopologyNodeDto, TopologyNodeRequest, TopologyProjectionDto, TopologyUpgradeApplyRequest,
+    TopologyUpgradeEffectDto, TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
 };
 use kontor_api::applications::{
     AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
@@ -90,9 +90,9 @@ use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
     ExecutionAuthorizationId, ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId,
-    MiniProjectId, ModuleKey, Money, ProjectId, QuickSessionId, RoleCatalogId, RoleSlotId,
-    RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId, SpecVersion,
-    StatusConflictId, TaskId, TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId,
+    MiniProjectId, ModuleKey, Money, ProjectId, QuickSessionId, RoleCatalogId, RoleCode,
+    RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId,
+    SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId,
     TopologySpecId, TriggerKey,
 };
 use kontor_core::realm::ReceiptEnvelope;
@@ -108,9 +108,10 @@ use kontor_core::repository::{
     TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
-    AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, ContextEnforcement, ContextPolicySnapshot,
-    EffectiveContextPolicy, IntakeReceipt, IntakeResult, ModelRung, NodeProjectionCapability,
-    RequestedContextPolicy, Shareability, ShareabilityTier, SourceIdentity, SourceProcessingState,
+    AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
+    ContextPolicySnapshot, EffectiveContextPolicy, IntakeReceipt, IntakeResult, ModelRung,
+    NodeProjectionCapability, ProjectSessionTopologySpec, RequestedContextPolicy,
+    RoleCatalogRevision, Shareability, ShareabilityTier, SourceIdentity, SourceProcessingState,
     TeamRunSnapshot, TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
@@ -1845,6 +1846,337 @@ impl Services {
         })
     }
 
+    /// Judge one candidate specification document, and hash exactly what was
+    /// judged.
+    ///
+    /// The violations come from `ProjectSessionTopologySpec::validate`, which is
+    /// the domain's own rule set. It refuses at the first rule it finds broken,
+    /// so this list holds at most one entry — and that is deliberate: a second,
+    /// more thorough validator here would be a competing source of truth about
+    /// what a valid vocabulary is, and the two would eventually disagree at
+    /// exactly the moment a publication depended on it.
+    fn judge_candidate(
+        &self,
+        candidate: &serde_json::Value,
+    ) -> Result<(Vec<String>, ContentHash), ApiError> {
+        let Ok(spec) = serde_json::from_value::<ProjectSessionTopologySpec>(candidate.clone())
+        else {
+            return Ok((
+                vec!["is not a topology specification document".to_owned()],
+                self.intent(candidate)?.hash().clone(),
+            ));
+        };
+        let hash = self.candidate_hash(&spec)?;
+        let mut violations = Vec::new();
+        if let Err(error) = spec.validate() {
+            violations.push(error.to_string());
+        }
+        Ok((violations, hash))
+    }
+
+    /// The canonical identity of one candidate specification.
+    ///
+    /// Hashed from the *parsed document*, never from the bytes a caller sent.
+    /// A specification has optional fields — an empty `historical_codes` is
+    /// omitted, not written as an empty list — so the same revision has more
+    /// than one JSON spelling, and hashing the spelling would give a draft, a
+    /// verdict and the stored revision three different identities for one
+    /// document. The store already hashes the parsed form, so this is the same
+    /// rule stated once rather than a second one that agrees by luck.
+    ///
+    /// Deliberately not `canonicalize`, which validates first: a draft of an
+    /// incomplete vocabulary still has an identity, and refusing to name it
+    /// would make the verdict impossible to ask for.
+    fn candidate_hash(&self, spec: &ProjectSessionTopologySpec) -> Result<ContentHash, ApiError> {
+        Ok(CanonicalDocument::from_serializable(spec)
+            .map_err(|error| self.refuse_domain(&error))?
+            .hash()
+            .clone())
+    }
+
+    /// One catalog revision, as this Realm can answer for it.
+    ///
+    /// The store first, because a published revision is what the Realm's own
+    /// seats are recorded against. The bundled document is the fallback for the
+    /// exact same identity and version, and only that: a catalog revision is a
+    /// property of the build rather than of a project, so a fresh Realm that has
+    /// not yet published one can still answer what its own codes mean. Nothing
+    /// is invented — a revision this build does not ship is simply not found.
+    fn catalog_revision(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> Result<RoleCatalogRevision, ApiError> {
+        let state = self.state()?;
+        if let Some(published) = state
+            .with_store(|store| store.get_role_catalog(catalog_id, version))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Ok(published);
+        }
+        self.domain
+            .role_catalogs
+            .iter()
+            .find(|catalog| catalog.catalog_id == catalog_id && catalog.version == version)
+            .cloned()
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such role catalog revision exists in this realm",
+                )
+            })
+    }
+
+    /// The catalog revision this build publishes.
+    fn published_catalog(&self) -> Result<RoleCatalogRevision, ApiError> {
+        let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "this build ships no role catalog",
+            )
+        })?;
+        self.catalog_revision(catalog.catalog_id, catalog.version)
+    }
+
+    /// One epic's current pin.
+    fn epic_pin(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<TopologySnapshot, ApiError> {
+        let state = self.state()?;
+        Ok(state
+            .with_store(|store| store.get_mini_project_topology(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this epic is not pinned to a topology revision yet",
+                )
+            })?
+            .topology)
+    }
+
+    /// What moving one epic's pin to `target` would do.
+    ///
+    /// Every effect is derived from what is stored: the kinds the target no
+    /// longer declares and the nodes standing on them, the kinds it adds, and
+    /// the seats and native containers that would be left citing a vocabulary
+    /// their node's kind has left. Nothing here writes, and nothing is inferred
+    /// from the *desired* shape — a node's own recorded kind is what is judged.
+    fn upgrade_effects(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        target: &RevisionRefDto,
+    ) -> Result<
+        (
+            TopologySnapshot,
+            TopologySnapshot,
+            Vec<TopologyUpgradeEffectDto>,
+        ),
+        ApiError,
+    > {
+        let state = self.state()?;
+        let current = self.epic_pin(project_id, epic_id)?;
+        let target_id =
+            TopologySpecId::parse(&target.id).map_err(|error| self.refuse_domain(&error))?;
+        let target_spec = state
+            .with_store(|store| store.get_topology_spec(project_id, target_id, target.version))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the target revision is not published in this project",
+                )
+            })?;
+        let current_spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, current.spec_id, current.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the revision this epic is pinned to is not published in this project",
+                )
+            })?;
+        let target_snapshot = TopologySnapshot {
+            spec_id: target_spec.spec_id,
+            version: target_spec.version,
+            canonical_hash: target_spec
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?
+                .hash()
+                .clone(),
+        };
+        if target_snapshot == current {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the epic is already pinned to that revision",
+            ));
+        }
+
+        let declared: BTreeSet<&TopologyKindKey> = target_spec
+            .node_kinds
+            .iter()
+            .map(|kind| &kind.kind)
+            .collect();
+        let held: BTreeSet<&TopologyKindKey> = current_spec
+            .node_kinds
+            .iter()
+            .map(|kind| &kind.kind)
+            .collect();
+
+        let mut effects = Vec::new();
+        for kind in held.difference(&declared) {
+            effects.push(TopologyUpgradeEffectDto {
+                subject: "kind".to_owned(),
+                topology_node_id: None,
+                effect: "withdrawn".to_owned(),
+                detail: self.detail(&format!("`{kind}` is no longer a declared node kind"))?,
+            });
+        }
+        for kind in declared.difference(&held) {
+            effects.push(TopologyUpgradeEffectDto {
+                subject: "kind".to_owned(),
+                topology_node_id: None,
+                effect: "introduced".to_owned(),
+                detail: self.detail(&format!("`{kind}` becomes available to place"))?,
+            });
+        }
+
+        for node in state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if declared.contains(&node.kind) {
+                continue;
+            }
+            effects.push(TopologyUpgradeEffectDto {
+                subject: "node".to_owned(),
+                topology_node_id: Some(node.id),
+                effect: "orphaned".to_owned(),
+                detail: self.detail(&format!(
+                    "this node stands on `{}`, which the target does not declare",
+                    node.kind
+                ))?,
+            });
+            let seats = state
+                .with_store(|store| store.list_seat_bindings(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?;
+            if seats
+                .iter()
+                .any(kontor_core::state::SeatBinding::is_non_terminal)
+            {
+                effects.push(TopologyUpgradeEffectDto {
+                    subject: "seat".to_owned(),
+                    topology_node_id: Some(node.id),
+                    effect: "stranded".to_owned(),
+                    detail: self.detail("the node still hosts a live seat")?,
+                });
+            }
+            if state
+                .with_store(|store| store.get_topology_node_container(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?
+                .is_some()
+            {
+                effects.push(TopologyUpgradeEffectDto {
+                    subject: "container".to_owned(),
+                    topology_node_id: Some(node.id),
+                    effect: "stranded".to_owned(),
+                    detail: self.detail("the node still holds a native container binding")?,
+                });
+            }
+        }
+
+        // Sorted so two runs over the same Realm produce the same list, which is
+        // what makes the preview hash mean anything at all.
+        effects.sort_by(|left, right| {
+            (
+                &left.subject,
+                left.topology_node_id.map(|id| id.to_string()),
+                &left.effect,
+                &left.detail,
+            )
+                .cmp(&(
+                    &right.subject,
+                    right.topology_node_id.map(|id| id.to_string()),
+                    &right.effect,
+                    &right.detail,
+                ))
+        });
+        Ok((current, target_snapshot, effects))
+    }
+
+    /// The digest an apply must name to prove it saw this preview.
+    fn upgrade_hash(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        current: &TopologySnapshot,
+        target: &TopologySnapshot,
+        effects: &[TopologyUpgradeEffectDto],
+    ) -> Result<ContentHash, ApiError> {
+        self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "topology_upgrade_preview",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "current": current.canonical_hash.as_str(),
+            "target": target.canonical_hash.as_str(),
+            "effects": effects
+                .iter()
+                .map(|effect| {
+                    serde_json::json!({
+                        "subject": effect.subject,
+                        "node": effect.topology_node_id.map(|id| id.to_string()),
+                        "effect": effect.effect,
+                        "detail": effect.detail,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    /// Which published revision produces `preview_hash` for this epic.
+    ///
+    /// The apply names its preview by digest and never by target, so the server
+    /// searches its own published revisions for the one that still produces
+    /// exactly those effects. A hash that matches none of them is a preview the
+    /// Realm has moved past — refused rather than re-derived, because the caller
+    /// authorized the effects it saw and not whatever replaced them.
+    fn target_of_preview(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        preview_hash: &ContentHash,
+    ) -> Result<TopologySnapshot, ApiError> {
+        let state = self.state()?;
+        let published = state
+            .with_store(|store| store.list_topology_specs(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        for candidate in published {
+            let reference = RevisionRefDto {
+                id: candidate.spec_id.to_string(),
+                version: candidate.version,
+            };
+            let Ok((current, target, effects)) =
+                self.upgrade_effects(project_id, epic_id, &reference)
+            else {
+                continue;
+            };
+            if &self.upgrade_hash(project_id, epic_id, &current, &target, &effects)? == preview_hash
+            {
+                return Ok(target);
+            }
+        }
+        Err(self.deny(
+            ApiErrorCode::RevisionConflict,
+            "no published revision still produces the preview this apply names",
+        ))
+    }
+
     /// One semantic scope, resolved to the chain of nodes that realizes it.
     ///
     /// This is where the semantic boundary is actually enforced. A caller names
@@ -2350,6 +2682,16 @@ impl Services {
             .map_err(|error| self.refuse(&error))?
             .newest
             .cursor)
+    }
+
+    /// One bounded line a human can read.
+    ///
+    /// Every effect line is server-authored and short by construction, so the
+    /// bound is a type-level fact rather than a length check anyone has to
+    /// remember; a line this build made too long is a refusal here rather than a
+    /// truncation nobody sees.
+    fn detail(&self, text: &str) -> Result<BoundedText, ApiError> {
+        BoundedText::parse(text).map_err(|error| self.refuse_domain(&error))
     }
 
     /// The hash an apply must name to prove it saw this preview.
@@ -3271,6 +3613,40 @@ fn capacity_config(ceilings: &CapacityCeilingsDto) -> CapacityConfig {
     }
 }
 
+/// One catalog entry, as a reference projection reports it.
+fn role_entry_dto(entry: &kontor_core::spec::RoleCatalogEntry) -> RoleCatalogEntryDto {
+    RoleCatalogEntryDto {
+        role_code: entry.role_code.clone(),
+        standard_title: entry.standard_title.clone(),
+        segment: entry.segment,
+        responsibility_summary: entry.responsibility_summary.clone(),
+        lifecycle: entry.lifecycle,
+        capability_defaults: entry
+            .capability_defaults
+            .iter()
+            .map(|skill| skill.as_str().to_owned())
+            .collect(),
+    }
+}
+
+/// How one durable record was classified for leaving Kontor.
+fn shareability_dto(stamp: &Shareability) -> ShareabilityDto {
+    ShareabilityDto {
+        class: stamp.class,
+        classifier: stamp.classifier.clone(),
+        provenance: stamp.provenance,
+    }
+}
+
+/// One pinned specification reference.
+fn pinned_spec_dto(snapshot: &TopologySnapshot) -> PinnedSpecDto {
+    PinnedSpecDto {
+        id: snapshot.spec_id,
+        version: snapshot.version,
+        canonical_hash: snapshot.canonical_hash.clone(),
+    }
+}
+
 const fn applied_dto(applied: Applied) -> AppliedDto {
     match applied {
         Applied::Created => AppliedDto::Created,
@@ -3802,100 +4178,398 @@ impl ApplicationOperations for Services {
 
     // -- Topology specification, catalog and reference ----------------------
     //
-    // The contract is fixed here so the registry, the generated clients and the
-    // authority rules are one decision rather than one per successor. The
-    // behaviour lands with the services that own it; until then every one of
-    // these refuses before any effect. A typed refusal is the honest answer: an
-    // empty projection would be indistinguishable from a project that really has
-    // no topology, which is exactly the lie that makes a missing service look
-    // like a working one.
+    // The Admin tier's defining Operational power: deciding which node kinds may
+    // ever exist in a project, and what every controlled code means. These read
+    // and write the OP-01 documents — `ProjectSessionTopologySpec` and
+    // `RoleCatalogRevision` — and nothing here keeps a second dictionary. A code
+    // this server cannot explain stays visibly unknown rather than being guessed,
+    // because a client that had to keep its own glossary would eventually
+    // disagree with the server about what its own state means.
 
     fn draft_topology_spec(
         &self,
-        _project_id: ProjectId,
-        _request: &DraftTopologySpecRequest,
+        project_id: ProjectId,
+        request: &DraftTopologySpecRequest,
     ) -> Result<TopologySpecCandidateDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the topology-specification builder is not composed in this build",
-        ))
+        let state = self.state()?;
+        // A draft edits a lineage or starts one. Editing means the *next*
+        // version of the named revision, which the server derives — a caller
+        // that could choose the version could publish over a revision something
+        // is already pinned to.
+        let (spec_id, version) = match &request.base {
+            Some(base) => {
+                let spec_id =
+                    TopologySpecId::parse(&base.id).map_err(|error| self.refuse_domain(&error))?;
+                let published = state
+                    .with_store(|store| store.get_topology_spec(project_id, spec_id, base.version))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::NotFound,
+                            "the base revision is not published in this project",
+                        )
+                    })?;
+                (
+                    spec_id,
+                    published
+                        .version
+                        .next()
+                        .map_err(|error| self.refuse_domain(&error))?,
+                )
+            }
+            None => (TopologySpecId::generate(), SpecVersion::FIRST),
+        };
+
+        // Assembled by the server, from the parts a caller is allowed to state.
+        // The identity, the version and the schema generation are not among
+        // them, which is what makes a draft impossible to aim at an existing
+        // revision.
+        let candidate = serde_json::json!({
+            "schema_version": SCHEMA_VERSION.get(),
+            "spec_id": spec_id.to_string(),
+            "version": version.get(),
+            "name": request.name.as_str(),
+            "root_kind": request.root_kind.as_str(),
+            "node_kinds": request.node_kinds,
+            "historical_codes": request.historical_codes,
+        });
+        // Returned in the exact shape a specification has, so the bytes a
+        // caller round-trips through validate and publish are the bytes that
+        // get stored. Not validated: judging it is its own operation and its
+        // own answer, and a draft that refused an incomplete vocabulary would
+        // be useless for the one thing a draft is for.
+        let (candidate, hash) =
+            match serde_json::from_value::<ProjectSessionTopologySpec>(candidate.clone()) {
+                Ok(spec) => (
+                    serde_json::to_value(&spec).map_err(|_| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the candidate could not be served",
+                        )
+                    })?,
+                    self.candidate_hash(&spec)?,
+                ),
+                // A vocabulary this build cannot even parse is still a draft. It
+                // carries the identity of the bytes it is, and validation is
+                // where a caller learns it is not a specification.
+                Err(_) => {
+                    let document = self.intent(&candidate)?;
+                    (candidate, document.hash().clone())
+                }
+            };
+        Ok(TopologySpecCandidateDto {
+            realm_id: state.realm_id(),
+            candidate,
+            candidate_hash: hash,
+        })
     }
 
     fn validate_topology_spec(
         &self,
         _project_id: ProjectId,
-        _request: &ValidateTopologySpecRequest,
+        request: &ValidateTopologySpecRequest,
     ) -> Result<TopologySpecValidationDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the topology-specification validator is not composed in this build",
-        ))
+        let state = self.state()?;
+        // Judged against the rules alone. Whether the revision it names is
+        // already published is a fact about this project rather than about the
+        // candidate, and publication answers it with the conflict it is.
+        let (violations, hash) = self.judge_candidate(&request.candidate)?;
+        Ok(TopologySpecValidationDto {
+            realm_id: state.realm_id(),
+            violations,
+            validation_hash: hash,
+        })
     }
 
     async fn publish_topology_spec(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _request: &PublishTopologySpecRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublishTopologySpecRequest,
     ) -> Result<PublishedTopologySpecDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "topology-specification publication is not composed in this build",
-        ))
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let project = self.project_at(project_id, request.expected_revision)?;
+
+        // Revalidated, not trusted. The hash proves the caller is publishing the
+        // document it had judged; it does not prove the verdict still stands,
+        // because the rules live in this build and not in the hash.
+        let (violations, hash) = self.judge_candidate(&request.candidate)?;
+        if hash != request.validation_hash {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the candidate is not the document the validation answered about",
+            ));
+        }
+        let spec: ProjectSessionTopologySpec = serde_json::from_value(request.candidate.clone())
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the candidate is not a topology specification document",
+                )
+            })?;
+
+        // A published revision is immutable. Re-publishing the same bytes is a
+        // replay and answers the original; re-publishing *different* bytes under
+        // the same identity and version is the shortcut this whole family exists
+        // to refuse, and it is refused before anything is written.
+        //
+        // Judged before the rules on purpose. A caller who edited a published
+        // revision has made one mistake, and being told "your vocabulary is
+        // invalid" would send them to fix the wrong thing.
+        let existing = state
+            .with_store(|store| store.get_topology_spec(project_id, spec.spec_id, spec.version))
+            .map_err(|error| self.refuse(&error))?;
+        let already = match &existing {
+            Some(published) => {
+                let published_hash = published
+                    .canonicalize()
+                    .map_err(|error| self.refuse_domain(&error))?
+                    .hash()
+                    .clone();
+                if published_hash != hash {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "this specification revision is already published with different content",
+                    ));
+                }
+                true
+            }
+            None => false,
+        };
+        if !violations.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the candidate does not satisfy the specification rules",
+            ));
+        }
+
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "topology_spec_publish",
+            "project": project_id.to_string(),
+            "spec": spec.spec_id.to_string(),
+            "version": spec.version.get(),
+            "canonical_hash": hash.as_str(),
+        }))?;
+        let replayed = self
+            .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
+            .is_some();
+
+        let stamp = Shareability::default_for(ShareabilityTier::ProjectKnowledge)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if !already && !replayed {
+            state
+                .with_store(|store| store.publish_topology_spec(project_id, &spec, &stamp, now))
+                .map_err(|error| self.refuse(&error))?;
+        }
+        let stored = state
+            .with_store(|store| {
+                store.get_topology_spec_shareability(project_id, spec.spec_id, spec.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .unwrap_or(stamp);
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::PublishTopologySpec,
+            AggregateRef::Project { project_id },
+            project.revision,
+            &intent,
+        )?;
+
+        Ok(PublishedTopologySpecDto {
+            spec: PinnedSpecDto {
+                id: spec.spec_id,
+                version: spec.version,
+                canonical_hash: hash,
+            },
+            shareability: shareability_dto(&stored),
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if already || replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: project.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
     }
 
     fn topology_spec(
         &self,
-        _project_id: ProjectId,
-        _spec_id: TopologySpecId,
-        _version: SpecVersion,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
     ) -> Result<TopologySpecDocumentDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "topology-specification reads are not composed in this build",
-        ))
+        let state = self.state()?;
+        let spec = state
+            .with_store(|store| store.get_topology_spec(project_id, spec_id, version))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such topology specification revision is published in this project",
+                )
+            })?;
+        let shareability = state
+            .with_store(|store| store.get_topology_spec_shareability(project_id, spec_id, version))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the published revision carries no classification",
+                )
+            })?;
+        let document = spec
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?;
+        Ok(TopologySpecDocumentDto {
+            realm_id: state.realm_id(),
+            spec: PinnedSpecDto {
+                id: spec.spec_id,
+                version: spec.version,
+                canonical_hash: document.hash().clone(),
+            },
+            document: serde_json::from_str(document.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the published document could not be served",
+                )
+            })?,
+            shareability: shareability_dto(&shareability),
+            snapshot_cursor: self.cursor()?,
+        })
     }
 
     fn role_catalog(
         &self,
-        _catalog_id: RoleCatalogId,
-        _version: SpecVersion,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
     ) -> Result<RoleCatalogDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the role catalog is not composed in this build",
-        ))
+        let state = self.state()?;
+        let catalog = self.catalog_revision(catalog_id, version)?;
+        Ok(RoleCatalogDto {
+            realm_id: state.realm_id(),
+            catalog_id: catalog.catalog_id,
+            version: catalog.version,
+            name: catalog.name.clone(),
+            // The catalog's own declaration order, not one this projection
+            // chose: the order is part of what was published.
+            roles: catalog.roles.iter().map(role_entry_dto).collect(),
+            snapshot_cursor: self.cursor()?,
+        })
     }
 
     fn role(
         &self,
-        _catalog_id: RoleCatalogId,
-        _version: SpecVersion,
-        _role_code: &str,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+        role_code: &str,
     ) -> Result<RoleCatalogEntryDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the role catalog is not composed in this build",
-        ))
+        let catalog = self.catalog_revision(catalog_id, version)?;
+        // Parsed before it is looked up, so a code that could never be a code is
+        // refused as malformed rather than reported as absent.
+        let code = RoleCode::parse(role_code).map_err(|error| self.refuse_domain(&error))?;
+        catalog.role(&code).map(role_entry_dto).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::NotFound,
+                "this catalog revision declares no such role code",
+            )
+        })
     }
 
     fn code_help(
         &self,
-        _project_id: ProjectId,
-        _epic_id: MiniProjectId,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
     ) -> Result<CodeHelpProjectionDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "server-owned code help is not composed in this build",
-        ))
-    }
+        let state = self.state()?;
+        let pinned = state
+            .with_store(|store| store.get_mini_project_topology(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this epic is not pinned to a topology revision yet",
+                )
+            })?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(
+                    project_id,
+                    pinned.topology.spec_id,
+                    pinned.topology.version,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the revision this epic is pinned to is not published in this project",
+                )
+            })?;
+        let source = RevisionRefDto {
+            id: spec.spec_id.to_string(),
+            version: spec.version,
+        };
 
-    // -- Semantic topology --------------------------------------------------
-    //
-    // These reuse OP-02's capability-dispatched materializer and the OP-01
-    // store rather than growing a second path to a runtime; that composition
-    // is not wired here yet, so each refuses before any effect. Materialize is
-    // the only one of the family that may ever reach a runtime at all.
+        // One combined projection, because a client rendering a transcript has a
+        // code in hand and does not know which family it came from. Historical
+        // codes are included on purpose: a client reading old state still has to
+        // render them honestly, and a projection that only described the current
+        // vocabulary would force exactly the private glossary this prevents.
+        let mut entries: Vec<CodeHelpEntryDto> = spec
+            .node_kinds
+            .iter()
+            .map(|declared| (declared.kind.as_str().to_owned(), &declared.code_help))
+            .chain(
+                spec.historical_codes
+                    .iter()
+                    .map(|entry| (entry.kind.as_str().to_owned(), &entry.help)),
+            )
+            .map(|(code, help)| CodeHelpEntryDto {
+                code,
+                full_name: help.full_name.clone(),
+                meaning: help.meaning.clone(),
+                category: help.category,
+                lifecycle: help.lifecycle,
+                source: source.clone(),
+            })
+            .collect();
+
+        // The role codes come from the catalog revision the project publishes,
+        // which is the same one every seat in it is recorded under.
+        let catalog = self.published_catalog()?;
+        let catalog_source = RevisionRefDto {
+            id: catalog.catalog_id.to_string(),
+            version: catalog.version,
+        };
+        entries.extend(catalog.roles.iter().map(|entry| CodeHelpEntryDto {
+            code: entry.role_code.as_str().to_owned(),
+            full_name: entry.standard_title.clone(),
+            meaning: entry.responsibility_summary.clone(),
+            category: CodeCategory::Role,
+            lifecycle: entry.lifecycle,
+            source: catalog_source.clone(),
+        }));
+        entries.sort_by(|left, right| {
+            left.category
+                .as_str()
+                .cmp(right.category.as_str())
+                .then_with(|| left.code.cmp(&right.code))
+        });
+
+        Ok(CodeHelpProjectionDto {
+            realm_id: state.realm_id(),
+            epic_id,
+            entries,
+            snapshot_cursor: self.cursor()?,
+        })
+    }
 
     fn inspect_topology(
         &self,
@@ -4154,27 +4828,109 @@ impl ApplicationOperations for Services {
 
     fn preview_topology_upgrade(
         &self,
-        _project_id: ProjectId,
-        _epic_id: MiniProjectId,
-        _request: &TopologyUpgradePreviewRequest,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TopologyUpgradePreviewRequest,
     ) -> Result<TopologyUpgradePreviewDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "topology specification upgrade is not composed in this build",
-        ))
+        let state = self.state()?;
+        let (current, target, effects) =
+            self.upgrade_effects(project_id, epic_id, &request.target_spec)?;
+        Ok(TopologyUpgradePreviewDto {
+            realm_id: state.realm_id(),
+            epic_id,
+            current_spec: pinned_spec_dto(&current),
+            target_spec: pinned_spec_dto(&target),
+            preview_hash: self.upgrade_hash(project_id, epic_id, &current, &target, &effects)?,
+            effects,
+            snapshot_cursor: self.cursor()?,
+        })
     }
 
     async fn apply_topology_upgrade(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _epic_id: MiniProjectId,
-        _request: &TopologyUpgradeApplyRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TopologyUpgradeApplyRequest,
     ) -> Result<AppliedTopologyUpgradeDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "topology specification upgrade is not composed in this build",
-        ))
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let epic = self.epic_row(project_id, epic_id)?;
+        if epic.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the epic moved since the caller read it",
+                )
+                .with_revision(Some(epic.revision)));
+        }
+
+        // The intent names the *preview*, not the target it resolves to, and the
+        // key is judged before anything is searched for. Both follow from the
+        // same rule: what the caller authorized is a set of effects, named by
+        // their digest. Recording the target instead would mean re-deriving the
+        // preview to find out what to record — and once the first call has
+        // moved the pin, that preview no longer describes the Realm, so a
+        // perfectly ordinary retry would be refused for succeeding.
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "topology_upgrade_apply",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "preview": request.preview_hash.as_str(),
+        }))?;
+        let replayed = self
+            .replayed(
+                key,
+                &intent,
+                Some(&AggregateRef::MiniProject {
+                    mini_project_id: epic_id,
+                }),
+            )?
+            .is_some();
+        if !replayed {
+            // Recomputed rather than remembered. A stored preview would let an
+            // apply commit effects the Realm no longer has; searching the
+            // published revisions for the one that still produces exactly these
+            // is what makes the authorization mean what it said.
+            let target = self.target_of_preview(project_id, epic_id, &request.preview_hash)?;
+            state
+                .with_store(|store| {
+                    store.repin_mini_project_topology(&MiniProjectTopologySnapshot {
+                        project_id,
+                        mini_project_id: epic_id,
+                        topology: target,
+                        pinned_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::UpgradeTopology,
+            AggregateRef::MiniProject {
+                mini_project_id: epic_id,
+            },
+            epic.revision,
+            &intent,
+        )?;
+
+        Ok(AppliedTopologyUpgradeDto {
+            pinned_spec: pinned_spec_dto(&self.epic_pin(project_id, epic_id)?),
+            projection: self.topology_projection(project_id, Some(epic_id))?,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
     }
 
     // -- Native capacity and exact-seat operations ---------------------------
