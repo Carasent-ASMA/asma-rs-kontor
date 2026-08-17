@@ -1996,6 +1996,10 @@ impl PaseoAdapter {
         generation: u64,
     ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
         let label = request.correlation().to_string();
+        // Resolved before anything is searched for or created, so a task this
+        // plane has no scope for is refused before any native mutation rather
+        // than named after a node id it can never be renamed away from.
+        let display_name = self.child_display_name(request)?;
         let existing = self.fetch_workspaces(project_id.as_str()).await?;
         let mut mine = existing
             .iter()
@@ -2019,7 +2023,7 @@ impl PaseoAdapter {
                         })?
                         .as_str(),
                     project_id.as_str(),
-                    &workspace_label_suffix(request.display_name.as_str(), &label),
+                    &workspace_label_suffix(&display_name, &label),
                 );
                 let output = self.transport.run(&command).await?;
                 let created: PaseoCliWorkspaceCreated = output.parse("PaseoCliWorkspaceCreated")?;
@@ -2055,6 +2059,36 @@ impl PaseoAdapter {
             request.requested_at,
         )?;
         Ok((identity, correlation, created))
+    }
+
+    /// The title one native child must carry.
+    ///
+    /// A child that names a delivery task **is** that task's session workspace,
+    /// so its title comes from the same authoritative scope
+    /// `prepare_workspace` renders from — `TSW · {jira issue} · {short code}`.
+    /// One renderer, so this adapter's two entry points cannot disagree about
+    /// what one workspace is called.
+    ///
+    /// The caller's `display_name` is deliberately not used for one. Topology
+    /// admission builds it from the node kind's template and the topology node
+    /// id, and a node id is an identity: a native title made out of one is
+    /// unreadable to the humans the title exists for, and Paseo has no
+    /// supported rename, so it is unreadable permanently.
+    ///
+    /// A child that names no task keeps the caller's name. Those are the
+    /// project and epic roots, whose titles are structural rather than
+    /// ticket-scoped, and there is no task scope to render them from.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::WorkspaceMismatch`] when the plane holds no
+    /// scope for the named task. Refusing is the whole point: falling back to
+    /// the caller's name would produce exactly the title this rule exists to
+    /// prevent.
+    fn child_display_name(&self, request: &ContainerRequest) -> RuntimeResult<String> {
+        match request.task_id {
+            Some(task_id) => self.config.scope.workspace_display_name_for(task_id),
+            None => Ok(request.display_name.as_str().to_owned()),
+        }
     }
 
     /// Who a child container inside a bound root belongs to.

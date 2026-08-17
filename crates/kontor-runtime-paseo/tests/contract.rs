@@ -67,7 +67,7 @@ use kontor_runtime::container::{
 };
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,
-    PaseoDelivery, PaseoExecutionScope, PaseoProjectOutcome, PaseoSlotPlan,
+    PaseoDelivery, PaseoExecutionScope, PaseoProjectOutcome, PaseoSlotPlan, PaseoTaskScope,
 };
 use kontor_runtime_paseo::client::{PaseoCommand, PaseoTransport};
 use kontor_runtime_paseo::fixture::RecordedPaseo;
@@ -3896,5 +3896,158 @@ async fn a_container_created_outside_the_bound_parent_is_refused() {
     assert!(
         plane.adapter.container_binding(node(NODE_A)).is_none(),
         "a refused placement leaves no binding behind"
+    );
+}
+
+/// A topology-created TSW is named from its task's scope, not from its node id.
+///
+/// The daemon builds `display_name` from the node kind's `name_template` and
+/// the topology node id, because that is the only name it *can* build: the Jira
+/// issue and the short ticket code are this plane's configuration, not the
+/// control plane's. So the title is the adapter's to render, from the same
+/// scope `prepare_workspace` renders from — and the caller's name is ignored
+/// for a child that names a task.
+///
+/// The regression this pins is a workspace called `Task Session Workspace ·
+/// 0189…` in a live Realm. Paseo has no rename, so that title is permanent.
+#[tokio::test]
+async fn a_task_scoped_child_is_titled_from_its_ticket_and_not_from_its_node_id() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let node_id = node(NODE_A);
+
+    // Exactly what topology admission sends: a kind template, a node id, and
+    // the task the node serves.
+    let request = ContainerRequest {
+        display_name: name(&format!("Task Session Workspace · {node_id}")),
+        task_id: Some(task()),
+        ..child_request(node_id, Some(bound_root(node(NODE_B))))
+    };
+    let outcome = plane
+        .adapter
+        .prepare_container(&request)
+        .await
+        .expect("the child container is prepared");
+
+    let titles = plane.daemon.titles("workspace create");
+    assert_eq!(titles.len(), 1, "one container, one title: {titles:?}");
+    assert!(
+        titles[0].starts_with("TSW · ASMA-7755 · KON-11"),
+        "the title is the ticket's, not the node's: {}",
+        titles[0]
+    );
+    // The node id belongs in the bracketed correlation label and nowhere else.
+    // That half is machine-read; the half in front of it is what a human sees.
+    let (display, correlation) = titles[0]
+        .split_once(" [")
+        .expect("a created title carries its correlation label");
+    assert_eq!(
+        display, "TSW · ASMA-7755 · KON-11",
+        "the visible half is exactly the ticket's title"
+    );
+    assert!(
+        !display.contains(&node_id.to_string()),
+        "a node id is an identity, and Paseo has no rename: {display}"
+    );
+    assert!(
+        correlation.contains(&node_id.to_string()),
+        "and the machine-read half still names the node: {correlation}"
+    );
+
+    // The correlation is unchanged: the label Paseo reports back still names
+    // the node, which is what every later readback resolves by.
+    assert_eq!(
+        outcome.snapshot.correlation.label.topology_node_id(),
+        node_id,
+        "the node correlation must survive the renaming rule"
+    );
+    assert_eq!(outcome.snapshot.topology_node_id(), node_id);
+}
+
+/// A child that names no task keeps the name its caller derived.
+///
+/// The project and epic roots are structural, not ticket-scoped: there is no
+/// task scope to render them from, and rendering them from one would put a
+/// ticket's name on a container that outlives it.
+#[tokio::test]
+async fn a_child_that_names_no_task_keeps_the_structural_name() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+
+    plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the child container is prepared");
+
+    let titles = plane.daemon.titles("workspace create");
+    assert!(
+        titles[0].starts_with("TSW · ASMA-7755 · KON-11"),
+        "the caller's own name is used verbatim: {}",
+        titles[0]
+    );
+}
+
+/// A task this plane has no scope for is refused before anything is created.
+///
+/// The alternative is the defect: falling back to the caller's name would put a
+/// node id on a native container permanently, because there is no rename.
+#[tokio::test]
+async fn a_task_with_no_configured_scope_is_refused_before_any_native_effect() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+    // A plane serving several tickets, none of them the one asked for.
+    let mut scoped = config();
+    scoped.scope.task_scopes = [(
+        TaskId::parse("01890000-0000-7000-8000-0000000000c9").expect("a canonical TaskId"),
+        PaseoTaskScope {
+            plan_item_key: external("KON-MVP-12"),
+            jira_issue_key: external("ASMA-7756"),
+            ticket_short_code: external("KON-12"),
+            canonical_worktree_cwd: root(),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let daemon = std::sync::Arc::new(recorded);
+    let adapter = PaseoAdapter::new(
+        scoped,
+        Box::new(std::sync::Arc::clone(&daemon)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a consistent checkpoint restores");
+
+    let node_id = node(NODE_A);
+    let refused = adapter
+        .prepare_container(&ContainerRequest {
+            display_name: name(&format!("Task Session Workspace · {node_id}")),
+            task_id: Some(task()),
+            ..child_request(node_id, Some(bound_root(node(NODE_B))))
+        })
+        .await;
+    assert!(
+        matches!(refused, Err(RuntimeError::WorkspaceMismatch { .. })),
+        "an unscoped task must be refused, not named after its node: {refused:?}"
+    );
+    assert!(
+        daemon.mutations().is_empty(),
+        "the refusal must land before any native effect: {:?}",
+        daemon.mutations()
     );
 }

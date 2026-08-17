@@ -190,6 +190,7 @@ pub struct RecordedPaseo {
     journals: Mutex<BTreeMap<String, Journal>>,
     calls: Mutex<Vec<String>>,
     mutating_routes: Mutex<BTreeSet<String>>,
+    titles: Mutex<Vec<(String, String)>>,
 }
 
 impl Default for RecordedPaseo {
@@ -212,6 +213,7 @@ impl RecordedPaseo {
             journals: Mutex::new(BTreeMap::new()),
             calls: Mutex::new(Vec::new()),
             mutating_routes: Mutex::new(BTreeSet::new()),
+            titles: Mutex::new(Vec::new()),
         }
     }
 
@@ -450,6 +452,22 @@ impl RecordedPaseo {
             .count()
     }
 
+    /// Every title `route` was asked to give something, in order.
+    ///
+    /// Kept apart from the call ledger because a title is not a ledger key —
+    /// but it *is* Kontor's decision, so a contract has to be able to state
+    /// what a container was actually going to be called.
+    #[must_use]
+    pub fn titles(&self, route: &str) -> Vec<String> {
+        self.titles
+            .lock()
+            .expect("the fixture lock is intact")
+            .iter()
+            .filter(|(made, _)| made == route)
+            .map(|(_, title)| title.clone())
+            .collect()
+    }
+
     /// Every call that could have changed Paseo.
     ///
     /// A refusal that must happen before any effect is proved by this being
@@ -622,6 +640,12 @@ impl PaseoTransport for RecordedPaseo {
         // only successful calls would make the retry rule untestable: the very
         // case that must not repeat would leave no trace of having happened
         // once.
+        if let Some(title) = command.title() {
+            self.titles
+                .lock()
+                .expect("the fixture lock is intact")
+                .push((route.clone(), title.to_owned()));
+        }
         self.record(route.clone(), command.mutates());
 
         let queued = self

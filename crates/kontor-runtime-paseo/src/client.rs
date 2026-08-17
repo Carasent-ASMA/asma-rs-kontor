@@ -306,6 +306,24 @@ impl PaseoCommand {
         self.mutates
     }
 
+    /// The `--title` this command sets, if it sets one.
+    ///
+    /// Narrow on purpose, and deliberately not part of [`PaseoCommand::route`].
+    /// The route omits every foreign value so a ledger assertion can never
+    /// quote an operator's prompt; a container's *title* is a different thing.
+    /// It is the name humans read in the runtime, it is Kontor's to decide from
+    /// its own scope, and a contract that could not assert it would let the one
+    /// visible half of a placement drift unnoticed — which is exactly how a
+    /// workspace ends up named after a node id.
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        self.argv
+            .iter()
+            .position(|argument| argument == "--title")
+            .and_then(|flag| self.argv.get(flag + 1))
+            .map(String::as_str)
+    }
+
     /// Refuse a foreign value that would be read as a flag.
     ///
     /// Paseo ids, paths and titles are foreign strings. One beginning with `-`
