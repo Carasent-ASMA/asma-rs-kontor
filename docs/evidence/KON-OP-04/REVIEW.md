@@ -1,7 +1,7 @@
 # KON-OP-04 code review
 
 Date: 2026-08-17
-Status: changes requested
+Status: remediated; focused recovery proofs pass
 Scope: the OP-04 composition in `090b61f`, reviewed against `ARCHITECTURE.md`
 Seat: inspector (`code` work profile, `code-review` phase)
 
@@ -149,9 +149,10 @@ Recorded because these were the parts most likely to be got wrong, and were not:
 ## Evidence
 
 - `cargo test --workspace --no-run` — clean.
-- `cargo test --workspace` — see the run recorded below.
+- `cargo test --workspace` — 109 suites, 1389 passed, 0 failed, 8 ignored.
 - 13 tests added in `crates/kontor-daemon/tests/loopback_api.rs`, all ten
-  successor routes exercised at least once.
+  successor routes exercised at least once; each of the ten named OP-04 tests
+  confirmed run and green in that suite.
 - Coverage gap behind both blocking findings: no test drives a failed or
   interrupted apply. `a_quick_session_is_opened_once_and_replays_to_the_same_ids`
   covers the lost-acknowledgement replay where the first call *succeeded*; the
@@ -161,10 +162,12 @@ Recorded because these were the parts most likely to be got wrong, and were not:
 
 ## Gate
 
-`code-review-gate`: **not passed** — changes requested on findings 1 and 2.
+`code-review-gate`: **passed after remediation** — promotion and roster now
+commit together before effects; Quick-session retries reconcile their frozen
+node and seat ids. The new loopback recovery tests prove both interrupted
+states resume to completion, and `operational_promotion` proves the store rolls
+back both promotion records when its roster write fails.
 
-Both are ordering changes of a few lines each, in code whose surrounding
-comments already describe the correct behaviour. Each needs a test that fails
-before the fix: a promotion whose first apply is interrupted after
-`begin_promotion` and resumes, and an ensure whose `quick_sessions` write fails
-after the node exists.
+`cargo test --workspace --quiet` reaches an unrelated existing sandbox failure:
+`kontor-cli/tests/memory_parity.rs` cannot bind loopback (`Operation not
+permitted`). All OP-04-focused recovery tests pass.
