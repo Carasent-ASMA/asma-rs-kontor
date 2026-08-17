@@ -83,7 +83,9 @@ describe('<ProjectView>', () => {
   })
 
   it('groups catalog roles and cannot apply a Core Team before preview confirmation', async () => {
-    const client = await open()
+    let confirm!: (value: unknown) => void
+    const applyCoreTeam = vi.fn(() => new Promise((resolve) => { confirm = resolve }))
+    const client = await open(operationalClient({ applyCoreTeam }))
     const section = screen.getByRole('heading', { name: 'Project Core Team' }).closest('section') as HTMLElement
     const apply = within(section).getByRole('button', { name: 'Apply confirmed preview' })
     expect(apply).toBeDisabled()
@@ -95,11 +97,15 @@ describe('<ProjectView>', () => {
     await waitFor(() => expect(client.previewCoreTeam).toHaveBeenCalled())
     expect(apply).toBeEnabled()
     fireEvent.click(apply)
-    await waitFor(() => expect(client.applyCoreTeam).toHaveBeenCalledWith(
+    expect(apply).toBeDisabled()
+    fireEvent.click(apply)
+    await waitFor(() => expect(client.applyCoreTeam).toHaveBeenCalledTimes(1))
+    expect(client.applyCoreTeam).toHaveBeenCalledWith(
       'project-1',
       expect.objectContaining({ expected_revision: 3, preview_hash: 'preview-1', seats: expect.arrayContaining([expect.objectContaining({ role_code: 'TPM', custom_display_name: 'Delivery lead' })]) }),
       expect.any(String),
-    ))
+    )
+    confirm({ core_team: { ...CORE_TEAM, revision: 4 }, receipt: RECEIPT })
     expect(await within(section).findByText(/Confirmed receipt/)).toHaveTextContent('receipt-1')
   })
 

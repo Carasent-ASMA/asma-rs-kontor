@@ -329,6 +329,7 @@ function CoreTeamPanel({
   const [preview, setPreview] = useState<CoreTeamPreview | null>(null)
   const [receipt, setReceipt] = useState<MutationReceipt | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     setCurrent(team)
@@ -362,7 +363,7 @@ function CoreTeamPanel({
       <fieldset className="operation-form">
         <legend>New seat / role</legend>
         <RoleFields roles={roles} roleCode={roleCode} onRoleCode={setRoleCode} label={label} onLabel={setLabel} disabled={!catalogRevision} />
-        <button type="button" onClick={add} disabled={!catalogRevision || !roleCode}>Add to preview</button>
+        <button type="button" onClick={add} disabled={busy || !catalogRevision || !roleCode}>Add to preview</button>
         {!catalogRevision ? <p className="banner" role="alert">The server projected no role-catalog revision, so a valid selection cannot be written.</p> : null}
       </fieldset>
       {seats.length ? (
@@ -376,14 +377,15 @@ function CoreTeamPanel({
         </ol>
       ) : <p className="empty">No seats in the proposed composition.</p>}
       <div className="operation-actions">
-        <button type="button" onClick={() => void act(() => client.previewCoreTeam(projectId, { seats }), setPreview, setError)}>Preview Core Team</button>
+        <button type="button" disabled={busy} onClick={() => void act(() => client.previewCoreTeam(projectId, { seats }), setPreview, setError, setBusy)}>Preview Core Team</button>
         <button
           type="button"
-          disabled={!preview}
+          disabled={busy || !preview}
           onClick={() => preview && void act(
             () => client.applyCoreTeam(projectId, { expected_revision: current.revision, preview_hash: preview.preview_hash, seats }, crypto.randomUUID()),
             (outcome: CoreTeamOutcome) => { setCurrent(outcome.core_team); setReceipt(outcome.receipt); setPreview(null) },
             setError,
+            setBusy,
           )}
         >Apply confirmed preview</button>
       </div>
@@ -414,6 +416,7 @@ function QuickSessionPanel({
   const [preview, setPreview] = useState<PromotionPreview | null>(null)
   const [promoted, setPromoted] = useState<PromotedSession | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
 
   return (
     <>
@@ -424,26 +427,27 @@ function QuickSessionPanel({
         onSubmit={(event) => {
           event.preventDefault()
           const role = roleSelection(catalogRevision, roleCode, label)
-          if (role) void act(() => client.ensureQuickSession(projectId, { purpose: purpose.trim(), role }, crypto.randomUUID()), setSession, setError)
+          if (role) void act(() => client.ensureQuickSession(projectId, { purpose: purpose.trim(), role }, crypto.randomUUID()), setSession, setError, setBusy)
         }}
       >
         <RoleFields roles={roles} roleCode={roleCode} onRoleCode={setRoleCode} label={label} onLabel={setLabel} disabled={!catalogRevision} />
         <label className="field grow">Purpose<input required value={purpose} onChange={(event) => setPurpose(event.target.value)} /></label>
-        <button type="submit" disabled={!catalogRevision || !roleCode}>Open Quick Session</button>
+        <button type="submit" disabled={busy || !catalogRevision || !roleCode}>Open Quick Session</button>
       </form>
       {session ? (
         <div className="operation-result">
           <p>QSW <code>{session.quick_session_id}</code> · node <code>{session.topology_node_id}</code> · <CodeHelp code={session.role.role_code} category="role" entries={help} /></p>
           <Receipt receipt={session.receipt} />
           <div className="operation-actions">
-            <button type="button" onClick={() => void act(() => client.previewPromotion(projectId, session.quick_session_id), setPreview, setError)}>Preview promotion</button>
+            <button type="button" disabled={busy} onClick={() => void act(() => client.previewPromotion(projectId, session.quick_session_id), setPreview, setError, setBusy)}>Preview promotion</button>
             <button
               type="button"
-              disabled={!preview}
+              disabled={busy || !preview}
               onClick={() => preview && void act(
                 () => client.applyPromotion(projectId, session.quick_session_id, { expected_revision: session.receipt.revision, preview_hash: preview.preview_hash }, crypto.randomUUID()),
                 setPromoted,
                 setError,
+                setBusy,
               )}
             >Promote confirmed preview</button>
           </div>
@@ -502,16 +506,17 @@ function ConsultationForm({
   const [question, setQuestion] = useState('')
   const [run, setRun] = useState<AdvisorRun | CommitteeRun | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const profile = profiles.find((entry) => profileKey(entry) === selected)
   return (
     <>
       <form className="operation-form" aria-label={`Invoke ${kind}`} onSubmit={(event) => {
         event.preventDefault()
-        if (profile) void act(() => invoke({ id: profile.id, version: profile.version }, question.trim()), setRun, setError)
+        if (profile) void act(() => invoke({ id: profile.id, version: profile.version }, question.trim()), setRun, setError, setBusy)
       }}>
         <label className="field">Profile<select required value={selected} onChange={(event) => setSelected(event.target.value)}>{profiles.map((entry) => <option key={profileKey(entry)} value={profileKey(entry)}>{entry.name} · {entry.id}@{entry.version}</option>)}</select></label>
         <label className="field grow">Question<input required value={question} onChange={(event) => setQuestion(event.target.value)} /></label>
-        <button type="submit" disabled={!profile}>Invoke {kind}</button>
+        <button type="submit" disabled={busy || !profile}>Invoke {kind}</button>
       </form>
       <p className="empty">Member count and protocol are not exposed by this `/v1` profile catalog; the console does not infer them from the profile name or hash.</p>
       {run ? (
@@ -545,6 +550,7 @@ function CompletionPanel({
   const [receipt, setReceipt] = useState<MutationReceipt | null>(null)
   const [reason, setReason] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const accept = (outcome: CompletionOutcome): void => { setState(outcome.state); setReceipt(outcome.receipt) }
   return (
     <>
@@ -558,14 +564,14 @@ function CompletionPanel({
         <Fact label="outstanding" value={state.outstanding.length ? state.outstanding.join(', ') : 'none'} />
       </Facts>
       <div className="operation-actions">
-        <button type="button" onClick={() => void act(() => client.advanceCompletion(projectId, epicId, { expected_revision: state.revision }, crypto.randomUUID()), accept, setError)}>Advance completion</button>
+        <button type="button" disabled={busy} onClick={() => void act(() => client.advanceCompletion(projectId, epicId, { expected_revision: state.revision }, crypto.randomUUID()), accept, setError, setBusy)}>Advance completion</button>
       </div>
       <form className="operation-form" aria-label="Return completion to remediation" onSubmit={(event) => {
         event.preventDefault()
-        void act(() => client.remediateCompletion(projectId, epicId, { expected_revision: state.revision, reason: reason.trim() }, crypto.randomUUID()), accept, setError)
+        void act(() => client.remediateCompletion(projectId, epicId, { expected_revision: state.revision, reason: reason.trim() }, crypto.randomUUID()), accept, setError, setBusy)
       }}>
         <label className="field grow">Remediation reason<input required value={reason} onChange={(event) => setReason(event.target.value)} /></label>
-        <button type="submit">Return for remediation</button>
+        <button type="submit" disabled={busy}>Return for remediation</button>
       </form>
       <Problem error={error} />
       <Receipt receipt={receipt} />
@@ -622,12 +628,20 @@ async function settled<T>(promise: Promise<T>): Promise<Read<T>> {
   }
 }
 
-async function act<T>(run: () => Promise<T>, accept: (value: T) => void, reject: (message: string | null) => void): Promise<void> {
+async function act<T>(
+  run: () => Promise<T>,
+  accept: (value: T) => void,
+  reject: (message: string | null) => void,
+  pending?: (value: boolean) => void,
+): Promise<void> {
+  pending?.(true)
   try {
     accept(await run())
     reject(null)
   } catch (cause) {
     reject(cause instanceof Error ? cause.message : 'The request failed.')
+  } finally {
+    pending?.(false)
   }
 }
 
