@@ -787,7 +787,6 @@ impl SqliteStore {
                 lease_id,
                 LeaseKind::Module,
                 module,
-                admitted.worktree.as_ref(),
                 &module_reclaimed,
             )?;
         }
@@ -800,7 +799,6 @@ impl SqliteStore {
                 lease_id,
                 LeaseKind::Worktree,
                 worktree,
-                None,
                 &worktree_reclaimed,
             )?;
         }
@@ -1596,13 +1594,16 @@ fn insert_lease(
     lease_id: ResourceLeaseId,
     kind: LeaseKind,
     place: &ExternalName,
-    worktree: Option<&ExternalName>,
     reclaimed: &[ResourceLeaseId],
 ) -> RepositoryResult<()> {
     // Reclaim lineage: the lease this one took the place over from, when this
     // admission is the one that found the previous holder lapsed. At most one
     // lapsed lease per place can have been active, so the first is the only one.
     let reclaimed_from = reclaimed.first().map(ToString::to_string);
+    let worktree = match kind {
+        LeaseKind::Module => request.admitted.worktree.as_ref(),
+        LeaseKind::Worktree => None,
+    };
     transaction
         .execute(
             "INSERT INTO resource_leases
