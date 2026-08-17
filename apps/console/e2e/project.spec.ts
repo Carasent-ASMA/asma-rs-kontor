@@ -56,7 +56,11 @@ for (const [name, viewport] of [
     await page.setViewportSize(viewport)
     await attach(page)
     await expect(page.getByText('eighth run refused')).toBeVisible()
-    await expect(page.getByRole('button', { name: 'ESW' })).toBeVisible()
+    const code = page.getByRole('button', { name: 'ESW' })
+    await expect(code).toBeVisible()
+    await code.click()
+    await expect(page.getByRole('tooltip').filter({ hasText: 'Epic Session Workspace' })).toBeVisible()
+    await code.click()
     await page.screenshot({ path: `../../evidence/ASMA-7878-PROJECT-${name.toUpperCase()}.png`, fullPage: true })
   })
 }
