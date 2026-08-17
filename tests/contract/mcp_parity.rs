@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        115,
+        117,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        116,
+        118,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -551,6 +551,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_memory_ingest_preview", CallerTier::Admin),
         ("kontor_memory_ingest_apply", CallerTier::Admin),
         ("kontor_memory_cutover_freeze", CallerTier::Admin),
+        // Who may write a project's subjects is an ordinary read; moving it is an
+        // admin act, like the switch it is spent on.
+        ("kontor_subject_authority_get", CallerTier::Observer),
+        ("kontor_subject_authority_attest", CallerTier::Admin),
         ("kontor_memory_cutover_switch", CallerTier::Admin),
         // KON-25: the Realm catalogue and Teams projection are reads; saving a
         // draft and publishing its next immutable revision are operator acts.

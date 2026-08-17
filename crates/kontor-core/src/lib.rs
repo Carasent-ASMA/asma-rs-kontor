@@ -90,6 +90,7 @@ macro_rules! closed_enum {
     };
 }
 
+pub mod authority;
 pub mod calendar;
 pub mod compaction;
 pub mod id;

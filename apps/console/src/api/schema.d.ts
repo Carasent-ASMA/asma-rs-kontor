@@ -316,6 +316,13 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * The realm-wide freeze, kept only to refuse.
+         * @description It is still routed so an existing caller gets a typed answer naming its
+         *     replacement rather than a 404 it might read as "not deployed yet" — and it
+         *     can no longer write anything: the v32 trigger refuses the singleton it used
+         *     to update.
+         */
         post: operations["freeze"];
         delete?: never;
         options?: never;
@@ -1415,6 +1422,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/subjects/authority": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one project's authority for both subjects. */
+        get: operations["authority"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/subjects/authority:attest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Attest one project's legacy source frozen, for one subject. */
+        post: operations["attest_authority"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/tasks/{task_id}": {
         parameters: {
             query?: never;
@@ -2477,6 +2518,25 @@ export interface components {
             /** @description The tasks to arm. Empty arms the whole epic. */
             tasks?: string[];
         };
+        /**
+         * @description The operator's statement that this project's legacy source is frozen.
+         *
+         *     Kontor cannot observe AgentsRoom, so what it records is that the attestation
+         *     was made, against the source position it names. The switch refuses without it.
+         */
+        Attest: {
+            /**
+             * Format: int64
+             * @description The authority revision the caller read.
+             */
+            expected_revision: number;
+            /** @description The source position the operator froze at. */
+            source_cursor: string;
+            /** @description The hash of the source at that position. */
+            source_hash: string;
+            /** @description Which subject's source was frozen. */
+            subject: string;
+        };
         /** @description What the Admin-only late-handoff reconciliation is asked for. */
         AttestLateHandoffRequest: {
             /** @description Valid artifact keys proving the bounded handoff. */
@@ -3007,7 +3067,7 @@ export interface components {
             /** @description The hash the preview answered with. */
             preview_hash: string;
             /** @description The roles the Core Team should seat, in order. */
-            seats: components["schemas"]["RoleSelectionDto"][];
+            seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
         };
         /** @description One project's Core Team. */
         CoreTeamDto: {
@@ -3055,14 +3115,47 @@ export interface components {
         /** @description A proposed Core Team composition. */
         CoreTeamPreviewRequest: {
             /** @description The roles the Core Team should seat, in order. */
-            seats: components["schemas"]["RoleSelectionDto"][];
+            seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
         };
-        /** @description One Core Team seat: the standard role, and the seat filling it if any. */
+        /**
+         * @description One Core Team seat: the standard role, the policy it is held under, and the
+         *     seat filling it if any.
+         *
+         *     Presence and ad-hoc eligibility are reported, not just accepted. A Core Team
+         *     edit states the whole roster, so a caller that could not read the policy of
+         *     the seats it is not changing would have to invent one for each of them — and
+         *     the first such edit would silently rewrite every other seat's presence.
+         */
         CoreTeamSeatDto: {
+            /** @description Whether the role may open a Quick session. */
+            ad_hoc_allowed: boolean;
+            /** @description When a concrete epic materializes it. */
+            presence: string;
             /** @description The role, as the server resolved it. */
             role: components["schemas"]["ResolvedRoleRefDto"];
             /** @description The binding filling it, once one has been materialized. */
             seat_binding_id?: string | null;
+        };
+        /**
+         * @description One Core Team seat as a caller states it: the role, and the policy the
+         *     project holds that role under.
+         *
+         *     [`RoleSelectionDto`] carries the catalog revision, the code and an optional
+         *     label — every fact about *which* role. It deliberately carries no policy,
+         *     because the same role is selected in places that have no epic presence to
+         *     state. A Core Team entry does have one, and it cannot be derived: presence
+         *     is not a function of the role code or of display order, and
+         *     `GET /quick-roles` answers from `ad_hoc_allowed` specifically. Inferring
+         *     either would hard-code project policy into the server and make that
+         *     projection dishonest, so both are stated once, here.
+         */
+        CoreTeamSeatSelectionDto: {
+            /** @description Whether the role may open a Quick session. */
+            ad_hoc_allowed: boolean;
+            /** @description When a concrete epic materializes it. */
+            presence: string;
+            /** @description The role this seat fills. */
+            role: components["schemas"]["RoleSelectionDto"];
         };
         /**
          * @description The native shape the server derived for one node.
@@ -3133,6 +3226,18 @@ export interface components {
          *     same project without a second identity that could disagree with it.
          */
         EnsureProjectRequest: {
+            /** @description Where this project's backlog comes from. Immutable once the project exists. */
+            backlog_origin: string;
+            /**
+             * @description Where this project's memory comes from. Immutable once the project exists.
+             *
+             *     Stated explicitly, per subject, because it is the one fact nothing else can
+             *     supply: whether a project's memory has an AgentsRoom original waiting to be
+             *     imported is knowledge the operator has and Kontor cannot observe. A default
+             *     would either make every legacy project silently writable or demand a
+             *     cutover ceremony from every fresh one.
+             */
+            memory_origin: string;
             /** @description Human name. Immutable once the project exists. */
             name: string;
             /** @description Canonical absolute root path. The natural identity. */
@@ -3854,11 +3959,15 @@ export interface components {
         ProjectDto: {
             /** @description Whether this call created it. */
             applied: components["schemas"]["AppliedDto"];
+            /** @description Where its backlog comes from, and who may write it now. */
+            backlog: components["schemas"]["SubjectAuthorityDto"];
             /**
              * Format: date-time
              * @description When it was created.
              */
             created_at: string;
+            /** @description Where its memory comes from, and who may write it now. */
+            memory: components["schemas"]["SubjectAuthorityDto"];
             /** @description Its name. */
             name: string;
             /** @description The project. */
@@ -4916,6 +5025,24 @@ export interface components {
             rule: string;
         };
         /**
+         * @description One subject's declared origin and current authority.
+         *
+         *     Reported on the project itself so a caller learns from `projects:ensure`
+         *     whether it may write yet, rather than discovering it from the first refused
+         *     memory or backlog write.
+         */
+        SubjectAuthorityDto: {
+            /** @description Who may write it now. */
+            authority: string;
+            /** @description How this subject's facts entered. Immutable. */
+            origin: string;
+            /**
+             * Format: int64
+             * @description The revision an attestation or switch must present.
+             */
+            revision: number;
+        };
+        /**
          * @description What `intake:submit` is asked for.
          *
          *     The envelope is the *canonical* event, already redacted by whoever holds the
@@ -4939,6 +5066,11 @@ export interface components {
             trigger_version: number;
         };
         Switch: {
+            /**
+             * Format: int64
+             * @description The authority revision the caller read. The switch refuses a stale one.
+             */
+            expected_revision: number;
             snapshot_hash: string;
             source: string;
         };
@@ -6156,7 +6288,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: {
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9283,6 +9415,50 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    authority: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    attest_authority: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Attest"];
+            };
+        };
+        responses: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

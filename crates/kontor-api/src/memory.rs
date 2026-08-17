@@ -5,7 +5,9 @@ use axum::{
     Json,
     extract::{Path, Query, State},
 };
+use kontor_core::authority::AuthoritySubject;
 use kontor_core::id::{AggregateRevision, CanonicalDocument, ContentHash, ProjectId};
+use kontor_store::authority::AuthorityError;
 use kontor_store::memory::{AgentsRoomExport, LegacyMemoryEntry, MemoryError, MemoryProvenance};
 use serde::Deserialize;
 use utoipa::ToSchema;
@@ -53,6 +55,28 @@ pub struct Switch {
     pub source: String,
     #[schema(value_type = String)]
     pub snapshot_hash: ContentHash,
+    /// The authority revision the caller read. The switch refuses a stale one.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// The operator's statement that this project's legacy source is frozen.
+///
+/// Kontor cannot observe AgentsRoom, so what it records is that the attestation
+/// was made, against the source position it names. The switch refuses without it.
+#[derive(Deserialize, ToSchema)]
+pub struct Attest {
+    /// Which subject's source was frozen.
+    #[schema(value_type = String)]
+    pub subject: AuthoritySubject,
+    /// The source position the operator froze at.
+    pub source_cursor: String,
+    /// The hash of the source at that position.
+    #[schema(value_type = String)]
+    pub source_hash: ContentHash,
+    /// The authority revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
 }
 #[derive(Deserialize, ToSchema)]
 pub struct ImportBody {
@@ -312,23 +336,106 @@ pub async fn import_apply(
         serde_json::json!({"realm_id":state.realm_id(),"import":preview}),
     ))
 }
+/// The realm-wide freeze, kept only to refuse.
+///
+/// It is still routed so an existing caller gets a typed answer naming its
+/// replacement rather than a 404 it might read as "not deployed yet" — and it
+/// can no longer write anything: the v32 trigger refuses the singleton it used
+/// to update.
 #[utoipa::path(
     post,
     path = "/v1/memory/cutover:freeze",
     tag = "memory",
     params(("Idempotency-Key" = String, Header)),
-    responses((status = 200))
+    responses((status = 409))
 )]
 pub async fn freeze(
     State(state): State<ApiState>,
     caller: Caller,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
-    state
-        .with_store(|s| s.freeze_agentsroom_writes())
-        .map_err(|e| map(&state, e))?;
+    Err(state.refuse(
+        ApiErrorCode::InvalidRequest,
+        "realm-wide memory freeze was replaced by per-project attestation: \
+         POST /v1/projects/{project_id}/subjects/authority:attest",
+    ))
+}
+
+/// Attest one project's legacy source frozen, for one subject.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/subjects/authority:attest",
+    tag = "memory",
+    params(
+        ("project_id" = String, Path),
+        ("Idempotency-Key" = String, Header)
+    ),
+    request_body = Attest,
+    responses((status = 200))
+)]
+pub async fn attest_authority(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project): Path<String>,
+    Json(body): Json<Attest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project = parse_project(&state, &project)?;
+    let (row, receipt) = state
+        .with_store(|s| {
+            s.attest_subject_source_frozen(
+                project,
+                body.subject,
+                body.expected_revision,
+                &body.source_cursor,
+                &body.source_hash,
+            )
+        })
+        .map_err(|e| map_authority(&state, e))?;
+    Ok(Json(serde_json::json!({
+        "realm_id": state.realm_id(),
+        "subject": row.subject,
+        "authority": row.authority,
+        "revision": row.revision.get(),
+        "receipt": receipt,
+    })))
+}
+
+/// Read one project's authority for both subjects.
+#[utoipa::path(
+    get,
+    path = "/v1/projects/{project_id}/subjects/authority",
+    tag = "memory",
+    params(("project_id" = String, Path)),
+    responses((status = 200))
+)]
+pub async fn authority(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project = parse_project(&state, &project)?;
+    let rows = state
+        .with_store(|s| s.subject_authorities(project))
+        .map_err(|e| map_authority(&state, e))?;
+    let subjects: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "subject": row.subject,
+                "origin": row.origin,
+                "authority": row.authority,
+                "revision": row.revision.get(),
+                "source_frozen_at": row.source_frozen_at,
+                "final_import_hash": row.final_import_hash,
+                "readback_hash": row.readback_hash,
+                "switched_at": row.switched_at,
+            })
+        })
+        .collect();
     Ok(Json(
-        serde_json::json!({"realm_id":state.realm_id(),"agentsroom_writes":"frozen"}),
+        serde_json::json!({"realm_id":state.realm_id(),"subjects":subjects}),
     ))
 }
 #[utoipa::path(
@@ -350,16 +457,50 @@ pub async fn switch(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project = parse_project(&state, &project)?;
-    state
-        .with_store(|s| s.switch_memory_authority(project, &body.source, &body.snapshot_hash))
+    let receipt = state
+        .with_store(|s| {
+            s.switch_project_memory_authority(
+                project,
+                &body.source,
+                &body.snapshot_hash,
+                body.expected_revision,
+            )
+        })
         .map_err(|e| map(&state, e))?;
-    Ok(Json(
-        serde_json::json!({"realm_id":state.realm_id(),"memory_authority":"kontor"}),
-    ))
+    Ok(Json(serde_json::json!({
+        "realm_id": state.realm_id(),
+        "project_id": project,
+        "subject": "memory",
+        "memory_authority": "kontor",
+        "receipt": receipt,
+    })))
 }
 
 fn parse_project(state: &ApiState, text: &str) -> Result<ProjectId, ApiError> {
     ProjectId::parse(text).map_err(|e| ApiError::from_domain(state.realm_id(), &e))
+}
+fn map_authority(state: &ApiState, error: AuthorityError) -> ApiError {
+    match error {
+        AuthorityError::RevisionConflict { current, .. } => ApiError::new(
+            state.realm_id(),
+            ApiErrorCode::RevisionConflict,
+            "the subject authority moved since the caller read it",
+        )
+        .with_revision(AggregateRevision::parse(current).ok()),
+        AuthorityError::NotFound => state.refuse(
+            ApiErrorCode::NotFound,
+            "this project has no declared authority for that subject",
+        ),
+        AuthorityError::Denied { .. } => state.refuse(
+            ApiErrorCode::Forbidden,
+            "the legacy system still owns this project's subject",
+        ),
+        AuthorityError::Domain(e) => ApiError::from_domain(state.realm_id(), &e),
+        _ => state.refuse(
+            ApiErrorCode::InvalidRequest,
+            "the subject authority operation was refused",
+        ),
+    }
 }
 fn map(state: &ApiState, error: MemoryError) -> ApiError {
     match error {

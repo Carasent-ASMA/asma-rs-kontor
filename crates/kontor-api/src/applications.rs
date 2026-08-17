@@ -42,6 +42,7 @@ use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
+use kontor_core::authority::{SubjectAuthority, SubjectOrigin};
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
     ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId,
@@ -1379,6 +1380,18 @@ pub struct EnsureProjectRequest {
     /// Canonical absolute root path. The natural identity.
     #[schema(value_type = String)]
     pub root_path: ExternalName,
+    /// Where this project's memory comes from. Immutable once the project exists.
+    ///
+    /// Stated explicitly, per subject, because it is the one fact nothing else can
+    /// supply: whether a project's memory has an AgentsRoom original waiting to be
+    /// imported is knowledge the operator has and Kontor cannot observe. A default
+    /// would either make every legacy project silently writable or demand a
+    /// cutover ceremony from every fresh one.
+    #[schema(value_type = String)]
+    pub memory_origin: SubjectOrigin,
+    /// Where this project's backlog comes from. Immutable once the project exists.
+    #[schema(value_type = String)]
+    pub backlog_origin: SubjectOrigin,
 }
 
 /// One project, as a bootstrap caller sees it.
@@ -1401,9 +1414,31 @@ pub struct ProjectDto {
     pub revision: AggregateRevision,
     /// Whether this call created it.
     pub applied: AppliedDto,
+    /// Where its memory comes from, and who may write it now.
+    pub memory: SubjectAuthorityDto,
+    /// Where its backlog comes from, and who may write it now.
+    pub backlog: SubjectAuthorityDto,
     /// When it was created.
     #[schema(value_type = String, format = DateTime)]
     pub created_at: Timestamp,
+}
+
+/// One subject's declared origin and current authority.
+///
+/// Reported on the project itself so a caller learns from `projects:ensure`
+/// whether it may write yet, rather than discovering it from the first refused
+/// memory or backlog write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SubjectAuthorityDto {
+    /// How this subject's facts entered. Immutable.
+    #[schema(value_type = String)]
+    pub origin: SubjectOrigin,
+    /// Who may write it now.
+    #[schema(value_type = String)]
+    pub authority: SubjectAuthority,
+    /// The revision an attestation or switch must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
 }
 
 // ---------------------------------------------------------------------------

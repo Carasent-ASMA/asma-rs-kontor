@@ -426,6 +426,13 @@ fn account_profile_revision(
 }
 
 impl ProjectRepository for SqliteStore {
+    /// Create a project whose memory and backlog are Kontor's own.
+    ///
+    /// [`NewProject`] carries no provenance, and a project created directly
+    /// through the repository has none to carry: its facts start here. Declaring
+    /// a subject as still belonging to AgentsRoom is the supported bootstrap's
+    /// job — `projects:ensure` takes both origins explicitly — so this primitive
+    /// records the only origin it can honestly claim rather than guessing.
     fn create_project(&self, request: &NewProject) -> RepositoryResult<Project> {
         let transaction = self.begin()?;
         transaction
@@ -440,6 +447,12 @@ impl ProjectRepository for SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        crate::authority::create_subject_authorities(
+            &transaction,
+            request.id,
+            crate::authority::SubjectOrigins::native(),
+        )
+        .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(Project {
             id: request.id,
