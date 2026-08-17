@@ -10944,15 +10944,11 @@ async fn a_contract_only_topology_route_refuses_instead_of_reporting_success() {
 
     for (call, tier) in [
         (
-            Call::get(format!(
-                "/v1/catalog/role-catalogs/{catalog}/1"
-            )),
+            Call::get(format!("/v1/catalog/role-catalogs/{catalog}/1")),
             "observer",
         ),
         (
-            Call::get(format!(
-                "/v1/catalog/role-catalogs/{catalog}/1/roles/lsa"
-            )),
+            Call::get(format!("/v1/catalog/role-catalogs/{catalog}/1/roles/lsa")),
             "observer",
         ),
         (

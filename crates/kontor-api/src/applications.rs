@@ -2819,7 +2819,9 @@ pub async fn draft_topology_spec(
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     Ok(Json(
-        state.applications().draft_topology_spec(project_id, &request)?,
+        state
+            .applications()
+            .draft_topology_spec(project_id, &request)?,
     ))
 }
 
@@ -2900,7 +2902,9 @@ pub async fn topology_spec(
     let spec_id = parse_id(&state, TopologySpecId::parse(&spec_id))?;
     let version = parse_id(&state, SpecVersion::parse(version))?;
     Ok(Json(
-        state.applications().topology_spec(project_id, spec_id, version)?,
+        state
+            .applications()
+            .topology_spec(project_id, spec_id, version)?,
     ))
 }
 
@@ -2921,7 +2925,9 @@ pub async fn role_catalog(
     caller.require(&state, CallerCapability::Observer)?;
     let catalog_id = parse_id(&state, RoleCatalogId::parse(&catalog_id))?;
     let version = parse_id(&state, SpecVersion::parse(version))?;
-    Ok(Json(state.applications().role_catalog(catalog_id, version)?))
+    Ok(Json(
+        state.applications().role_catalog(catalog_id, version)?,
+    ))
 }
 
 /// One resolved role from one catalog revision.
