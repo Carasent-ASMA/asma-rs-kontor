@@ -2223,6 +2223,252 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Every controlled code one epic's pinned revisions define, sorted and server-owned.",
     },
+    // ---- Semantic topology: a scope is named, never a native shape ---------
+    ToolSpec {
+        name: "kontor_topology_inspect",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/topology:inspect",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            opt(
+                "epic_id",
+                Place::Query,
+                ArgType::MiniProjectId,
+                "Narrow to one epic's pinned subgraph.",
+            ),
+        ],
+        about: "The stored authoritative topology, with each node's derived and observed shape.",
+    },
+    ToolSpec {
+        name: "kontor_topology_drift",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology:drift",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "target",
+                Place::Body,
+                ArgType::Json,
+                "The semantic scope: a project root, Quick session, epic, epic control, ticket, \
+                 Advisor or Committee consultation.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Read the exact native identities back and record what was observed.",
+    },
+    ToolSpec {
+        name: "kontor_topology_ensure",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology:ensure",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "target",
+                Place::Body,
+                ArgType::Json,
+                "The semantic scope: a project root, Quick session, epic, epic control, ticket, \
+                 Advisor or Committee consultation.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Ensure the logical nodes one semantic scope needs. No native effect.",
+    },
+    ToolSpec {
+        name: "kontor_topology_materialize",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology:materialize",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "target",
+                Place::Body,
+                ArgType::Json,
+                "The semantic scope: a project root, Quick session, epic, epic control, ticket, \
+                 Advisor or Committee consultation.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Materialize or reconcile an ensured scope through the admission path.",
+    },
+    ToolSpec {
+        name: "kontor_topology_retire",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "topology_node_id",
+                Place::Path,
+                ArgType::TopologyNodeId,
+                "The node a projection returned.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why the node is leaving service. Recorded, never interpreted.",
+            ),
+        ],
+        about: "Retire one already-returned node after child and seat policy checks.",
+    },
+    ToolSpec {
+        name: "kontor_topology_archive",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "topology_node_id",
+                Place::Path,
+                ArgType::TopologyNodeId,
+                "The node a projection returned.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why the node is leaving service. Recorded, never interpreted.",
+            ),
+        ],
+        about: "Archive one already-retired node after exact readback.",
+    },
+    ToolSpec {
+        name: "kontor_topology_upgrade_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The epic whose pin would move.",
+            ),
+            req(
+                "target_spec",
+                Place::Body,
+                ArgType::Json,
+                "An `{id, version}` published revision to diff against.",
+            ),
+        ],
+        about: "What moving one epic's pinned specification would do. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_topology_upgrade_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The epic whose pin moves.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Apply the named upgrade preview and return the new immutable pin.",
+    },
 ];
 
 /// The two connector reads are scoped the same way, so they share one list.

@@ -1412,6 +1412,138 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply the named upgrade preview.",
+        "operationId": "apply_topology_upgrade",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose pin moves",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopologyUpgradeApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedTopologyUpgradeDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "What moving one epic's pinned specification would do.",
+        "operationId": "preview_topology_upgrade",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose pin would move",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopologyUpgradePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopologyUpgradePreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics:apply": {
       "post": {
         "tags": [
@@ -3217,6 +3349,392 @@
         }
       }
     },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Archive one already-retired node.",
+        "operationId": "archive_topology_node",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node a projection returned",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopologyNodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopologyMutationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Retire one already-returned node.",
+        "operationId": "retire_topology_node",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node a projection returned",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopologyNodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopologyMutationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology:drift": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Read the exact native identities back and record what was observed.",
+        "operationId": "drift_topology",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SemanticTopologyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopologyMutationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology:ensure": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Ensure the logical nodes one semantic scope needs.",
+        "operationId": "ensure_topology",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SemanticTopologyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopologyMutationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology:inspect": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "The stored authoritative topology.",
+        "operationId": "inspect_topology",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "query",
+            "description": "Narrow to one epic's pinned subgraph",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopologyProjectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology:materialize": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Materialize or reconcile an ensured scope.",
+        "operationId": "materialize_topology",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SemanticTopologyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopologyMutationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "A runtime could not be reached"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/triggers/{trigger}/{version}": {
       "get": {
         "tags": [
@@ -4213,6 +4731,29 @@
               "null"
             ],
             "description": "Where its work happens, once declared."
+          }
+        }
+      },
+      "AppliedTopologyUpgradeDto": {
+        "type": "object",
+        "description": "One applied upgrade: the new immutable pin and what the topology now is.",
+        "required": [
+          "pinned_spec",
+          "projection",
+          "receipt"
+        ],
+        "properties": {
+          "pinned_spec": {
+            "$ref": "#/components/schemas/PinnedSpecDto",
+            "description": "The pin the epic now holds."
+          },
+          "projection": {
+            "$ref": "#/components/schemas/TopologyProjectionDto",
+            "description": "The topology as it stands after the upgrade."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt the upgrade was committed under."
           }
         }
       },
@@ -6691,27 +7232,6 @@
           }
         }
       },
-      "ReceiptResponse": {
-        "allOf": [
-          {
-            "type": "object",
-            "description": "The Realm-qualified receipt envelope."
-          },
-          {
-            "type": "object",
-            "required": [
-              "replayed"
-            ],
-            "properties": {
-              "replayed": {
-                "type": "boolean",
-                "description": "`true` when the idempotency key had already recorded this exact command,\nso nothing was written and the original receipt is being returned."
-              }
-            }
-          }
-        ],
-        "description": "A receipt, and whether this call is the one that recorded it."
-      },
       "RecordGateRequest": {
         "type": "object",
         "description": "What `gates/{gate_id}:record` is asked for.",
@@ -7644,6 +8164,27 @@
             "description": "The work-profile category to pin, for a profile correction."
           }
         }
+      },
+      "SemanticTopologyRequest": {
+        "type": "object",
+        "description": "What a semantic topology write is asked for.\n\nA scope and the revision the caller read it at, and nothing else. There is\nno field for a node kind, a parent, a native name, a native id or a working\ndirectory — not because they are validated away, but because the type has\nnowhere to put them.",
+        "required": [
+          "target",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller believes is current.",
+            "minimum": 0
+          },
+          "target": {
+            "$ref": "#/components/schemas/SemanticTopologyTargetDto",
+            "description": "The semantic scope to act on."
+          }
+        },
+        "additionalProperties": false
       },
       "SemanticTopologyTargetDto": {
         "oneOf": [
@@ -9003,6 +9544,24 @@
           }
         }
       },
+      "TopologyMutationDto": {
+        "type": "object",
+        "description": "What one semantic topology write produced.",
+        "required": [
+          "projection",
+          "receipt"
+        ],
+        "properties": {
+          "projection": {
+            "$ref": "#/components/schemas/TopologyProjectionDto",
+            "description": "The topology as it stands after the effect."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt the effect was committed under."
+          }
+        }
+      },
       "TopologyNodeDto": {
         "type": "object",
         "description": "One node of a topology projection.",
@@ -9059,6 +9618,64 @@
           "topology_node_id": {
             "type": "string",
             "description": "Durable node identity. The only topology handle a caller may address\nback, and only for the operations that take one."
+          }
+        }
+      },
+      "TopologyNodeRequest": {
+        "type": "object",
+        "description": "What addressing one already-returned node is asked for.",
+        "required": [
+          "expected_revision",
+          "reason"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The node's revision the caller believes is current.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the node is being retired or archived. Recorded, never interpreted."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TopologyProjectionDto": {
+        "type": "object",
+        "description": "One project's authoritative topology, as stored.\n\nThe nodes carry the derived native shape and, where anything has been read\nback, the exact native identity observed. Both are evidence: their presence\nin an answer does not make them legal in a request, which is what keeps the\nmodel-facing boundary semantic.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "pinned_spec",
+          "nodes",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TopologyNodeDto"
+            },
+            "description": "Every node in the addressed scope, parents before children."
+          },
+          "pinned_spec": {
+            "$ref": "#/components/schemas/PinnedSpecDto",
+            "description": "The exact immutable specification these nodes are pinned to."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project whose topology this is."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was read in."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
           }
         }
       },
@@ -9172,6 +9789,118 @@
             "description": "Every violation, in a stable order. Empty means publishable."
           }
         }
+      },
+      "TopologyUpgradeApplyRequest": {
+        "type": "object",
+        "description": "What applying a named upgrade preview is asked for.",
+        "required": [
+          "preview_hash",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epic revision the caller believes is current.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the preview answered with."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TopologyUpgradeEffectDto": {
+        "type": "object",
+        "description": "One node-, seat- or native-level effect an upgrade would have.",
+        "required": [
+          "subject",
+          "effect",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "One line a human can read."
+          },
+          "effect": {
+            "type": "string",
+            "description": "What would happen, in the server's own vocabulary."
+          },
+          "subject": {
+            "type": "string",
+            "description": "What the effect is about: a node, a seat or a native container."
+          },
+          "topology_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node it concerns, when it concerns one."
+          }
+        }
+      },
+      "TopologyUpgradePreviewDto": {
+        "type": "object",
+        "description": "What an upgrade would do, computed and committed nowhere.\n\nA preview is a read: it takes no idempotency key, and it hands back a hash\nthe apply must name. The apply revalidates anyway — a hash proves the caller\nis applying the diff it was shown, not that the world still looks that way.",
+        "required": [
+          "realm_id",
+          "epic_id",
+          "current_spec",
+          "target_spec",
+          "effects",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "current_spec": {
+            "$ref": "#/components/schemas/PinnedSpecDto",
+            "description": "The pin as it stands."
+          },
+          "effects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TopologyUpgradeEffectDto"
+            },
+            "description": "Every effect, in a stable order."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "The epic whose pin would move."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding apply must name."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that computed it."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this preview was computed at."
+          },
+          "target_spec": {
+            "$ref": "#/components/schemas/PinnedSpecDto",
+            "description": "The pin it would move to."
+          }
+        }
+      },
+      "TopologyUpgradePreviewRequest": {
+        "type": "object",
+        "description": "What a pinned-specification upgrade is previewed against.",
+        "required": [
+          "target_spec"
+        ],
+        "properties": {
+          "target_spec": {
+            "$ref": "#/components/schemas/RevisionRefDto",
+            "description": "The published revision to diff the epic's current pin against."
+          }
+        },
+        "additionalProperties": false
       },
       "TriggerSpecDto": {
         "type": "object",

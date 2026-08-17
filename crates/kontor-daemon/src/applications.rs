@@ -40,6 +40,11 @@ use kontor_api::applications::{
     WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
+    AppliedTopologyUpgradeDto, SemanticTopologyRequest, TopologyMutationDto, TopologyNodeRequest,
+    TopologyProjectionDto, TopologyUpgradeApplyRequest, TopologyUpgradePreviewDto,
+    TopologyUpgradePreviewRequest,
+};
+use kontor_api::applications::{
     AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
     ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto, ProfilePhaseDto, ProfileValidationDto,
     RegisterPackRequest, ReplaceSeatRequest, ReplacedSeatDto, ResolveConflictRequest,
@@ -2854,6 +2859,111 @@ impl ApplicationOperations for Services {
         Err(self.deny(
             ApiErrorCode::Unavailable,
             "server-owned code help is not composed in this build",
+        ))
+    }
+
+    // -- Semantic topology --------------------------------------------------
+    //
+    // These reuse OP-02's capability-dispatched materializer and the OP-01
+    // store rather than growing a second path to a runtime; that composition
+    // is not wired here yet, so each refuses before any effect. Materialize is
+    // the only one of the family that may ever reach a runtime at all.
+
+    fn inspect_topology(
+        &self,
+        _project_id: ProjectId,
+        _epic_id: Option<MiniProjectId>,
+    ) -> Result<TopologyProjectionDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the stored topology projection is not composed in this build",
+        ))
+    }
+
+    async fn drift_topology(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _request: &SemanticTopologyRequest,
+    ) -> Result<TopologyMutationDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "native topology readback is not composed in this build",
+        ))
+    }
+
+    async fn ensure_topology(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _request: &SemanticTopologyRequest,
+    ) -> Result<TopologyMutationDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "semantic topology placement is not composed in this build",
+        ))
+    }
+
+    async fn materialize_topology(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _request: &SemanticTopologyRequest,
+    ) -> Result<TopologyMutationDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "semantic topology materialization is not composed in this build",
+        ))
+    }
+
+    async fn retire_topology_node(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _topology_node_id: TopologyNodeId,
+        _request: &TopologyNodeRequest,
+    ) -> Result<TopologyMutationDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "topology node retirement is not composed in this build",
+        ))
+    }
+
+    async fn archive_topology_node(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _topology_node_id: TopologyNodeId,
+        _request: &TopologyNodeRequest,
+    ) -> Result<TopologyMutationDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "topology node archival is not composed in this build",
+        ))
+    }
+
+    fn preview_topology_upgrade(
+        &self,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+        _request: &TopologyUpgradePreviewRequest,
+    ) -> Result<TopologyUpgradePreviewDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "topology specification upgrade is not composed in this build",
+        ))
+    }
+
+    async fn apply_topology_upgrade(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+        _request: &TopologyUpgradeApplyRequest,
+    ) -> Result<AppliedTopologyUpgradeDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "topology specification upgrade is not composed in this build",
         ))
     }
 

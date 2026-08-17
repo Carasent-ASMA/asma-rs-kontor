@@ -284,6 +284,42 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/epics/{epic_id}/code-help",
             get(applications::code_help),
         )
+        // Semantic topology. A caller names a scope Kontor already owns; the
+        // server derives the kind, the parent and the native shape from the
+        // pinned specification. Inspect is a stored read; drift is a write
+        // because it records the raw readback before deriving disagreement.
+        .route(
+            "/v1/projects/{project_id}/topology:inspect",
+            get(applications::inspect_topology),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology:drift",
+            post(applications::drift_topology),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology:ensure",
+            post(applications::ensure_topology),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology:materialize",
+            post(applications::materialize_topology),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire",
+            post(applications::retire_topology_node),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive",
+            post(applications::archive_topology_node),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
+            post(applications::preview_topology_upgrade),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply",
+            post(applications::apply_topology_upgrade),
+        )
         .route(
             "/v1/projects/{project_id}/provider-account-profiles",
             get(applications::account_profiles),

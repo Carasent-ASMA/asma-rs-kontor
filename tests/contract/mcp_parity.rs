@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        71,
+        79,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        72,
+        80,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -573,6 +573,18 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_role_catalog_get", CallerTier::Observer),
         ("kontor_role_get", CallerTier::Observer),
         ("kontor_code_help_get", CallerTier::Observer),
+        // KON-OP-03: naming a semantic scope is operator work — it is asking
+        // Kontor to place the sessions the work already implies. Moving an
+        // epic's pinned specification is not: it changes what kinds may exist
+        // for work already running, so both halves of the upgrade are admin.
+        ("kontor_topology_inspect", CallerTier::Observer),
+        ("kontor_topology_drift", CallerTier::Operator),
+        ("kontor_topology_ensure", CallerTier::Operator),
+        ("kontor_topology_materialize", CallerTier::Operator),
+        ("kontor_topology_retire", CallerTier::Operator),
+        ("kontor_topology_archive", CallerTier::Operator),
+        ("kontor_topology_upgrade_preview", CallerTier::Admin),
+        ("kontor_topology_upgrade_apply", CallerTier::Admin),
     ]);
     for tool in REGISTRY {
         assert_eq!(

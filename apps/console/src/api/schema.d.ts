@@ -540,6 +540,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply the named upgrade preview. */
+        post: operations["apply_topology_upgrade"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** What moving one epic's pinned specification would do. */
+        post: operations["preview_topology_upgrade"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics:apply": {
         parameters: {
             query?: never;
@@ -1093,6 +1127,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive one already-retired node. */
+        post: operations["archive_topology_node"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retire one already-returned node. */
+        post: operations["retire_topology_node"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology:drift": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read the exact native identities back and record what was observed. */
+        post: operations["drift_topology"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology:ensure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ensure the logical nodes one semantic scope needs. */
+        post: operations["ensure_topology"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology:inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The stored authoritative topology. */
+        get: operations["inspect_topology"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology:materialize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Materialize or reconcile an ensured scope. */
+        post: operations["materialize_topology"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/triggers/{trigger}/{version}": {
         parameters: {
             query?: never;
@@ -1565,6 +1701,15 @@ export interface components {
             workflow_id: string;
             /** @description Where its work happens, once declared. */
             worktree?: string | null;
+        };
+        /** @description One applied upgrade: the new immutable pin and what the topology now is. */
+        AppliedTopologyUpgradeDto: {
+            /** @description The pin the epic now holds. */
+            pinned_spec: components["schemas"]["PinnedSpecDto"];
+            /** @description The topology as it stands after the upgrade. */
+            projection: components["schemas"]["TopologyProjectionDto"];
+            /** @description The receipt the upgrade was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
         };
         /**
          * @description What `epics:apply` is asked for.
@@ -2798,14 +2943,6 @@ export interface components {
              */
             updated_at: string;
         };
-        /** @description A receipt, and whether this call is the one that recorded it. */
-        ReceiptResponse: Record<string, never> & {
-            /**
-             * @description `true` when the idempotency key had already recorded this exact command,
-             *     so nothing was written and the original receipt is being returned.
-             */
-            replayed: boolean;
-        };
         /** @description What `gates/{gate_id}:record` is asked for. */
         RecordGateRequest: {
             /** @description The account profile recording it. */
@@ -3273,6 +3410,23 @@ export interface components {
             team_template?: null | components["schemas"]["RevisionRefDto"];
             /** @description The work-profile category to pin, for a profile correction. */
             work_profile_category?: string | null;
+        };
+        /**
+         * @description What a semantic topology write is asked for.
+         *
+         *     A scope and the revision the caller read it at, and nothing else. There is
+         *     no field for a node kind, a parent, a native name, a native id or a working
+         *     directory — not because they are validated away, but because the type has
+         *     nowhere to put them.
+         */
+        SemanticTopologyRequest: {
+            /**
+             * Format: int64
+             * @description The project revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The semantic scope to act on. */
+            target: components["schemas"]["SemanticTopologyTargetDto"];
         };
         /**
          * @description The scope a semantic topology operation acts on.
@@ -3916,6 +4070,13 @@ export interface components {
             expected_revision: number;
             reason: string;
         };
+        /** @description What one semantic topology write produced. */
+        TopologyMutationDto: {
+            /** @description The topology as it stands after the effect. */
+            projection: components["schemas"]["TopologyProjectionDto"];
+            /** @description The receipt the effect was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+        };
         /** @description One node of a topology projection. */
         TopologyNodeDto: {
             /** @description The native shape the server derived. */
@@ -3936,6 +4097,39 @@ export interface components {
              *     back, and only for the operations that take one.
              */
             topology_node_id: string;
+        };
+        /** @description What addressing one already-returned node is asked for. */
+        TopologyNodeRequest: {
+            /**
+             * Format: int64
+             * @description The node's revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description Why the node is being retired or archived. Recorded, never interpreted. */
+            reason: string;
+        };
+        /**
+         * @description One project's authoritative topology, as stored.
+         *
+         *     The nodes carry the derived native shape and, where anything has been read
+         *     back, the exact native identity observed. Both are evidence: their presence
+         *     in an answer does not make them legal in a request, which is what keeps the
+         *     model-facing boundary semantic.
+         */
+        TopologyProjectionDto: {
+            /** @description Every node in the addressed scope, parents before children. */
+            nodes: components["schemas"]["TopologyNodeDto"][];
+            /** @description The exact immutable specification these nodes are pinned to. */
+            pinned_spec: components["schemas"]["PinnedSpecDto"];
+            /** @description The project whose topology this is. */
+            project_id: string;
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
         };
         /** @description One seat a topology node hosts, as a projection reports it. */
         TopologySeatDto: {
@@ -3997,6 +4191,58 @@ export interface components {
             validation_hash: string;
             /** @description Every violation, in a stable order. Empty means publishable. */
             violations: string[];
+        };
+        /** @description What applying a named upgrade preview is asked for. */
+        TopologyUpgradeApplyRequest: {
+            /**
+             * Format: int64
+             * @description The epic revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The hash the preview answered with. */
+            preview_hash: string;
+        };
+        /** @description One node-, seat- or native-level effect an upgrade would have. */
+        TopologyUpgradeEffectDto: {
+            /** @description One line a human can read. */
+            detail: string;
+            /** @description What would happen, in the server's own vocabulary. */
+            effect: string;
+            /** @description What the effect is about: a node, a seat or a native container. */
+            subject: string;
+            /** @description The node it concerns, when it concerns one. */
+            topology_node_id?: string | null;
+        };
+        /**
+         * @description What an upgrade would do, computed and committed nowhere.
+         *
+         *     A preview is a read: it takes no idempotency key, and it hands back a hash
+         *     the apply must name. The apply revalidates anyway — a hash proves the caller
+         *     is applying the diff it was shown, not that the world still looks that way.
+         */
+        TopologyUpgradePreviewDto: {
+            /** @description The pin as it stands. */
+            current_spec: components["schemas"]["PinnedSpecDto"];
+            /** @description Every effect, in a stable order. */
+            effects: components["schemas"]["TopologyUpgradeEffectDto"][];
+            /** @description The epic whose pin would move. */
+            epic_id: string;
+            /** @description The hash the corresponding apply must name. */
+            preview_hash: string;
+            /** @description The Realm that computed it. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The position this preview was computed at.
+             */
+            snapshot_cursor: number;
+            /** @description The pin it would move to. */
+            target_spec: components["schemas"]["PinnedSpecDto"];
+        };
+        /** @description What a pinned-specification upgrade is previewed against. */
+        TopologyUpgradePreviewRequest: {
+            /** @description The published revision to diff the epic's current pin against. */
+            target_spec: components["schemas"]["RevisionRefDto"];
         };
         /**
          * @description One pinned trigger revision, as an operator reads it back.
@@ -5348,6 +5594,107 @@ export interface operations {
             };
             /** @description Startup reconciliation has not finished */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_topology_upgrade: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose pin moves */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TopologyUpgradeApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedTopologyUpgradeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_topology_upgrade: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose pin would move */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TopologyUpgradePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyUpgradePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6716,6 +7063,325 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    archive_topology_node: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The node a projection returned */
+                topology_node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TopologyNodeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyMutationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retire_topology_node: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The node a projection returned */
+                topology_node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TopologyNodeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyMutationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    drift_topology: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SemanticTopologyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyMutationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ensure_topology: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SemanticTopologyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyMutationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    inspect_topology: {
+        parameters: {
+            query?: {
+                /** @description Narrow to one epic's pinned subgraph */
+                epic_id?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyProjectionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    materialize_topology: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SemanticTopologyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyMutationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A runtime could not be reached */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

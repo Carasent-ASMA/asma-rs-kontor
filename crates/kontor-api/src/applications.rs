@@ -40,7 +40,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
@@ -513,6 +513,151 @@ pub struct RoleCatalogDto {
     /// The position this read is consistent with.
     #[schema(value_type = i64)]
     pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+// ---------------------------------------------------------------------------
+// Semantic topology
+// ---------------------------------------------------------------------------
+
+/// How far an inspection reaches.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TopologyScopeQuery {
+    /// Narrow to one epic's pinned subgraph. Absent means the whole project.
+    pub epic_id: Option<String>,
+}
+
+/// One project's authoritative topology, as stored.
+///
+/// The nodes carry the derived native shape and, where anything has been read
+/// back, the exact native identity observed. Both are evidence: their presence
+/// in an answer does not make them legal in a request, which is what keeps the
+/// model-facing boundary semantic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologyProjectionDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project whose topology this is.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The exact immutable specification these nodes are pinned to.
+    pub pinned_spec: PinnedSpecDto,
+    /// Every node in the addressed scope, parents before children.
+    pub nodes: Vec<TopologyNodeDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// What a semantic topology write is asked for.
+///
+/// A scope and the revision the caller read it at, and nothing else. There is
+/// no field for a node kind, a parent, a native name, a native id or a working
+/// directory — not because they are validated away, but because the type has
+/// nowhere to put them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticTopologyRequest {
+    /// The semantic scope to act on.
+    pub target: SemanticTopologyTargetDto,
+    /// The project revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What addressing one already-returned node is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TopologyNodeRequest {
+    /// The node's revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Why the node is being retired or archived. Recorded, never interpreted.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// What one semantic topology write produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologyMutationDto {
+    /// The topology as it stands after the effect.
+    pub projection: TopologyProjectionDto,
+    /// The receipt the effect was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// What a pinned-specification upgrade is previewed against.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TopologyUpgradePreviewRequest {
+    /// The published revision to diff the epic's current pin against.
+    pub target_spec: RevisionRefDto,
+}
+
+/// One node-, seat- or native-level effect an upgrade would have.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologyUpgradeEffectDto {
+    /// What the effect is about: a node, a seat or a native container.
+    pub subject: String,
+    /// The node it concerns, when it concerns one.
+    #[schema(value_type = Option<String>)]
+    pub topology_node_id: Option<TopologyNodeId>,
+    /// What would happen, in the server's own vocabulary.
+    pub effect: String,
+    /// One line a human can read.
+    #[schema(value_type = String)]
+    pub detail: BoundedText,
+}
+
+/// What an upgrade would do, computed and committed nowhere.
+///
+/// A preview is a read: it takes no idempotency key, and it hands back a hash
+/// the apply must name. The apply revalidates anyway — a hash proves the caller
+/// is applying the diff it was shown, not that the world still looks that way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologyUpgradePreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The epic whose pin would move.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// The pin as it stands.
+    pub current_spec: PinnedSpecDto,
+    /// The pin it would move to.
+    pub target_spec: PinnedSpecDto,
+    /// Every effect, in a stable order.
+    pub effects: Vec<TopologyUpgradeEffectDto>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The position this preview was computed at.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// What applying a named upgrade preview is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TopologyUpgradeApplyRequest {
+    /// The hash the preview answered with.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The epic revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One applied upgrade: the new immutable pin and what the topology now is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedTopologyUpgradeDto {
+    /// The pin the epic now holds.
+    pub pinned_spec: PinnedSpecDto,
+    /// The topology as it stands after the upgrade.
+    pub projection: TopologyProjectionDto,
+    /// The receipt the upgrade was committed under.
+    pub receipt: MutationReceiptDto,
 }
 
 /// Every controlled code one epic's pinned revisions define.
@@ -2372,6 +2517,72 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
     ) -> Result<CodeHelpProjectionDto, ApiError>;
 
+    /// The stored authoritative topology, optionally narrowed to one epic.
+    fn inspect_topology(
+        &self,
+        project_id: ProjectId,
+        epic_id: Option<MiniProjectId>,
+    ) -> Result<TopologyProjectionDto, ApiError>;
+
+    /// Read the exact native identities back and record what was observed.
+    async fn drift_topology(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &SemanticTopologyRequest,
+    ) -> Result<TopologyMutationDto, ApiError>;
+
+    /// Ensure the logical nodes one semantic scope needs. No native effect.
+    async fn ensure_topology(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &SemanticTopologyRequest,
+    ) -> Result<TopologyMutationDto, ApiError>;
+
+    /// Materialize or reconcile an ensured scope through the admission path.
+    async fn materialize_topology(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &SemanticTopologyRequest,
+    ) -> Result<TopologyMutationDto, ApiError>;
+
+    /// Retire one already-returned node after child and seat policy checks.
+    async fn retire_topology_node(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &TopologyNodeRequest,
+    ) -> Result<TopologyMutationDto, ApiError>;
+
+    /// Archive one already-retired node after exact readback.
+    async fn archive_topology_node(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &TopologyNodeRequest,
+    ) -> Result<TopologyMutationDto, ApiError>;
+
+    /// What moving one epic's pinned specification would do. Commits nothing.
+    fn preview_topology_upgrade(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TopologyUpgradePreviewRequest,
+    ) -> Result<TopologyUpgradePreviewDto, ApiError>;
+
+    /// Apply the named preview and return the new immutable pin.
+    async fn apply_topology_upgrade(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TopologyUpgradeApplyRequest,
+    ) -> Result<AppliedTopologyUpgradeDto, ApiError>;
+
     /// Apply one whole epic — graph, links, selections — atomically.
     async fn apply_epic(
         &self,
@@ -3020,6 +3231,236 @@ pub async fn code_help(
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
     Ok(Json(state.applications().code_help(project_id, epic_id)?))
+}
+
+/// The stored authoritative topology.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/topology:inspect", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = Option<String>, Query, description = "Narrow to one epic's pinned subgraph")
+    ),
+    responses((status = 200, body = TopologyProjectionDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn inspect_topology(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Query(query): Query<TopologyScopeQuery>,
+) -> Result<Json<TopologyProjectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = query
+        .epic_id
+        .map(|epic| parse_id(&state, MiniProjectId::parse(&epic)))
+        .transpose()?;
+    Ok(Json(
+        state.applications().inspect_topology(project_id, epic_id)?,
+    ))
+}
+
+/// Read the exact native identities back and record what was observed.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology:drift", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SemanticTopologyRequest,
+    responses((status = 200, body = TopologyMutationDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn drift_topology(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<SemanticTopologyRequest>,
+) -> Result<Json<TopologyMutationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .drift_topology(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Ensure the logical nodes one semantic scope needs.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology:ensure", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SemanticTopologyRequest,
+    responses((status = 200, body = TopologyMutationDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn ensure_topology(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<SemanticTopologyRequest>,
+) -> Result<Json<TopologyMutationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .ensure_topology(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Materialize or reconcile an ensured scope.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology:materialize", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SemanticTopologyRequest,
+    responses(
+        (status = 200, body = TopologyMutationDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "A runtime could not be reached")
+    )
+)]
+pub async fn materialize_topology(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<SemanticTopologyRequest>,
+) -> Result<Json<TopologyMutationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .materialize_topology(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Retire one already-returned node.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node a projection returned"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TopologyNodeRequest,
+    responses((status = 200, body = TopologyMutationDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn retire_topology_node(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TopologyNodeRequest>,
+) -> Result<Json<TopologyMutationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .retire_topology_node(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Archive one already-retired node.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node a projection returned"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TopologyNodeRequest,
+    responses((status = 200, body = TopologyMutationDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn archive_topology_node(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TopologyNodeRequest>,
+) -> Result<Json<TopologyMutationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .archive_topology_node(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// What moving one epic's pinned specification would do.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose pin would move")
+    ),
+    request_body = TopologyUpgradePreviewRequest,
+    responses((status = 200, body = TopologyUpgradePreviewDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn preview_topology_upgrade(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<TopologyUpgradePreviewRequest>,
+) -> Result<Json<TopologyUpgradePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_topology_upgrade(project_id, epic_id, &request)?,
+    ))
+}
+
+/// Apply the named upgrade preview.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose pin moves"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TopologyUpgradeApplyRequest,
+    responses((status = 200, body = AppliedTopologyUpgradeDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn apply_topology_upgrade(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TopologyUpgradeApplyRequest>,
+) -> Result<Json<AppliedTopologyUpgradeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_topology_upgrade(&key, project_id, epic_id, &request)
+            .await?,
+    ))
 }
 
 /// Apply one whole epic atomically.

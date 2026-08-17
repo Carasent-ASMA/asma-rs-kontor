@@ -11215,3 +11215,83 @@ async fn a_team_slot_cannot_carry_a_raw_role_or_a_caller_supplied_title() {
         accepted.body
     );
 }
+
+/// A model names a scope; it never names a native shape.
+///
+/// This is the boundary the whole semantic topology family exists to hold. The
+/// request type has fields for a target and a revision and nothing else, so a
+/// caller cannot state a node kind, a parent, a native id or name, or a working
+/// directory — the server derives every one of those from the pinned
+/// specification. Each of these would be a way for a client to decide where a
+/// session physically lives, which is how a team's roles end up split across
+/// two containers.
+#[tokio::test]
+async fn a_topology_request_cannot_carry_a_kind_a_parent_or_a_native_shape() {
+    let world = World::open().await;
+    let uri = format!("/v1/projects/{}/topology:ensure", world.project);
+    let target = serde_json::json!({"scope": "project_root"});
+
+    for smuggled in [
+        serde_json::json!({"kind_key": "PSW"}),
+        serde_json::json!({"parent_topology_node_id": TopologyNodeId::generate().to_string()}),
+        serde_json::json!({"native_id": "container-1"}),
+        serde_json::json!({"native_name": "kontor-psw"}),
+        serde_json::json!({"cwd": "/tmp/somewhere"}),
+        serde_json::json!({"desired_binding": {"runtime_kind": "fake.runtime"}}),
+    ] {
+        let mut body = serde_json::json!({"target": target, "expected_revision": 1});
+        let (field, value) = smuggled
+            .as_object()
+            .and_then(|object| object.iter().next())
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .expect("one smuggled field");
+        body[&field] = value;
+
+        let answer = Call::post(&uri, &body)
+            .signed_as(&world, "operator")
+            .with_key(format!("smuggle-{field}"))
+            .send(&world)
+            .await;
+        assert_eq!(
+            answer.status, 422,
+            "`{field}` must be refused by the request type, not interpreted: {}",
+            answer.body
+        );
+    }
+
+    // The same request without the smuggled field gets past the wire and lands
+    // on the honest "no service yet", so the refusals above are about the extra
+    // field and not about the shape in general.
+    let clean = Call::post(
+        &uri,
+        &serde_json::json!({"target": target, "expected_revision": 1}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("clean-ensure")
+    .send(&world)
+    .await;
+    assert_eq!(clean.status, 503, "{}", clean.body);
+    assert_eq!(clean.code(), "unavailable");
+}
+
+/// The semantic target is a closed set, not a string the server interprets.
+#[tokio::test]
+async fn an_invented_topology_scope_is_refused() {
+    let world = World::open().await;
+    let answer = Call::post(
+        format!("/v1/projects/{}/topology:ensure", world.project),
+        &serde_json::json!({
+            "target": {"scope": "whatever_i_like"},
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("invented-scope")
+    .send(&world)
+    .await;
+    assert_eq!(
+        answer.status, 422,
+        "a scope outside the closed union must be refused: {}",
+        answer.body
+    );
+}
