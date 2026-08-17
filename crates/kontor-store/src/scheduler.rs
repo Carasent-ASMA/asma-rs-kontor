@@ -440,6 +440,8 @@ impl SqliteStore {
     ///
     /// A lease whose expiry has passed is *not* reported as held: the place is
     /// reclaimable, and the admission that reclaims it is what records the expiry.
+    /// Pre-worktree-retention leases recover the same task's declared tree; new
+    /// leases retain that value directly and therefore never need the fallback.
     ///
     /// # Errors
     /// Backend failures only.
@@ -447,12 +449,17 @@ impl SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT lease.resource_key, lease.worktree_key, team.task_id
+                "SELECT lease.resource_key,
+                        COALESCE(lease.worktree_key, task_tree.worktree),
+                        team.task_id
                  FROM resource_leases AS lease
                  JOIN agent_runs AS run
                    ON run.project_id = lease.project_id AND run.id = lease.agent_run_id
                  JOIN team_runs AS team
                    ON team.project_id = run.project_id AND team.id = run.team_run_id
+                 LEFT JOIN task_worktrees AS task_tree
+                   ON task_tree.project_id = team.project_id
+                  AND task_tree.task_id = team.task_id
                  WHERE lease.lease_kind = 'module'
                    AND lease.released_at IS NULL
                    AND lease.expired_at IS NULL
