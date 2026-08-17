@@ -53,9 +53,18 @@
 //!   the durable leases the admission transaction acquires, never by a value in
 //!   this crate.
 
+pub mod completion;
 pub mod model;
 pub mod ready;
 
+pub use completion::{
+    CommitteeVerdict, CompiledCompletion, CompletionCommand, CompletionEdge,
+    CompletionEdgeCondition, CompletionNode, CompletionNodeKey, CompletionNodeKind,
+    CompletionObservation, CompletionPhase, CompletionProfile, CompletionProfileRef,
+    CompletionRound, CompletionSignal, CompletionState, CompletionTransition, IntegrationRecord,
+    PollingFallback, RemediationApproval, RemediationAuthorization, RemediationRecord,
+    RepositoryOutcome, SignalDelivery, advance, compile, operational_default, outstanding, start,
+};
 pub use model::{
     AccountAdmissionEvidence, AccountCapabilityKey, AccountPin, AdaptiveWindow,
     AdaptiveWindowConfig, AdmissionEventId, AdmittedCandidate, AuthorizationEvidence,
