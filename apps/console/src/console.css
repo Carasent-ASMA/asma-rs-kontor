@@ -721,6 +721,10 @@ td {
   overflow-x: auto;
 }
 
+.project-view .table-scroll table {
+  min-width: 52rem;
+}
+
 .compact-list {
   margin: 0;
   padding-left: 1.25rem;
