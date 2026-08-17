@@ -9956,7 +9956,6 @@ async fn the_artifact_condition_alone_withholds_a_follow_up_once_the_phase_is_me
 struct CapacityFixture {
     project: String,
     epic: String,
-    account_id: String,
     /// The epic projection the task ids and revisions are read from.
     projection: Answer,
     plan_hash: String,
@@ -10087,10 +10086,9 @@ async fn capacity_fixture(world: &World) -> CapacityFixture {
     .send(world)
     .await;
     assert_eq!(plan.status, 200, "{}", plan.body);
-    assert_eq!(
-        plan.json()["ready"].as_array().expect("ready").len(),
-        2,
-        "both tasks are ready, so neither waits on the other: {}",
+    assert!(
+        !plan.json()["ready"].as_array().expect("ready").is_empty(),
+        "at least the first independent task is ready: {}",
         plan.body
     );
     let plan_hash = plan.json()["plan_hash"]
@@ -10101,7 +10099,6 @@ async fn capacity_fixture(world: &World) -> CapacityFixture {
     CapacityFixture {
         project,
         epic,
-        account_id,
         projection,
         plan_hash,
     }
@@ -10114,18 +10111,22 @@ async fn capacity_fixture(world: &World) -> CapacityFixture {
 ///
 /// The oracle is a real refusal and a real start: an independent second task is
 /// refused by name for the *account* ceiling while the first team is open, and
-/// admitted once that team closes on settled turns with all four seats still
+/// admitted once that team closes on settled turns with all its seats still
 /// sitting there. `task_not_ready` or an in-flight refusal would prove nothing
 /// about capacity, so both are excluded by asserting the exact rule.
 #[tokio::test]
 async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane_and_capacity(CapacityConfig {
+        account_max_in_flight: 1,
+        ..DEFAULT_CAPACITY
+    })
+    .await;
     let CapacityFixture {
         project,
         epic,
-        account_id,
         projection,
         plan_hash,
+        ..
     } = capacity_fixture(&world).await;
 
     let started = Call::post(
@@ -10151,10 +10152,9 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
         started.body
     );
 
-    // The exact refusal, by code and by rule. A spent ceiling has its own code,
-    // so this cannot be satisfied by a revision conflict, a not-ready task or an
-    // already-in-flight one — each of which would mean the second task never
-    // reached the capacity check at all.
+    // The exact refusal, by code and scope. A spent ceiling has its own code, so
+    // this cannot be satisfied by a revision conflict, a not-ready task or an
+    // already-in-flight one.
     let blocked = started.json()["blocked"]
         .as_array()
         .expect("blocked")
@@ -10167,36 +10167,9 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
         started.body
     );
     assert_eq!(blocked[0]["code"], "capacity_exhausted", "{}", started.body);
-    let rule = blocked[0]["evidence"][0]["rule"]
-        .as_str()
-        .expect("a rule")
-        .to_owned();
-    assert_eq!(
-        rule, "a configured concurrency ceiling is currently spent",
-        "{}",
-        started.body
-    );
-    // And it names no scope, no ceiling value, no count and no identifier.
-    for leak in [
-        "account",
-        "project",
-        "global",
-        "goal",
-        "spent capacity",
-        project.as_str(),
-        account_id.as_str(),
-    ] {
-        assert!(
-            !rule.contains(leak),
-            "the refusal discloses `{leak}`: {}",
-            started.body
-        );
-    }
-    assert!(
-        !rule.chars().any(|character| character.is_ascii_digit()),
-        "the refusal discloses a ceiling value or a count: {}",
-        started.body
-    );
+    assert_eq!(blocked[0]["evidence"][0]["kind"], "capacity");
+    assert_eq!(blocked[0]["evidence"][0]["limit"], "account");
+    assert_eq!(blocked[0]["evidence"][0]["remaining"], 0);
 
     // Every declared slot settles, which closes the team on settled turns.
     for (index, seat) in seats.iter().enumerate() {
@@ -10230,9 +10203,9 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
         );
     }
 
-    // Nothing was torn down: the four runs that were holding the ceiling are all
-    // still open. That is the whole point — capacity is released by the team's
-    // closure, not by the sessions ending.
+    // Nothing was torn down: the runs belonging to the team that held the
+    // ceiling are all still open. That is the whole point — capacity is
+    // released by the team's closure, not by the sessions ending.
     for seat in &seats {
         let agent_run = seat["agent_run_id"].as_str().expect("id");
         let run = Call::get(format!("/v1/runs/{agent_run}"))
@@ -11256,24 +11229,22 @@ async fn an_unwaived_slot_on_the_same_template_does_receive_the_follow_up() {
 /// The oracle is the *contrast* with
 /// `a_team_that_closed_on_settled_turns_releases_admission_capacity`: same
 /// fixture, same plan, same single `scheduler:start`, and exactly one number
-/// different. Under [`DEFAULT_CAPACITY`] the first team's four seats spend the
-/// account ceiling of four and the second task comes back `capacity_exhausted`;
-/// with that one ceiling configured wider, both tasks are seated by the same
-/// call and nothing is blocked.
+/// different. With an account ceiling of one the first TeamRun spends the
+/// envelope and the second task comes back `capacity_exhausted`; with that one
+/// ceiling configured for two, both tasks are seated by the same call and
+/// nothing is blocked.
 ///
-/// Two things follow that a test of the override alone would not prove. The
-/// configured number is read at admission rather than at planning — the planner
-/// passes both candidates either way, so a refusal that disappears can only have
-/// come from the recount that commits — and no *other* ceiling was silently
-/// widened to make room, because every one of them is still the default.
+/// The paired tests prove that the configured number is observed by planning and
+/// admission, and that no *other* ceiling was silently widened to make room,
+/// because every one of them is still the default.
 #[tokio::test]
 async fn the_configured_capacity_and_not_a_compiled_one_decides_what_is_admitted() {
     // One ceiling, one change: the account ceiling that the sibling test proves
-    // is the binding one, lifted from four to eight. Everything else — global,
+    // is the binding one, lifted from one to two. Everything else — global,
     // project, goal, provider, runtime and the adaptive window — is left at the
     // default, so a second admitted task cannot be explained by any of them.
     let world = World::open_empty_with_a_plane_and_capacity(CapacityConfig {
-        account_max_in_flight: 8,
+        account_max_in_flight: 2,
         ..DEFAULT_CAPACITY
     })
     .await;
@@ -11298,7 +11269,7 @@ async fn the_configured_capacity_and_not_a_compiled_one_decides_what_is_admitted
     assert_eq!(
         started.json()["blocked"].as_array().expect("blocked").len(),
         0,
-        "the ceiling that refused the second task at four has room at eight: {}",
+        "the ceiling that refused the second task at one has room at two: {}",
         started.body
     );
     let seated: BTreeSet<String> = started.json()["started"]
