@@ -17,7 +17,7 @@ const ROLES = [
 ]
 const CORE_TEAM = {
   project_id: 'project-1', realm_id: 'realm-1', revision: 3, snapshot_cursor: 20,
-  seats: [{ role: { catalog_revision: REVISION, role_code: 'LSA', segment: 'leadership', standard_title: 'Lead Software Architect' }, seat_binding_id: 'seat-lsa' }],
+  seats: [{ role: { catalog_revision: REVISION, role_code: 'LSA', segment: 'leadership', standard_title: 'Lead Software Architect' }, presence: 'required', ad_hoc_allowed: true, seat_binding_id: 'seat-lsa' }],
 }
 const PROFILE = { id: 'independent-review', version: 1, name: 'Independent Review', definition_hash: 'profile-hash' }
 
@@ -91,6 +91,8 @@ describe('<ProjectView>', () => {
     expect(apply).toBeDisabled()
     fireEvent.change(within(section).getByLabelText('Role'), { target: { value: 'TPM' } })
     fireEvent.change(within(section).getByLabelText(/Custom seat label/), { target: { value: 'Delivery lead' } })
+    fireEvent.change(within(section).getByLabelText('Epic presence'), { target: { value: 'default' } })
+    fireEvent.click(within(section).getByLabelText('Quick-session eligible'))
     expect((within(section).getByRole('option', { name: /TPM/ }).parentElement as HTMLOptGroupElement).label).toBe('leadership')
     fireEvent.click(within(section).getByRole('button', { name: 'Add to preview' }))
     fireEvent.click(within(section).getByRole('button', { name: 'Preview Core Team' }))
@@ -102,7 +104,15 @@ describe('<ProjectView>', () => {
     await waitFor(() => expect(client.applyCoreTeam).toHaveBeenCalledTimes(1))
     expect(client.applyCoreTeam).toHaveBeenCalledWith(
       'project-1',
-      expect.objectContaining({ expected_revision: 3, preview_hash: 'preview-1', seats: expect.arrayContaining([expect.objectContaining({ role_code: 'TPM', custom_display_name: 'Delivery lead' })]) }),
+      expect.objectContaining({
+        expected_revision: 3,
+        preview_hash: 'preview-1',
+        seats: expect.arrayContaining([expect.objectContaining({
+          presence: 'default',
+          ad_hoc_allowed: true,
+          role: expect.objectContaining({ role_code: 'TPM', custom_display_name: 'Delivery lead' }),
+        })]),
+      }),
       expect.any(String),
     )
     confirm({ core_team: { ...CORE_TEAM, revision: 4 }, receipt: RECEIPT })

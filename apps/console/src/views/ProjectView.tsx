@@ -10,6 +10,7 @@ import type {
   CoreTeam,
   CoreTeamOutcome,
   CoreTeamPreview,
+  CoreTeamSeatSelection,
   EpicProjection,
   MutationReceipt,
   ProfileCatalog,
@@ -323,9 +324,11 @@ function CoreTeamPanel({
   help: readonly CodeHelpEntry[]
 }) {
   const [current, setCurrent] = useState(team)
-  const [seats, setSeats] = useState<RoleSelection[]>([])
+  const [seats, setSeats] = useState<CoreTeamSeatSelection[]>([])
   const [roleCode, setRoleCode] = useState(roles[0]?.role_code ?? '')
   const [label, setLabel] = useState('')
+  const [presence, setPresence] = useState('')
+  const [adHocAllowed, setAdHocAllowed] = useState(false)
   const [preview, setPreview] = useState<CoreTeamPreview | null>(null)
   const [receipt, setReceipt] = useState<MutationReceipt | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -334,17 +337,23 @@ function CoreTeamPanel({
   useEffect(() => {
     setCurrent(team)
     setSeats(team.seats.map((seat) => ({
-      catalog_revision: seat.role.catalog_revision,
-      role_code: seat.role.role_code,
-      ...(seat.role.custom_display_name ? { custom_display_name: seat.role.custom_display_name } : {}),
+      role: {
+        catalog_revision: seat.role.catalog_revision,
+        role_code: seat.role.role_code,
+        ...(seat.role.custom_display_name ? { custom_display_name: seat.role.custom_display_name } : {}),
+      },
+      presence: seat.presence,
+      ad_hoc_allowed: seat.ad_hoc_allowed,
     })))
   }, [team])
 
   const add = (): void => {
     const selection = roleSelection(catalogRevision, roleCode, label)
-    if (!selection) return
-    setSeats((value) => [...value, selection])
+    if (!selection || !presence) return
+    setSeats((value) => [...value, { role: selection, presence, ad_hoc_allowed: adHocAllowed }])
     setLabel('')
+    setPresence('')
+    setAdHocAllowed(false)
     setPreview(null)
   }
 
@@ -356,6 +365,8 @@ function CoreTeamPanel({
           <li key={`${seat.role.role_code}-${seat.seat_binding_id ?? 'unfilled'}`}>
             <CodeHelp code={seat.role.role_code} category="role" entries={help} /> {seat.role.standard_title}
             {seat.role.custom_display_name ? ` · ${seat.role.custom_display_name}` : ''}
+            {' · '}presence <CodeHelp code={seat.presence} entries={help} />
+            {' · '}Quick sessions {seat.ad_hoc_allowed ? 'allowed' : 'not allowed'}
             {' · '}{seat.seat_binding_id ? <code>{seat.seat_binding_id}</code> : 'not materialized'}
           </li>
         ))}
@@ -363,14 +374,18 @@ function CoreTeamPanel({
       <fieldset className="operation-form">
         <legend>New seat / role</legend>
         <RoleFields roles={roles} roleCode={roleCode} onRoleCode={setRoleCode} label={label} onLabel={setLabel} disabled={!catalogRevision} />
-        <button type="button" onClick={add} disabled={busy || !catalogRevision || !roleCode}>Add to preview</button>
+        <label className="field">Epic presence<select required value={presence} onChange={(event) => setPresence(event.target.value)}><option value="">Choose…</option><option value="required">required</option><option value="default">default</option><option value="on_demand">on demand</option></select></label>
+        <label className="check-field"><input type="checkbox" checked={adHocAllowed} onChange={(event) => setAdHocAllowed(event.target.checked)} /> Quick-session eligible</label>
+        <button type="button" onClick={add} disabled={busy || !catalogRevision || !roleCode || !presence}>Add to preview</button>
         {!catalogRevision ? <p className="banner" role="alert">The server projected no role-catalog revision, so a valid selection cannot be written.</p> : null}
       </fieldset>
       {seats.length ? (
         <ol className="compact-list" aria-label="proposed Core Team seats">
           {seats.map((seat, index) => (
-            <li key={`${seat.role_code}-${index}`}>
-              <CodeHelp code={seat.role_code} category="role" entries={help} /> {seat.custom_display_name ?? ''}
+            <li key={`${seat.role.role_code}-${index}`}>
+              <CodeHelp code={seat.role.role_code} category="role" entries={help} /> {seat.role.custom_display_name ?? ''}
+              {' · '}presence <CodeHelp code={seat.presence} entries={help} />
+              {' · '}Quick sessions {seat.ad_hoc_allowed ? 'allowed' : 'not allowed'}
               <button type="button" onClick={() => { setSeats((value) => value.filter((_, at) => at !== index)); setPreview(null) }}>Remove</button>
             </li>
           ))}

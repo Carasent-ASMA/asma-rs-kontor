@@ -758,6 +758,13 @@ td {
   flex: 1 1 24rem;
 }
 
+.check-field {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  min-height: 2rem;
+}
+
 .operation-actions {
   display: flex;
   flex-wrap: wrap;

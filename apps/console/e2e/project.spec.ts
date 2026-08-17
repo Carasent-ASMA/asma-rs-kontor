@@ -22,7 +22,7 @@ async function attach(page: Page): Promise<void> {
           seats: [{ seat_binding_id: 'seat-lsa', role_slot_id: 'lsa', lifecycle: 'active', role: { catalog_revision: REVISION, role_code: 'LSA', segment: 'leadership', standard_title: 'Lead Software Architect' } }],
         }],
       },
-      '/v1/projects/project-1/core-team': { realm_id: REALM, project_id: 'project-1', revision: 2, snapshot_cursor: 21, seats: [{ role: { catalog_revision: REVISION, role_code: 'LSA', segment: 'leadership', standard_title: 'Lead Software Architect' }, seat_binding_id: 'seat-lsa' }] },
+      '/v1/projects/project-1/core-team': { realm_id: REALM, project_id: 'project-1', revision: 2, snapshot_cursor: 21, seats: [{ role: { catalog_revision: REVISION, role_code: 'LSA', segment: 'leadership', standard_title: 'Lead Software Architect' }, presence: 'required', ad_hoc_allowed: true, seat_binding_id: 'seat-lsa' }] },
       '/v1/projects/project-1/quick-roles': { realm_id: REALM, project_id: 'project-1', snapshot_cursor: 21, roles: [{ role_code: 'LSA', standard_title: 'Lead Software Architect', segment: 'leadership', lifecycle: 'active', responsibility_summary: 'Owns architecture.', capability_defaults: ['persistent'] }] },
       '/v1/projects/project-1/capacity': { realm_id: REALM, project_id: 'project-1', snapshot_cursor: 21, accounts: [], active_team_runs: 4, adaptive_streak: 2, adaptive_width: 5, mission_ceiling: 7, last_refusal: 'eighth run refused' },
       '/v1/projects/project-1/epics/epic-1/code-help': { realm_id: REALM, epic_id: 'epic-1', snapshot_cursor: 21, entries: [

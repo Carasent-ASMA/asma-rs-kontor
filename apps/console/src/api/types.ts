@@ -77,6 +77,8 @@ export type CoreTeamPreviewRequest = Schemas['CoreTeamPreviewRequest']
 export type CoreTeamPreview = Schemas['CoreTeamPreviewDto']
 /** Apply an unchanged Core Team preview. */
 export type CoreTeamApplyRequest = Schemas['CoreTeamApplyRequest']
+/** One Core Team role plus its explicit epic-presence policy. */
+export type CoreTeamSeatSelection = Schemas['CoreTeamSeatSelectionDto']
 /** A receipt-backed Core Team write. */
 export type CoreTeamOutcome = Schemas['CoreTeamOutcomeDto']
 /** The roles a Quick session may select. */
