@@ -77,7 +77,8 @@ pub use operational::{
     CoreTeamRevision, CoreTeamSeat, CoreTeamSeatSelection, EpicPresence, OperationalEffects,
     OperationalKinds, OperationalWorkflow, PinnedConfiguration, ProjectSessionBaseBinding,
     PromotionNode, PromotionOutcome, PromotionPlan, PromotionPreview, PromotionSeat,
-    PromotionTarget, QuickSession, QuickSessionRequest, QuickSourceEvidence, SourceDisposition,
+    PromotionTarget, QuickSession, QuickSessionRequest, QuickSourceEvidence, RosterUpgradeOutcome,
+    RosterUpgradePlan, RosterUpgradePreview, SourceDisposition,
 };
 
 pub use run::{

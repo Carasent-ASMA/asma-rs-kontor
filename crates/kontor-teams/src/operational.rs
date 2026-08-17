@@ -404,6 +404,40 @@ pub struct PromotionOutcome {
     pub lsa_seat_binding_id: SeatBindingId,
 }
 
+/// Immutable effects authorized by one explicit epic-roster upgrade preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RosterUpgradePlan {
+    /// Promoted source identifying the concrete epic.
+    pub quick_session_id: QuickSessionId,
+    /// Roster revision currently pinned by the epic.
+    pub from_version: SpecVersion,
+    /// Published project roster revision to pin.
+    pub target: CoreTeamRevision,
+    /// New required/default seats to materialize. Existing seats are reused.
+    pub new_seats: Vec<PromotionSeat>,
+}
+
+/// One roster-upgrade plan and the hash an apply must name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RosterUpgradePreview {
+    /// Immutable plan.
+    pub plan: RosterUpgradePlan,
+    /// Canonical plan hash.
+    pub preview_hash: ContentHash,
+}
+
+/// Result of one explicit roster upgrade.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RosterUpgradeOutcome {
+    /// Roster now pinned by the epic.
+    pub core_team: CoreTeamRevision,
+    /// New seats created by this upgrade.
+    pub materialized_seats: Vec<PromotionSeat>,
+}
+
 /// Semantic side effects owned by topology, runtime and handoff adapters.
 ///
 /// There is intentionally no reparent operation. Promotion moves work through
@@ -419,6 +453,13 @@ pub trait OperationalEffects: Send {
 
     /// Create/reconcile the MiniProject, ESW, ECP and initial seats.
     async fn materialize_epic(&mut self, plan: &PromotionPlan) -> DomainResult<()>;
+
+    /// Materialize only the additional required/default seats in a roster move.
+    async fn materialize_roster(
+        &mut self,
+        mini_project_id: MiniProjectId,
+        seats: &[PromotionSeat],
+    ) -> DomainResult<()>;
 
     /// Deliver one exact immutable handoff to the target LSA seat.
     async fn deliver_handoff(
@@ -449,6 +490,12 @@ struct PromotionApplication {
     outcome: Option<PromotionOutcome>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RosterUpgradeApplication {
+    intent_hash: ContentHash,
+    outcome: Option<RosterUpgradeOutcome>,
+}
+
 /// Durable, serializable OP-04 application state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -463,6 +510,11 @@ pub struct OperationalWorkflow {
     promotion_drafts: BTreeMap<String, PromotionDraft>,
     promotions: BTreeMap<String, PromotionApplication>,
     promotion_keys: BTreeMap<String, String>,
+    epic_rosters: BTreeMap<String, CoreTeamRevision>,
+    epic_seats: BTreeMap<String, Vec<PromotionSeat>>,
+    roster_drafts: BTreeMap<String, RosterUpgradePreview>,
+    roster_upgrades: BTreeMap<String, RosterUpgradeApplication>,
+    roster_upgrade_keys: BTreeMap<String, String>,
 }
 
 impl OperationalWorkflow {
@@ -480,6 +532,11 @@ impl OperationalWorkflow {
             promotion_drafts: BTreeMap::new(),
             promotions: BTreeMap::new(),
             promotion_keys: BTreeMap::new(),
+            epic_rosters: BTreeMap::new(),
+            epic_seats: BTreeMap::new(),
+            roster_drafts: BTreeMap::new(),
+            roster_upgrades: BTreeMap::new(),
+            roster_upgrade_keys: BTreeMap::new(),
         }
     }
 
@@ -850,7 +907,158 @@ impl OperationalWorkflow {
             .get_mut(&quick_text)
             .expect("the promotion application is still present")
             .outcome = Some(outcome.clone());
+        self.epic_rosters
+            .insert(quick_text.clone(), draft.preview.plan.core_team.clone());
+        self.epic_seats
+            .insert(quick_text, draft.preview.plan.seats.clone());
         Ok(outcome)
+    }
+
+    /// Preview an explicit move to the project's current published roster.
+    ///
+    /// Existing seat identities are preserved. Only newly required/default
+    /// roles are planned; removed or newly on-demand roles are not silently
+    /// retired or created.
+    ///
+    /// # Errors
+    /// Rejects an unpromoted source or a target that is not the next published
+    /// project roster revision.
+    pub fn preview_roster_upgrade(
+        &mut self,
+        quick_session_id: QuickSessionId,
+    ) -> DomainResult<RosterUpgradePreview> {
+        let quick_text = quick_session_id.to_string();
+        let current = self.epic_rosters.get(&quick_text).cloned().ok_or_else(|| {
+            DomainError::invalid("RosterUpgrade", "the source has no promoted epic")
+        })?;
+        let project_id = self.quick(quick_session_id)?.project_id;
+        let target = self
+            .core_team(project_id)
+            .cloned()
+            .ok_or(DomainError::MissingAuthority {
+                subject: "Roster upgrade",
+                rule: "the project has no Core Team revision",
+            })?;
+        if current.version.next()? != target.version {
+            return Err(DomainError::invalid(
+                "RosterUpgrade",
+                "the project roster is not the next epic revision",
+            ));
+        }
+        let draft_key = roster_draft_key(quick_session_id, target.version);
+        if let Some(preview) = self.roster_drafts.get(&draft_key) {
+            return Ok(preview.clone());
+        }
+        let existing: BTreeSet<RoleSlotId> = self.epic_seats[&quick_text]
+            .iter()
+            .map(|seat| seat.role_slot_id.clone())
+            .collect();
+        let control_node_id = self.promotion_drafts[&quick_text]
+            .preview
+            .plan
+            .nodes
+            .get(1)
+            .ok_or_else(|| DomainError::invalid("RosterUpgrade", "the epic has no ECP node"))?
+            .id;
+        let new_seats = target
+            .initial_epic_seats()
+            .into_iter()
+            .filter(|seat| !existing.contains(&seat.role_slot_id))
+            .map(|seat| PromotionSeat {
+                id: SeatBindingId::generate(),
+                role_slot_id: seat.role_slot_id,
+                topology_node_id: control_node_id,
+                role: seat.role,
+            })
+            .collect();
+        let plan = RosterUpgradePlan {
+            quick_session_id,
+            from_version: current.version,
+            target,
+            new_seats,
+        };
+        let preview = RosterUpgradePreview {
+            preview_hash: canonical_hash(&plan)?,
+            plan,
+        };
+        self.roster_drafts.insert(draft_key, preview.clone());
+        Ok(preview)
+    }
+
+    /// Apply one named roster upgrade exactly once.
+    ///
+    /// # Errors
+    /// Rejects a changed/reused key, unknown preview or semantic effect refusal.
+    pub async fn apply_roster_upgrade<E: OperationalEffects>(
+        &mut self,
+        key: &IdempotencyKey,
+        preview: &RosterUpgradePreview,
+        effects: &mut E,
+    ) -> DomainResult<RosterUpgradeOutcome> {
+        let draft_key =
+            roster_draft_key(preview.plan.quick_session_id, preview.plan.target.version);
+        if self.roster_drafts.get(&draft_key) != Some(preview) {
+            return Err(DomainError::invalid(
+                "RosterUpgrade",
+                "apply does not match the named preview",
+            ));
+        }
+        let intent_hash = canonical_hash(&(&draft_key, &preview.preview_hash))?;
+        let key_text = key.to_string();
+        if let Some(bound) = self.roster_upgrade_keys.get(&key_text) {
+            if bound != &draft_key || self.roster_upgrades[bound].intent_hash != intent_hash {
+                return Err(reused_key());
+            }
+            if let Some(outcome) = &self.roster_upgrades[bound].outcome {
+                return Ok(outcome.clone());
+            }
+        } else {
+            if self.roster_upgrades.contains_key(&draft_key) {
+                return Err(DomainError::invalid(
+                    "RosterUpgrade",
+                    "the preview is already bound to another apply command",
+                ));
+            }
+            self.roster_upgrades.insert(
+                draft_key.clone(),
+                RosterUpgradeApplication {
+                    intent_hash,
+                    outcome: None,
+                },
+            );
+            self.roster_upgrade_keys.insert(key_text, draft_key.clone());
+        }
+
+        let quick_text = preview.plan.quick_session_id.to_string();
+        let mini_project_id = self.promotions[&quick_text]
+            .outcome
+            .as_ref()
+            .expect("a roster preview requires an applied promotion")
+            .mini_project_id;
+        effects
+            .materialize_roster(mini_project_id, &preview.plan.new_seats)
+            .await?;
+        self.epic_rosters
+            .insert(quick_text.clone(), preview.plan.target.clone());
+        self.epic_seats
+            .get_mut(&quick_text)
+            .expect("the promoted epic seats exist")
+            .extend(preview.plan.new_seats.clone());
+        let outcome = RosterUpgradeOutcome {
+            core_team: preview.plan.target.clone(),
+            materialized_seats: preview.plan.new_seats.clone(),
+        };
+        self.roster_upgrades
+            .get_mut(&draft_key)
+            .expect("the roster application exists")
+            .outcome = Some(outcome.clone());
+        Ok(outcome)
+    }
+
+    /// Read the roster currently pinned by one promoted epic.
+    #[must_use]
+    pub fn epic_roster(&self, quick_session_id: QuickSessionId) -> Option<&CoreTeamRevision> {
+        self.epic_rosters.get(&quick_session_id.to_string())
     }
 
     fn base(&self, project_id: ProjectId) -> DomainResult<&ProjectSessionBaseBinding> {
@@ -945,4 +1153,8 @@ fn canonical_hash<T: Serialize>(value: &T) -> DomainResult<ContentHash> {
 
 fn reused_key() -> DomainError {
     DomainError::invalid("IdempotencyKey", "was already bound to a different command")
+}
+
+fn roster_draft_key(quick_session_id: QuickSessionId, version: SpecVersion) -> String {
+    format!("{quick_session_id}:{}", version.get())
 }

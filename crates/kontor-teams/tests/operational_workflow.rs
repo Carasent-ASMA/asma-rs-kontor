@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use kontor_context::{TestAttempt, TestResult, WorkspaceRef};
 use kontor_core::id::{
     AgentRunId, BoundedText, CanonicalDocument, ContentHash, ContextPackId, ExternalId,
-    ExternalName, IdempotencyKey, ProjectId, RealmId, RoleCatalogId, RoleCode, SCHEMA_VERSION,
-    SeatBindingId, SpecVersion, Timestamp, TopologyKindKey, TopologySpecId,
+    ExternalName, IdempotencyKey, MiniProjectId, ProjectId, RealmId, RoleCatalogId, RoleCode,
+    SCHEMA_VERSION, SeatBindingId, SpecVersion, Timestamp, TopologyKindKey, TopologySpecId,
 };
 use kontor_core::spec::{
     CodeLifecycle, RoleCatalogEntry, RoleCatalogRevision, RoleSegment, TopologySnapshot,
@@ -16,7 +16,8 @@ use kontor_core::{DomainError, DomainResult};
 use kontor_teams::{
     CoreTeamRevision, CoreTeamSeatSelection, EpicPresence, OperationalEffects, OperationalKinds,
     OperationalWorkflow, PinnedConfiguration, ProjectSessionBaseBinding, PromotionPlan,
-    PromotionTarget, QuickSession, QuickSessionRequest, QuickSourceEvidence, SourceDisposition,
+    PromotionSeat, PromotionTarget, QuickSession, QuickSessionRequest, QuickSourceEvidence,
+    SourceDisposition,
 };
 
 fn name(text: &str) -> ExternalName {
@@ -158,10 +159,12 @@ struct FakeEffects {
     mini_projects: BTreeSet<String>,
     nodes: BTreeSet<String>,
     seats: BTreeSet<String>,
+    roster_seats: BTreeSet<String>,
     handoffs: BTreeMap<String, ContentHash>,
     archived: BTreeSet<String>,
     fail_delivery_once: bool,
     materialize_epic_calls: usize,
+    materialize_roster_calls: usize,
 }
 
 #[async_trait]
@@ -188,6 +191,20 @@ impl OperationalEffects for FakeEffects {
             .extend(plan.nodes.iter().map(|node| node.id.to_string()));
         self.seats
             .extend(plan.seats.iter().map(|seat| seat.id.to_string()));
+        Ok(())
+    }
+
+    async fn materialize_roster(
+        &mut self,
+        mini_project_id: MiniProjectId,
+        seats: &[PromotionSeat],
+    ) -> DomainResult<()> {
+        assert!(self.mini_projects.contains(&mini_project_id.to_string()));
+        self.materialize_roster_calls += 1;
+        self.roster_seats
+            .extend(seats.iter().map(|seat| seat.id.to_string()));
+        self.seats
+            .extend(seats.iter().map(|seat| seat.id.to_string()));
         Ok(())
     }
 
@@ -420,6 +437,41 @@ async fn qsw_to_esw_promotion_is_idempotent_and_hands_off_to_the_lsa() {
     assert_eq!(
         effects.handoffs[&outcome.lsa_seat_binding_id.to_string()],
         outcome.handoff_hash
+    );
+
+    let roster_preview = workflow
+        .preview_roster_upgrade(quick.id)
+        .expect("explicit roster-upgrade preview");
+    assert_eq!(roster_preview.plan.from_version, SpecVersion::FIRST);
+    assert_eq!(
+        roster_preview
+            .plan
+            .new_seats
+            .iter()
+            .map(|seat| seat.role.role_code.as_str())
+            .collect::<Vec<_>>(),
+        ["QA"],
+        "only the newly default role is materialized"
+    );
+    let roster_key = IdempotencyKey::parse("upgrade-roster-v2").expect("valid key");
+    let upgraded = workflow
+        .apply_roster_upgrade(&roster_key, &roster_preview, &mut effects)
+        .await
+        .expect("roster upgrade applies");
+    let roster_calls_after_success = effects.materialize_roster_calls;
+    let roster_replay = workflow
+        .apply_roster_upgrade(&roster_key, &roster_preview, &mut effects)
+        .await
+        .expect("roster upgrade acknowledgement replays");
+    assert_eq!(upgraded, roster_replay);
+    assert_eq!(effects.materialize_roster_calls, roster_calls_after_success);
+    assert_eq!(effects.roster_seats.len(), 1);
+    assert_eq!(
+        workflow
+            .epic_roster(quick.id)
+            .expect("upgraded epic roster")
+            .version,
+        SpecVersion::parse(2).expect("version two")
     );
 }
 
