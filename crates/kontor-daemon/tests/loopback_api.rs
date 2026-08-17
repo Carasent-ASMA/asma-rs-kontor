@@ -11259,9 +11259,9 @@ async fn a_topology_request_cannot_carry_a_kind_a_parent_or_a_native_shape() {
         );
     }
 
-    // The same request without the smuggled field gets past the wire and lands
-    // on the honest "no service yet", so the refusals above are about the extra
-    // field and not about the shape in general.
+    // The same request without the smuggled field gets past the wire and
+    // actually ensures the project root, so the refusals above are about the
+    // extra field and not about the shape in general.
     let clean = Call::post(
         &uri,
         &serde_json::json!({"target": target, "expected_revision": 1}),
@@ -11270,8 +11270,7 @@ async fn a_topology_request_cannot_carry_a_kind_a_parent_or_a_native_shape() {
     .with_key("clean-ensure")
     .send(&world)
     .await;
-    assert_eq!(clean.status, 503, "{}", clean.body);
-    assert_eq!(clean.code(), "unavailable");
+    assert_eq!(clean.status, 200, "{}", clean.body);
 }
 
 /// The semantic target is a closed set, not a string the server interprets.
@@ -11383,4 +11382,979 @@ async fn a_successor_contract_refuses_an_under_authorized_caller_first() {
     .await;
     assert_eq!(refused.status, 403, "{}", refused.body);
     assert_eq!(refused.code(), "forbidden");
+}
+
+// ---------------------------------------------------------------------------
+// OP-03 CP2/CP3/CP4 — the composed behaviour, driven through the public API.
+//
+// Every test in this section exercises a *write path*, not a refusal shape.
+// That distinction is the whole point: a complete route table whose operations
+// all answer `unavailable` passes every contract test and admits no work, and
+// the only way to tell the two apart is to make something happen and read it
+// back.
+// ---------------------------------------------------------------------------
+
+/// A Realm with a project, an account profile and an epic, built through the
+/// public operations alone.
+struct Composed {
+    world: World,
+    project: String,
+    project_revision: u64,
+    account: String,
+    epic: String,
+}
+
+async fn compose_realm(root: &str) -> Composed {
+    let world = World::open_empty_with_a_plane().await;
+    world.daemon.reconcile().await;
+
+    let created = ensure_project(&world, "compose-project", "Kontor", root).await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_revision = created.json()["revision"].as_u64().expect("a revision");
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead architect",
+            "harness": "fake.runtime",
+            "credential_alias": "lead-architect",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("compose-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_revision,
+            "Composed epic",
+            &category,
+            serde_json::json!([{"title": "Do the thing"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("compose-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+
+    Composed {
+        world,
+        project,
+        project_revision,
+        account,
+        epic,
+    }
+}
+
+/// Ensuring a scope creates the chain the specification declares.
+///
+/// The caller names an epic's control plane and nothing else. What comes back
+/// is a root, an epic and a control plane — kinds, parents and scoping the
+/// server derived — which is the composed topology path doing its job rather
+/// than a refusal wearing a 200.
+#[tokio::test]
+async fn ensuring_a_control_plane_creates_the_chain_the_specification_declares() {
+    let composed = compose_realm("/tmp/kontor-cp2-chain").await;
+    let world = &composed.world;
+
+    let ensured = Call::post(
+        format!("/v1/projects/{}/topology:ensure", composed.project),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": composed.epic},
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("ensure-control")
+    .send(world)
+    .await;
+    assert_eq!(ensured.status, 200, "{}", ensured.body);
+    assert_eq!(ensured.json()["receipt"]["applied"], "created");
+
+    let kinds: Vec<String> = ensured.json()["projection"]["nodes"]
+        .as_array()
+        .expect("a node array")
+        .iter()
+        .map(|node| node["kind_key"].as_str().expect("a kind").to_owned())
+        .collect();
+    assert!(
+        kinds.contains(&"ESW".to_owned()) && kinds.contains(&"ECP".to_owned()),
+        "the epic and its control plane must both exist: {kinds:?}"
+    );
+
+    // Every node cites the exact specification revision it was placed under.
+    let pinned = &ensured.json()["projection"]["pinned_spec"];
+    assert!(
+        pinned["canonical_hash"]
+            .as_str()
+            .is_some_and(|hash| !hash.is_empty()),
+        "the projection names the exact document it is pinned to: {}",
+        ensured.body
+    );
+
+    // Ensuring again creates nothing. Not "answers the same" — creates nothing:
+    // the node count is what proves it.
+    let again = Call::post(
+        format!("/v1/projects/{}/topology:ensure", composed.project),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": composed.epic},
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("ensure-control-2")
+    .send(world)
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(
+        again.json()["projection"]["nodes"].as_array().map(Vec::len),
+        ensured.json()["projection"]["nodes"]
+            .as_array()
+            .map(Vec::len),
+        "a second ensure must place nothing new"
+    );
+}
+
+/// A replayed key answers from what is durable, and a stale revision writes
+/// nothing.
+#[tokio::test]
+async fn a_semantic_topology_write_survives_replay_and_refuses_a_stale_revision() {
+    let composed = compose_realm("/tmp/kontor-cp2-replay").await;
+    let world = &composed.world;
+    let uri = format!("/v1/projects/{}/topology:ensure", composed.project);
+    let body = serde_json::json!({
+        "target": {"scope": "epic", "epic_id": composed.epic},
+        "expected_revision": composed.project_revision,
+    });
+
+    let first = Call::post(&uri, &body)
+        .signed_as(world, "operator")
+        .with_key("replay-ensure")
+        .send(world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["receipt"]["applied"], "created");
+
+    let replayed = Call::post(&uri, &body)
+        .signed_as(world, "operator")
+        .with_key("replay-ensure")
+        .send(world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["receipt"]["applied"],
+        "unchanged",
+        "a replayed key answers from what is durable rather than writing again"
+    );
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        first.json()["receipt"]["receipt_id"],
+        "and it answers from the *original* receipt"
+    );
+
+    let stale = Call::post(
+        &uri,
+        &serde_json::json!({
+            "target": {"scope": "epic", "epic_id": composed.epic},
+            "expected_revision": composed.project_revision + 7,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("stale-ensure")
+    .send(world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(stale.code(), "revision_conflict");
+}
+
+/// Materializing binds a seat only where the vocabulary allows one.
+///
+/// The epic kind is a native root and hosts nothing; its control plane is a
+/// session host. Both are materialized through the same operation, and the
+/// difference in what comes back is the capability dispatch — not a special
+/// case written for either kind.
+#[tokio::test]
+async fn materializing_binds_a_seat_only_on_a_kind_declared_a_session_host() {
+    let composed = compose_realm("/tmp/kontor-cp2-materialize").await;
+    let world = &composed.world;
+    let uri = format!("/v1/projects/{}/topology:materialize", composed.project);
+
+    for (index, scope) in ["epic", "epic_control"].iter().enumerate() {
+        let answer = Call::post(
+            &uri,
+            &serde_json::json!({
+                "target": {"scope": scope, "epic_id": composed.epic},
+                "expected_revision": composed.project_revision,
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("materialize-{index}"))
+        .send(world)
+        .await;
+        assert_eq!(answer.status, 200, "{scope}: {}", answer.body);
+    }
+
+    let projection = Call::get(format!(
+        "/v1/projects/{}/topology:inspect?epic_id={}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+
+    let nodes = projection.json()["nodes"]
+        .as_array()
+        .expect("nodes")
+        .clone();
+    let seats_on = |kind: &str| -> usize {
+        nodes
+            .iter()
+            .filter(|node| node["kind_key"] == kind)
+            .map(|node| node["seats"].as_array().map_or(0, Vec::len))
+            .sum()
+    };
+    assert_eq!(
+        seats_on("ESW"),
+        0,
+        "an epic is a native root and hosts no session: {}",
+        projection.body
+    );
+    assert_eq!(
+        seats_on("ECP"),
+        1,
+        "the control plane is a session host and holds exactly one control seat: {}",
+        projection.body
+    );
+}
+
+/// A node is retired by the id an answer already returned, and not otherwise.
+#[tokio::test]
+async fn a_node_is_retired_by_the_id_an_answer_returned_and_children_block_it() {
+    let composed = compose_realm("/tmp/kontor-cp2-retire").await;
+    let world = &composed.world;
+
+    let ensured = Call::post(
+        format!("/v1/projects/{}/topology:ensure", composed.project),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": composed.epic},
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("retire-ensure")
+    .send(world)
+    .await;
+    assert_eq!(ensured.status, 200, "{}", ensured.body);
+    let nodes = ensured.json()["projection"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .clone();
+    let node_of = |kind: &str| -> (String, u64) {
+        let node = nodes
+            .iter()
+            .find(|node| node["kind_key"] == kind)
+            .unwrap_or_else(|| panic!("a {kind} node exists: {ensured:?}", ensured = ensured.body));
+        (
+            node["topology_node_id"].as_str().expect("an id").to_owned(),
+            1,
+        )
+    };
+    let (control, control_revision) = node_of("ECP");
+    let (epic_node, epic_revision) = node_of("ESW");
+
+    // The epic still has a live child, so retiring it concludes something that
+    // is not true yet.
+    let blocked = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{epic_node}/retire",
+            composed.project
+        ),
+        &serde_json::json!({"expected_revision": epic_revision, "reason": "done with it"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("retire-epic-early")
+    .send(world)
+    .await;
+    assert_eq!(blocked.status, 409, "{}", blocked.body);
+
+    // The leaf retires, and says so in the projection it returns.
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{control}/retire",
+            composed.project
+        ),
+        &serde_json::json!({"expected_revision": control_revision, "reason": "epic finished"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("retire-control")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let lifecycle = retired.json()["projection"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|node| node["topology_node_id"] == control.as_str())
+        .map(|node| node["lifecycle"].as_str().expect("a lifecycle").to_owned());
+    assert_eq!(lifecycle.as_deref(), Some("retired"), "{}", retired.body);
+
+    // The same revision no longer stands: retirement moved it.
+    let repeat = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{control}/retire",
+            composed.project
+        ),
+        &serde_json::json!({"expected_revision": control_revision, "reason": "again"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("retire-control-again")
+    .send(world)
+    .await;
+    assert_eq!(repeat.status, 409, "{}", repeat.body);
+}
+
+/// A capacity refresh stores the raw reading, not only what was derived.
+#[tokio::test]
+async fn a_capacity_refresh_stores_the_raw_reading_it_derived_from() {
+    let composed = compose_realm("/tmp/kontor-cp3-refresh").await;
+    let world = &composed.world;
+
+    let refreshed = Call::post(
+        format!("/v1/projects/{}/capacity:refresh", composed.project),
+        &serde_json::json!({"account_profile_ids": [composed.account]}),
+    )
+    .signed_as(world, "operator")
+    .with_key("refresh-1")
+    .send(world)
+    .await;
+    assert_eq!(refreshed.status, 200, "{}", refreshed.body);
+
+    let account = refreshed.json()["accounts"]
+        .as_array()
+        .expect("accounts")
+        .iter()
+        .find(|entry| entry["account_profile_id"] == composed.account.as_str())
+        .expect("the refreshed account is in the projection")
+        .clone();
+    let observation = account["observation_id"]
+        .as_str()
+        .expect("the derived answer cites the evidence it came from")
+        .to_owned();
+    assert_eq!(
+        account["available"], true,
+        "the fake runtime proves the account environment: {}",
+        refreshed.body
+    );
+
+    // The raw reading is addressable in its own right, and it is what the
+    // collector saw rather than what the Realm concluded.
+    let evidence = Call::get(format!(
+        "/v1/projects/{}/capacity/observations/{observation}",
+        composed.project
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(evidence.status, 200, "{}", evidence.body);
+    assert_eq!(evidence.json()["available"], true);
+    assert_eq!(evidence.json()["pressure"], false);
+    assert_eq!(
+        evidence.json()["reading"]["probe"]["outcome"],
+        "account_environment_supported",
+        "the stored reading is the collector's, not a re-derivation: {}",
+        evidence.body
+    );
+    // And it carries no endpoint, credential or process identity.
+    for forbidden in ["token", "secret", "keychain", "config_home", "argv", "pid"] {
+        assert!(
+            !evidence.body.contains(forbidden),
+            "a stored reading must not carry `{forbidden}`: {}",
+            evidence.body
+        );
+    }
+}
+
+/// An override stands beside the evidence; it never rewrites it.
+#[tokio::test]
+async fn an_operator_override_never_rewrites_what_the_provider_reported() {
+    let composed = compose_realm("/tmp/kontor-cp3-override").await;
+    let world = &composed.world;
+
+    let refreshed = Call::post(
+        format!("/v1/projects/{}/capacity:refresh", composed.project),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key("override-refresh")
+    .send(world)
+    .await;
+    assert_eq!(refreshed.status, 200, "{}", refreshed.body);
+    let observation =
+        refreshed.json()["accounts"].as_array().expect("accounts")[0]["observation_id"]
+            .as_str()
+            .expect("an observation")
+            .to_owned();
+
+    let overridden = Call::post(
+        format!(
+            "/v1/projects/{}/provider-account-profiles/{}/availability:override",
+            composed.project, composed.account
+        ),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "available": false,
+            "reason": "held back during the incident"
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("override-1")
+    .send(world)
+    .await;
+    assert_eq!(overridden.status, 200, "{}", overridden.body);
+    assert_eq!(overridden.json()["account"]["available"], false);
+    assert_eq!(
+        overridden.json()["account"]["override_reason"],
+        "held back during the incident"
+    );
+
+    // The provider's word is untouched, and still says the opposite.
+    let evidence = Call::get(format!(
+        "/v1/projects/{}/capacity/observations/{observation}",
+        composed.project
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(evidence.status, 200, "{}", evidence.body);
+    assert_eq!(
+        evidence.json()["available"],
+        true,
+        "the operator disagreed; the evidence did not change: {}",
+        evidence.body
+    );
+
+    // A second override under the revision the first consumed is refused.
+    let stale = Call::post(
+        format!(
+            "/v1/projects/{}/provider-account-profiles/{}/availability:override",
+            composed.project, composed.account
+        ),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "available": true,
+            "reason": "and back again"
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("override-2")
+    .send(world)
+    .await;
+    assert_eq!(stale.status, 200, "{}", stale.body);
+    let third = Call::post(
+        format!(
+            "/v1/projects/{}/provider-account-profiles/{}/availability:override",
+            composed.project, composed.account
+        ),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "available": true,
+            "reason": "once more"
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("override-3")
+    .send(world)
+    .await;
+    assert_eq!(third.status, 409, "{}", third.body);
+    assert_eq!(third.code(), "revision_conflict");
+}
+
+/// Nothing in the composed capacity path needs `asma` to exist.
+///
+/// The collector reads the Realm's own configuration and the runtime families
+/// it was composed with. A Realm holding no adapter at all still answers — it
+/// reports the account as unusable, which is what it observed, rather than
+/// failing to answer or reporting an availability nobody proved.
+#[tokio::test]
+async fn a_capacity_refresh_answers_without_any_external_executable() {
+    let world = World::open_unconfigured().await;
+    let created = ensure_project(&world, "absent-1", "Kontor", "/tmp/kontor-cp3-absent").await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead architect",
+            "harness": "fake.runtime",
+            "credential_alias": "lead-architect",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("absent-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+
+    let refreshed = Call::post(
+        format!("/v1/projects/{project}/capacity:refresh"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("absent-refresh")
+    .send(&world)
+    .await;
+    assert_eq!(refreshed.status, 200, "{}", refreshed.body);
+    let entry = refreshed.json()["accounts"].as_array().expect("accounts")[0].clone();
+    assert_eq!(
+        entry["available"], false,
+        "an unconfigured family cannot prove an account: {}",
+        refreshed.body
+    );
+
+    // An absent runtime is not the provider pushing back, so it must not have
+    // narrowed anything.
+    let observation = entry["observation_id"].as_str().expect("an observation");
+    let evidence = Call::get(format!(
+        "/v1/projects/{project}/capacity/observations/{observation}"
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(evidence.json()["pressure"], false, "{}", evidence.body);
+}
+
+/// A scheduling snapshot restores the persisted width instead of starting a
+/// fresh window at four.
+///
+/// The mutant this kills is the one the round-2 review named: an
+/// `AdaptiveWindow::start` in `Services::snapshot`. With it, every plan reports
+/// four however many clean observations have been folded, and the persisted
+/// state is decoration.
+#[tokio::test]
+async fn a_plan_restores_the_persisted_adaptive_width_rather_than_starting_at_four() {
+    let composed = compose_realm("/tmp/kontor-cp4-restore").await;
+    let world = &composed.world;
+
+    let width = |body: &Answer| -> u64 {
+        body.json()["adaptive_width"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a width: {}", body.body))
+    };
+    let streak = |body: &Answer| -> u64 {
+        body.json()["adaptive_streak"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a streak: {}", body.body))
+    };
+
+    let seeded = Call::get(format!("/v1/projects/{}/capacity", composed.project))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(seeded.status, 200, "{}", seeded.body);
+    assert_eq!(
+        width(&seeded),
+        4,
+        "an epic is seeded at the configured start when it is applied"
+    );
+    assert_eq!(streak(&seeded), 0);
+
+    // One clean observation is one sample, not a trend.
+    let first = Call::post(
+        format!("/v1/projects/{}/capacity:refresh", composed.project),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key("cp4-clean-1")
+    .send(world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(width(&first), 4, "one clean reading must not widen it");
+    assert_eq!(streak(&first), 1, "but it is remembered");
+
+    // Replaying it changes nothing at all — not the width, not the trend.
+    let replay = Call::post(
+        format!("/v1/projects/{}/capacity:refresh", composed.project),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key("cp4-clean-1")
+    .send(world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        width(&replay),
+        4,
+        "a replay may not stand in for a second reading"
+    );
+    assert_eq!(streak(&replay), 1);
+
+    // The second *distinct* reading grows it by exactly one step.
+    let second = Call::post(
+        format!("/v1/projects/{}/capacity:refresh", composed.project),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key("cp4-clean-2")
+    .send(world)
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(width(&second), 5, "{}", second.body);
+    assert_eq!(streak(&second), 0, "the trend starts again");
+
+    // And a plan — the production scheduling path — sees the width that was
+    // learned, not a fresh one.
+    let plan = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:plan",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key("cp4-plan")
+    .send(world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+
+    let after = Call::get(format!("/v1/projects/{}/capacity", composed.project))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(
+        width(&after),
+        5,
+        "planning must not reset the window it plans against: {}",
+        after.body
+    );
+}
+
+/// The mission ceiling counts active TeamRun envelopes, once each.
+#[tokio::test]
+async fn the_mission_ceiling_counts_team_runs_and_not_the_seats_they_hold() {
+    let composed = compose_realm("/tmp/kontor-cp4-count").await;
+    let world = &composed.world;
+
+    let capacity = Call::get(format!("/v1/projects/{}/capacity", composed.project))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(capacity.status, 200, "{}", capacity.body);
+    assert_eq!(
+        capacity.json()["mission_ceiling"],
+        7,
+        "the Operational ceiling is seven: {}",
+        capacity.body
+    );
+    assert_eq!(
+        capacity.json()["active_team_runs"],
+        0,
+        "nothing has been admitted yet: {}",
+        capacity.body
+    );
+
+    // Materializing opens a control seat. A seat is not work in flight, and the
+    // count must not move — this is the "counting seats instead of TeamRuns"
+    // shortcut, killed by observation rather than by reading the code.
+    let materialized = Call::post(
+        format!("/v1/projects/{}/topology:materialize", composed.project),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": composed.epic},
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("count-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let seats: usize = materialized.json()["projection"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .map(|node| node["seats"].as_array().map_or(0, Vec::len))
+        .sum();
+    assert!(seats > 0, "a seat was opened: {}", materialized.body);
+
+    let after = Call::get(format!("/v1/projects/{}/capacity", composed.project))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(
+        after.json()["active_team_runs"],
+        0,
+        "an idle seat is a seat waiting to be used, not work being done: {}",
+        after.body
+    );
+}
+
+/// The capacity configuration is a real revision that a stale write cannot move.
+#[tokio::test]
+async fn the_capacity_configuration_reports_the_operational_ceilings_and_guards_its_revision() {
+    let composed = compose_realm("/tmp/kontor-cp3-config").await;
+    let world = &composed.world;
+
+    let current = Call::get("/v1/capacity/configuration")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(current.status, 200, "{}", current.body);
+    assert_eq!(current.json()["ceilings"]["mission_max_in_flight"], 7);
+    assert_eq!(current.json()["ceilings"]["adaptive"]["ceiling"], 7);
+    assert_eq!(current.json()["revision"], 1);
+
+    let mut ceilings = current.json()["ceilings"].clone();
+    ceilings["mission_max_in_flight"] = serde_json::json!(5);
+
+    // A preview commits nothing and names what would narrow.
+    let preview = Call::post(
+        "/v1/capacity/configuration:preview",
+        &serde_json::json!({"ceilings": ceilings, "expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("config-preview")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert!(
+        preview.json()["clamped"]
+            .as_array()
+            .expect("a clamped list")
+            .iter()
+            .any(|entry| entry == "mission_max_in_flight"),
+        "a narrowed ceiling is named: {}",
+        preview.body
+    );
+    let unchanged = Call::get("/v1/capacity/configuration")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(
+        unchanged.json()["revision"],
+        1,
+        "a preview writes nothing: {}",
+        unchanged.body
+    );
+
+    let applied = Call::post(
+        "/v1/capacity/configuration:apply",
+        &serde_json::json!({"ceilings": ceilings, "expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("config-apply")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["ceilings"]["mission_max_in_flight"], 5);
+    assert_eq!(applied.json()["revision"], 1);
+
+    // The same key answers from what is durable rather than conflicting.
+    let replayed = Call::post(
+        "/v1/capacity/configuration:apply",
+        &serde_json::json!({"ceilings": ceilings, "expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("config-apply")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["revision"], 1);
+
+    // A caller still holding revision one is current, and its write advances
+    // the record.
+    let advanced = Call::post(
+        "/v1/capacity/configuration:apply",
+        &serde_json::json!({"ceilings": ceilings, "expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("config-apply-2")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+    assert_eq!(advanced.json()["revision"], 2);
+
+    // A third caller still holding revision one is not.
+    let stale = Call::post(
+        "/v1/capacity/configuration:apply",
+        &serde_json::json!({"ceilings": ceilings, "expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("config-apply-3")
+    .send(world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+}
+
+/// The width a *plan* admits against is the persisted one, not a fresh four.
+///
+/// This is the round-2 defect observed rather than argued: with
+/// `AdaptiveWindow::start` back in `Services::snapshot`, six armed ready tasks
+/// plan four at a time forever, however many clean observations have been
+/// folded. The persisted position is read by `capacity_get` either way, so the
+/// only way to tell the two apart is to count what the scheduler would actually
+/// admit.
+#[tokio::test]
+async fn a_plan_admits_against_the_width_that_was_learned() {
+    let world = World::open_empty_with_a_plane().await;
+    world.daemon.reconcile().await;
+
+    let created = ensure_project(&world, "width-1", "Kontor", "/tmp/kontor-cp4-width").await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("a revision");
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead architect",
+            "harness": "fake.runtime",
+            "credential_alias": "lead-architect",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("width-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    // Six independent tasks: more than the window starts at, fewer than the
+    // mission ceiling, so the window is the only thing that can be capping the
+    // batch.
+    let category = first_category(&world).await;
+    let tasks: Vec<serde_json::Value> = (0..6)
+        .map(|index| serde_json::json!({"title": format!("Task {index}")}))
+        .collect();
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Width epic",
+            &category,
+            serde_json::Value::Array(tasks),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("width-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("a revision");
+    let task_ids: Vec<String> = applied.json()["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .map(|task| task["task_id"].as_str().expect("an id").to_owned())
+        .collect();
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": task_ids,
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 8,
+            "budget": {
+                "max_tokens": 100_000,
+                "max_commands": 500,
+                "max_duration_seconds": 3600,
+                "max_cost_minor_units": 5000,
+                "cost_currency": "NOK"
+            },
+            "granted_by": account_id,
+            "reason": "Fill the window"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("width-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let ready_count = async |key: &str| -> usize {
+        let plan = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+            &serde_json::json!({}),
+        )
+        .signed_as(&world, "operator")
+        .with_key(key)
+        .send(&world)
+        .await;
+        assert_eq!(plan.status, 200, "{}", plan.body);
+        plan.json()["ready"].as_array().expect("a ready set").len()
+    };
+
+    assert_eq!(
+        ready_count("width-plan-1").await,
+        4,
+        "the seeded window admits four"
+    );
+
+    // Two distinct clean observations widen it by exactly one step.
+    for key in ["width-clean-1", "width-clean-2"] {
+        let refreshed = Call::post(
+            format!("/v1/projects/{project}/capacity:refresh"),
+            &serde_json::json!({}),
+        )
+        .signed_as(&world, "operator")
+        .with_key(key)
+        .send(&world)
+        .await;
+        assert_eq!(refreshed.status, 200, "{}", refreshed.body);
+    }
+
+    assert_eq!(
+        ready_count("width-plan-2").await,
+        5,
+        "the plan admits against the width that was learned, not a fresh one"
+    );
+
+    // Nothing already admitted was disturbed by any of this: the plan is a
+    // read, and the six tasks are all still there to be admitted.
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("width-plan-3")
+    .send(&world)
+    .await;
+    let counted = plan.json()["ready"].as_array().expect("ready").len()
+        + plan.json()["blocked"].as_array().expect("blocked").len();
+    assert_eq!(counted, 6, "{}", plan.body);
 }
