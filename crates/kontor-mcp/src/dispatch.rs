@@ -349,6 +349,7 @@ fn check(tool: &'static str, arg: &ArgSpec, value: &serde_json::Value) -> Result
         | ArgType::TopologyNodeId
         | ArgType::SeatBindingId
         | ArgType::RoleCatalogId
+        | ArgType::CapacityObservationId
         | ArgType::OpenKey
         | ArgType::ExternalName
         | ArgType::ExternalId
@@ -435,6 +436,7 @@ fn parse_domain(ty: ArgType, text: &str) -> Result<(), kontor_core::DomainError>
         ArgType::TopologyNodeId => id::TopologyNodeId::parse(text).map(drop),
         ArgType::SeatBindingId => id::SeatBindingId::parse(text).map(drop),
         ArgType::RoleCatalogId => id::RoleCatalogId::parse(text).map(drop),
+        ArgType::CapacityObservationId => id::CapacityObservationId::parse(text).map(drop),
         ArgType::OpenKey => id::validate_open_key("OpenKey", text),
         ArgType::ExternalName => id::ExternalName::parse(text).map(drop),
         ArgType::ExternalId => id::ExternalId::parse(text).map(drop),

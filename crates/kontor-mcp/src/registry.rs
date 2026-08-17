@@ -87,6 +87,8 @@ pub enum ArgType {
     SeatBindingId,
     /// A canonical v7 UUID naming one server-owned role catalog across revisions.
     RoleCatalogId,
+    /// A canonical v7 UUID naming one raw provider/account observation.
+    CapacityObservationId,
     /// An open, deployment-defined key.
     ///
     /// Its lexical rule — lowercase ASCII, digits, `.`, `_`, `-` — is also what
@@ -142,6 +144,7 @@ impl ArgType {
             | Self::TopologyNodeId
             | Self::SeatBindingId
             | Self::RoleCatalogId
+            | Self::CapacityObservationId
             | Self::OpenKey
             | Self::ExternalName
             | Self::ExternalId
@@ -2468,6 +2471,237 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Apply the named upgrade preview and return the new immutable pin.",
+    },
+    // ---- Native capacity: evidence is collected, never asserted ------------
+    ToolSpec {
+        name: "kontor_capacity_config_get",
+        tier: CallerTier::Admin,
+        method: Method::Get,
+        path: "/v1/capacity/configuration",
+        kind: OpKind::Read,
+        args: &[],
+        about: "The current immutable capacity configuration revision and its effective values.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_config_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/capacity/configuration:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "ceilings",
+                Place::Body,
+                ArgType::Json,
+                "The complete set of ceilings to stand up.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The configuration revision the caller read.",
+            ),
+        ],
+        about: "What a full capacity replacement would clamp. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_config_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/capacity/configuration:apply",
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "ceilings",
+                Place::Body,
+                ArgType::Json,
+                "The complete set of ceilings to stand up.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The configuration revision the caller read.",
+            ),
+        ],
+        about: "Apply a full capacity replacement under the expected revision.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/capacity",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "One project's admission picture: availability, active TeamRuns and the adaptive window.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_refresh",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/capacity:refresh",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            opt(
+                "account_profile_ids",
+                Place::Body,
+                ArgType::TextArray,
+                "Configured account profiles to collect. Empty means every one.",
+            ),
+        ],
+        about: "Run the configured native collectors and fold what they report.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_observation_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/capacity/observations/{observation_id}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "observation_id",
+                Place::Path,
+                ArgType::CapacityObservationId,
+                "The raw observation.",
+            ),
+        ],
+        about: "One redacted raw observation and the availability derived from it.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_override",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/availability:override",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "account_profile_id",
+                Place::Path,
+                ArgType::AccountProfileId,
+                "The account profile.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The account revision the caller read.",
+            ),
+            req(
+                "available",
+                Place::Body,
+                ArgType::Bool,
+                "What the operator asserts.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why. Recorded, never interpreted.",
+            ),
+            opt(
+                "expires_at",
+                Place::Body,
+                ArgType::Timestamp,
+                "When the override lapses on its own.",
+            ),
+        ],
+        about: "Stand an operator judgement beside an account's raw evidence, never over it.",
+    },
+    ToolSpec {
+        name: "kontor_seat_attention",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/attention",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The exact binding a projection returned.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The binding revision the caller read.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why the seat is being looked at.",
+            ),
+        ],
+        about: "Observe one exact bound seat and record typed attention evidence.",
+    },
+    ToolSpec {
+        name: "kontor_seat_retire",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The exact binding a projection returned.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The binding revision the caller read.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why the seat is being released.",
+            ),
+        ],
+        about: "Retire and release one exact binding after supported readback; never a scan by name.",
     },
 ];
 

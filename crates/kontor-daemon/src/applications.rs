@@ -53,6 +53,11 @@ use kontor_api::applications::{
     WaiveRoleSlotRequest, WorkProfileDetailDto,
 };
 use kontor_api::applications::{
+    AvailabilityOverrideDto, AvailabilityOverrideRequest, CapacityConfigurationDto,
+    CapacityConfigurationPreviewDto, CapacityConfigurationRequest, CapacityObservationDto,
+    CapacityRefreshRequest, ProjectCapacityDto, SeatBindingOutcomeDto, SeatBindingRequest,
+};
+use kontor_api::applications::{
     CodeHelpProjectionDto, DraftTopologySpecRequest, PublishTopologySpecRequest,
     PublishedTopologySpecDto, RoleCatalogDto, RoleCatalogEntryDto, TopologySpecCandidateDto,
     TopologySpecDocumentDto, TopologySpecValidationDto, ValidateTopologySpecRequest,
@@ -2964,6 +2969,112 @@ impl ApplicationOperations for Services {
         Err(self.deny(
             ApiErrorCode::Unavailable,
             "topology specification upgrade is not composed in this build",
+        ))
+    }
+
+    // -- Native capacity and exact-seat operations ---------------------------
+    //
+    // `kontor-accounts` owns the raw observations, the derived availability and
+    // the adaptive transition; the collectors it needs are not composed here
+    // yet. Every one of these refuses rather than reporting a ceiling or an
+    // availability it has not observed — a fabricated "available" is the one
+    // answer that would let the scheduler admit work against a provider that
+    // never agreed.
+
+    fn capacity_configuration(&self) -> Result<CapacityConfigurationDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "capacity configuration is not composed in this build",
+        ))
+    }
+
+    fn preview_capacity_configuration(
+        &self,
+        _request: &CapacityConfigurationRequest,
+    ) -> Result<CapacityConfigurationPreviewDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "capacity configuration is not composed in this build",
+        ))
+    }
+
+    async fn apply_capacity_configuration(
+        &self,
+        _key: &IdempotencyKey,
+        _request: &CapacityConfigurationRequest,
+    ) -> Result<CapacityConfigurationDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "capacity configuration is not composed in this build",
+        ))
+    }
+
+    fn project_capacity(&self, _project_id: ProjectId) -> Result<ProjectCapacityDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the account-owned capacity projection is not composed in this build",
+        ))
+    }
+
+    async fn refresh_capacity(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _request: &CapacityRefreshRequest,
+    ) -> Result<ProjectCapacityDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "no native capacity collector is composed in this build",
+        ))
+    }
+
+    fn capacity_observation(
+        &self,
+        _project_id: ProjectId,
+        _observation_id: kontor_core::id::CapacityObservationId,
+    ) -> Result<CapacityObservationDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "raw capacity observations are not composed in this build",
+        ))
+    }
+
+    async fn override_availability(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _account_profile_id: AccountProfileId,
+        _request: &AvailabilityOverrideRequest,
+    ) -> Result<AvailabilityOverrideDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "operator availability override is not composed in this build",
+        ))
+    }
+
+    async fn seat_attention(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _seat_binding_id: SeatBindingId,
+        _request: &SeatBindingRequest,
+    ) -> Result<SeatBindingOutcomeDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "exact-seat observation is not composed in this build",
+        ))
+    }
+
+    async fn retire_seat(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _seat_binding_id: SeatBindingId,
+        _request: &SeatBindingRequest,
+    ) -> Result<SeatBindingOutcomeDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "exact-seat retirement is not composed in this build",
         ))
     }
 

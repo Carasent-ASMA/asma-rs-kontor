@@ -516,6 +516,230 @@ pub struct RoleCatalogDto {
 }
 
 // ---------------------------------------------------------------------------
+// Native capacity and exact-seat operations
+// ---------------------------------------------------------------------------
+
+/// The adaptive admission window's configured shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdaptiveWindowDto {
+    /// Where a fresh window starts.
+    pub initial: u32,
+    /// The narrowest it may become under pressure.
+    pub floor: u32,
+    /// The widest it may grow.
+    pub ceiling: u32,
+    /// How much one clean pair of observations widens it.
+    pub growth_step: u32,
+}
+
+/// Every configured concurrency ceiling, as one replaceable document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CapacityCeilingsDto {
+    /// Across the whole realm.
+    pub global_max_in_flight: u32,
+    /// Within one project.
+    pub project_max_in_flight: u32,
+    /// Active admitted non-terminal TeamRun envelopes, counted once each.
+    pub mission_max_in_flight: u32,
+    /// Per provider account.
+    pub account_max_in_flight: u32,
+    /// Per provider.
+    pub provider_max_in_flight: u32,
+    /// Per runtime family.
+    pub runtime_max_in_flight: u32,
+    /// The adaptive window's shape.
+    pub adaptive: AdaptiveWindowDto,
+}
+
+/// The current immutable capacity configuration revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CapacityConfigurationDto {
+    /// The Realm it governs.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The effective values.
+    pub ceilings: CapacityCeilingsDto,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// A full replacement of the capacity configuration.
+///
+/// Whole-document rather than per-field: ceilings constrain one another, and a
+/// partial update would let a caller move one past another without ever seeing
+/// the pair.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CapacityConfigurationRequest {
+    /// The complete set of ceilings to stand up.
+    pub ceilings: CapacityCeilingsDto,
+    /// The configuration revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What a configuration change would do to the windows now open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CapacityConfigurationPreviewDto {
+    /// The Realm it was computed for.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The values as they would stand.
+    pub ceilings: CapacityCeilingsDto,
+    /// Where a currently open window would be clamped, in a stable order.
+    pub clamped: Vec<String>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// One provider account's availability, as the realm currently reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AccountAvailabilityDto {
+    /// The account profile.
+    #[schema(value_type = String)]
+    pub account_profile_id: AccountProfileId,
+    /// The raw observation this was derived from, when one exists.
+    #[schema(value_type = Option<String>)]
+    pub observation_id: Option<kontor_core::id::CapacityObservationId>,
+    /// Whether the realm currently considers it usable.
+    pub available: bool,
+    /// Whether an operator override is standing, and why.
+    #[schema(value_type = Option<String>)]
+    pub override_reason: Option<ExternalName>,
+    /// When any standing override lapses.
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub override_expires_at: Option<Timestamp>,
+}
+
+/// One project's admission picture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProjectCapacityDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Per-account availability, each citing the raw evidence it came from.
+    pub accounts: Vec<AccountAvailabilityDto>,
+    /// Active admitted non-terminal TeamRun envelopes. Counted once each —
+    /// never their seats, and never a persistent idle SeatBinding.
+    pub active_team_runs: u32,
+    /// The mission ceiling those are counted against.
+    pub mission_ceiling: u32,
+    /// The adaptive window's current width.
+    pub adaptive_width: u32,
+    /// Consecutive distinct clean observations since the last widening.
+    pub adaptive_streak: u32,
+    /// The last observation folded into the window.
+    #[schema(value_type = Option<String>)]
+    pub last_observation_id: Option<kontor_core::id::CapacityObservationId>,
+    /// Why the last admission was refused, when one was.
+    #[schema(value_type = Option<String>)]
+    pub last_refusal: Option<BoundedText>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Which configured accounts a refresh should collect from.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CapacityRefreshRequest {
+    /// Configured account profiles to collect. Empty means every one.
+    ///
+    /// Only ids this realm already has a profile for. A refresh cannot name a
+    /// provider, an endpoint or a credential — those are configuration, and a
+    /// request that could carry them would be choosing what to talk to.
+    #[serde(default)]
+    #[schema(value_type = Vec<String>)]
+    pub account_profile_ids: Vec<AccountProfileId>,
+}
+
+/// One raw observation and what was derived from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CapacityObservationDto {
+    /// The Realm it was recorded in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The observation.
+    #[schema(value_type = String)]
+    pub observation_id: kontor_core::id::CapacityObservationId,
+    /// The account it concerns.
+    #[schema(value_type = String)]
+    pub account_profile_id: AccountProfileId,
+    /// When the collector read it.
+    #[schema(value_type = String, format = DateTime)]
+    pub observed_at: Timestamp,
+    /// The collector's redacted wire reading. Never a credential or an endpoint.
+    #[schema(value_type = Object)]
+    pub reading: serde_json::Value,
+    /// What the realm derived from it.
+    pub available: bool,
+    /// Whether the reading indicated pressure.
+    pub pressure: bool,
+}
+
+/// An operator's standing judgement about one account's availability.
+///
+/// It never rewrites the raw observation. Evidence and override are separate
+/// records so a later reader can still see what the provider actually said.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AvailabilityOverrideRequest {
+    /// The account's revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// What the operator asserts.
+    pub available: bool,
+    /// Why. Recorded, never interpreted.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+    /// When the override lapses on its own.
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<Timestamp>,
+}
+
+/// What an override produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AvailabilityOverrideDto {
+    /// The account as it now reads.
+    pub account: AccountAvailabilityDto,
+    /// The receipt the override was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// What addressing one exact seat is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SeatBindingRequest {
+    /// The binding's revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Why the seat is being looked at or released.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// What observing or releasing one exact seat produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SeatBindingOutcomeDto {
+    /// The seat, as it now reads.
+    pub seat: TopologySeatDto,
+    /// What the runtime reported about it, when it answered.
+    pub observed_binding: Option<ObservedBindingDto>,
+    /// The receipt this was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+// ---------------------------------------------------------------------------
 // Semantic topology
 // ---------------------------------------------------------------------------
 
@@ -2583,6 +2807,67 @@ pub trait ApplicationOperations: Send + Sync {
         request: &TopologyUpgradeApplyRequest,
     ) -> Result<AppliedTopologyUpgradeDto, ApiError>;
 
+    /// The current immutable capacity configuration revision.
+    fn capacity_configuration(&self) -> Result<CapacityConfigurationDto, ApiError>;
+
+    /// What a full replacement would do to the windows now open.
+    fn preview_capacity_configuration(
+        &self,
+        request: &CapacityConfigurationRequest,
+    ) -> Result<CapacityConfigurationPreviewDto, ApiError>;
+
+    /// Apply a full replacement under the expected revision.
+    async fn apply_capacity_configuration(
+        &self,
+        key: &IdempotencyKey,
+        request: &CapacityConfigurationRequest,
+    ) -> Result<CapacityConfigurationDto, ApiError>;
+
+    /// One project's admission picture.
+    fn project_capacity(&self, project_id: ProjectId) -> Result<ProjectCapacityDto, ApiError>;
+
+    /// Run the configured native collectors and fold what they report.
+    async fn refresh_capacity(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &CapacityRefreshRequest,
+    ) -> Result<ProjectCapacityDto, ApiError>;
+
+    /// One redacted raw observation and its derived outcome.
+    fn capacity_observation(
+        &self,
+        project_id: ProjectId,
+        observation_id: kontor_core::id::CapacityObservationId,
+    ) -> Result<CapacityObservationDto, ApiError>;
+
+    /// Stand an operator judgement beside the raw evidence, never over it.
+    async fn override_availability(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        account_profile_id: AccountProfileId,
+        request: &AvailabilityOverrideRequest,
+    ) -> Result<AvailabilityOverrideDto, ApiError>;
+
+    /// Observe one exact bound seat and record typed attention evidence.
+    async fn seat_attention(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        request: &SeatBindingRequest,
+    ) -> Result<SeatBindingOutcomeDto, ApiError>;
+
+    /// Retire and release one exact binding after supported readback.
+    async fn retire_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        request: &SeatBindingRequest,
+    ) -> Result<SeatBindingOutcomeDto, ApiError>;
+
     /// Apply one whole epic — graph, links, selections — atomically.
     async fn apply_epic(
         &self,
@@ -3459,6 +3744,228 @@ pub async fn apply_topology_upgrade(
         state
             .applications()
             .apply_topology_upgrade(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// The current immutable capacity configuration.
+#[utoipa::path(
+    get, path = "/v1/capacity/configuration", tag = "applications",
+    responses((status = 200, body = CapacityConfigurationDto), (status = 401), (status = 403))
+)]
+pub async fn capacity_configuration(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<CapacityConfigurationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().capacity_configuration()?))
+}
+
+/// What a full replacement would do to the windows now open.
+#[utoipa::path(
+    post, path = "/v1/capacity/configuration:preview", tag = "applications",
+    request_body = CapacityConfigurationRequest,
+    responses((status = 200, body = CapacityConfigurationPreviewDto), (status = 401), (status = 403))
+)]
+pub async fn preview_capacity_configuration(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Json(request): Json<CapacityConfigurationRequest>,
+) -> Result<Json<CapacityConfigurationPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_capacity_configuration(&request)?,
+    ))
+}
+
+/// Apply a full capacity replacement.
+#[utoipa::path(
+    post, path = "/v1/capacity/configuration:apply", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = CapacityConfigurationRequest,
+    responses((status = 200, body = CapacityConfigurationDto), (status = 401), (status = 403), (status = 409))
+)]
+pub async fn apply_capacity_configuration(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<CapacityConfigurationRequest>,
+) -> Result<Json<CapacityConfigurationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_capacity_configuration(&key, &request)
+            .await?,
+    ))
+}
+
+/// One project's admission picture.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/capacity", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    responses((status = 200, body = ProjectCapacityDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn project_capacity(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProjectCapacityDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().project_capacity(project_id)?))
+}
+
+/// Run the configured native collectors.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/capacity:refresh", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = CapacityRefreshRequest,
+    responses(
+        (status = 200, body = ProjectCapacityDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "A configured collector could not be reached")
+    )
+)]
+pub async fn refresh_capacity(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<CapacityRefreshRequest>,
+) -> Result<Json<ProjectCapacityDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .refresh_capacity(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// One redacted raw observation and its derived outcome.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/capacity/observations/{observation_id}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("observation_id" = String, Path, description = "The raw observation")
+    ),
+    responses((status = 200, body = CapacityObservationDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn capacity_observation(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, observation_id)): Path<(String, String)>,
+) -> Result<Json<CapacityObservationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let observation_id = parse_id(
+        &state,
+        kontor_core::id::CapacityObservationId::parse(&observation_id),
+    )?;
+    Ok(Json(
+        state
+            .applications()
+            .capacity_observation(project_id, observation_id)?,
+    ))
+}
+
+/// Stand an operator judgement beside one account's raw evidence.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/availability:override",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("account_profile_id" = String, Path, description = "The account profile"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = AvailabilityOverrideRequest,
+    responses((status = 200, body = AvailabilityOverrideDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn override_availability(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, account_profile_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AvailabilityOverrideRequest>,
+) -> Result<Json<AvailabilityOverrideDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let account_profile_id = parse_id(&state, AccountProfileId::parse(&account_profile_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .override_availability(&key, project_id, account_profile_id, &request)
+            .await?,
+    ))
+}
+
+/// Observe one exact bound seat.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/attention", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("seat_binding_id" = String, Path, description = "The exact binding"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SeatBindingRequest,
+    responses((status = 200, body = SeatBindingOutcomeDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn seat_attention(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, seat_binding_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SeatBindingRequest>,
+) -> Result<Json<SeatBindingOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .seat_attention(&key, project_id, seat_binding_id, &request)
+            .await?,
+    ))
+}
+
+/// Retire and release one exact binding.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("seat_binding_id" = String, Path, description = "The exact binding"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SeatBindingRequest,
+    responses((status = 200, body = SeatBindingOutcomeDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn retire_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, seat_binding_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SeatBindingRequest>,
+) -> Result<Json<SeatBindingOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .retire_seat(&key, project_id, seat_binding_id, &request)
             .await?,
     ))
 }

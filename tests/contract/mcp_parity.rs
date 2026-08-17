@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        79,
+        88,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        80,
+        89,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -585,6 +585,19 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_topology_archive", CallerTier::Operator),
         ("kontor_topology_upgrade_preview", CallerTier::Admin),
         ("kontor_topology_upgrade_apply", CallerTier::Admin),
+        // KON-OP-03: the ceilings a realm admits work under are configuration,
+        // so reading and changing them is admin. Collecting evidence, judging
+        // an account and attending or releasing one exact seat are operator
+        // work; the derived picture itself is a read anyone may take.
+        ("kontor_capacity_config_get", CallerTier::Admin),
+        ("kontor_capacity_config_preview", CallerTier::Admin),
+        ("kontor_capacity_config_apply", CallerTier::Admin),
+        ("kontor_capacity_get", CallerTier::Observer),
+        ("kontor_capacity_refresh", CallerTier::Operator),
+        ("kontor_capacity_observation_get", CallerTier::Observer),
+        ("kontor_capacity_override", CallerTier::Operator),
+        ("kontor_seat_attention", CallerTier::Operator),
+        ("kontor_seat_retire", CallerTier::Operator),
     ]);
     for tool in REGISTRY {
         assert_eq!(

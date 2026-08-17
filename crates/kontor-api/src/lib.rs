@@ -320,6 +320,46 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply",
             post(applications::apply_topology_upgrade),
         )
+        // Native capacity. `kontor-accounts` owns the observations and the
+        // policy; nothing here accepts a threshold, a process id, an argv or a
+        // raw availability, because those are configuration or trusted
+        // connector facts rather than things a caller may assert.
+        .route(
+            "/v1/capacity/configuration",
+            get(applications::capacity_configuration),
+        )
+        .route(
+            "/v1/capacity/configuration:preview",
+            post(applications::preview_capacity_configuration),
+        )
+        .route(
+            "/v1/capacity/configuration:apply",
+            post(applications::apply_capacity_configuration),
+        )
+        .route(
+            "/v1/projects/{project_id}/capacity",
+            get(applications::project_capacity),
+        )
+        .route(
+            "/v1/projects/{project_id}/capacity:refresh",
+            post(applications::refresh_capacity),
+        )
+        .route(
+            "/v1/projects/{project_id}/capacity/observations/{observation_id}",
+            get(applications::capacity_observation),
+        )
+        .route(
+            "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/availability:override",
+            post(applications::override_availability),
+        )
+        .route(
+            "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/attention",
+            post(applications::seat_attention),
+        )
+        .route(
+            "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire",
+            post(applications::retire_seat),
+        )
         .route(
             "/v1/projects/{project_id}/provider-account-profiles",
             get(applications::account_profiles),

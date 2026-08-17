@@ -13,6 +13,121 @@
     "version": "1.0.0"
   },
   "paths": {
+    "/v1/capacity/configuration": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "The current immutable capacity configuration.",
+        "operationId": "capacity_configuration",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapacityConfigurationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/capacity/configuration:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply a full capacity replacement.",
+        "operationId": "apply_capacity_configuration",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapacityConfigurationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapacityConfigurationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/capacity/configuration:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "What a full replacement would do to the windows now open.",
+        "operationId": "preview_capacity_configuration",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapacityConfigurationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapacityConfigurationPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/catalog": {
       "get": {
         "tags": [
@@ -863,6 +978,163 @@
           },
           "409": {
             "description": "The task moved, or the key settled a different turn"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/capacity": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One project's admission picture.",
+        "operationId": "project_capacity",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectCapacityDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/capacity/observations/{observation_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One redacted raw observation and its derived outcome.",
+        "operationId": "capacity_observation",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "observation_id",
+            "in": "path",
+            "description": "The raw observation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapacityObservationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/capacity:refresh": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Run the configured native collectors.",
+        "operationId": "refresh_capacity",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapacityRefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectCapacityDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "A configured collector could not be reached"
           }
         }
       }
@@ -2136,6 +2408,78 @@
         }
       }
     },
+    "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/availability:override": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Stand an operator judgement beside one account's raw evidence.",
+        "operationId": "override_availability",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_profile_id",
+            "in": "path",
+            "description": "The account profile",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AvailabilityOverrideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvailabilityOverrideDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/provider-account-profiles:ensure": {
       "post": {
         "tags": [
@@ -2188,6 +2532,150 @@
             "description": ""
           },
           "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/attention": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Observe one exact bound seat.",
+        "operationId": "seat_attention",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "description": "The exact binding",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeatBindingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeatBindingOutcomeDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Retire and release one exact binding.",
+        "operationId": "retire_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "description": "The exact binding",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeatBindingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeatBindingOutcomeDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
             "description": ""
           },
           "409": {
@@ -4429,6 +4917,46 @@
           }
         }
       },
+      "AccountAvailabilityDto": {
+        "type": "object",
+        "description": "One provider account's availability, as the realm currently reads it.",
+        "required": [
+          "account_profile_id",
+          "available"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "The account profile."
+          },
+          "available": {
+            "type": "boolean",
+            "description": "Whether the realm currently considers it usable."
+          },
+          "observation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The raw observation this was derived from, when one exists."
+          },
+          "override_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When any standing override lapses."
+          },
+          "override_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Whether an operator override is standing, and why."
+          }
+        }
+      },
       "AccountProfileDto": {
         "type": "object",
         "description": "One provider-account profile, with nothing a caller could authenticate with.\n\nThe credential reference is an opaque alias whose meaning lives entirely in\nthe resolver's policy: publishing it discloses nothing, and there is no field\nhere that a token, a config home or a keychain target could occupy.",
@@ -4468,6 +4996,43 @@
             "minimum": 0
           }
         }
+      },
+      "AdaptiveWindowDto": {
+        "type": "object",
+        "description": "The adaptive admission window's configured shape.",
+        "required": [
+          "initial",
+          "floor",
+          "ceiling",
+          "growth_step"
+        ],
+        "properties": {
+          "ceiling": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The widest it may grow.",
+            "minimum": 0
+          },
+          "floor": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The narrowest it may become under pressure.",
+            "minimum": 0
+          },
+          "growth_step": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How much one clean pair of observations widens it.",
+            "minimum": 0
+          },
+          "initial": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Where a fresh window starts.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "ApiErrorBody": {
         "type": "object",
@@ -4983,6 +5548,58 @@
           }
         }
       },
+      "AvailabilityOverrideDto": {
+        "type": "object",
+        "description": "What an override produced.",
+        "required": [
+          "account",
+          "receipt"
+        ],
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/AccountAvailabilityDto",
+            "description": "The account as it now reads."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt the override was committed under."
+          }
+        }
+      },
+      "AvailabilityOverrideRequest": {
+        "type": "object",
+        "description": "An operator's standing judgement about one account's availability.\n\nIt never rewrites the raw observation. Evidence and override are separate\nrecords so a later reader can still see what the provider actually said.",
+        "required": [
+          "expected_revision",
+          "available",
+          "reason"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "What the operator asserts."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The account's revision the caller believes is current.",
+            "minimum": 0
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the override lapses on its own."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why. Recorded, never interpreted."
+          }
+        },
+        "additionalProperties": false
+      },
       "BarrierState": {
         "type": "string",
         "description": "How far startup reconciliation has got, and therefore whether scheduling may\nrun.",
@@ -5104,6 +5721,203 @@
             "minimum": 0
           }
         }
+      },
+      "CapacityCeilingsDto": {
+        "type": "object",
+        "description": "Every configured concurrency ceiling, as one replaceable document.",
+        "required": [
+          "global_max_in_flight",
+          "project_max_in_flight",
+          "mission_max_in_flight",
+          "account_max_in_flight",
+          "provider_max_in_flight",
+          "runtime_max_in_flight",
+          "adaptive"
+        ],
+        "properties": {
+          "account_max_in_flight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Per provider account.",
+            "minimum": 0
+          },
+          "adaptive": {
+            "$ref": "#/components/schemas/AdaptiveWindowDto",
+            "description": "The adaptive window's shape."
+          },
+          "global_max_in_flight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Across the whole realm.",
+            "minimum": 0
+          },
+          "mission_max_in_flight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Active admitted non-terminal TeamRun envelopes, counted once each.",
+            "minimum": 0
+          },
+          "project_max_in_flight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Within one project.",
+            "minimum": 0
+          },
+          "provider_max_in_flight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Per provider.",
+            "minimum": 0
+          },
+          "runtime_max_in_flight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Per runtime family.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "CapacityConfigurationDto": {
+        "type": "object",
+        "description": "The current immutable capacity configuration revision.",
+        "required": [
+          "realm_id",
+          "ceilings",
+          "revision",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "ceilings": {
+            "$ref": "#/components/schemas/CapacityCeilingsDto",
+            "description": "The effective values."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it governs."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
+          }
+        }
+      },
+      "CapacityConfigurationPreviewDto": {
+        "type": "object",
+        "description": "What a configuration change would do to the windows now open.",
+        "required": [
+          "realm_id",
+          "ceilings",
+          "clamped",
+          "preview_hash"
+        ],
+        "properties": {
+          "ceilings": {
+            "$ref": "#/components/schemas/CapacityCeilingsDto",
+            "description": "The values as they would stand."
+          },
+          "clamped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Where a currently open window would be clamped, in a stable order."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding apply must name."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was computed for."
+          }
+        }
+      },
+      "CapacityConfigurationRequest": {
+        "type": "object",
+        "description": "A full replacement of the capacity configuration.\n\nWhole-document rather than per-field: ceilings constrain one another, and a\npartial update would let a caller move one past another without ever seeing\nthe pair.",
+        "required": [
+          "ceilings",
+          "expected_revision"
+        ],
+        "properties": {
+          "ceilings": {
+            "$ref": "#/components/schemas/CapacityCeilingsDto",
+            "description": "The complete set of ceilings to stand up."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The configuration revision the caller believes is current.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "CapacityObservationDto": {
+        "type": "object",
+        "description": "One raw observation and what was derived from it.",
+        "required": [
+          "realm_id",
+          "observation_id",
+          "account_profile_id",
+          "observed_at",
+          "reading",
+          "available",
+          "pressure"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "The account it concerns."
+          },
+          "available": {
+            "type": "boolean",
+            "description": "What the realm derived from it."
+          },
+          "observation_id": {
+            "type": "string",
+            "description": "The observation."
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the collector read it."
+          },
+          "pressure": {
+            "type": "boolean",
+            "description": "Whether the reading indicated pressure."
+          },
+          "reading": {
+            "type": "object",
+            "description": "The collector's redacted wire reading. Never a credential or an endpoint."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was recorded in."
+          }
+        }
+      },
+      "CapacityRefreshRequest": {
+        "type": "object",
+        "description": "Which configured accounts a refresh should collect from.",
+        "properties": {
+          "account_profile_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Configured account profiles to collect. Empty means every one.\n\nOnly ids this realm already has a profile for. A refresh cannot name a\nprovider, an endpoint or a credential — those are configuration, and a\nrequest that could carry them would be choosing what to talk to."
+          }
+        },
+        "additionalProperties": false
       },
       "CodeHelpEntryDto": {
         "type": "object",
@@ -6844,6 +7658,80 @@
           }
         }
       },
+      "ProjectCapacityDto": {
+        "type": "object",
+        "description": "One project's admission picture.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "accounts",
+          "active_team_runs",
+          "mission_ceiling",
+          "adaptive_width",
+          "adaptive_streak",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountAvailabilityDto"
+            },
+            "description": "Per-account availability, each citing the raw evidence it came from."
+          },
+          "active_team_runs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Active admitted non-terminal TeamRun envelopes. Counted once each —\nnever their seats, and never a persistent idle SeatBinding.",
+            "minimum": 0
+          },
+          "adaptive_streak": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Consecutive distinct clean observations since the last widening.",
+            "minimum": 0
+          },
+          "adaptive_width": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The adaptive window's current width.",
+            "minimum": 0
+          },
+          "last_observation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last observation folded into the window."
+          },
+          "last_refusal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last admission was refused, when one was."
+          },
+          "mission_ceiling": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The mission ceiling those are counted against.",
+            "minimum": 0
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was read in."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
+          }
+        }
+      },
       "ProjectDto": {
         "type": "object",
         "description": "One project, as a bootstrap caller sees it.",
@@ -8025,6 +8913,56 @@
             "description": "The seats that now exist."
           }
         }
+      },
+      "SeatBindingOutcomeDto": {
+        "type": "object",
+        "description": "What observing or releasing one exact seat produced.",
+        "required": [
+          "seat",
+          "receipt"
+        ],
+        "properties": {
+          "observed_binding": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ObservedBindingDto",
+                "description": "What the runtime reported about it, when it answered."
+              }
+            ]
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt this was committed under."
+          },
+          "seat": {
+            "$ref": "#/components/schemas/TopologySeatDto",
+            "description": "The seat, as it now reads."
+          }
+        }
+      },
+      "SeatBindingRequest": {
+        "type": "object",
+        "description": "What addressing one exact seat is asked for.",
+        "required": [
+          "expected_revision",
+          "reason"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The binding's revision the caller believes is current.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the seat is being looked at or released."
+          }
+        },
+        "additionalProperties": false
       },
       "SeatProjectionDto": {
         "type": "object",

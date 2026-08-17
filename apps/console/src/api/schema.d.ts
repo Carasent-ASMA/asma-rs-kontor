@@ -4,6 +4,57 @@
  */
 
 export interface paths {
+    "/v1/capacity/configuration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The current immutable capacity configuration. */
+        get: operations["capacity_configuration"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/capacity/configuration:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply a full capacity replacement. */
+        post: operations["apply_capacity_configuration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/capacity/configuration:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** What a full replacement would do to the windows now open. */
+        post: operations["preview_capacity_configuration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/catalog": {
         parameters: {
             query?: never;
@@ -377,6 +428,57 @@ export interface paths {
          *     runtime ended anything.
          */
         post: operations["settle_turn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/capacity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One project's admission picture. */
+        get: operations["project_capacity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/capacity/observations/{observation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One redacted raw observation and its derived outcome. */
+        get: operations["capacity_observation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/capacity:refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run the configured native collectors. */
+        post: operations["refresh_capacity"];
         delete?: never;
         options?: never;
         head?: never;
@@ -786,6 +888,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/availability:override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stand an operator judgement beside one account's raw evidence. */
+        post: operations["override_availability"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/provider-account-profiles:ensure": {
         parameters: {
             query?: never;
@@ -797,6 +916,40 @@ export interface paths {
         put?: never;
         /** Create a provider-account profile, or return the one with that label. */
         post: operations["ensure_account_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/attention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Observe one exact bound seat. */
+        post: operations["seat_attention"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retire and release one exact binding. */
+        post: operations["retire_seat"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1544,6 +1697,22 @@ export interface components {
              */
             team_run_closed?: string | null;
         };
+        /** @description One provider account's availability, as the realm currently reads it. */
+        AccountAvailabilityDto: {
+            /** @description The account profile. */
+            account_profile_id: string;
+            /** @description Whether the realm currently considers it usable. */
+            available: boolean;
+            /** @description The raw observation this was derived from, when one exists. */
+            observation_id?: string | null;
+            /**
+             * Format: date-time
+             * @description When any standing override lapses.
+             */
+            override_expires_at?: string | null;
+            /** @description Whether an operator override is standing, and why. */
+            override_reason?: string | null;
+        };
         /**
          * @description One provider-account profile, with nothing a caller could authenticate with.
          *
@@ -1567,6 +1736,29 @@ export interface components {
              * @description The revision a write must present.
              */
             revision: number;
+        };
+        /** @description The adaptive admission window's configured shape. */
+        AdaptiveWindowDto: {
+            /**
+             * Format: int32
+             * @description The widest it may grow.
+             */
+            ceiling: number;
+            /**
+             * Format: int32
+             * @description The narrowest it may become under pressure.
+             */
+            floor: number;
+            /**
+             * Format: int32
+             * @description How much one clean pair of observations widens it.
+             */
+            growth_step: number;
+            /**
+             * Format: int32
+             * @description Where a fresh window starts.
+             */
+            initial: number;
         };
         /** @description The JSON body every refusal is reported with. */
         ApiErrorBody: {
@@ -1822,6 +2014,35 @@ export interface components {
             /** @description The tasks it names explicitly, when it is not scope-wide. */
             selected_tasks: string[];
         };
+        /** @description What an override produced. */
+        AvailabilityOverrideDto: {
+            /** @description The account as it now reads. */
+            account: components["schemas"]["AccountAvailabilityDto"];
+            /** @description The receipt the override was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+        };
+        /**
+         * @description An operator's standing judgement about one account's availability.
+         *
+         *     It never rewrites the raw observation. Evidence and override are separate
+         *     records so a later reader can still see what the provider actually said.
+         */
+        AvailabilityOverrideRequest: {
+            /** @description What the operator asserts. */
+            available: boolean;
+            /**
+             * Format: int64
+             * @description The account's revision the caller believes is current.
+             */
+            expected_revision: number;
+            /**
+             * Format: date-time
+             * @description When the override lapses on its own.
+             */
+            expires_at?: string | null;
+            /** @description Why. Recorded, never interpreted. */
+            reason: string;
+        };
         /**
          * @description How far startup reconciliation has got, and therefore whether scheduling may
          *     run.
@@ -1893,6 +2114,116 @@ export interface components {
              * @description Maximum tokens across the armed work.
              */
             max_tokens: number;
+        };
+        /** @description Every configured concurrency ceiling, as one replaceable document. */
+        CapacityCeilingsDto: {
+            /**
+             * Format: int32
+             * @description Per provider account.
+             */
+            account_max_in_flight: number;
+            /** @description The adaptive window's shape. */
+            adaptive: components["schemas"]["AdaptiveWindowDto"];
+            /**
+             * Format: int32
+             * @description Across the whole realm.
+             */
+            global_max_in_flight: number;
+            /**
+             * Format: int32
+             * @description Active admitted non-terminal TeamRun envelopes, counted once each.
+             */
+            mission_max_in_flight: number;
+            /**
+             * Format: int32
+             * @description Within one project.
+             */
+            project_max_in_flight: number;
+            /**
+             * Format: int32
+             * @description Per provider.
+             */
+            provider_max_in_flight: number;
+            /**
+             * Format: int32
+             * @description Per runtime family.
+             */
+            runtime_max_in_flight: number;
+        };
+        /** @description The current immutable capacity configuration revision. */
+        CapacityConfigurationDto: {
+            /** @description The effective values. */
+            ceilings: components["schemas"]["CapacityCeilingsDto"];
+            /** @description The Realm it governs. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
+        };
+        /** @description What a configuration change would do to the windows now open. */
+        CapacityConfigurationPreviewDto: {
+            /** @description The values as they would stand. */
+            ceilings: components["schemas"]["CapacityCeilingsDto"];
+            /** @description Where a currently open window would be clamped, in a stable order. */
+            clamped: string[];
+            /** @description The hash the corresponding apply must name. */
+            preview_hash: string;
+            /** @description The Realm it was computed for. */
+            realm_id: string;
+        };
+        /**
+         * @description A full replacement of the capacity configuration.
+         *
+         *     Whole-document rather than per-field: ceilings constrain one another, and a
+         *     partial update would let a caller move one past another without ever seeing
+         *     the pair.
+         */
+        CapacityConfigurationRequest: {
+            /** @description The complete set of ceilings to stand up. */
+            ceilings: components["schemas"]["CapacityCeilingsDto"];
+            /**
+             * Format: int64
+             * @description The configuration revision the caller believes is current.
+             */
+            expected_revision: number;
+        };
+        /** @description One raw observation and what was derived from it. */
+        CapacityObservationDto: {
+            /** @description The account it concerns. */
+            account_profile_id: string;
+            /** @description What the realm derived from it. */
+            available: boolean;
+            /** @description The observation. */
+            observation_id: string;
+            /**
+             * Format: date-time
+             * @description When the collector read it.
+             */
+            observed_at: string;
+            /** @description Whether the reading indicated pressure. */
+            pressure: boolean;
+            /** @description The collector's redacted wire reading. Never a credential or an endpoint. */
+            reading: Record<string, never>;
+            /** @description The Realm it was recorded in. */
+            realm_id: string;
+        };
+        /** @description Which configured accounts a refresh should collect from. */
+        CapacityRefreshRequest: {
+            /**
+             * @description Configured account profiles to collect. Empty means every one.
+             *
+             *     Only ids this realm already has a profile for. A refresh cannot name a
+             *     provider, an endpoint or a credential — those are configuration, and a
+             *     request that could carry them would be choosing what to talk to.
+             */
+            account_profile_ids?: string[];
         };
         /**
          * @description Server-owned help for one controlled code.
@@ -2760,6 +3091,45 @@ export interface components {
             /** @description Why validation failed, when it did. A rule, never a stored value. */
             refused?: string | null;
         };
+        /** @description One project's admission picture. */
+        ProjectCapacityDto: {
+            /** @description Per-account availability, each citing the raw evidence it came from. */
+            accounts: components["schemas"]["AccountAvailabilityDto"][];
+            /**
+             * Format: int32
+             * @description Active admitted non-terminal TeamRun envelopes. Counted once each —
+             *     never their seats, and never a persistent idle SeatBinding.
+             */
+            active_team_runs: number;
+            /**
+             * Format: int32
+             * @description Consecutive distinct clean observations since the last widening.
+             */
+            adaptive_streak: number;
+            /**
+             * Format: int32
+             * @description The adaptive window's current width.
+             */
+            adaptive_width: number;
+            /** @description The last observation folded into the window. */
+            last_observation_id?: string | null;
+            /** @description Why the last admission was refused, when one was. */
+            last_refusal?: string | null;
+            /**
+             * Format: int32
+             * @description The mission ceiling those are counted against.
+             */
+            mission_ceiling: number;
+            /** @description The project. */
+            project_id: string;
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
+        };
         /** @description One project, as a bootstrap caller sees it. */
         ProjectDto: {
             /** @description Whether this call created it. */
@@ -3361,6 +3731,24 @@ export interface components {
             realm_id: string;
             /** @description The seats that now exist. */
             started: components["schemas"]["StartedSeatDto"][];
+        };
+        /** @description What observing or releasing one exact seat produced. */
+        SeatBindingOutcomeDto: {
+            observed_binding?: null | components["schemas"]["ObservedBindingDto"];
+            /** @description The receipt this was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The seat, as it now reads. */
+            seat: components["schemas"]["TopologySeatDto"];
+        };
+        /** @description What addressing one exact seat is asked for. */
+        SeatBindingRequest: {
+            /**
+             * Format: int64
+             * @description The binding's revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description Why the seat is being looked at or released. */
+            reason: string;
         };
         /** @description One seat: a role slot, the run filling it and the native session behind it. */
         SeatProjectionDto: {
@@ -4390,6 +4778,116 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    capacity_configuration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapacityConfigurationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_capacity_configuration: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CapacityConfigurationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapacityConfigurationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_capacity_configuration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CapacityConfigurationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapacityConfigurationPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     model_catalog: {
         parameters: {
             query?: never;
@@ -5161,6 +5659,148 @@ export interface operations {
             };
             /** @description The task moved, or the key settled a different turn */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    project_capacity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectCapacityDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    capacity_observation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The raw observation */
+                observation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapacityObservationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    refresh_capacity: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CapacityRefreshRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectCapacityDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A configured collector could not be reached */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6107,6 +6747,61 @@ export interface operations {
             };
         };
     };
+    override_availability: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The account profile */
+                account_profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AvailabilityOverrideRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AvailabilityOverrideDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     ensure_account_profile: {
         parameters: {
             query?: never;
@@ -6141,6 +6836,116 @@ export interface operations {
                 content?: never;
             };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    seat_attention: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The exact binding */
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeatBindingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatBindingOutcomeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retire_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The exact binding */
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeatBindingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatBindingOutcomeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

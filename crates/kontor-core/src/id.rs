@@ -235,6 +235,13 @@ entity_ids! {
     AdvisorRunId,
     /// Identifies one consultation of a Committee.
     CommitteeRunId,
+    /// Identifies one raw provider/account observation.
+    ///
+    /// Raw evidence is addressable in its own right because an operator's
+    /// override must never rewrite what a provider reported: the two are
+    /// separate records, and this is what lets the derived answer cite the
+    /// observation it came from.
+    CapacityObservationId,
 }
 
 fn parse_entity_uuid(subject: &'static str, text: &str) -> DomainResult<Uuid> {
