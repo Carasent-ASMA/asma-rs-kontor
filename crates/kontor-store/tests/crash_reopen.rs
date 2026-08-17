@@ -118,7 +118,10 @@ fn committed_work_survives_an_abrupt_exit_and_an_interrupted_transaction_does_no
     store.quick_check().expect("quick_check passes");
     store.foreign_key_check().expect("foreign_key_check passes");
     assert!(store.foreign_keys_enabled().expect("readable"));
-    assert_eq!(store.busy_timeout_ms().expect("readable"), 5_000);
+    // The budget a reopened store carries, spelled out here rather than read
+    // from the constant: a test that read it would agree with any edit to it,
+    // including one that quietly removed the bound altogether.
+    assert_eq!(store.busy_timeout_ms().expect("readable"), 15_000);
     assert_eq!(
         store.journal_mode().expect("readable").to_lowercase(),
         "wal"

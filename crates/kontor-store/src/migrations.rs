@@ -31,10 +31,19 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 27;
+pub const SCHEMA_VERSION: i64 = 28;
 
 /// The bounded busy timeout applied to every connection.
-const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
+///
+/// It has to cover the longest thing another connection can legitimately be
+/// holding the database for, and that is one complete first-open migration
+/// chain — every generation from zero, in a single transaction. The chain grows
+/// with every schema generation and each table rebuild in it costs real
+/// milliseconds, so a budget sized against a shorter chain turns an ordinary
+/// concurrent first open into a spurious "database is locked" on a loaded
+/// machine. Fifteen seconds is still a bound: a genuinely stuck peer still
+/// fails, it just is not confused with a busy one.
+const BUSY_TIMEOUT: Duration = Duration::from_millis(15_000);
 
 /// How long to wait between attempts at the one statement the busy handler does
 /// not cover. Short enough to be invisible, long enough not to spin a core.
@@ -123,6 +132,10 @@ const MIGRATIONS: &[&str] = &[
     // locate the node before it creates the seat binding that would otherwise
     // have been the only way to find it.
     include_str!("../migrations/0027_task_topology_node.sql"),
+    include_str!("../migrations/0028_native_capacity.sql"),
+    // Schema v28. Account-owned capacity evidence: the immutable raw reading a
+    // native collector took, and the operator override that stands beside it
+    // rather than over it. Cooldown stops being another program's file.
 ];
 
 const _: () = assert!(

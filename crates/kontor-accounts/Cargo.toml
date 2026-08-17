@@ -18,6 +18,10 @@ kontor-core = { path = "../kontor-core", version = "=0.1.0" }
 # For the capability preflight only: an account-pinned launch is refused by the
 # runtime contract's own gate, never by a second copy of it in this crate.
 kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
+# The adaptive window's arithmetic — how wide, how it clamps, what one growth
+# step adds — stays the scheduler's. This crate owns only the transition: which
+# observation moves the window, and when.
+kontor-scheduler = { path = "../kontor-scheduler", version = "=0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 secrecy = { workspace = true }

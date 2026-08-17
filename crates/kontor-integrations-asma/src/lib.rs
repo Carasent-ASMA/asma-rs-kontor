@@ -1,13 +1,18 @@
-//! `kontor-integrations-asma` — asma fleet and asma jira sync subprocess boundaries
+//! `kontor-integrations-asma` — the asma jira sync subprocess boundary
 //!
 //! Kontor compiles the *policy* for an external ticket and delegates every
 //! *effect* to the supported `asma` executable. Three properties are structural
 //! here rather than conventional:
 //!
-//! 1. **One writer.** This crate has no HTTP client, no Jira URL, no filesystem
-//!    edge and no knowledge of `~/.asma/fleet`. Its only way to reach the world
-//!    is [`AsmaExecutable`], which runs an argv array — never a shell — and
+//! 1. **One writer, and only about tickets.** This crate has no HTTP client, no
+//!    Jira URL and no filesystem edge. Its only way to reach the world is
+//!    [`AsmaExecutable`], which runs an argv array — never a shell — and
 //!    exchanges one schema-versioned JSON document over stdin/stdout.
+//!
+//!    Capacity used to cross here too, through `asma fleet`. It does not any
+//!    more: `kontor-accounts` collects it natively, so a Realm's admission
+//!    decisions no longer depend on another program being installed, and this
+//!    crate has no knowledge of `~/.asma/fleet` at all.
 //! 2. **Policy is data, decisions are core.** Status ids, status names, field
 //!    ids and option ids live in the versioned specifications under `fixtures/`
 //!    and in receipts. The decision itself is
@@ -37,7 +42,6 @@ use std::fmt;
 use kontor_core::DomainError;
 use kontor_core::ticket::StatusConflictKind;
 
-pub mod fleet;
 pub mod jira;
 mod process;
 

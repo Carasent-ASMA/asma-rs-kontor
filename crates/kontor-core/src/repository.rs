@@ -20,14 +20,14 @@ use crate::calendar::{
 };
 use crate::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash,
-    CredentialAlias, EventCursor, ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey,
-    ExternalName, ExternalProjectKey, GateKey, GuardrailEvaluationId, IdempotencyKey,
-    IntakeDecisionId, IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey,
-    ProjectId, RealmId, RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
-    ScheduleOverrideId, SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId,
-    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
-    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ConnectorKey,
+    ContentHash, CredentialAlias, EventCursor, ExecutionAuthorizationId, ExternalId,
+    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, GuardrailEvaluationId,
+    IdempotencyKey, IntakeDecisionId, IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId,
+    PhaseKey, ProjectId, RealmId, RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId,
+    RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId, SpecVersion,
+    StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
+    TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -44,7 +44,7 @@ use crate::state::{
     AdaptiveAdmissionState, DesiredRunState, GateState, GateVerdict, NativeContainerBinding,
     NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RunLifecycle, RunProjection,
     SeatAttachment, SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure,
-    TeamTerminalEvidence, TerminalEvidence, TerminalOutcome,
+    TeamTerminalEvidence, TerminalEvidence, TerminalOutcome, TopologyLifecycle,
 };
 use crate::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -1588,6 +1588,185 @@ pub trait ProjectRepository {
     ) -> RepositoryResult<()>;
 }
 
+/// One raw capacity reading, exactly as a collector observed it.
+///
+/// The `reading` is opaque here on purpose. `kontor-accounts` owns what a
+/// reading means; this layer's whole job is to persist it unaltered and hand it
+/// back, and a store that could parse it would eventually be tempted to derive
+/// from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapacityObservation {
+    /// The observation.
+    pub id: CapacityObservationId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account it concerns.
+    pub account_profile_id: AccountProfileId,
+    /// When the collector read it.
+    pub observed_at: Timestamp,
+    /// The collector's evidence, verbatim.
+    pub reading: CanonicalDocument,
+    /// What the account layer derived from it, in the same transaction.
+    pub available: bool,
+    /// Whether the reading indicated the provider pushing back.
+    pub pressure: bool,
+    /// When any cooldown this reading started lifts.
+    pub cooling_until: Option<Timestamp>,
+}
+
+/// One raw capacity reading to persist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCapacityObservation {
+    /// The observation's identity, minted by the collector.
+    pub id: CapacityObservationId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account it concerns.
+    pub account_profile_id: AccountProfileId,
+    /// When the collector read it.
+    pub observed_at: Timestamp,
+    /// The collector's evidence, verbatim.
+    pub reading: CanonicalDocument,
+    /// Derived availability.
+    pub available: bool,
+    /// Derived pressure.
+    pub pressure: bool,
+    /// Derived cooldown expiry, if the reading started one.
+    pub cooling_until: Option<Timestamp>,
+}
+
+/// An operator's standing judgement about one account's availability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvailabilityOverride {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account it concerns.
+    pub account_profile_id: AccountProfileId,
+    /// What the operator asserts.
+    pub available: bool,
+    /// Why. Recorded, never interpreted.
+    pub reason: ExternalName,
+    /// When it lapses on its own.
+    pub expires_at: Option<Timestamp>,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+impl AvailabilityOverride {
+    /// Whether this judgement still stands at `now`.
+    #[must_use]
+    pub fn is_standing(&self, now: Timestamp) -> bool {
+        self.expires_at.is_none_or(|expiry| now < expiry)
+    }
+}
+
+/// An operator judgement to record, under the account's expected revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAvailabilityOverride {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account it concerns.
+    pub account_profile_id: AccountProfileId,
+    /// What the operator asserts.
+    pub available: bool,
+    /// Why.
+    pub reason: ExternalName,
+    /// When it lapses.
+    pub expires_at: Option<Timestamp>,
+    /// The override revision the caller believes is current; `1` for the first.
+    pub expected_revision: AggregateRevision,
+    /// Mutation instant.
+    pub updated_at: Timestamp,
+}
+
+/// Account-owned capacity evidence and the judgement standing beside it.
+///
+/// Raw first: [`CapacityRepository::record_capacity_observation`] is the only
+/// way a reading enters the Realm, and the row it writes can never be updated
+/// or deleted. An override is a separate record precisely so that recording one
+/// cannot silently rewrite what a provider reported.
+pub trait CapacityRepository {
+    /// Persist one raw reading together with what was derived from it.
+    ///
+    /// # Errors
+    /// Refuses an unknown or cross-project account profile, and a duplicate
+    /// observation id — a replayed collector reading is not a second fact.
+    fn record_capacity_observation(
+        &self,
+        request: &NewCapacityObservation,
+    ) -> RepositoryResult<CapacityObservation>;
+
+    /// Read one raw observation.
+    ///
+    /// # Errors
+    /// Backend failures only; another project's observation is `Ok(None)`.
+    fn get_capacity_observation(
+        &self,
+        project_id: ProjectId,
+        id: CapacityObservationId,
+    ) -> RepositoryResult<Option<CapacityObservation>>;
+
+    /// The most recent observation for each of a project's accounts.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn latest_capacity_observations(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<CapacityObservation>>;
+
+    /// Record or replace one account's standing operator judgement.
+    ///
+    /// The first judgement about an account is written at
+    /// [`AggregateRevision::INITIAL`] and must be presented as such, because a
+    /// revision cannot be zero and so "there is no record" has no other
+    /// spelling. The consequence is deliberate and narrow: two operators who
+    /// both read *no* override may both write, and the second wins. Every
+    /// subsequent write is an ordinary compare-and-swap.
+    ///
+    /// # Errors
+    /// Refuses an unknown account profile and a stale expected revision. On
+    /// refusal nothing is written — in particular no observation is touched.
+    fn set_availability_override(
+        &self,
+        request: &NewAvailabilityOverride,
+    ) -> RepositoryResult<AvailabilityOverride>;
+
+    /// A project's standing operator judgements, including lapsed ones.
+    ///
+    /// Expiry is a fact the caller applies, not a row the store deletes: a
+    /// lapsed judgement is still a record that someone made it.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_availability_overrides(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AvailabilityOverride>>;
+}
+
+/// The Realm's capacity ceilings as an operator set them.
+///
+/// Realm-scoped rather than project-scoped, so the operations that read and
+/// replace it are inherent store methods rather than [`CapacityRepository`]
+/// ones: a realm-wide write has no aggregate to name and is made idempotent
+/// through the realm binding table instead of a command receipt.
+///
+/// The `ceilings` document is opaque here: `kontor-scheduler` owns what a
+/// ceiling means, and a store that could parse one would eventually validate it
+/// twice, differently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCapacityConfiguration {
+    /// The ceilings, verbatim.
+    pub ceilings: CanonicalDocument,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
 /// Generic topology, typed seat and persisted adaptive-window state.
 pub trait TopologyRepository {
     /// Publish one immutable project topology specification revision.
@@ -1723,6 +1902,49 @@ pub trait TopologyRepository {
         mini_project_id: Option<MiniProjectId>,
     ) -> RepositoryResult<Vec<SessionTopologyNode>>;
 
+    /// Every logical node in one project, parents before children.
+    ///
+    /// Distinct from [`TopologyRepository::list_topology_nodes`], whose `None`
+    /// scope means "the nodes that belong to no epic" rather than "all of
+    /// them". A whole-project inspection needs the second reading, and reading
+    /// it as the first is how a projection quietly reports only the root.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_project_topology_nodes(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<SessionTopologyNode>>;
+
+    /// Read one logical node by its durable identity.
+    ///
+    /// # Errors
+    /// Backend failures only; another project's node is `Ok(None)`.
+    fn get_topology_node(
+        &self,
+        project_id: ProjectId,
+        id: TopologyNodeId,
+    ) -> RepositoryResult<Option<SessionTopologyNode>>;
+
+    /// Move one node's lifecycle under a compare-and-swap.
+    ///
+    /// The order is fixed and one-way — active, retired, archived — because a
+    /// node that could go back to active would resurrect the seats and the
+    /// native container its retirement concluded were finished with.
+    ///
+    /// # Errors
+    /// Refuses an unknown node, a stale revision, a backwards or repeated
+    /// transition, and retiring a node that still has children or non-terminal
+    /// seats. On refusal no column is written.
+    fn transition_topology_node(
+        &self,
+        project_id: ProjectId,
+        id: TopologyNodeId,
+        lifecycle: TopologyLifecycle,
+        expected_revision: AggregateRevision,
+        updated_at: Timestamp,
+    ) -> RepositoryResult<SessionTopologyNode>;
+
     /// Create one active logical seat binding.
     ///
     /// # Errors
@@ -1739,6 +1961,21 @@ pub trait TopologyRepository {
         project_id: ProjectId,
         topology_node_id: TopologyNodeId,
     ) -> RepositoryResult<Vec<SeatBinding>>;
+
+    /// Read one seat by its exact binding identity.
+    ///
+    /// The read behind every exact-seat operation. It takes the binding id and
+    /// nothing else addressable — no name, no `cwd`, no scan — which is what
+    /// makes "this seat" mean one row rather than the first row that looked
+    /// like it. A binding from another project is `Ok(None)`.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_seat_binding(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+    ) -> RepositoryResult<Option<SeatBinding>>;
 
     /// The active topology node serving one delivery task.
     ///
@@ -1846,6 +2083,20 @@ pub trait TopologyRepository {
         project_id: ProjectId,
         mini_project_id: MiniProjectId,
     ) -> RepositoryResult<Option<AdaptiveAdmissionState>>;
+
+    /// Every epic in one project that has an adaptive position.
+    ///
+    /// A capacity observation is about a provider account, and the accounts a
+    /// project uses serve every epic in it — so one reading moves each epic's
+    /// position, and this is the list of positions there are to move. An epic
+    /// with no row is one that was never applied through this build.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_adaptive_admission_states(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AdaptiveAdmissionState>>;
 }
 
 /// Immutable specification revisions.

@@ -20,34 +20,37 @@ use kontor_core::calendar::{
 };
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CommandReceiptId, ContentHash, CredentialAlias,
-    CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey, GuardrailEvaluationId,
-    HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money,
-    PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SignedDuration,
-    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
-    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
-    WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ContentHash,
+    CredentialAlias, CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey,
+    GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
+    ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleCatalogId, RoleCode,
+    RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId,
+    SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
+    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
+    TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
     AggregateRef, CommandKind, CommandOutboxEntry, CommandReceipt, ReceiptAuthority,
 };
 use kontor_core::repository::{
-    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, CalendarRepository,
-    CommandRepository, ConnectorSpecSelector, CredentialReference, CredentialReferenceKind,
-    GateEvaluation, HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord,
-    IntakeOutcome, IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
-    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewCommandIntent, NewGateEvaluation,
-    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewMiniProject,
-    NewNativeContainerBinding, NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding,
-    NewSessionTopologyNode, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow,
-    NewTeamRun, NewTicketLink, PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault,
-    RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError,
-    RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SourceEventIngest, SpecRepository, Task, TaskInspection,
-    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
+    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AvailabilityOverride,
+    CalendarRepository, CapacityObservation, CapacityRepository, CommandRepository,
+    ConnectorSpecSelector, CredentialReference, CredentialReferenceKind, GateEvaluation,
+    HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
+    IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
+    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
+    NewCapacityObservation, NewCommandIntent, NewGateEvaluation, NewIntakeDecision,
+    NewIntakeDecisionRecord, NewIntakeReevaluation, NewMiniProject, NewNativeContainerBinding,
+    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, RealmEventPage,
+    RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
+    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
+    SeatLivenessObservation, SourceEventIngest, SpecRepository, StoredCapacityConfiguration, Task,
+    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
@@ -76,6 +79,7 @@ use serde::de::DeserializeOwned;
 use crate::SqliteStore;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
+use crate::graph::IdempotencyBinding;
 
 /// Maximum length of an agent-run parent chain that is walked when checking for
 /// a lineage cycle.
@@ -1514,6 +1518,149 @@ impl TopologyRepository for SqliteStore {
         Ok(nodes)
     }
 
+    fn list_project_topology_nodes(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<SessionTopologyNode>> {
+        // Created-at order puts parents before children without a recursive
+        // walk: a child cannot be created before the parent it names.
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                 WHERE project_id = ?1 ORDER BY created_at, id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut nodes = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            nodes.push(read_topology_node(row)?);
+        }
+        Ok(nodes)
+    }
+
+    fn get_topology_node(
+        &self,
+        project_id: ProjectId,
+        id: TopologyNodeId,
+    ) -> RepositoryResult<Option<SessionTopologyNode>> {
+        let node: Option<RepositoryResult<SessionTopologyNode>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        node.transpose()
+    }
+
+    fn transition_topology_node(
+        &self,
+        project_id: ProjectId,
+        id: TopologyNodeId,
+        lifecycle: TopologyLifecycle,
+        expected_revision: AggregateRevision,
+        updated_at: Timestamp,
+    ) -> RepositoryResult<SessionTopologyNode> {
+        let transaction = self.begin()?;
+        let current: Option<RepositoryResult<SessionTopologyNode>> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let current = current.transpose()?.ok_or(RepositoryError::NotFound {
+            subject: "topology node",
+        })?;
+        current
+            .revision
+            .expect("topology node", expected_revision)?;
+
+        let advances = matches!(
+            (current.lifecycle, lifecycle),
+            (TopologyLifecycle::Active, TopologyLifecycle::Retired)
+                | (TopologyLifecycle::Retired, TopologyLifecycle::Archived)
+        );
+        if !advances {
+            return Err(conflict(
+                "topology node",
+                "the lifecycle only advances active to retired to archived",
+            ));
+        }
+
+        // Retiring a node concludes that everything below it is finished with.
+        // A node with a live child or a non-terminal seat is not, and retiring
+        // it would leave both addressable under a parent nothing may use.
+        if lifecycle == TopologyLifecycle::Retired {
+            let live_children: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM topology_nodes
+                     WHERE project_id = ?1 AND parent_id = ?2 AND lifecycle = 'active'",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if live_children > 0 {
+                return Err(conflict(
+                    "topology node",
+                    "the node still has active children",
+                ));
+            }
+            let live_seats: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM seat_bindings
+                     WHERE project_id = ?1 AND topology_node_id = ?2 AND lifecycle = 'active'",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if live_seats > 0 {
+                return Err(conflict(
+                    "topology node",
+                    "the node still hosts active seats",
+                ));
+            }
+        }
+
+        transaction
+            .execute(
+                "UPDATE topology_nodes SET lifecycle = ?1, revision = revision + 1, updated_at = ?2
+                 WHERE project_id = ?3 AND id = ?4 AND revision = ?5",
+                params![
+                    lifecycle.as_str(),
+                    text(updated_at),
+                    project_id.to_string(),
+                    id.to_string(),
+                    revision_column(expected_revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        let updated = transaction
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(updated)
+    }
+
     fn create_seat_binding(&self, request: &NewSeatBinding) -> RepositoryResult<SeatBinding> {
         let transaction = self.begin()?;
         let node: Option<RepositoryResult<SessionTopologyNode>> = transaction
@@ -1927,6 +2074,26 @@ impl TopologyRepository for SqliteStore {
         Ok(bindings)
     }
 
+    fn get_seat_binding(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+    ) -> RepositoryResult<Option<SeatBinding>> {
+        let binding: Option<RepositoryResult<SeatBinding>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_seat_binding(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        binding.transpose()
+    }
+
     fn create_adaptive_admission_state(
         &self,
         request: &NewAdaptiveAdmissionState,
@@ -2051,6 +2218,27 @@ impl TopologyRepository for SqliteStore {
         Ok(state)
     }
 
+    fn list_adaptive_admission_states(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AdaptiveAdmissionState>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {ADAPTIVE_ADMISSION_COLUMNS} FROM adaptive_admission_state
+                 WHERE project_id = ?1 ORDER BY mini_project_id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut states = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            states.push(read_adaptive_admission(row)?);
+        }
+        Ok(states)
+    }
+
     fn get_adaptive_admission_state(
         &self,
         project_id: ProjectId,
@@ -2069,6 +2257,400 @@ impl TopologyRepository for SqliteStore {
             .optional()
             .map_err(backend)?;
         state.transpose()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Account-owned capacity evidence
+// ---------------------------------------------------------------------------
+
+const CAPACITY_OBSERVATION_COLUMNS: &str = "id, project_id, account_profile_id, observed_at, \
+    reading, reading_hash, available, pressure, cooling_until";
+
+const AVAILABILITY_OVERRIDE_COLUMNS: &str = "project_id, account_profile_id, available, reason, \
+    expires_at, revision, updated_at";
+
+fn read_capacity_observation(row: &Row<'_>) -> RepositoryResult<CapacityObservation> {
+    let cooling_until: Option<String> = row.get(8).map_err(backend)?;
+    Ok(CapacityObservation {
+        id: CapacityObservationId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        account_profile_id: AccountProfileId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+        observed_at: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
+        reading: stored_payload(
+            &row.get::<_, String>(4).map_err(backend)?,
+            &row.get::<_, String>(5).map_err(backend)?,
+        )?,
+        available: row.get::<_, i64>(6).map_err(backend)? != 0,
+        pressure: row.get::<_, i64>(7).map_err(backend)? != 0,
+        cooling_until: cooling_until.as_deref().map(read_timestamp).transpose()?,
+    })
+}
+
+fn read_capacity_configuration(row: &Row<'_>) -> RepositoryResult<StoredCapacityConfiguration> {
+    Ok(StoredCapacityConfiguration {
+        ceilings: stored_payload(
+            &row.get::<_, String>(0).map_err(backend)?,
+            &row.get::<_, String>(1).map_err(backend)?,
+        )?,
+        revision: revision_of(row.get::<_, i64>(2).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
+    })
+}
+
+fn read_availability_override(row: &Row<'_>) -> RepositoryResult<AvailabilityOverride> {
+    let expires_at: Option<String> = row.get(4).map_err(backend)?;
+    Ok(AvailabilityOverride {
+        project_id: ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        account_profile_id: AccountProfileId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        available: row.get::<_, i64>(2).map_err(backend)? != 0,
+        reason: ExternalName::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+        expires_at: expires_at.as_deref().map(read_timestamp).transpose()?,
+        revision: revision_of(row.get::<_, i64>(5).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(6).map_err(backend)?)?,
+    })
+}
+
+impl CapacityRepository for SqliteStore {
+    fn record_capacity_observation(
+        &self,
+        request: &NewCapacityObservation,
+    ) -> RepositoryResult<CapacityObservation> {
+        let transaction = self.begin()?;
+        // The account is proved to exist here rather than left to the foreign
+        // key, so a collector that read an account this project does not own is
+        // told which thing was wrong instead of getting a generic constraint
+        // refusal.
+        if read_account_profile_in(&transaction, request.project_id, request.account_profile_id)?
+            .is_none()
+        {
+            return Err(RepositoryError::NotFound {
+                subject: "account profile",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO capacity_observations
+                     (id, project_id, account_profile_id, observed_at, reading, reading_hash,
+                      available, pressure, cooling_until)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    request.id.to_string(),
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    text(request.observed_at),
+                    request.reading.json(),
+                    request.reading.hash().as_str(),
+                    i64::from(request.available),
+                    i64::from(request.pressure),
+                    request.cooling_until.map(text),
+                ],
+            )
+            .map_err(backend)?;
+        let observation = transaction
+            .query_row(
+                &format!(
+                    "SELECT {CAPACITY_OBSERVATION_COLUMNS} FROM capacity_observations
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![request.project_id.to_string(), request.id.to_string()],
+                |row| Ok(read_capacity_observation(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(observation)
+    }
+
+    fn get_capacity_observation(
+        &self,
+        project_id: ProjectId,
+        id: CapacityObservationId,
+    ) -> RepositoryResult<Option<CapacityObservation>> {
+        let observation: Option<RepositoryResult<CapacityObservation>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {CAPACITY_OBSERVATION_COLUMNS} FROM capacity_observations
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_capacity_observation(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        observation.transpose()
+    }
+
+    fn latest_capacity_observations(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<CapacityObservation>> {
+        // Latest per account by observation instant, with the id as the
+        // tie-break: two readings taken in the same second still have a stable
+        // order, because the id is time-ordered.
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {CAPACITY_OBSERVATION_COLUMNS} FROM capacity_observations AS outer_row
+                 WHERE project_id = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM capacity_observations AS newer
+                       WHERE newer.project_id = outer_row.project_id
+                         AND newer.account_profile_id = outer_row.account_profile_id
+                         AND (newer.observed_at, newer.id) > (outer_row.observed_at, outer_row.id)
+                   )
+                 ORDER BY account_profile_id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut observations = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            observations.push(read_capacity_observation(row)?);
+        }
+        Ok(observations)
+    }
+
+    fn set_availability_override(
+        &self,
+        request: &NewAvailabilityOverride,
+    ) -> RepositoryResult<AvailabilityOverride> {
+        let transaction = self.begin()?;
+        if read_account_profile_in(&transaction, request.project_id, request.account_profile_id)?
+            .is_none()
+        {
+            return Err(RepositoryError::NotFound {
+                subject: "account profile",
+            });
+        }
+        let current: Option<RepositoryResult<AvailabilityOverride>> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {AVAILABILITY_OVERRIDE_COLUMNS} FROM availability_overrides
+                     WHERE project_id = ?1 AND account_profile_id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string()
+                ],
+                |row| Ok(read_availability_override(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let current = current.transpose()?;
+        // The first judgement about an account is written at revision one, and
+        // a caller has to say so. Letting any revision create the first record
+        // would make "I read it as absent" indistinguishable from "I read a
+        // record that has since been replaced".
+        let next = match &current {
+            Some(existing) => {
+                existing
+                    .revision
+                    .expect("availability override", request.expected_revision)?;
+                existing.revision.next()?
+            }
+            None => {
+                AggregateRevision::INITIAL
+                    .expect("availability override", request.expected_revision)?;
+                AggregateRevision::INITIAL
+            }
+        };
+        transaction
+            .execute(
+                "INSERT INTO availability_overrides
+                     (project_id, account_profile_id, available, reason, expires_at, revision,
+                      updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (project_id, account_profile_id) DO UPDATE SET
+                     available = excluded.available,
+                     reason = excluded.reason,
+                     expires_at = excluded.expires_at,
+                     revision = excluded.revision,
+                     updated_at = excluded.updated_at",
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    i64::from(request.available),
+                    request.reason.as_str(),
+                    request.expires_at.map(text),
+                    revision_column(next)?,
+                    text(request.updated_at),
+                ],
+            )
+            .map_err(backend)?;
+        let stored = transaction
+            .query_row(
+                &format!(
+                    "SELECT {AVAILABILITY_OVERRIDE_COLUMNS} FROM availability_overrides
+                     WHERE project_id = ?1 AND account_profile_id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string()
+                ],
+                |row| Ok(read_availability_override(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn list_availability_overrides(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AvailabilityOverride>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {AVAILABILITY_OVERRIDE_COLUMNS} FROM availability_overrides
+                 WHERE project_id = ?1 ORDER BY account_profile_id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut overrides = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            overrides.push(read_availability_override(row)?);
+        }
+        Ok(overrides)
+    }
+}
+
+/// The Realm's capacity ceilings.
+///
+/// Inherent rather than on [`CapacityRepository`] because the configuration is
+/// realm-scoped: there is no aggregate for a command receipt to name, so a
+/// replay is answered through the realm binding table `0015` built for exactly
+/// this class of operation.
+impl SqliteStore {
+    /// The stored ceilings, if an operator has set any.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn get_capacity_configuration(
+        &self,
+    ) -> RepositoryResult<Option<StoredCapacityConfiguration>> {
+        let stored: Option<RepositoryResult<StoredCapacityConfiguration>> = self
+            .connection
+            .query_row(
+                "SELECT ceilings, ceilings_hash, revision, updated_at FROM capacity_configuration
+                 WHERE id = 1",
+                [],
+                |row| Ok(read_capacity_configuration(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        stored.transpose()
+    }
+
+    /// Replace the ceilings under compare-and-swap, answering a replay from
+    /// what is already durable.
+    ///
+    /// The key is judged before the revision, and that order is the whole
+    /// idempotency story: a retry of a call that already succeeded presents the
+    /// revision it read *before* the write, which as a bare compare-and-swap
+    /// would be stale. Recognising the key first turns that retry into the
+    /// original answer instead of a conflict.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] for a key already bound to
+    /// different content, and a revision conflict for a genuinely stale write.
+    /// On refusal nothing is written.
+    pub fn set_capacity_configuration(
+        &self,
+        ceilings: &CanonicalDocument,
+        binding: &IdempotencyBinding,
+        expected_revision: AggregateRevision,
+    ) -> RepositoryResult<StoredCapacityConfiguration> {
+        let transaction = self.begin()?;
+        let bound: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT operation, fingerprint FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![binding.key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let read_current = |transaction: &Transaction<'_>| {
+            let current: Option<RepositoryResult<StoredCapacityConfiguration>> = transaction
+                .query_row(
+                    "SELECT ceilings, ceilings_hash, revision, updated_at
+                     FROM capacity_configuration WHERE id = 1",
+                    [],
+                    |row| Ok(read_capacity_configuration(row)),
+                )
+                .optional()
+                .map_err(backend)?;
+            current.transpose()
+        };
+        match bound {
+            Some((operation, fingerprint))
+                if operation == binding.operation
+                    && fingerprint == binding.fingerprint.as_str() =>
+            {
+                return read_current(&transaction)?.ok_or(RepositoryError::NotFound {
+                    subject: "capacity configuration",
+                });
+            }
+            Some(_) => {
+                return Err(conflict(
+                    "idempotency key",
+                    "this key is already bound to a different operation",
+                ));
+            }
+            None => {}
+        }
+
+        let next = match read_current(&transaction)? {
+            Some(existing) => {
+                existing
+                    .revision
+                    .expect("capacity configuration", expected_revision)?;
+                existing.revision.next()?
+            }
+            None => {
+                AggregateRevision::INITIAL.expect("capacity configuration", expected_revision)?;
+                AggregateRevision::INITIAL
+            }
+        };
+        transaction
+            .execute(
+                "INSERT INTO realm_idempotency_bindings
+                     (idempotency_key, operation, fingerprint, bound_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    binding.key,
+                    binding.operation,
+                    binding.fingerprint.as_str(),
+                    text(binding.bound_at)
+                ],
+            )
+            .map_err(backend)?;
+        transaction
+            .execute(
+                "INSERT INTO capacity_configuration (id, ceilings, ceilings_hash, revision, updated_at)
+                 VALUES (1, ?1, ?2, ?3, ?4)
+                 ON CONFLICT (id) DO UPDATE SET
+                     ceilings = excluded.ceilings,
+                     ceilings_hash = excluded.ceilings_hash,
+                     revision = excluded.revision,
+                     updated_at = excluded.updated_at",
+                params![
+                    ceilings.json(),
+                    ceilings.hash().as_str(),
+                    revision_column(next)?,
+                    text(binding.bound_at),
+                ],
+            )
+            .map_err(backend)?;
+        let stored = read_current(&transaction)?.ok_or(RepositoryError::NotFound {
+            subject: "capacity configuration",
+        })?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
     }
 }
 

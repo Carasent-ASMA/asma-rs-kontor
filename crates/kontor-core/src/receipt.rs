@@ -109,6 +109,22 @@ closed_enum! {
         SettleRuntime => "settle_runtime",
         /// Replace one runtime-terminal persistent seat with its linked successor.
         ReplaceSeat => "replace_seat",
+        /// Run the native capacity collectors and fold what they report.
+        ///
+        /// It targets the *project*, for the same reason as
+        /// [`CommandKind::EnsureAccountProfile`]: what is being recorded is
+        /// authority over the project's fleet, not over one account in it.
+        RefreshCapacity => "refresh_capacity",
+        /// Stand an operator judgement beside one account's raw evidence.
+        ///
+        /// Never over it. The raw observation is immutable, so this kind can
+        /// only ever have added a second record — which is what makes the
+        /// disagreement auditable.
+        OverrideAvailability => "override_availability",
+        /// Observe one exact bound seat and record what came back.
+        ObserveSeat => "observe_seat",
+        /// Retire and release one exact bound seat.
+        RetireSeat => "retire_seat",
         /// Bring a provider-account profile into existence, or prove the one
         /// with that label matches.
         ///
@@ -343,6 +359,18 @@ impl CommandKind {
             // is already true desires nothing.
             Self::SettleRuntime => witness(matches!(target, A::AgentRun)),
             Self::ReplaceSeat => witness(matches!(target, A::TeamRun)),
+            // Capacity is a fact about the project's fleet. Neither command
+            // names an account, because an account profile is not an aggregate
+            // a command may target — and a refresh covers several of them at
+            // once, so naming one would understate what it authorized.
+            Self::RefreshCapacity | Self::OverrideAvailability => {
+                witness(matches!(target, A::Project))
+            }
+            // A seat is not an aggregate a command may target, and a persistent
+            // control-plane seat has no TeamRun to stand in for one — that is
+            // precisely what makes it persistent. The project is what the
+            // authority is over, and it is the one aggregate every seat has.
+            Self::ObserveSeat | Self::RetireSeat => witness(matches!(target, A::Project)),
         }
     }
 

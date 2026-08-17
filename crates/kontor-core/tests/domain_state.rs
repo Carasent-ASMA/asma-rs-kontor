@@ -1539,6 +1539,14 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("submit_intake", "project", "witness", None),
     ("pull_ticket_comments", "task", "witness", None),
     ("claim_ticket", "task", "witness", None),
+    // OP-03 CP3. Capacity is a fact about the project's fleet, and a seat is
+    // not an aggregate a command may name, so all four witness the project.
+    // Spelled out here a second time on purpose: this table is an independent
+    // declaration of the matrix, not a mirror of it.
+    ("refresh_capacity", "project", "witness", None),
+    ("override_availability", "project", "witness", None),
+    ("observe_seat", "project", "witness", None),
+    ("retire_seat", "project", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.
