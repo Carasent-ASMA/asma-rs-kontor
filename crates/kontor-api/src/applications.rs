@@ -96,7 +96,12 @@ pub struct RevisionRefDto {
 /// A request that could also state the standard title would be a second source
 /// for a fact the catalog already owns, and the two would disagree the first
 /// time a title was corrected — so the title is resolved, never accepted.
+///
+/// The field list is closed. Without that, a caller sending `standard_title`
+/// would have it quietly dropped by serde and would believe it had been
+/// honoured — which is worse than a refusal, because it looks like agreement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RoleSelectionDto {
     /// The exact catalog revision the code is read from.
     pub catalog_revision: RevisionRefDto,
@@ -105,6 +110,7 @@ pub struct RoleSelectionDto {
     pub role_code: RoleCode,
     /// A presentation-only label, when this seat is shown as something more
     /// specific than its standard title.
+    #[serde(default)]
     #[schema(value_type = Option<String>)]
     pub custom_display_name: Option<ExternalName>,
 }
@@ -626,16 +632,57 @@ pub struct ModelCatalogDto {
     pub models: Vec<serde_json::Value>,
 }
 
+/// One declared seat in a Delivery Team template.
+///
+/// The role is a [`RoleSelectionDto`] rather than free-form JSON. Before this,
+/// a slot's meaning lived in an opaque `id` the server never interpreted, which
+/// made "which standard role is this seat?" a string every client answered for
+/// itself. A selection names a catalog revision and a code, and the server owns
+/// the rest.
+///
+/// `capabilities` stays a nested document on purpose: it is a chain, a context
+/// class and a skill set, none of which is a role fact, and the daemon and the
+/// domain validate it once rather than the wire schema validating it twice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDraftSlotRequest {
+    /// The slot key within this template.
+    pub id: String,
+    /// The standard role this seat fills.
+    pub role: RoleSelectionDto,
+    /// What the seat in it may be.
+    #[schema(value_type = Object)]
+    pub capabilities: serde_json::Value,
+}
+
+/// One declared seat, as a projection reports it back.
+///
+/// The role is echoed as the selection that was stored. It becomes a fully
+/// resolved [`ResolvedRoleRefDto`] when the role-catalog service is composed and
+/// the daemon can look a code up; until then the honest answer is what was
+/// selected, because a standard title invented here would be exactly the second
+/// source of truth the selection type exists to remove.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TeamDraftSlotDto {
+    /// The slot key within this template.
+    pub id: String,
+    /// The standard role this seat fills, as selected.
+    pub role: RoleSelectionDto,
+    /// What the seat in it may be.
+    #[schema(value_type = Object)]
+    pub capabilities: serde_json::Value,
+}
+
 /// One mutable draft document accepted by the realm.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TeamDraftRequest {
     /// Stable logical template id.
     pub id: String,
     /// Human label.
     pub name: String,
-    /// Slot declarations in editor wire form.
-    #[schema(value_type = Vec<Object>)]
-    pub slots: Vec<serde_json::Value>,
+    /// The seats this template declares.
+    pub slots: Vec<TeamDraftSlotRequest>,
 }
 
 /// One server-held draft.
@@ -645,9 +692,8 @@ pub struct TeamDraftDto {
     pub id: String,
     /// Human label.
     pub name: String,
-    /// Slot declarations in editor wire form.
-    #[schema(value_type = Vec<Object>)]
-    pub slots: Vec<serde_json::Value>,
+    /// The seats this template declares.
+    pub slots: Vec<TeamDraftSlotDto>,
     /// Server-resolved context policy preview for every slot.
     #[schema(value_type = Vec<Object>)]
     pub resolved_policy: Vec<serde_json::Value>,
@@ -662,9 +708,8 @@ pub struct PublishedTeamRevisionDto {
     pub version: u32,
     /// Human label frozen at publish.
     pub name: String,
-    /// Slot declarations frozen at publish.
-    #[schema(value_type = Vec<Object>)]
-    pub slots: Vec<serde_json::Value>,
+    /// The seats frozen at publish.
+    pub slots: Vec<TeamDraftSlotDto>,
     /// Server-resolved context policy preview frozen from this revision.
     #[schema(value_type = Vec<Object>)]
     pub resolved_policy: Vec<serde_json::Value>,

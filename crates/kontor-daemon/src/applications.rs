@@ -36,7 +36,8 @@ use kontor_api::applications::{
     LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, ProjectDto, PublishedTeamRevisionDto,
     ReadyTaskDto, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerStartDto,
     SeatProjectionDto, StartRequest, StartedSeatDto, TeamDraftDto, TeamDraftRequest,
-    TeamRunProjectionDto, TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
+    TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto, TeamsProjectionDto,
+    WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
@@ -2234,7 +2235,7 @@ fn teams_projection_dto(
         .drafts
         .into_iter()
         .map(|draft| {
-            let slots: Vec<serde_json::Value> = serde_json::from_str(&draft.slots_json)?;
+            let slots: Vec<TeamDraftSlotDto> = serde_json::from_str(&draft.slots_json)?;
             let resolved_policy = resolved_policy(&slots);
             Ok(TeamDraftDto {
                 id: draft.id,
@@ -2248,7 +2249,7 @@ fn teams_projection_dto(
         .revisions
         .into_iter()
         .map(|revision| {
-            let slots: Vec<serde_json::Value> = serde_json::from_str(&revision.slots_json)?;
+            let slots: Vec<TeamDraftSlotDto> = serde_json::from_str(&revision.slots_json)?;
             let resolved_policy = resolved_policy(&slots);
             Ok(PublishedTeamRevisionDto {
                 id: revision.id,
@@ -2267,11 +2268,11 @@ fn teams_projection_dto(
     })
 }
 
-fn resolved_policy(slots: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn resolved_policy(slots: &[TeamDraftSlotDto]) -> Vec<serde_json::Value> {
     slots
         .iter()
         .map(|slot| {
-            let capabilities = &slot["capabilities"];
+            let capabilities = &slot.capabilities;
             let class = capabilities["context"]["class"]
                 .as_str()
                 .unwrap_or("native");
@@ -2305,7 +2306,7 @@ fn resolved_policy(slots: &[serde_json::Value]) -> Vec<serde_json::Value> {
                 "role_slot"
             };
             serde_json::json!({
-                "slot": slot["id"],
+                "slot": slot.id,
                 "class": class,
                 "source": source,
                 "effective_threshold": effective,

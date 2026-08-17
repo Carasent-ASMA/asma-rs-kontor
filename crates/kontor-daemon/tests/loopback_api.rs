@@ -1534,7 +1534,14 @@ async fn teams_catalog_drafts_and_immutable_revisions_share_one_realm_projection
     let draft = serde_json::json!({
         "id": "team-live",
         "name": "Live team v1",
-        "slots": [{"id": "lead", "capabilities": {"context": {"class": "standard"}}}]
+        "slots": [{
+            "id": "lead",
+            "role": {
+                "catalog_revision": {"id": "standard-roles", "version": 1},
+                "role_code": "LSA"
+            },
+            "capabilities": {"context": {"class": "standard"}}
+        }]
     });
     let saved = Call::post("/v1/teams/drafts:save", &draft)
         .signed_as(&world, "operator")
@@ -11040,4 +11047,119 @@ async fn the_specification_routes_check_authority_before_they_find_no_service() 
     .await;
     assert_eq!(drafted.status, 503, "{}", drafted.body);
     assert_eq!(drafted.code(), "unavailable");
+}
+
+/// A seat's role is selected, never asserted.
+///
+/// Before the Delivery Team slot carried a [`RoleSelectionDto`], its meaning
+/// lived in an opaque id the server never read, so "which standard role is
+/// this?" was a string every client answered for itself. The three refusals
+/// below are the shortcuts that closes: a role given as bare text, a role code
+/// that is not a code, and — the quiet one — a caller supplying the standard
+/// title alongside the code. Serde would drop that last field by default and
+/// answer 200, which reads as agreement; the closed field list makes it a
+/// refusal instead.
+#[tokio::test]
+async fn a_team_slot_cannot_carry_a_raw_role_or_a_caller_supplied_title() {
+    let world = World::open().await;
+
+    async fn save(world: &World, slot: serde_json::Value, key: &str) -> Answer {
+        let body = serde_json::json!({
+            "id": "team-typed",
+            "name": "Typed team",
+            "slots": [slot],
+        });
+        Call::post("/v1/teams/drafts:save", &body)
+            .signed_as(world, "operator")
+            .with_key(key)
+            .send(world)
+            .await
+    }
+
+    // A role as free text is not a selection at all.
+    let raw = save(
+        &world,
+        serde_json::json!({
+            "id": "lead",
+            "role": "Lead Software Architect",
+            "capabilities": {},
+        }),
+        "raw-role-string",
+    )
+    .await;
+    assert_eq!(
+        raw.status, 422,
+        "a bare role string must not be accepted: {}",
+        raw.body
+    );
+
+    // A code that is not a code is refused by the domain's own parser.
+    let unknown = save(
+        &world,
+        serde_json::json!({
+            "id": "lead",
+            "role": {
+                "catalog_revision": {"id": "standard-roles", "version": 1},
+                "role_code": "not a code",
+            },
+            "capabilities": {},
+        }),
+        "unparseable-role-code",
+    )
+    .await;
+    assert_eq!(
+        unknown.status, 422,
+        "a malformed role code must not be accepted: {}",
+        unknown.body
+    );
+
+    // The standard title belongs to the catalog. Supplying one is refused
+    // rather than silently discarded.
+    let titled = save(
+        &world,
+        serde_json::json!({
+            "id": "lead",
+            "role": {
+                "catalog_revision": {"id": "standard-roles", "version": 1},
+                "role_code": "LSA",
+                "standard_title": "Something Else Entirely",
+            },
+            "capabilities": {},
+        }),
+        "caller-supplied-standard-title",
+    )
+    .await;
+    assert_eq!(
+        titled.status, 422,
+        "a caller-supplied standard title must be refused, not dropped: {}",
+        titled.body
+    );
+
+    // The same slot without the smuggled title is accepted, so the refusals
+    // above are about the title and not about the shape in general.
+    let accepted = save(
+        &world,
+        serde_json::json!({
+            "id": "lead",
+            "role": {
+                "catalog_revision": {"id": "standard-roles", "version": 1},
+                "role_code": "LSA",
+            },
+            "capabilities": {},
+        }),
+        "well-formed-selection",
+    )
+    .await;
+    assert_eq!(accepted.status, 200, "{}", accepted.body);
+    assert_eq!(
+        accepted.json()["drafts"][0]["slots"][0]["role"]["role_code"],
+        serde_json::json!("LSA")
+    );
+    assert!(
+        accepted.json()["drafts"][0]["slots"][0]["role"]
+            .get("standard_title")
+            .is_none(),
+        "the server must not invent a title it has no catalog to resolve: {}",
+        accepted.body
+    );
 }

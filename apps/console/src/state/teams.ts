@@ -478,10 +478,28 @@ export interface SeatCapabilities {
   readonly mayWaive: readonly string[]
 }
 
+/**
+ * One standard role, selected by the revision it is read from and its code.
+ *
+ * The standard title is deliberately absent. It belongs to the catalog, the
+ * realm resolves it, and a console that could send one would be a second source
+ * for a fact it does not own. The realm refuses a payload carrying it.
+ */
+export interface RoleSelection {
+  /** The exact catalog revision the code is read from. */
+  readonly catalog_revision: { readonly id: string; readonly version: number }
+  /** The stable role code, such as `LSA`. */
+  readonly role_code: string
+  /** A presentation-only label, when the seat is shown as something narrower. */
+  readonly custom_display_name?: string
+}
+
 /** One slot in a team template. */
 export interface TeamSlot {
   /** The slot key. Opaque — nothing here interprets it. */
   readonly id: string
+  /** The standard role this seat fills. */
+  readonly role: RoleSelection
   /** What the seat in it may be. */
   readonly capabilities: SeatCapabilities
 }
@@ -1546,6 +1564,21 @@ function observedBand(minTokens: number, rationale: string, role: string): SeatN
  * old circular placeholders, these values can and do disagree with the seeded
  * context classes.
  */
+/**
+ * The catalog revision this prototype fixture selects its roles from.
+ *
+ * A fixture still has to name a revision: a selection without one would be a
+ * code floating free of the catalog that gives it meaning, which is the shape
+ * the wire type exists to refuse.
+ */
+const FIXTURE_ROLE_CATALOG = { id: 'standard-roles', version: 1 } as const
+
+/** One role selection against the fixture catalog revision. */
+const selects = (code: string): RoleSelection => ({
+  catalog_revision: FIXTURE_ROLE_CATALOG,
+  role_code: code,
+})
+
 export const SEED_TEAMS: readonly TeamDraft[] = [
   {
     id: 'draft-plan-build-verify',
@@ -1553,6 +1586,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
     slots: [
       {
         id: 'architect',
+        role: selects('LSA'),
         capabilities: {
           chain: [
             { provider: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh' },
@@ -1575,6 +1609,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
         // Builder — standard. The policy's own rung order, including the two
         // adjacent Codex rungs the editor flags as a notice.
         id: 'implementer',
+        role: selects('SWE'),
         capabilities: {
           chain: [
             { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'max' },
@@ -1596,6 +1631,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
       {
         // Tester.
         id: 'qa',
+        role: selects('QA'),
         capabilities: {
           chain: [
             { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'max' },
@@ -1617,6 +1653,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
       {
         // Inspector.
         id: 'audit',
+        role: selects('AUD'),
         capabilities: {
           chain: [
             { provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' },
@@ -1643,6 +1680,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
     slots: [
       {
         id: 'orchestrator',
+        role: selects('TPM'),
         capabilities: {
           chain: [
             { provider: 'cursor', model: 'auto-smart', effort: 'unset' },
@@ -1664,6 +1702,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
       },
       {
         id: 'builder-chore',
+        role: selects('SWE'),
         capabilities: {
           chain: [
             { provider: 'cursor', model: 'auto-smart', effort: 'unset' },

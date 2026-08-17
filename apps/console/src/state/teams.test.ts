@@ -154,6 +154,9 @@ const COLLISION_CATALOG: ModelCatalog = {
 }
 
 /** A capability set built around one chain. */
+/** Any well-formed role selection; these suites are about capabilities, not roles. */
+const anyRole = { catalog_revision: { id: 'standard-roles', version: 1 }, role_code: 'SWE' }
+
 function seat(overrides: Partial<SeatCapabilities> = {}): SeatCapabilities {
   return {
     chain: [rung('codex', 'gpt-5.6-sol', 'xhigh'), rung('claude', 'claude-opus-5', 'xhigh')],
@@ -241,7 +244,7 @@ describe('need-band provenance is enforced, not merely stored', () => {
     return {
       id: 'd-band',
       name: 'a draft',
-      slots: [{ id: 'architect', capabilities: seat({ need }) }],
+      slots: [{ id: 'architect', role: anyRole, capabilities: seat({ need }) }],
     }
   }
 
@@ -880,8 +883,8 @@ describe('validateTeam', () => {
     id: 'd-1',
     name: 'a template',
     slots: [
-      { id: 's-1', capabilities: seat() },
-      { id: 's-2', capabilities: seat() },
+      { id: 's-1', role: anyRole, capabilities: seat() },
+      { id: 's-2', role: anyRole, capabilities: seat() },
     ],
   }
 
@@ -893,9 +896,9 @@ describe('validateTeam', () => {
     const issues = validateTeam({
       ...draft,
       slots: [
-        { id: 's-1', capabilities: seat() },
-        { id: 's-1', capabilities: seat() },
-        { id: 's-1', capabilities: seat() },
+        { id: 's-1', role: anyRole, capabilities: seat() },
+        { id: 's-1', role: anyRole, capabilities: seat() },
+        { id: 's-1', role: anyRole, capabilities: seat() },
       ],
     })
     expect(codes(issues)).toEqual(['duplicate_slot_id'])

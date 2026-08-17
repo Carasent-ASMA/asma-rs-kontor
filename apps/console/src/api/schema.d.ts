@@ -2759,8 +2759,8 @@ export interface components {
             name: string;
             /** @description Server-resolved context policy preview frozen from this revision. */
             resolved_policy: Record<string, never>[];
-            /** @description Slot declarations frozen at publish. */
-            slots: Record<string, never>[];
+            /** @description The seats frozen at publish. */
+            slots: components["schemas"]["TeamDraftSlotDto"][];
             /**
              * Format: int32
              * @description Monotonic version within `id`.
@@ -3056,6 +3056,10 @@ export interface components {
          *     A request that could also state the standard title would be a second source
          *     for a fact the catalog already owns, and the two would disagree the first
          *     time a title was corrected — so the title is resolved, never accepted.
+         *
+         *     The field list is closed. Without that, a caller sending `standard_title`
+         *     would have it quietly dropped by serde and would believe it had been
+         *     honoured — which is worse than a refusal, because it looks like agreement.
          */
         RoleSelectionDto: {
             /** @description The exact catalog revision the code is read from. */
@@ -3654,8 +3658,8 @@ export interface components {
             name: string;
             /** @description Server-resolved context policy preview for every slot. */
             resolved_policy: Record<string, never>[];
-            /** @description Slot declarations in editor wire form. */
-            slots: Record<string, never>[];
+            /** @description The seats this template declares. */
+            slots: components["schemas"]["TeamDraftSlotDto"][];
         };
         /** @description One mutable draft document accepted by the realm. */
         TeamDraftRequest: {
@@ -3663,8 +3667,46 @@ export interface components {
             id: string;
             /** @description Human label. */
             name: string;
-            /** @description Slot declarations in editor wire form. */
-            slots: Record<string, never>[];
+            /** @description The seats this template declares. */
+            slots: components["schemas"]["TeamDraftSlotRequest"][];
+        };
+        /**
+         * @description One declared seat, as a projection reports it back.
+         *
+         *     The role is echoed as the selection that was stored. It becomes a fully
+         *     resolved [`ResolvedRoleRefDto`] when the role-catalog service is composed and
+         *     the daemon can look a code up; until then the honest answer is what was
+         *     selected, because a standard title invented here would be exactly the second
+         *     source of truth the selection type exists to remove.
+         */
+        TeamDraftSlotDto: {
+            /** @description What the seat in it may be. */
+            capabilities: Record<string, never>;
+            /** @description The slot key within this template. */
+            id: string;
+            /** @description The standard role this seat fills, as selected. */
+            role: components["schemas"]["RoleSelectionDto"];
+        };
+        /**
+         * @description One declared seat in a Delivery Team template.
+         *
+         *     The role is a [`RoleSelectionDto`] rather than free-form JSON. Before this,
+         *     a slot's meaning lived in an opaque `id` the server never interpreted, which
+         *     made "which standard role is this seat?" a string every client answered for
+         *     itself. A selection names a catalog revision and a code, and the server owns
+         *     the rest.
+         *
+         *     `capabilities` stays a nested document on purpose: it is a chain, a context
+         *     class and a skill set, none of which is a role fact, and the daemon and the
+         *     domain validate it once rather than the wire schema validating it twice.
+         */
+        TeamDraftSlotRequest: {
+            /** @description What the seat in it may be. */
+            capabilities: Record<string, never>;
+            /** @description The slot key within this template. */
+            id: string;
+            /** @description The standard role this seat fills. */
+            role: components["schemas"]["RoleSelectionDto"];
         };
         /** @description One team run and its seats, as the epic projection reports them. */
         TeamRunProjectionDto: {

@@ -6615,9 +6615,9 @@
           "slots": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/TeamDraftSlotDto"
             },
-            "description": "Slot declarations frozen at publish."
+            "description": "The seats frozen at publish."
           },
           "version": {
             "type": "integer",
@@ -7187,7 +7187,7 @@
       },
       "RoleSelectionDto": {
         "type": "object",
-        "description": "What a caller supplies when a new seat selects a standard role.\n\nIt carries the catalog revision and the code, and deliberately nothing else.\nA request that could also state the standard title would be a second source\nfor a fact the catalog already owns, and the two would disagree the first\ntime a title was corrected — so the title is resolved, never accepted.",
+        "description": "What a caller supplies when a new seat selects a standard role.\n\nIt carries the catalog revision and the code, and deliberately nothing else.\nA request that could also state the standard title would be a second source\nfor a fact the catalog already owns, and the two would disagree the first\ntime a title was corrected — so the title is resolved, never accepted.\n\nThe field list is closed. Without that, a caller sending `standard_title`\nwould have it quietly dropped by serde and would believe it had been\nhonoured — which is worse than a refusal, because it looks like agreement.",
         "required": [
           "catalog_revision",
           "role_code"
@@ -7208,7 +7208,8 @@
             "type": "string",
             "description": "The stable role code."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "RoleSlotWaiverDto": {
         "type": "object",
@@ -8467,9 +8468,9 @@
           "slots": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/TeamDraftSlotDto"
             },
-            "description": "Slot declarations in editor wire form."
+            "description": "The seats this template declares."
           }
         }
       },
@@ -8493,11 +8494,59 @@
           "slots": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/TeamDraftSlotRequest"
             },
-            "description": "Slot declarations in editor wire form."
+            "description": "The seats this template declares."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TeamDraftSlotDto": {
+        "type": "object",
+        "description": "One declared seat, as a projection reports it back.\n\nThe role is echoed as the selection that was stored. It becomes a fully\nresolved [`ResolvedRoleRefDto`] when the role-catalog service is composed and\nthe daemon can look a code up; until then the honest answer is what was\nselected, because a standard title invented here would be exactly the second\nsource of truth the selection type exists to remove.",
+        "required": [
+          "id",
+          "role",
+          "capabilities"
+        ],
+        "properties": {
+          "capabilities": {
+            "type": "object",
+            "description": "What the seat in it may be."
+          },
+          "id": {
+            "type": "string",
+            "description": "The slot key within this template."
+          },
+          "role": {
+            "$ref": "#/components/schemas/RoleSelectionDto",
+            "description": "The standard role this seat fills, as selected."
           }
         }
+      },
+      "TeamDraftSlotRequest": {
+        "type": "object",
+        "description": "One declared seat in a Delivery Team template.\n\nThe role is a [`RoleSelectionDto`] rather than free-form JSON. Before this,\na slot's meaning lived in an opaque `id` the server never interpreted, which\nmade \"which standard role is this seat?\" a string every client answered for\nitself. A selection names a catalog revision and a code, and the server owns\nthe rest.\n\n`capabilities` stays a nested document on purpose: it is a chain, a context\nclass and a skill set, none of which is a role fact, and the daemon and the\ndomain validate it once rather than the wire schema validating it twice.",
+        "required": [
+          "id",
+          "role",
+          "capabilities"
+        ],
+        "properties": {
+          "capabilities": {
+            "type": "object",
+            "description": "What the seat in it may be."
+          },
+          "id": {
+            "type": "string",
+            "description": "The slot key within this template."
+          },
+          "role": {
+            "$ref": "#/components/schemas/RoleSelectionDto",
+            "description": "The standard role this seat fills."
+          }
+        },
+        "additionalProperties": false
       },
       "TeamRunProjectionDto": {
         "type": "object",

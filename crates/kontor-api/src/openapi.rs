@@ -171,6 +171,8 @@ impl Modify for RealmBearer {
         crate::applications::ModelCatalogDto,
         crate::applications::TeamDraftRequest,
         crate::applications::TeamDraftDto,
+        crate::applications::TeamDraftSlotRequest,
+        crate::applications::TeamDraftSlotDto,
         crate::applications::PublishedTeamRevisionDto,
         crate::applications::TeamsProjectionDto,
         crate::applications::TicketLinkRequest,

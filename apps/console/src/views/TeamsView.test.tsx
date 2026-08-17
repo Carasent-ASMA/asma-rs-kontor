@@ -26,6 +26,9 @@ import type {
  * The output rate is deliberately absurd: if it ever reaches a rendered figure,
  * the arithmetic says so loudly rather than plausibly.
  */
+/** Any well-formed role selection; this suite is about model routing, not roles. */
+const anyRole = { catalog_revision: { id: 'standard-roles', version: 1 }, role_code: 'SWE' }
+
 const SOURCED_CATALOG: ModelCatalog = {
   providers: [
     {
@@ -83,6 +86,7 @@ const SOURCED_SEED: readonly TeamDraft[] = [
     slots: [
       {
         id: 'seat',
+        role: anyRole,
         capabilities: {
           chain: [{ provider: 'p', model: 'm', effort: 'high' }],
           context: { class: 'lean', enforcement: 'best_effort' },
@@ -137,6 +141,7 @@ function benchSeed(minTokens = 100_000): readonly TeamDraft[] {
       slots: [
         {
           id: 'seat',
+          role: anyRole,
           capabilities: {
             chain: [{ provider: 'b', model: 'bench', effort: 'high' }],
             context: { class: 'deep', enforcement: 'best_effort' },
