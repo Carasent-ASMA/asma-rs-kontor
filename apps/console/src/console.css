@@ -201,6 +201,55 @@ code {
   font-size: 0.85rem;
 }
 
+/* Server-owned help stays reachable by hover, keyboard focus and touch/click. */
+.code-help {
+  position: relative;
+  display: inline-block;
+}
+
+.code-help > button {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dotted currentColor;
+  background: none;
+  color: inherit;
+  cursor: help;
+}
+
+.code-help-text {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 0.25rem);
+  z-index: 5;
+  display: none;
+  width: min(20rem, calc(100vw - 2rem));
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  box-shadow: 0 0.25rem 0.75rem rgb(0 0 0 / 18%);
+  font-size: 0.85rem;
+}
+
+.code-help-text > * {
+  display: block;
+}
+
+.code-help-text small {
+  margin-top: 0.25rem;
+  color: var(--ink-soft);
+}
+
+.code-help:hover .code-help-text,
+.code-help:focus-within .code-help-text,
+.code-help[data-open="true"] .code-help-text {
+  display: block;
+}
+
+.code-help[data-known="false"] > button {
+  color: var(--warn);
+}
+
 /* --------------------------------------------------------------- skeleton */
 
 .console {

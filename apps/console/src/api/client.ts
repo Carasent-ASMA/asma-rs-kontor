@@ -16,11 +16,33 @@
  *    contract's own code, so callers branch on `code` and never on prose.
  */
 import type {
+  AdvisorRun,
+  AdvanceCompletionRequest,
+  CodeHelpProjection,
+  CommitteeRun,
+  CompletionOutcome,
+  CompletionState,
+  CoreTeam,
+  CoreTeamApplyRequest,
+  CoreTeamOutcome,
+  CoreTeamPreview,
+  CoreTeamPreviewRequest,
+  EnsureQuickSessionRequest,
+  EpicProjection,
   Health,
+  InvokeConsultationRequest,
   MessageAck,
   ModelCatalogProjection,
   PermissionAck,
+  ProfileCatalog,
+  ProjectCapacity,
+  PromotedSession,
+  PromotionApplyRequest,
+  PromotionPreview,
+  QuickRoles,
+  QuickSession,
   Realm,
+  RemediateCompletionRequest,
   Refusal,
   RunSnapshot,
   StreamFrame,
@@ -29,6 +51,7 @@ import type {
   TimelinePage,
   TeamsProjection,
   TeamDraftRequest,
+  TopologyProjection,
 } from './types'
 import type { Endpoint } from './endpoint'
 import { SseParser } from './sse'
@@ -267,6 +290,185 @@ export class KontorClient {
     })
   }
 
+  /** One Operational epic. */
+  async epic(projectId: string, epicId: string): Promise<EpicProjection> {
+    return this.#json<EpicProjection>(
+      `/v1/projects/${encodeURIComponent(projectId)}/epics/${encodeURIComponent(epicId)}`,
+    )
+  }
+
+  /** The authoritative topology, optionally narrowed to one epic. */
+  async topology(projectId: string, epicId?: string): Promise<TopologyProjection> {
+    const query = epicId ? `?epic_id=${encodeURIComponent(epicId)}` : ''
+    return this.#json<TopologyProjection>(
+      `/v1/projects/${encodeURIComponent(projectId)}/topology:inspect${query}`,
+    )
+  }
+
+  /** The project's Core Team. */
+  async coreTeam(projectId: string): Promise<CoreTeam> {
+    return this.#json<CoreTeam>(`/v1/projects/${encodeURIComponent(projectId)}/core-team`)
+  }
+
+  /** Preview a Core Team composition without committing it. */
+  async previewCoreTeam(
+    projectId: string,
+    request: CoreTeamPreviewRequest,
+  ): Promise<CoreTeamPreview> {
+    return this.#post<CoreTeamPreview>(
+      `/v1/projects/${encodeURIComponent(projectId)}/core-team:preview`,
+      request,
+    )
+  }
+
+  /** Apply exactly the Core Team preview the operator confirmed. */
+  async applyCoreTeam(
+    projectId: string,
+    request: CoreTeamApplyRequest,
+    commandId: string,
+  ): Promise<CoreTeamOutcome> {
+    return this.#command<CoreTeamOutcome>(
+      `/v1/projects/${encodeURIComponent(projectId)}/core-team:apply`,
+      commandId,
+      request,
+    )
+  }
+
+  /** The catalog-backed roles a Quick session may select. */
+  async quickRoles(projectId: string): Promise<QuickRoles> {
+    return this.#json<QuickRoles>(`/v1/projects/${encodeURIComponent(projectId)}/quick-roles`)
+  }
+
+  /** Open one Quick session, or read back the one this key already opened. */
+  async ensureQuickSession(
+    projectId: string,
+    request: EnsureQuickSessionRequest,
+    commandId: string,
+  ): Promise<QuickSession> {
+    return this.#command<QuickSession>(
+      `/v1/projects/${encodeURIComponent(projectId)}/quick-sessions:ensure`,
+      commandId,
+      request,
+    )
+  }
+
+  /** Preview promoting one Quick session to an epic. */
+  async previewPromotion(projectId: string, quickSessionId: string): Promise<PromotionPreview> {
+    return this.#json<PromotionPreview>(
+      `/v1/projects/${encodeURIComponent(projectId)}/quick-sessions/${encodeURIComponent(quickSessionId)}/promotion:preview`,
+    )
+  }
+
+  /** Apply exactly the promotion preview the operator confirmed. */
+  async applyPromotion(
+    projectId: string,
+    quickSessionId: string,
+    request: PromotionApplyRequest,
+    commandId: string,
+  ): Promise<PromotedSession> {
+    return this.#command<PromotedSession>(
+      `/v1/projects/${encodeURIComponent(projectId)}/quick-sessions/${encodeURIComponent(quickSessionId)}/promotion:apply`,
+      commandId,
+      request,
+    )
+  }
+
+  /** The server-owned admission picture for one project. */
+  async projectCapacity(projectId: string): Promise<ProjectCapacity> {
+    return this.#json<ProjectCapacity>(`/v1/projects/${encodeURIComponent(projectId)}/capacity`)
+  }
+
+  /** Help for the controlled codes pinned by one epic. */
+  async codeHelp(projectId: string, epicId: string): Promise<CodeHelpProjection> {
+    return this.#json<CodeHelpProjection>(
+      `/v1/projects/${encodeURIComponent(projectId)}/epics/${encodeURIComponent(epicId)}/code-help`,
+    )
+  }
+
+  /** Every published Advisor profile revision. */
+  async advisorProfiles(projectId: string): Promise<ProfileCatalog> {
+    return this.#json<ProfileCatalog>(
+      `/v1/projects/${encodeURIComponent(projectId)}/advisor-profiles`,
+    )
+  }
+
+  /** Every published Committee template revision. */
+  async committeeTemplates(projectId: string): Promise<ProfileCatalog> {
+    return this.#json<ProfileCatalog>(
+      `/v1/projects/${encodeURIComponent(projectId)}/committee-templates`,
+    )
+  }
+
+  /** Every published Completion profile revision. */
+  async completionProfiles(projectId: string): Promise<ProfileCatalog> {
+    return this.#json<ProfileCatalog>(
+      `/v1/projects/${encodeURIComponent(projectId)}/completion-profiles`,
+    )
+  }
+
+  /** Invoke one Advisor consultation. */
+  async invokeAdvisor(
+    projectId: string,
+    epicId: string,
+    request: InvokeConsultationRequest,
+    commandId: string,
+  ): Promise<AdvisorRun> {
+    return this.#command<AdvisorRun>(
+      `/v1/projects/${encodeURIComponent(projectId)}/epics/${encodeURIComponent(epicId)}/advisor-runs:invoke`,
+      commandId,
+      request,
+    )
+  }
+
+  /** Invoke one Committee consultation. */
+  async invokeCommittee(
+    projectId: string,
+    epicId: string,
+    request: InvokeConsultationRequest,
+    commandId: string,
+  ): Promise<CommitteeRun> {
+    return this.#command<CommitteeRun>(
+      `/v1/projects/${encodeURIComponent(projectId)}/epics/${encodeURIComponent(epicId)}/committee-runs:invoke`,
+      commandId,
+      request,
+    )
+  }
+
+  /** One epic's current completion state. */
+  async completion(projectId: string, epicId: string): Promise<CompletionState> {
+    return this.#json<CompletionState>(
+      `/v1/projects/${encodeURIComponent(projectId)}/epics/${encodeURIComponent(epicId)}/completion`,
+    )
+  }
+
+  /** Advance completion from the revision the operator confirmed. */
+  async advanceCompletion(
+    projectId: string,
+    epicId: string,
+    request: AdvanceCompletionRequest,
+    commandId: string,
+  ): Promise<CompletionOutcome> {
+    return this.#command<CompletionOutcome>(
+      `/v1/projects/${encodeURIComponent(projectId)}/epics/${encodeURIComponent(epicId)}/completion:advance`,
+      commandId,
+      request,
+    )
+  }
+
+  /** Return completion to remediation from the revision the operator confirmed. */
+  async remediateCompletion(
+    projectId: string,
+    epicId: string,
+    request: RemediateCompletionRequest,
+    commandId: string,
+  ): Promise<CompletionOutcome> {
+    return this.#command<CompletionOutcome>(
+      `/v1/projects/${encodeURIComponent(projectId)}/epics/${encodeURIComponent(epicId)}/completion:remediate`,
+      commandId,
+      request,
+    )
+  }
+
   /** One page of a session's recorded content. */
   async timeline(
     agentRunId: string,
@@ -417,6 +619,24 @@ export class KontorClient {
       throw foreign
     }
     return body as T
+  }
+
+  /** POST one JSON body without creating a mutation key. */
+  async #post<T>(path: string, body: unknown): Promise<T> {
+    return this.#json<T>(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  /** POST one receipt-backed command under the caller's stable key. */
+  async #command<T>(path: string, commandId: string, body: unknown): Promise<T> {
+    return this.#json<T>(path, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': commandId, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
   }
 
   /** Turn a non-2xx answer into the refusal it claims to be. */

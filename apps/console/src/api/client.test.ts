@@ -97,6 +97,31 @@ describe('client requests', () => {
     expect(new Headers(calls[3]?.init?.headers).get('Idempotency-Key')).toBe('publish-1')
   })
 
+  it('keeps Operational reads, previews and receipt-backed applies on /v1', async () => {
+    const { client, calls } = clientWith(() => json({ realm_id: REALM }))
+    await client.topology('project 1', 'epic 1')
+    await client.codeHelp('project 1', 'epic 1')
+    await client.previewCoreTeam('project 1', { seats: [] })
+    await client.applyCoreTeam(
+      'project 1',
+      { expected_revision: 4, preview_hash: 'hash-1', seats: [] },
+      'apply-1',
+    )
+
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/v1/projects/project%201/topology:inspect',
+      '/v1/projects/project%201/epics/epic%201/code-help',
+      '/v1/projects/project%201/core-team:preview',
+      '/v1/projects/project%201/core-team:apply',
+    ])
+    expect(new URL(calls[0]?.url ?? '').searchParams.get('epic_id')).toBe('epic 1')
+    expect(calls[2]?.init?.body).toBe('{"seats":[]}')
+    expect(new Headers(calls[3]?.init?.headers).get('Idempotency-Key')).toBe('apply-1')
+    expect(calls[3]?.init?.body).toBe(
+      '{"expected_revision":4,"preview_hash":"hash-1","seats":[]}',
+    )
+  })
+
   it('reports a refusal with the contract code rather than as a channel failure', async () => {
     const { client } = clientWith(() =>
       json(
