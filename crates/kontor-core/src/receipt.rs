@@ -143,6 +143,18 @@ closed_enum! {
         /// epic is staffed *from*, and a running epic holds the revision it
         /// froze at promotion.
         ApplyCoreTeam => "apply_core_team",
+        /// Publish the next immutable Advisor profile revision.
+        ///
+        /// The project is the aggregate. Publishing a policy document creates no
+        /// ASW and no seat: a profile is what a consultation would be asked
+        /// under, and until someone invokes one there is nothing running to
+        /// name.
+        ApplyAdvisorProfile => "apply_advisor_profile",
+        /// Publish the next immutable Committee template revision.
+        ///
+        /// The project is the aggregate, for the same reason: a template seats
+        /// no CSW until it is convened.
+        ApplyCommitteeTemplate => "apply_committee_template",
         /// Open one ad-hoc Quick session under the project's session base.
         ///
         /// The project is the aggregate. A Quick session creates no MiniProject
@@ -411,6 +423,13 @@ impl CommandKind {
             // that publishing a roster changed one running epic, which is the
             // one thing publishing a roster deliberately does not do.
             Self::ApplyCoreTeam | Self::EnsureQuickSession => witness(matches!(target, A::Project)),
+            // The project, and only the project. A published profile or
+            // template is project configuration; an epic here would let a
+            // receipt claim that publishing one changed a running consultation,
+            // which is exactly what pinning a revision prevents.
+            Self::ApplyAdvisorProfile | Self::ApplyCommitteeTemplate => {
+                witness(matches!(target, A::Project))
+            }
             // The epic each of these is about. Promotion names the epic it
             // creates rather than the project it creates it in: the receipt has
             // to be findable from the thing that now exists.

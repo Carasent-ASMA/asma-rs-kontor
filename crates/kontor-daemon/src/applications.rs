@@ -53,9 +53,10 @@ use kontor_api::applications::{
     CoreTeamMaterializeRequest, CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest,
     CoreTeamSeatDto, CoreTeamSeatSelectionDto, EnsureQuickSessionRequest,
     InvokeConsultationRequest, ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto,
-    ProfilePreviewRequest, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
-    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RemediateCompletionRequest,
-    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
+    ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest,
+    PromotionPreviewDto, QuickRolesDto, QuickSessionDto, RecordFindingsRequest,
+    RemediateCompletionRequest, RosterUpgradePreviewDto, RosterUpgradePreviewRequest,
+    SettleConsultationRequest,
 };
 use kontor_api::applications::{
     AppliedTopologyUpgradeDto, CodeHelpEntryDto, DesiredBindingDto, PinnedSpecDto,
@@ -86,6 +87,7 @@ use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
+use kontor_core::consultation::{AdvisorProfileSpec, CommitteeTemplateSpec, ConsultationFamily};
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
@@ -105,8 +107,9 @@ use kontor_core::repository::{
     NewMiniProject, NewNativeContainerBinding, NewSeatBinding, NewSessionTopologyNode,
     NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault, RealmRepository,
     RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
-    SpecRepository, StoredCoreTeamRevision, StoredEpicRoster, StoredPromotion, StoredQuickSession,
-    TaskTransitionRequest, TicketRepository, TopologyRepository, WorkflowRepository,
+    SpecRepository, StoredConsultationProfileRevision, StoredCoreTeamRevision, StoredEpicRoster,
+    StoredPromotion, StoredQuickSession, TaskTransitionRequest, TicketRepository,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -2820,6 +2823,215 @@ impl Services {
         ))
     }
 
+    // -----------------------------------------------------------------------
+    // Consultation profile catalogs
+    // -----------------------------------------------------------------------
+    //
+    // Publishing a policy document is the whole of this surface. Invoking one,
+    // recording findings and settling belong to the durable services that own
+    // the runs, and those remain refused until they exist: a published profile
+    // creates no ASW, no CSW and no seat.
+
+    /// Every published revision of one consultation family, oldest first.
+    fn consultation_catalog(
+        &self,
+        project_id: ProjectId,
+        family: ConsultationFamily,
+    ) -> Result<ProfileCatalogDto, ApiError> {
+        let state = self.state()?;
+        // Resolved first so an unknown project is refused rather than answered
+        // with the empty catalog every unknown project would appear to have.
+        self.project_row(project_id)?;
+        let stored = self.stored_consultation_profiles(project_id, family)?;
+        Ok(ProfileCatalogDto {
+            realm_id: state.realm_id(),
+            project_id,
+            revisions: stored.iter().map(consultation_revision_dto).collect(),
+            revision: consultation_catalog_revision(stored.len()),
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    fn stored_consultation_profiles(
+        &self,
+        project_id: ProjectId,
+        family: ConsultationFamily,
+    ) -> Result<Vec<StoredConsultationProfileRevision>, ApiError> {
+        self.state()?
+            .with_store(|store| store.list_consultation_profile_revisions(project_id, family))
+            .map_err(|error| self.refuse(&error))
+    }
+
+    /// Judge one candidate definition and commit nothing.
+    ///
+    /// A pure read: it deserializes into the family schema, validates and
+    /// canonicalizes it, and returns violations plus the hash an apply must
+    /// name. No draft, receipt, id or aggregate is written.
+    fn preview_consultation_profile(
+        &self,
+        project_id: ProjectId,
+        family: ConsultationFamily,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError> {
+        let state = self.state()?;
+        self.project_row(project_id)?;
+        Ok(ProfilePreviewDto {
+            realm_id: state.realm_id(),
+            violations: consultation_definition(family, &request.definition)
+                .err()
+                .map_or_else(Vec::new, |violation| vec![violation]),
+            preview_hash: self.consultation_preview_hash(
+                project_id,
+                family,
+                &request.definition,
+            )?,
+        })
+    }
+
+    /// The token a preview hands out and its apply must present.
+    ///
+    /// Bound to the project and the family as well as to the document, so a
+    /// preview taken against one catalog cannot authorize a publish into the
+    /// other.
+    fn consultation_preview_hash(
+        &self,
+        project_id: ProjectId,
+        family: ConsultationFamily,
+        definition: &serde_json::Value,
+    ) -> Result<ContentHash, ApiError> {
+        self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "consultation_profile_preview",
+            "project": project_id.to_string(),
+            "family": family.as_str(),
+            "definition": definition,
+        }))
+    }
+
+    /// Publish one revalidated definition as the next immutable revision.
+    fn apply_consultation_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        family: ConsultationFamily,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError> {
+        let state = self.state()?;
+        let project = self.project_row(project_id)?;
+        // Revalidated here rather than trusted from the preview. What may be
+        // published is this exact document, and an unpublishable one is refused
+        // whatever revision the catalog is at.
+        // The refusal is deliberately detail-free: a rejection reason travels
+        // through `preview`, whose `violations` are typed for it, and not
+        // through an error message that would carry document text into logs.
+        let definition = consultation_definition(family, &request.definition).map_err(|_| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the definition is not publishable; preview it to see why",
+            )
+        })?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "consultation_profile_apply",
+            "project": project_id.to_string(),
+            "family": family.as_str(),
+            "preview": request.preview_hash.as_str(),
+        }))?;
+        // Replay is judged before the expected revision, as in `apply_core_team`
+        // and for the same reason: publishing moves this catalog, so a retry
+        // after a lost acknowledgement necessarily presents the revision it read
+        // before the first attempt. Checking that first would refuse the retry
+        // for the sole reason that the original call succeeded.
+        let replayed = self
+            .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
+            .is_some();
+
+        if !replayed {
+            let stored = self.stored_consultation_profiles(project_id, family)?;
+            let current = consultation_catalog_revision(stored.len());
+            if current != request.expected_revision {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the profile catalog moved since the caller read it",
+                    )
+                    .with_revision(Some(current)));
+            }
+            if self.consultation_preview_hash(project_id, family, &request.definition)?
+                != request.preview_hash
+            {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the apply does not match the named preview",
+                ));
+            }
+            let canonical = definition
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?;
+            // The store holds the gap check: version one starts a profile and
+            // every later version must be exactly the next one, so a caller
+            // cannot publish over a revision a run has already pinned.
+            state
+                .with_store(|store| {
+                    store.publish_consultation_profile_revision(
+                        &StoredConsultationProfileRevision {
+                            project_id,
+                            family,
+                            profile_id: definition.profile_id(),
+                            version: definition.version(),
+                            name: definition.name(),
+                            definition: canonical.json().to_owned(),
+                            definition_hash: canonical.hash().clone(),
+                            published_at: kontor_api::now(),
+                        },
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
+        // Read back rather than echoed, so a replay answers with the revision
+        // the original call published instead of with the request it repeated.
+        let stored = self.stored_consultation_profiles(project_id, family)?;
+        let published = stored
+            .iter()
+            .find(|candidate| {
+                candidate.profile_id == definition.profile_id()
+                    && candidate.version == definition.version()
+            })
+            .map(consultation_revision_dto)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the published revision could not be read back",
+                )
+            })?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            match family {
+                ConsultationFamily::Advisor => CommandKind::ApplyAdvisorProfile,
+                ConsultationFamily::Committee => CommandKind::ApplyCommitteeTemplate,
+            },
+            AggregateRef::Project { project_id },
+            project.revision,
+            &intent,
+        )?;
+        Ok(AppliedProfileDto {
+            published,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: consultation_catalog_revision(stored.len()),
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
     /// One semantic scope, resolved to the chain of nodes that realizes it.
     ///
     /// This is where the semantic boundary is actually enforced. A caller names
@@ -4288,6 +4500,104 @@ fn shareability_dto(stamp: &Shareability) -> ShareabilityDto {
 /// "version one is published" are different values. Collapsing them would let
 /// an apply written against an unconfigured project land on a project that had
 /// meanwhile published its first roster.
+/// One consultation family's catalog revision.
+///
+/// How many revisions the project has published into that family, plus one.
+/// Derived from the rows for the same reason `core_team_revision_of` is: a
+/// stored counter would need its own transaction to stay true, and the first
+/// partial write would leave the catalog claiming a revision it cannot show.
+fn consultation_catalog_revision(published: usize) -> AggregateRevision {
+    AggregateRevision::parse(
+        u64::try_from(published)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1),
+    )
+    .unwrap_or(AggregateRevision::INITIAL)
+}
+
+fn consultation_revision_dto(stored: &StoredConsultationProfileRevision) -> ProfileRevisionDto {
+    ProfileRevisionDto {
+        id: stored.profile_id.clone(),
+        version: stored.version,
+        name: stored.name.clone(),
+        definition_hash: stored.definition_hash.clone(),
+    }
+}
+
+/// One candidate definition, parsed into the type its route selected.
+enum ConsultationDefinition {
+    /// An Advisor profile.
+    Advisor(Box<AdvisorProfileSpec>),
+    /// A Committee template.
+    Committee(Box<CommitteeTemplateSpec>),
+}
+
+impl ConsultationDefinition {
+    /// The stable logical id every revision of this document shares.
+    fn profile_id(&self) -> String {
+        match self {
+            Self::Advisor(spec) => spec.profile_id.to_string(),
+            Self::Committee(spec) => spec.template_id.to_string(),
+        }
+    }
+
+    fn version(&self) -> SpecVersion {
+        match self {
+            Self::Advisor(spec) => spec.version,
+            Self::Committee(spec) => spec.version,
+        }
+    }
+
+    fn name(&self) -> ExternalName {
+        match self {
+            Self::Advisor(spec) => spec.name.clone(),
+            Self::Committee(spec) => spec.name.clone(),
+        }
+    }
+
+    /// The canonical typed value, which is what gets stored and hashed.
+    fn canonicalize(&self) -> Result<CanonicalDocument, kontor_core::DomainError> {
+        match self {
+            Self::Advisor(spec) => spec.canonicalize(),
+            Self::Committee(spec) => spec.canonicalize(),
+        }
+    }
+}
+
+/// Parse and validate one candidate definition, or say why it cannot be
+/// published.
+///
+/// The family comes from the route, never from the document, so a caller cannot
+/// publish an Advisor profile into the Committee catalog by labelling it one.
+/// Unknown fields are rejected by the specifications themselves, which means a
+/// typo in a policy document fails here rather than being silently dropped and
+/// published as a permission nobody wrote.
+///
+/// The violation describes the caller's own submission back to it. It reaches
+/// the caller only through a preview's typed `violations`, never through a
+/// refusal message: a preview exists to tell an Admin what to fix, and an
+/// `ApiError` carries a static string precisely so document text cannot ride
+/// out in one.
+fn consultation_definition(
+    family: ConsultationFamily,
+    definition: &serde_json::Value,
+) -> Result<ConsultationDefinition, String> {
+    match family {
+        ConsultationFamily::Advisor => {
+            let spec: AdvisorProfileSpec = serde_json::from_value(definition.clone())
+                .map_err(|error| format!("not a valid Advisor profile: {error}"))?;
+            spec.validate().map_err(|error| error.to_string())?;
+            Ok(ConsultationDefinition::Advisor(Box::new(spec)))
+        }
+        ConsultationFamily::Committee => {
+            let spec: CommitteeTemplateSpec = serde_json::from_value(definition.clone())
+                .map_err(|error| format!("not a valid Committee template: {error}"))?;
+            spec.validate().map_err(|error| error.to_string())?;
+            Ok(ConsultationDefinition::Committee(Box::new(spec)))
+        }
+    }
+}
+
 fn core_team_revision_of(current: Option<&CoreTeamRevision>) -> AggregateRevision {
     current.map_or(AggregateRevision::INITIAL, |current| {
         AggregateRevision::parse(u64::from(current.version.get()).saturating_add(1))
@@ -7014,32 +7324,23 @@ impl ApplicationOperations for Services {
             },
         })
     }
-    fn advisor_profiles(&self, _project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Advisor service is not composed in this build",
-        ))
+    fn advisor_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
+        self.consultation_catalog(project_id, ConsultationFamily::Advisor)
     }
     fn preview_advisor_profile(
         &self,
-        _project_id: ProjectId,
-        _request: &ProfilePreviewRequest,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
     ) -> Result<ProfilePreviewDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Advisor service is not composed in this build",
-        ))
+        self.preview_consultation_profile(project_id, ConsultationFamily::Advisor, request)
     }
     async fn apply_advisor_profile(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _request: &ProfileApplyRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
     ) -> Result<AppliedProfileDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Advisor service is not composed in this build",
-        ))
+        self.apply_consultation_profile(key, project_id, ConsultationFamily::Advisor, request)
     }
     async fn invoke_advisor_run(
         &self,
@@ -7065,32 +7366,23 @@ impl ApplicationOperations for Services {
             "the Advisor service is not composed in this build",
         ))
     }
-    fn committee_templates(&self, _project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Committee service is not composed in this build",
-        ))
+    fn committee_templates(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
+        self.consultation_catalog(project_id, ConsultationFamily::Committee)
     }
     fn preview_committee_template(
         &self,
-        _project_id: ProjectId,
-        _request: &ProfilePreviewRequest,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
     ) -> Result<ProfilePreviewDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Committee service is not composed in this build",
-        ))
+        self.preview_consultation_profile(project_id, ConsultationFamily::Committee, request)
     }
     async fn apply_committee_template(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _request: &ProfileApplyRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
     ) -> Result<AppliedProfileDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Committee service is not composed in this build",
-        ))
+        self.apply_consultation_profile(key, project_id, ConsultationFamily::Committee, request)
     }
     async fn invoke_committee_run(
         &self,

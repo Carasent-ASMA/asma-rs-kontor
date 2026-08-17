@@ -11311,7 +11311,7 @@ async fn an_invented_topology_scope_is_refused() {
 
 /// Every successor contract refuses; none of them pretends.
 ///
-/// OP-04, OP-05 and OP-06 own the behaviour behind these routes. The contract
+/// OP-06 owns the behaviour behind the routes still listed here. The contract
 /// is fixed now so the authority rules and the closed argument lists are one
 /// decision rather than one per successor — which is only safe if the daemon
 /// is honest about having no service yet. The failure this pins is the tempting
@@ -11324,8 +11324,6 @@ async fn every_successor_contract_refuses_rather_than_answering_emptily() {
     let project = world.project;
 
     let reads = [
-        format!("/v1/projects/{project}/advisor-profiles"),
-        format!("/v1/projects/{project}/committee-templates"),
         format!("/v1/projects/{project}/completion-profiles"),
         format!(
             "/v1/projects/{project}/epics/{}/completion",
@@ -11436,6 +11434,424 @@ async fn a_successor_contract_refuses_an_under_authorized_caller_first() {
     .await;
     assert_eq!(refused.status, 403, "{}", refused.body);
     assert_eq!(refused.code(), "forbidden");
+}
+
+// ---------------------------------------------------------------------------
+// OP-05 CP1 — published consultation policy, driven through the public API.
+// ---------------------------------------------------------------------------
+
+/// One complete, publishable Advisor profile.
+fn advisor_definition(profile_id: &str, version: u32) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "profile_id": profile_id,
+        "version": version,
+        "name": "Data platform advisor",
+        "short_name": "Data",
+        "expertise": "Postgres, CDC and inter-service data flow.",
+        "behavior": "Answer the question asked, and cite the evidence you were given.",
+        "output_requirements": "A recommendation and the evidence it rests on.",
+        "models": {
+            "rungs": [{"provider": "claude", "model": "claude-opus-5", "effort": "high"}]
+        },
+        "context": {"skills": [], "files": [], "memory": "none"},
+        "allowed_caller_roles": ["architect"],
+        "allowed_scopes": ["epic"],
+        "budget": {
+            "max_tokens": 200000,
+            "max_commands": 20,
+            "max_duration_seconds": 1800,
+            "max_cost": {"minor_units": 5000, "currency": "NOK"}
+        },
+        "max_consultations": 2
+    })
+}
+
+const ADVISOR_PROFILE: &str = "01991c00-0000-7000-8000-0000000000a1";
+
+/// A composed catalog route, held to the rule the `unavailable` guard protected.
+///
+/// Unlike an unconfigured Core Team, an empty consultation catalog is not a lie:
+/// a project that has published no Advisor profile genuinely has none, and the
+/// aggregate revision it reports says the catalog is untouched rather than
+/// missing. What would have been a lie is answering emptily while no service
+/// existed, which is what that guard was for.
+#[tokio::test]
+async fn an_unpublished_consultation_catalog_is_empty_and_says_so() {
+    let world = World::open().await;
+    let answer = Call::get(format!("/v1/projects/{}/advisor-profiles", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.json()["revisions"].as_array().map(Vec::len), Some(0));
+    assert_eq!(answer.json()["revision"].as_u64(), Some(1));
+}
+
+/// Preview, publish, read back — and the version after it.
+#[tokio::test]
+async fn a_previewed_advisor_profile_publishes_and_reads_back() {
+    let world = World::open().await;
+    let project = world.project;
+
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, 1)}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("preview-v1")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(
+        preview.json()["violations"].as_array().map(Vec::len),
+        Some(0),
+        "a complete definition has nothing to fix: {}",
+        preview.body
+    );
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+
+    // A preview commits nothing: the catalog is still empty.
+    let untouched = Call::get(format!("/v1/projects/{project}/advisor-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        untouched.json()["revisions"].as_array().map(Vec::len),
+        Some(0),
+        "a preview published something: {}",
+        untouched.body
+    );
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor_definition(ADVISOR_PROFILE, 1),
+            "preview_hash": hash,
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("apply-v1")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["published"]["version"].as_u64(), Some(1));
+    assert_eq!(
+        applied.json()["published"]["id"].as_str(),
+        Some(ADVISOR_PROFILE)
+    );
+    assert_eq!(
+        applied.json()["receipt"]["applied"].as_str(),
+        Some("created")
+    );
+
+    let catalog = Call::get(format!("/v1/projects/{project}/advisor-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        catalog.json()["revisions"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        catalog.json()["revision"].as_u64(),
+        Some(2),
+        "publishing moved the catalog: {}",
+        catalog.body
+    );
+
+    // The next version publishes against the revision that read reported.
+    let next_preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, 2)}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("preview-v2")
+    .send(&world)
+    .await;
+    let next_hash = next_preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let next = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor_definition(ADVISOR_PROFILE, 2),
+            "preview_hash": next_hash,
+            "expected_revision": 2,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("apply-v2")
+    .send(&world)
+    .await;
+    assert_eq!(next.status, 200, "{}", next.body);
+    assert_eq!(next.json()["published"]["version"].as_u64(), Some(2));
+}
+
+/// A retry after a lost acknowledgement replays; it does not publish twice.
+#[tokio::test]
+async fn replaying_a_profile_apply_publishes_once() {
+    let world = World::open().await;
+    let project = world.project;
+    let definition = advisor_definition(ADVISOR_PROFILE, 1);
+
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": definition}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replay-preview")
+    .send(&world)
+    .await;
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let body = serde_json::json!({
+        "definition": definition,
+        "preview_hash": hash,
+        "expected_revision": 1,
+    });
+
+    let first = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("apply-once")
+    .send(&world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+
+    // The same key and the same intent, presenting the revision it read before
+    // the first attempt. Refusing this for the sole reason that the original
+    // succeeded is the bug the replay-first ordering exists to avoid.
+    let again = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("apply-once")
+    .send(&world)
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(
+        again.json()["receipt"]["applied"].as_str(),
+        Some("unchanged")
+    );
+    assert_eq!(again.json()["published"]["version"].as_u64(), Some(1));
+
+    let catalog = Call::get(format!("/v1/projects/{project}/advisor-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        catalog.json()["revisions"].as_array().map(Vec::len),
+        Some(1),
+        "the replay published a second revision: {}",
+        catalog.body
+    );
+}
+
+/// A definition the preview never judged cannot be published under its hash.
+#[tokio::test]
+async fn a_profile_apply_must_match_the_named_preview() {
+    let world = World::open().await;
+    let project = world.project;
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, 1)}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("swap-preview")
+    .send(&world)
+    .await;
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+
+    // Same shape, different content: what the Admin authorized was the document
+    // they were shown.
+    let mut swapped = advisor_definition(ADVISOR_PROFILE, 1);
+    swapped["max_consultations"] = serde_json::json!(99);
+    let refused = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": swapped,
+            "preview_hash": hash,
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("swap-apply")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "invalid_request");
+    assert!(refused.json().get("published").is_none());
+}
+
+/// Publishing against a revision the catalog has moved past writes nothing.
+#[tokio::test]
+async fn a_profile_apply_under_a_stale_revision_writes_nothing() {
+    let world = World::open().await;
+    let project = world.project;
+    for (version, key) in [(1_u32, "stale-first"), (2, "stale-second")] {
+        let preview = Call::post(
+            format!("/v1/projects/{project}/advisor-profiles:preview"),
+            &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, version)}),
+        )
+        .signed_as(&world, "admin")
+        .with_key(format!("{key}-preview"))
+        .send(&world)
+        .await;
+        let hash = preview.json()["preview_hash"]
+            .as_str()
+            .expect("a preview hash")
+            .to_owned();
+        let applied = Call::post(
+            format!("/v1/projects/{project}/advisor-profiles:apply"),
+            &serde_json::json!({
+                "definition": advisor_definition(ADVISOR_PROFILE, version),
+                "preview_hash": hash,
+                // Both attempts claim the catalog is untouched. The second one
+                // is wrong, because the first moved it.
+                "expected_revision": 1,
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key(format!("{key}-apply"))
+        .send(&world)
+        .await;
+        if version == 1 {
+            assert_eq!(applied.status, 200, "{}", applied.body);
+        } else {
+            assert_eq!(applied.status, 409, "{}", applied.body);
+            assert_eq!(applied.code(), "revision_conflict");
+        }
+    }
+    let catalog = Call::get(format!("/v1/projects/{project}/advisor-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        catalog.json()["revisions"].as_array().map(Vec::len),
+        Some(1)
+    );
+}
+
+/// A typo in a policy document is a violation, not a silently dropped field.
+#[tokio::test]
+async fn an_unknown_field_in_a_profile_is_reported_not_ignored() {
+    let world = World::open().await;
+    let mut definition = advisor_definition(ADVISOR_PROFILE, 1);
+    definition["allowed_caller_role"] = serde_json::json!(["architect"]);
+    let preview = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:preview", world.project),
+        &serde_json::json!({"definition": definition}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("typo-preview")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert!(
+        !preview.json()["violations"]
+            .as_array()
+            .expect("violations")
+            .is_empty(),
+        "a misspelled field must not be dropped and published: {}",
+        preview.body
+    );
+}
+
+/// The family comes from the route, never from the document.
+#[tokio::test]
+async fn an_advisor_profile_cannot_be_published_as_a_committee_template() {
+    let world = World::open().await;
+    let preview = Call::post(
+        format!("/v1/projects/{}/committee-templates:preview", world.project),
+        &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, 1)}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("wrong-family")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert!(
+        !preview.json()["violations"]
+            .as_array()
+            .expect("violations")
+            .is_empty(),
+        "an Advisor profile is not a Committee template: {}",
+        preview.body
+    );
+}
+
+/// Publishing a profile seats nobody.
+///
+/// A profile is what a consultation *would* be asked under. If publishing one
+/// created an ASW or a seat, an Admin editing policy would be spending provider
+/// capacity, and the read-only boundary would already have been crossed before
+/// anybody asked a question.
+#[tokio::test]
+async fn publishing_a_profile_creates_no_workspace_and_no_seat() {
+    let world = World::open().await;
+    let project = world.project;
+    let before = Call::get(format!("/v1/projects/{project}/topology:inspect"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, 1)}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("no-seat-preview")
+    .send(&world)
+    .await;
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let applied = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor_definition(ADVISOR_PROFILE, 1),
+            "preview_hash": hash,
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("no-seat-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let after = Call::get(format!("/v1/projects/{project}/topology:inspect"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    // The realm cursor moves, because a receipt was written. What must not move
+    // is the topology: no ASW, no CSW, no seat.
+    assert_eq!(
+        before.json()["nodes"],
+        after.json()["nodes"],
+        "publishing a profile changed the topology"
+    );
+    assert_eq!(
+        after.json()["nodes"].as_array().map(Vec::len),
+        Some(0),
+        "publishing a profile materialized a node: {}",
+        after.body
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ use crate::calendar::{
     HolidayImportBatch, HolidaySourceRevision, OverrideRevocation, ScheduleOverride,
     WorkCalendarAssignment, WorkScope,
 };
+use crate::consultation::ConsultationFamily;
 use crate::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ConnectorKey,
@@ -197,6 +198,39 @@ pub struct StoredCoreTeamRevision {
     pub catalog_hash: ContentHash,
     /// The resolved seats, in their published order.
     pub seats: serde_json::Value,
+    /// Publication instant.
+    pub published_at: Timestamp,
+}
+
+/// One published Advisor profile or Committee template revision, as it is
+/// stored.
+///
+/// The definition is held as the canonical document the domain produced, for
+/// the same reason `StoredCoreTeamRevision` holds its seats that way: the
+/// store's obligation is that what it returns is byte-identical to what was
+/// published, and `definition_hash` already pins the typed value it was
+/// canonicalized from. Re-deriving whether the document is publishable is the
+/// specification's job, and it has already been done once, before the write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredConsultationProfileRevision {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Which family this revision belongs to.
+    pub family: ConsultationFamily,
+    /// The profile or template identity shared by every revision of it.
+    pub profile_id: String,
+    /// Monotonic version within `profile_id`.
+    pub version: SpecVersion,
+    /// The label frozen at publish.
+    pub name: ExternalName,
+    /// The canonical definition, byte-for-byte as published.
+    ///
+    /// Held as the canonical text rather than as a re-serialized value: a
+    /// `serde_json::Value` round-trip is only incidentally byte-stable, and the
+    /// digest below is over these exact bytes.
+    pub definition: String,
+    /// Digest of that canonical definition.
+    pub definition_hash: ContentHash,
     /// Publication instant.
     pub published_at: Timestamp,
 }

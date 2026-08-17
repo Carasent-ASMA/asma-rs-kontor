@@ -18,6 +18,7 @@ use kontor_core::calendar::{
     HolidayProviderKind, HolidaySourceRevision, IanaTimeZone, OverrideExpiry, OverrideRevocation,
     ScheduleOverride, WeeklyWindow, WorkCalendarAssignment, WorkScope,
 };
+use kontor_core::consultation::ConsultationFamily;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ContentHash,
@@ -49,10 +50,10 @@ use kontor_core::repository::{
     RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
     RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
     SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredCapacityConfiguration, StoredCoreTeamRevision, StoredEpicRoster, StoredPromotion,
-    StoredQuickSession, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun,
-    TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, TopologyRepository,
-    WorkflowRepository, validate_dependency_graph,
+    StoredCapacityConfiguration, StoredConsultationProfileRevision, StoredCoreTeamRevision,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, Task, TaskInspection,
+    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
@@ -1107,6 +1108,126 @@ impl SqliteStore {
             .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(())
+    }
+
+    /// Publish the next immutable revision of one Advisor profile or Committee
+    /// template.
+    ///
+    /// The gap check is per `(project, family, profile_id)`: version one starts
+    /// a profile, and every later version must be exactly the next one. A caller
+    /// that skipped a version would publish a revision whose predecessor never
+    /// existed, and a run pinning "the previous revision" would then have
+    /// nothing to read.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the version is not the next
+    /// one for that profile, or a backend error.
+    pub fn publish_consultation_profile_revision(
+        &self,
+        revision: &StoredConsultationProfileRevision,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let current: Option<i64> = transaction
+            .query_row(
+                "SELECT MAX(version) FROM consultation_profile_revisions
+                 WHERE project_id = ?1 AND family = ?2 AND profile_id = ?3",
+                params![
+                    revision.project_id.to_string(),
+                    revision.family.as_str(),
+                    revision.profile_id.as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .flatten();
+        let expected = current.map_or(1, |version| version.saturating_add(1));
+        if version_column(revision.version) != expected {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation profile revision",
+                rule: "must be the next revision for this profile",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO consultation_profile_revisions
+                     (project_id, family, profile_id, version, name, definition,
+                      definition_hash, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    revision.project_id.to_string(),
+                    revision.family.as_str(),
+                    revision.profile_id.as_str(),
+                    version_column(revision.version),
+                    revision.name.as_str(),
+                    revision.definition.as_str(),
+                    revision.definition_hash.as_str(),
+                    text(revision.published_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Every published revision of one consultation family in a project.
+    ///
+    /// Ordered by profile then version, oldest first, so a catalog read is a
+    /// stable projection rather than whatever order the pages happen to be in.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_consultation_profile_revisions(
+        &self,
+        project_id: ProjectId,
+        family: ConsultationFamily,
+    ) -> RepositoryResult<Vec<StoredConsultationProfileRevision>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT profile_id, version, name, definition, definition_hash, created_at
+                 FROM consultation_profile_revisions
+                 WHERE project_id = ?1 AND family = ?2
+                 ORDER BY profile_id ASC, version ASC",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string(), family.as_str()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(
+                |(profile_id, version, name, definition, definition_hash, created_at)| {
+                    // Re-admitted rather than merely parsed: `from_stored`
+                    // proves the bytes are still canonical *and* that they
+                    // still hash to the digest published with them. A silently
+                    // rewritten definition would otherwise be served to a run
+                    // that pinned the original.
+                    let digest = ContentHash::parse(&definition_hash)?;
+                    let document = CanonicalDocument::from_stored(&definition, &digest)?;
+                    Ok(StoredConsultationProfileRevision {
+                        project_id,
+                        family,
+                        profile_id,
+                        version: read_version(version)?,
+                        name: ExternalName::parse(&name)?,
+                        definition: document.json().to_owned(),
+                        definition_hash: digest,
+                        published_at: read_timestamp(&created_at)?,
+                    })
+                },
+            )
+            .collect()
     }
 
     /// Record one Quick session and the ids its placement used.
