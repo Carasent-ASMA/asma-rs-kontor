@@ -689,6 +689,85 @@ td {
   flex: 1 1 16rem;
 }
 
+/* ----------------------------------------------------- project operations */
+
+.view-intro h2,
+.project-sections h3,
+.project-sections h4 {
+  margin-top: 0;
+}
+
+.project-sections {
+  display: grid;
+  gap: var(--gap);
+}
+
+.project-sections > section,
+.advisory-grid > section {
+  min-width: 0;
+  padding: var(--gap);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.advisory-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gap);
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.compact-list {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.compact-list li + li {
+  margin-top: 0.35rem;
+}
+
+.compact-list button {
+  margin-left: 0.5rem;
+}
+
+.block {
+  display: block;
+  color: var(--ink-soft);
+}
+
+.operation-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap);
+  align-items: flex-end;
+  margin: var(--gap) 0;
+  padding: var(--gap);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.operation-form > .field-row {
+  flex: 1 1 24rem;
+}
+
+.operation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: var(--gap) 0;
+}
+
+.operation-result,
+.receipt {
+  padding: 0.5rem;
+  border-left: 3px solid var(--accent);
+  background: var(--paper-sunk);
+}
+
 /* ----------------------------------------------------------- narrow layout */
 
 @media (max-width: 767px) {
@@ -761,5 +840,13 @@ td {
   .class-table {
     display: block;
     overflow-x: auto;
+  }
+
+  .advisory-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .project-sections > section {
+    padding: 0.6rem;
   }
 }

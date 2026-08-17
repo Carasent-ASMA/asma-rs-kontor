@@ -237,7 +237,7 @@ describe('<TeamsView>', () => {
     }
     render(<TeamsView client={client as never} />)
     expect(await screen.findByRole('alert')).toHaveTextContent('/v1/catalog')
-    expect(screen.queryByRole('list', { name: 'team templates' })).toBeNull()
+    expect(screen.queryByRole('list', { name: 'Delivery Team templates' })).toBeNull()
   })
 
   it('saves then publishes through the live realm and renders its revision cursor', async () => {
@@ -274,7 +274,7 @@ describe('<TeamsView>', () => {
     }
     render(<TeamsView catalog={catalog} seed={benchSeed()} />)
     expect(screen.getByRole('alert')).toHaveTextContent('/v1/catalog')
-    expect(screen.queryByRole('list', { name: 'team templates' })).toBeNull()
+    expect(screen.queryByRole('list', { name: 'Delivery Team templates' })).toBeNull()
   })
 
   it('claims provenance for exactly the five cell classes it renders', () => {
@@ -328,7 +328,7 @@ describe('<TeamsView>', () => {
 
   it('lists the seeded drafts and edits none of them until one is chosen', () => {
     render(<TeamsView />)
-    const list = screen.getByRole('list', { name: 'team templates' })
+    const list = screen.getByRole('list', { name: 'Delivery Team templates' })
     expect(within(list).getAllByRole('button')).toHaveLength(2)
     expect(screen.getByText('Select a team template.')).toBeInTheDocument()
   })
@@ -683,7 +683,7 @@ describe('<TeamsView>', () => {
 
   it('moves through the draft list with the arrow keys', () => {
     render(<TeamsView />)
-    const list = screen.getByRole('list', { name: 'team templates' })
+    const list = screen.getByRole('list', { name: 'Delivery Team templates' })
     fireEvent.keyDown(list, { key: 'ArrowDown' })
     expect(screen.getByRole('button', { name: /chore lane/ })).toHaveAttribute(
       'aria-current',

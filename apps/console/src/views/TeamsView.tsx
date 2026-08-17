@@ -1,5 +1,5 @@
 /**
- * Teams: what a team template declares, and what each seat in it may be.
+ * Delivery Teams: what a team template declares, and what each seat in it may be.
  *
  * # What this view is, and what it is not
  *
@@ -99,7 +99,7 @@ export function TeamsView({
         setOffline(false)
       })
       .catch(() => {
-        if (current) setLoadError('The realm catalog and Teams projection could not be loaded.')
+        if (current) setLoadError('The realm catalog and Delivery Teams projection could not be loaded.')
       })
     return () => {
       current = false
@@ -109,7 +109,7 @@ export function TeamsView({
   if (catalog === null) {
     return (
       <section className="view" aria-label="teams">
-        <h2>Teams</h2>
+        <h2>Delivery Teams</h2>
         {loadError ? (
           <>
             <p className="banner" role="alert">{loadError}</p>
@@ -128,7 +128,7 @@ export function TeamsView({
   if (blocks(catalogIssues)) {
     return (
       <section className="view" aria-label="teams">
-        <h2>Teams</h2>
+        <h2>Delivery Teams</h2>
         <p className="banner" role="alert" data-banner="catalog-refused">
           The realm catalog was refused at the <code>/v1/catalog</code> trust boundary.
         </p>
@@ -147,10 +147,10 @@ export function TeamsView({
 
   return (
     <section className="view" aria-label="teams">
-      <h2>Teams</h2>
+      <h2>Delivery Teams</h2>
       <p className="banner" role="note" data-banner={offline ? 'offline-preview' : 'realm-live'}>
         {offline ? 'Offline preview. Nothing on this screen came from the realm. ' :
-          `Live realm catalog and Teams projection at cursor ${cursor ?? 0}. `}
+          `Live realm catalog and Delivery Teams projection at cursor ${cursor ?? 0}. `}
         <strong>Every cell states its own provenance</strong>{' '}
         rather than the banner claiming one for all of them: a context ceiling, an
         effort ladder, a charging basis, a price and a need band each read{' '}
@@ -272,7 +272,7 @@ function TeamList({
 
   return (
     <div className="team-list">
-      <h3>Team templates</h3>
+      <h3>Delivery Team templates</h3>
       <p className="caveat">
         Drafts are mutable; published revisions below are immutable realm projections.
       </p>
@@ -280,7 +280,7 @@ function TeamList({
       {drafts.length === 0 ? (
         <p className="empty">No drafts.</p>
       ) : (
-        <ul ref={list} onKeyDown={onKeyDown} aria-label="team templates">
+        <ul ref={list} onKeyDown={onKeyDown} aria-label="Delivery Team templates">
           {drafts.map((draft) => {
             const blocking = blockingCount(draft, catalog)
             const isSelected = draft.id === selected

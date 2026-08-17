@@ -30,7 +30,7 @@ async function attach(page: Page): Promise<void> {
   await page.getByLabel('Realm endpoint').fill('http://127.0.0.1:7777')
   await page.getByLabel('Realm bearer').fill('operator-secret')
   await page.getByRole('button', { name: 'Connect' }).click()
-  await page.getByRole('button', { name: 'Teams' }).click()
+  await page.getByRole('button', { name: 'Delivery Teams' }).click()
   await expect(page.getByRole('note')).toContainText('Live realm catalog')
   await page.getByRole('button', { name: /plan-build-verify/ }).click()
   await expect(page.getByLabel('Team name')).toBeVisible()
