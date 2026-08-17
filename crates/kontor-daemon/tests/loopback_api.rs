@@ -38,8 +38,8 @@ use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, 
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
-    AgentRunId, CanonicalDocument, ContentHash, MiniProjectId, ProjectId, TaskId, TeamRunId,
-    TopologyNodeId,
+    AgentRunId, CanonicalDocument, ContentHash, ExternalName, MiniProjectId, ProjectId, TaskId,
+    TeamRunId, TopologyNodeId,
 };
 use kontor_core::repository::{
     NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunClosure,
@@ -5799,6 +5799,148 @@ async fn a_seat_is_prepared_at_the_worktree_the_task_declares() {
             .is_empty(),
         "{}",
         started.body
+    );
+}
+
+/// Tasks that share a module are safe to run together only when both sides
+/// hold different, declared worktrees. The scheduler already understands that
+/// rule; this proves the daemon carries the task placement into both the plan
+/// and the durable module lease used by the next plan.
+#[tokio::test]
+async fn distinct_task_worktrees_isolate_one_module_through_admission() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project(&world, "isolated-module", "Kontor", "/tmp/kontor-isolated").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("isolated-module-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Isolated module epic",
+            &category,
+            serde_json::json!([
+                {"title": "Tree A", "module": "asma-rs-kontor", "worktree": "/w/isolated-a"},
+                {"title": "Tree B", "module": "asma-rs-kontor", "worktree": "/w/isolated-b"},
+                {"title": "No tree", "module": "asma-rs-kontor", "worktree": null}
+            ]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("isolated-module-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 3,
+            "budget": {"max_tokens": 1000, "max_commands": 10,
+                       "max_duration_seconds": 600, "max_cost_minor_units": 100,
+                       "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Prove worktree-isolated module admission"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("isolated-module-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert_eq!(
+        plan.json()["ready"].as_array().expect("ready").len(),
+        2,
+        "both distinct trees admit: {}",
+        plan.body
+    );
+    assert!(
+        plan.json()["blocked"]
+            .as_array()
+            .expect("blocked")
+            .iter()
+            .any(|task| task["code"] == "module_in_flight"),
+        "the task with no verified tree remains serialized: {}",
+        plan.body
+    );
+
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("isolated-module-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+
+    let unverified_task = TaskId::parse(
+        applied.json()["tasks"][2]["task_id"]
+            .as_str()
+            .expect("task id"),
+    )
+    .expect("task id");
+    let claims = world
+        .daemon
+        .state()
+        .with_store(|store| store.active_module_claims(kontor_api::now()))
+        .expect("module claims");
+    let trees: BTreeSet<_> = claims
+        .iter()
+        .filter(|claim| claim.module.as_str() == "asma-rs-kontor")
+        .filter_map(|claim| claim.worktree.as_ref().map(ExternalName::as_str))
+        .collect();
+    assert_eq!(
+        trees,
+        BTreeSet::from(["/w/isolated-a", "/w/isolated-b"]),
+        "the module leases retain each admitted task's worktree"
+    );
+    assert!(
+        claims.iter().all(|claim| claim.task_id != unverified_task),
+        "the task without a verified tree was not admitted"
     );
 }
 
