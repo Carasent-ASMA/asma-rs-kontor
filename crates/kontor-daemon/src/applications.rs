@@ -104,7 +104,8 @@ use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
     AuthorizationEvidence, CalendarAdmission, Candidate, CandidateDecision, CapacityConfig,
     CapacityUsage, ExternalWorkEvidence, ReconciliationEvidence, ReconciliationScope,
-    RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
+    RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin, WorktreeClaim,
+    WorktreeVerification,
 };
 use kontor_store::{
     AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication, EpicTask, EpicTicketLink,
@@ -1612,6 +1613,13 @@ impl Services {
                 .iter()
                 .find(|stored| stored.arms(now, Some(epic_id), Some(task.id)))
                 .map(|stored| evidence_of(&stored.authorization));
+            let worktree = state
+                .with_store(|store| store.task_worktree(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?
+                .map(|worktree| WorktreeClaim {
+                    worktree,
+                    verification: WorktreeVerification::Verified,
+                });
             candidates.push(Candidate {
                 project_id,
                 task_id: task.id,
@@ -1622,7 +1630,7 @@ impl Services {
                 created_at: task.created_at,
                 priority: 0,
                 module: task.module.clone(),
-                worktree: None,
+                worktree,
                 depends_on: edges.get(&task.id).cloned().unwrap_or_default(),
                 serializes_with: BTreeSet::new(),
                 origin: TaskOrigin::Manual,
@@ -6105,7 +6113,10 @@ impl Services {
                     .module
                     .as_ref()
                     .map(|_| kontor_core::id::ResourceLeaseId::generate()),
-                worktree_lease_id: None,
+                worktree_lease_id: admitted
+                    .worktree
+                    .as_ref()
+                    .map(|_| kontor_core::id::ResourceLeaseId::generate()),
                 holder_instance: holder,
                 lease_expires_at: lease_expires,
                 evidence,
