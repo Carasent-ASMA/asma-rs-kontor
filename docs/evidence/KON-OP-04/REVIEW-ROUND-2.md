@@ -142,5 +142,11 @@ success. Runs recorded in this document use an explicit `--manifest-path`.
 `code-review-gate`: **passed** — recorded through `kontor_gate_record` as the
 inspector, citing `code-change` and `review-notes`.
 
+- receipt: `01a01041-2fc1-7293-a078-af9e822787b6`
+- sequence: 2 (round 1's rejection is sequence 1)
+- evaluator: role `inspector`, account `01a00751-5be9-7281-bba5-75d8c0c101e7`
+- readback: `kontor_task_get` reports `code-review-gate: passed` at snapshot
+  cursor 98 — the receipt is the command, this is the state.
+
 Round 1's rejection stands as the first verdict on this task; this is the second.
 The next phase is `qa`, whose gate belongs to the tester.
