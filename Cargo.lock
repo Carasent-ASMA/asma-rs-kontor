@@ -3364,6 +3364,8 @@ dependencies = [
 name = "kontor-teams"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "kontor-context",
  "kontor-core",
  "kontor-runtime",
  "serde",
