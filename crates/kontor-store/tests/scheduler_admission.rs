@@ -1016,6 +1016,64 @@ fn a_ceiling_is_recounted_from_the_rows_rather_than_trusted() {
 }
 
 #[test]
+fn four_five_seat_teams_spend_four_capacity_envelopes() {
+    let harness = Harness::new();
+    let scope = harness.scope("team-capacity");
+    let peers = BTreeSet::new();
+
+    for team in 0..4 {
+        let task = harness.task(&scope, &format!("Team {team}"), TaskState::Ready);
+        let admitted = harness.admitted(&scope, task, None, None);
+        let parts = Parts::new(&format!("team-capacity-{team}"));
+        let mut request = commit(&scope, &admitted, &peers, &parts, &scope.template, now());
+        request.capacity.global_max_in_flight = 4;
+        request.capacity.project_max_in_flight = 4;
+        request.capacity.mission_max_in_flight = 4;
+        request.capacity.account_max_in_flight = 4;
+        harness
+            .store
+            .admit_candidate(&request)
+            .expect("each of four TeamRun envelopes admits");
+
+        for seat in 1..5 {
+            harness
+                .store
+                .create_agent_run(&NewAgentRun {
+                    id: AgentRunId::generate(),
+                    project_id: scope.project,
+                    team_run_id: parts.team_run,
+                    parent_agent_run_id: None,
+                    role: role(&format!("seat-{team}-{seat}")),
+                    account_profile_id: Some(scope.account),
+                    binding: None,
+                    created_at: now(),
+                })
+                .expect("the declared seat is durable");
+        }
+    }
+
+    let open_seats: i64 = harness
+        .raw()
+        .query_row(
+            "SELECT count(*) FROM agent_runs WHERE lifecycle = 'queued'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the seat population is readable");
+    assert_eq!(open_seats, 20);
+
+    let task = harness.task(&scope, "Fifth team", TaskState::Ready);
+    let admitted = harness.admitted(&scope, task, None, None);
+    let parts = Parts::new("team-capacity-fifth");
+    let mut request = commit(&scope, &admitted, &peers, &parts, &scope.template, now());
+    request.capacity.global_max_in_flight = 4;
+    assert_eq!(
+        harness.store.admit_candidate(&request),
+        Err(RepositoryError::CapacityExhausted { scope: "global" })
+    );
+}
+
+#[test]
 fn a_dependency_that_has_not_finished_blocks_the_admission() {
     let harness = Harness::new();
     let scope = harness.scope("deps");
