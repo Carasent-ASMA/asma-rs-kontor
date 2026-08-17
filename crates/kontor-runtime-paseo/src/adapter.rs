@@ -68,7 +68,8 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerLabel,
-    ContainerOutcome, ContainerProjection, ContainerRequest,
+    ContainerOutcome, ContainerProjection, ContainerRequest, RetitleContainerOutcome,
+    RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -2964,6 +2965,44 @@ impl RuntimeAdapter for PaseoAdapter {
             generation: state.generation,
         };
         state.admissions.admit(request, &facts)
+    }
+
+    /// Refused, and precisely.
+    ///
+    /// Neither transport this adapter speaks can ask for it. The CLI verbs it
+    /// shells out to are `workspace create` and `workspace archive`; the typed
+    /// RPC envelopes it exchanges are `project.list`, `project.add`,
+    /// `fetch_workspaces`, `fetch_agents`, `fetch_agent`,
+    /// `fetch_agent_timeline` and `send_agent_message`. None of them changes a
+    /// title. `agent update-labels` exists but addresses an agent, not the
+    /// workspace that holds it.
+    ///
+    /// The daemon itself is not the limit: its MCP facade serves
+    /// `rename_workspace(workspace_id, title)`, so Paseo can rename — this
+    /// adapter simply has no route to the operation. The correction is therefore
+    /// named and small: teach this adapter that request, then read the title
+    /// back through `fetch_workspaces` on the same native id. Until that route
+    /// exists, claiming the capability would be a lie, and the two shortcuts
+    /// that would "work" today are both refused on purpose. Archiving and
+    /// recreating destroys the native id every Kontor binding, seat and readback
+    /// resolves by — a rename that loses the identity is not a rename. Writing
+    /// the daemon's own state directly is an undocumented internal surface with
+    /// no contract, no readback and no versioning.
+    ///
+    /// So Kontor holds the correction as pending rather than pretending to have
+    /// made it. That is the honest state, and it is visible: the topology
+    /// projection keeps reporting the title the runtime actually carries.
+    ///
+    /// # Errors
+    /// Always [`RuntimeError::UnsupportedCapability`].
+    async fn retitle_container(
+        &self,
+        request: &RetitleContainerRequest,
+    ) -> RuntimeResult<RetitleContainerOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::RetitleContainer,
+        })
     }
 
     async fn prepare_container(

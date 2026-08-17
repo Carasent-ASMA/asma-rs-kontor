@@ -28,3 +28,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# The adapter contract is `async_trait`, so exercising the scripted fake needs a
+# runtime to poll it. Test-only: this crate ships no executor of its own.
+tokio = { workspace = true }

@@ -64,6 +64,7 @@ use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerProjection, ContainerRequest,
+    RetitleContainerRequest,
 };
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,
@@ -4049,5 +4050,73 @@ async fn a_task_with_no_configured_scope_is_refused_before_any_native_effect() {
         daemon.mutations().is_empty(),
         "the refusal must land before any native effect: {:?}",
         daemon.mutations()
+    );
+}
+
+/// This adapter cannot retitle a container, and says so without touching one.
+///
+/// The supported Paseo 0.3.1 surface has `workspace create`, `workspace list`
+/// and `workspace archive`, and no verb that changes a workspace's title.
+/// `agent update-labels` addresses an agent, not the workspace holding it.
+///
+/// The two things that would appear to work are both refused. Archiving and
+/// recreating destroys the native id every Kontor binding resolves by, and
+/// writing the daemon's own state is an undocumented surface with no contract
+/// and no readback. So the answer is `unsupported_capability`, naming the
+/// capability, and Kontor keeps the correction as pending.
+#[tokio::test]
+async fn this_adapter_refuses_to_retitle_and_reaches_nothing() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO));
+    let plane = Plane::fresh(recorded);
+
+    let refused = plane
+        .adapter
+        .retitle_container(&RetitleContainerRequest {
+            topology_node_id: node(NODE_A),
+            bound_native_id: external(WORKSPACE_ID),
+            generation: 1,
+            desired_title: name("TSW · ASMA-7755 · KON-11"),
+            requested_at: at("2026-08-17T09:00:00Z"),
+        })
+        .await;
+
+    assert!(
+        matches!(
+            refused,
+            Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::RetitleContainer
+            })
+        ),
+        "the refusal must name the capability rather than fail vaguely: {refused:?}"
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "an unsupported operation must reach nothing: {:?}",
+        plane.daemon.mutations()
+    );
+    assert!(
+        plane.daemon.titles("workspace create").is_empty(),
+        "and it must certainly not create a replacement container"
+    );
+}
+
+/// The capability is not declared, so a caller can tell before asking.
+#[tokio::test]
+async fn this_adapter_does_not_declare_the_retitle_capability() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO));
+    let plane = Plane::fresh(recorded);
+
+    let declared = plane
+        .adapter
+        .discover_capabilities()
+        .await
+        .expect("the plane answers its capabilities");
+    assert!(
+        !declared.supports(RuntimeCapability::RetitleContainer),
+        "a runtime with no rename verb must not advertise one"
     );
 }

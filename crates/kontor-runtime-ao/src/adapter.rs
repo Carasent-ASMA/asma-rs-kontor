@@ -107,6 +107,12 @@ pub const UNSUPPORTED: &[(RuntimeCapability, &str)] = &[
          asserted and never proven",
     ),
     (
+        RuntimeCapability::RetitleContainer,
+        "AO owns no container above a session, so there is no title to correct: the same \
+         reason it cannot prepare a project. A session's own name is fixed by the spawn \
+         that created it",
+    ),
+    (
         RuntimeCapability::Adopt,
         "AO cannot plant Kontor's full immutable correlation label into a branch that \
          already exists, so an existing session cannot be proven to belong to a run",
@@ -1299,6 +1305,22 @@ impl RuntimeAdapter for AoAdapter {
         _request: &WorkspacePrepareRequest,
     ) -> RuntimeResult<WorkspaceOutcome> {
         Err(self.refuse_unsupported(RuntimeCapability::PrepareWorkspace))
+    }
+
+    /// Refused: AO owns no container to retitle.
+    ///
+    /// The same reason it cannot prepare a project. A session's name is fixed by
+    /// the spawn that created it, and there is no object above it whose title
+    /// could be corrected.
+    ///
+    /// # Errors
+    /// Always [`RuntimeError::UnsupportedCapability`].
+    async fn retitle_container(
+        &self,
+        request: &kontor_runtime::container::RetitleContainerRequest,
+    ) -> RuntimeResult<kontor_runtime::container::RetitleContainerOutcome> {
+        let _ = request;
+        Err(self.refuse_unsupported(RuntimeCapability::RetitleContainer))
     }
 
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
