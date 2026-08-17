@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 28;
+pub const SCHEMA_VERSION: i64 = 29;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -132,10 +132,14 @@ const MIGRATIONS: &[&str] = &[
     // locate the node before it creates the seat binding that would otherwise
     // have been the only way to find it.
     include_str!("../migrations/0027_task_topology_node.sql"),
-    include_str!("../migrations/0028_native_capacity.sql"),
     // Schema v28. Account-owned capacity evidence: the immutable raw reading a
     // native collector took, and the operator override that stands beside it
     // rather than over it. Cooldown stops being another program's file.
+    include_str!("../migrations/0028_native_capacity.sql"),
+    // Schema v29. Topology specification publication through `/v1`, and the
+    // explicit epic upgrade that moves a pin — which is why the pin row becomes
+    // writable by that one operation, and why the closed kind list grows by two.
+    include_str!("../migrations/0029_topology_publication.sql"),
 ];
 
 const _: () = assert!(

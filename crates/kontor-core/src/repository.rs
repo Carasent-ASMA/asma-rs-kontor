@@ -1810,6 +1810,20 @@ pub trait TopologyRepository {
         version: SpecVersion,
     ) -> RepositoryResult<Option<ProjectSessionTopologySpec>>;
 
+    /// Every topology specification revision published in one project.
+    ///
+    /// The set an upgrade may move an epic to. Ordered by identity and version
+    /// so a search over it is deterministic — a preview digest that resolved to
+    /// a different revision depending on row order would not be a digest of
+    /// anything.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_topology_specs(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<ProjectSessionTopologySpec>>;
+
     /// Select an already-published topology revision for future project scopes.
     ///
     /// # Errors
@@ -1827,6 +1841,23 @@ pub trait TopologyRepository {
         &self,
         project_id: ProjectId,
     ) -> RepositoryResult<Option<ProjectTopologyDefault>>;
+
+    /// Move one already-pinned epic to a different published revision.
+    ///
+    /// Deliberately not the same call as
+    /// [`TopologyRepository::pin_mini_project_topology`]: an epic with no pin
+    /// yet is refused here, so this operation can never quietly create the
+    /// first pin, and the first pin can never be an upgrade of nothing. What
+    /// moves is the epic's current position; the revisions on either side stay
+    /// immutable, and the move itself is audited by the receipt that carries it.
+    ///
+    /// # Errors
+    /// Refuses an unpinned or cross-project epic and a target revision that is
+    /// not published in this project.
+    fn repin_mini_project_topology(
+        &self,
+        snapshot: &MiniProjectTopologySnapshot,
+    ) -> RepositoryResult<()>;
 
     /// Pin one immutable topology revision/hash to a MiniProject.
     ///

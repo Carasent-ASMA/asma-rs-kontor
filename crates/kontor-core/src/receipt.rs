@@ -125,6 +125,17 @@ closed_enum! {
         ObserveSeat => "observe_seat",
         /// Retire and release one exact bound seat.
         RetireSeat => "retire_seat",
+        /// Publish one immutable project topology specification revision.
+        ///
+        /// It targets the *project*, because deciding which node kinds may ever
+        /// exist is authority over the project and not over any node in it —
+        /// and the revision it publishes is not an aggregate a command may name.
+        PublishTopologySpec => "publish_topology_spec",
+        /// Move one epic's pinned topology revision to another published one.
+        ///
+        /// The epic is the aggregate: the pin is the epic's, and the revision it
+        /// moves to is immutable and shared.
+        UpgradeTopology => "upgrade_topology",
         /// Bring a provider-account profile into existence, or prove the one
         /// with that label matches.
         ///
@@ -371,6 +382,8 @@ impl CommandKind {
             // precisely what makes it persistent. The project is what the
             // authority is over, and it is the one aggregate every seat has.
             Self::ObserveSeat | Self::RetireSeat => witness(matches!(target, A::Project)),
+            Self::PublishTopologySpec => witness(matches!(target, A::Project)),
+            Self::UpgradeTopology => witness(matches!(target, A::MiniProject)),
         }
     }
 

@@ -1139,6 +1139,31 @@ impl TopologyRepository for SqliteStore {
             .transpose()
     }
 
+    fn list_topology_specs(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<ProjectSessionTopologySpec>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT definition, definition_hash FROM topology_specs
+                 WHERE project_id = ?1 ORDER BY spec_id, version",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut specs = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let document = stored_payload(
+                &row.get::<_, String>(0).map_err(backend)?,
+                &row.get::<_, String>(1).map_err(backend)?,
+            )?;
+            specs.push(document.deserialize::<ProjectSessionTopologySpec>()?);
+        }
+        Ok(specs)
+    }
+
     fn set_project_topology_default(
         &self,
         selection: &ProjectTopologyDefault,
@@ -1232,6 +1257,53 @@ impl TopologyRepository for SqliteStore {
                     version_column(snapshot.topology.version),
                     snapshot.topology.canonical_hash.as_str(),
                     text(snapshot.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn repin_mini_project_topology(
+        &self,
+        snapshot: &MiniProjectTopologySnapshot,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        // The pin must already exist. An epic with none has not been upgraded,
+        // it has never been placed, and creating the first pin here would let an
+        // upgrade stand in for the placement it is supposed to be moving.
+        let pinned = transaction
+            .query_row(
+                "SELECT 1 FROM mini_project_topology_snapshots
+                 WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![
+                    snapshot.project_id.to_string(),
+                    snapshot.mini_project_id.to_string()
+                ],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(backend)?
+            .is_some();
+        if !pinned {
+            return Err(RepositoryError::NotFound {
+                subject: "mini-project topology snapshot",
+            });
+        }
+        // And the revision it moves to must be one this project published.
+        topology_spec_in(&transaction, snapshot.project_id, &snapshot.topology)?;
+        transaction
+            .execute(
+                "UPDATE mini_project_topology_snapshots
+                 SET spec_id = ?1, version = ?2, canonical_hash = ?3, pinned_at = ?4
+                 WHERE project_id = ?5 AND mini_project_id = ?6",
+                params![
+                    snapshot.topology.spec_id.to_string(),
+                    version_column(snapshot.topology.version),
+                    snapshot.topology.canonical_hash.as_str(),
+                    text(snapshot.pinned_at),
+                    snapshot.project_id.to_string(),
+                    snapshot.mini_project_id.to_string(),
                 ],
             )
             .map_err(backend)?;

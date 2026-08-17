@@ -1547,6 +1547,10 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("override_availability", "project", "witness", None),
     ("observe_seat", "project", "witness", None),
     ("retire_seat", "project", "witness", None),
+    // Publication is authority over the project's vocabulary; an upgrade moves
+    // one epic's pin, so the epic is what it names.
+    ("publish_topology_spec", "project", "witness", None),
+    ("upgrade_topology", "mini_project", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.
