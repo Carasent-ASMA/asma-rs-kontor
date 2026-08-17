@@ -260,7 +260,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 30);
+    assert_eq!(SCHEMA_VERSION, 31);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
@@ -2056,18 +2056,67 @@ fn a_terminal_task_cannot_be_changed_by_direct_sql() {
         .expect("a task may close");
 
     for statement in [
-        "UPDATE tasks SET state = 'ready' WHERE id = ?1",
         "UPDATE tasks SET state = 'in_progress' WHERE id = ?1",
         "UPDATE tasks SET state = 'cancelled' WHERE id = ?1",
         "UPDATE tasks SET title = 'renamed' WHERE id = ?1",
         "UPDATE tasks SET revision = revision + 1 WHERE id = ?1",
         "DELETE FROM tasks WHERE id = ?1",
+        // The reopen exception is `done -> ready` and *only* the state: an update
+        // that also renamed the task or moved it to another epic is a rewrite.
+        "UPDATE tasks SET state = 'ready', title = 'renamed' WHERE id = ?1",
+        "UPDATE tasks SET state = 'ready', created_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
     ] {
         assert!(
             connection
                 .execute(statement, rusqlite::params![TASK])
                 .is_err(),
             "a terminal task must refuse: {statement}"
+        );
+    }
+
+    // The one exception the schema allows, because the domain has a rule for it:
+    // a completed task returns to `ready`.
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'ready', revision = revision + 1 WHERE id = ?1",
+            rusqlite::params![TASK],
+        )
+        .expect("a completed task may be reopened to ready");
+
+    // The exception is not one-shot: a reopened task that completes again reopens
+    // again, because the rule is about the pair of states and not about a count.
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'done', revision = revision + 1 WHERE id = ?1",
+            rusqlite::params![TASK],
+        )
+        .expect("a reopened task may complete again");
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'ready', revision = revision + 1 WHERE id = ?1",
+            rusqlite::params![TASK],
+        )
+        .expect("and be reopened again");
+
+    // A failed task has a successor, not a second life. `cancelled` is the same
+    // clause of the same trigger, and `TaskState::is_reopenable` is asserted over
+    // both in the domain oracle — this row can only be closed one way, because
+    // once it is closed as `failed` nothing moves it again, which is the point.
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'failed', revision = revision + 1 WHERE id = ?1",
+            rusqlite::params![TASK],
+        )
+        .expect("an open task may fail");
+    for statement in [
+        "UPDATE tasks SET state = 'ready', revision = revision + 1 WHERE id = ?1",
+        "UPDATE tasks SET state = 'done', revision = revision + 1 WHERE id = ?1",
+    ] {
+        assert!(
+            connection
+                .execute(statement, rusqlite::params![TASK])
+                .is_err(),
+            "a failed task must refuse: {statement}"
         );
     }
 }

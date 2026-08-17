@@ -63,10 +63,11 @@ use kontor_core::state::{
     AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
     GateVerdict, NativeContainerBinding, NativeRuntimeIdentity, ObservedContainerKind,
     ObservedRunState, PlacementState, RunLifecycle, RunProjection, SeatAttachment,
-    SeatAttachmentObservation, SeatBinding, SessionTopologyNode, TaskProgressEvidence, TaskState,
-    TaskTeamClosure, TaskTransition, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence,
-    TerminalEvidence, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
-    certify_task_progress, evaluate_seat_attachment, plan_team_advance, plan_team_closure,
+    SeatAttachmentObservation, SeatBinding, SessionTopologyNode, TaskProgressEvidence,
+    TaskReopenAuthority, TaskState, TaskTeamClosure, TaskTransition, TeamChildEvidence,
+    TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence, TerminalEvidenceSource,
+    TerminalOutcome, TopologyLifecycle, certify_task_progress, evaluate_seat_attachment,
+    plan_team_advance, plan_team_closure,
 };
 use kontor_core::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -3929,6 +3930,20 @@ impl WorkflowRepository for SqliteStore {
         let transition = TaskTransition {
             to: request.to,
             resume_receipt: request.resume_receipt,
+            // The authority *is* the receipt, so a reopen with no receipt cannot
+            // be assembled here — which is the check, rather than a second flag
+            // beside it.
+            reopen: match (request.reopen, request.resume_receipt) {
+                (true, Some(receipt)) => Some(TaskReopenAuthority::granted_by(receipt)),
+                (true, None) => {
+                    return Err(DomainError::MissingAuthority {
+                        subject: "task reopen",
+                        rule: "reopening a terminal task requires a command receipt",
+                    }
+                    .into());
+                }
+                (false, _) => None,
+            },
             run_outcome: request.run_outcome,
             closure: certificate.as_ref(),
             progress: progress.as_ref(),

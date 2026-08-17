@@ -9269,6 +9269,7 @@ impl Services {
                         expected_revision: task.revision,
                         to: TaskState::InProgress,
                         resume_receipt: None,
+                        reopen: false,
                         run_outcome: None,
                         produced_artifacts: BTreeSet::new(),
                         completed_phases: BTreeSet::new(),
@@ -10754,6 +10755,11 @@ impl Services {
                         LifecycleAction::Resume | LifecycleAction::ReopenTask
                     )
                     .then_some(receipt),
+                    // Only `reopen_task` may pass a terminal task's immutability,
+                    // and it says so here rather than letting the store infer it
+                    // from the receipt: a plain `resume` carries the same kind of
+                    // receipt and must keep being refused.
+                    reopen: matches!(request.action, LifecycleAction::ReopenTask),
                     run_outcome: None,
                     produced_artifacts: artifacts.clone(),
                     completed_phases: if to == TaskState::Done {

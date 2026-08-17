@@ -648,6 +648,14 @@ pub struct TaskTransitionRequest {
     pub to: TaskState,
     /// The command receipt that authorizes a resume.
     pub resume_receipt: Option<CommandReceiptId>,
+    /// Whether this transition is an explicit reopen of a terminal task.
+    ///
+    /// Kept apart from `resume_receipt` because the two are different decisions
+    /// carried by the same kind of receipt: a resume lets a held task continue,
+    /// and a reopen contradicts a conclusion the Realm already recorded. A store
+    /// that inferred one from the other would let any resume walk a completed task
+    /// back open.
+    pub reopen: bool,
     /// How the task's run closed, for a failure transition.
     pub run_outcome: Option<TerminalOutcome>,
     /// Artifacts produced, for a completion transition.

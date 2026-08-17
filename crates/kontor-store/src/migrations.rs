@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 30;
+pub const SCHEMA_VERSION: i64 = 31;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -144,6 +144,10 @@ const MIGRATIONS: &[&str] = &[
     // what a container is called is the runtime's fact, read back rather than
     // mirrored.
     include_str!("../migrations/0030_retitle_container_command.sql"),
+    // Schema v31. The bounded task reopen: `done -> ready` and nothing else, so
+    // the lifecycle action the surface advertises can reach the domain rule
+    // written for it.
+    include_str!("../migrations/0031_bounded_task_reopen.sql"),
 ];
 
 const _: () = assert!(

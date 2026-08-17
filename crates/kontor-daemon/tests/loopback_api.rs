@@ -3920,7 +3920,7 @@ async fn a_started_task_leaves_ready_so_it_can_legally_be_completed() {
 }
 
 #[tokio::test]
-async fn a_teamless_task_completes_reopens_and_lets_its_epic_close_and_reopen() {
+async fn a_teamless_task_is_held_and_resumed_and_its_epic_stays_open() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
     let seed = bootstrap(&world, "term").await;
@@ -4245,19 +4245,22 @@ async fn a_run_the_runtime_says_is_still_working_is_not_settled() {
     );
 }
 
-#[tokio::test]
-async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
-    let world = World::open_empty().await;
-    world.script(HISTORY_LIVE);
-    world.daemon.reconcile().await;
-    let (seed, runs) = seated(&world, "endgame").await;
-
+/// Settle every seat of one seated task, and return the last answer.
+///
+/// Extracted so more than one test can reach a *closed team*, which is the state
+/// every terminal task transition is judged against.
+async fn settle_every_seat(
+    world: &World,
+    seed: &Bootstrapped,
+    runs: &[String],
+    prefix: &str,
+) -> Answer {
     // Every declared seat is settled, one call each. The team closes on the last
     // one, because the closure walks the template's declared slots and an
     // unsettled seat is unaccounted for rather than absent.
     let mut settled = None;
     for (index, run) in runs.iter().enumerate() {
-        finish_natively(&world, run).await;
+        finish_natively(world, run).await;
         let answer = Call::post(
             format!(
                 "/v1/projects/{}/agent-runs/{run}/runtime:settle",
@@ -4265,64 +4268,37 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
             ),
             &serde_json::json!({}),
         )
-        .signed_as(&world, "operator")
-        .with_key(format!("endgame-settle-{index}"))
-        .send(&world)
+        .signed_as(world, "operator")
+        .with_key(format!("{prefix}-settle-{index}"))
+        .send(world)
         .await;
         assert_eq!(answer.status, 200, "seat {index}: {}", answer.body);
         settled = Some(answer);
     }
-    let settled = settled.expect("at least one seat was settled");
-    // Every declared role slot is terminal, so the team's closure was certified
-    // from the frozen template rather than asserted by anyone.
-    assert!(
-        settled.json()["team_run_closed"].is_string(),
-        "the team run closes once its declared slots are done: {}",
-        settled.body
-    );
-    assert!(settled.json()["team_pending"].is_null());
+    settled.expect("at least one seat was settled")
+}
 
-    // The task can now be completed: it cites the certified team closure, which
-    // the store re-proves against its own rows.
-    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    let task_revision = projection.json()["tasks"][0]["revision"]
-        .as_u64()
-        .expect("a revision");
+/// Discharge one task's pinned profile through the public routes and complete it.
+///
+/// Every gate the profile declares is recorded by a role *it* authorizes, citing
+/// the evidence *it* requires, all read from the projection — so nothing here is a
+/// literal a test invented, and the completion cites the artifacts the profile
+/// asks for.
+///
+/// Returns the completion answer.
+async fn discharge_the_profile_and_complete(
+    world: &World,
+    seed: &Bootstrapped,
+    prefix: &str,
+) -> Answer {
     let lifecycle = format!(
         "/v1/projects/{}/epics/{}/lifecycle",
         seed.project, seed.epic
     );
-    let completed = Call::post(
-        &lifecycle,
-        &serde_json::json!({
-            "action": "complete_task", "task_id": seed.task,
-            "expected_revision": task_revision, "reason": "The work is done"
-        }),
-    )
-    .signed_as(&world, "operator")
-    .with_key("endgame-complete")
-    .send(&world)
-    .await;
-    // Before any gate is recorded the task stops on its pinned profile's own
-    // closure — not on a missing team certificate. `unsupported_capability` here
-    // would mean the certificate is still absent; a domain refusal about profile
-    // closure means it was derived, cited and re-proved by the store, and the
-    // task stopped on its own declared work.
-    assert_ne!(
-        completed.code(),
-        "unsupported_capability",
-        "the team closure certificate is derived and cited, not missing: {}",
-        completed.body
-    );
-    assert_eq!(
-        completed.status, 400,
-        "the task stops on its pinned profile's own closure: {}",
-        completed.body
-    );
-
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
     // Now discharge that profile. Every gate it declares is recorded through the
     // public route, by a role *it* authorizes, citing the evidence *it* requires —
     // all of which the projection reports, so nothing here is read out of band and
@@ -4366,9 +4342,9 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
                 "evidence": evidence,
             }),
         )
-        .signed_as(&world, "operator")
-        .with_key(format!("endgame-gate-{index}"))
-        .send(&world)
+        .signed_as(world, "operator")
+        .with_key(format!("{prefix}-gate-{index}"))
+        .send(world)
         .await;
         assert_eq!(recorded.status, 200, "gate `{name}`: {}", recorded.body);
         assert_eq!(recorded.json()["verdict"], "passed");
@@ -4377,8 +4353,8 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
 
     // Every gate now reads as passed through the public projection.
     let after_gates = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
-        .signed_as(&world, "observer")
-        .send(&world)
+        .signed_as(world, "observer")
+        .send(world)
         .await;
     for gate in after_gates.json()["tasks"][0]["gates"]
         .as_array()
@@ -4414,10 +4390,231 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
             "evidence": artifacts,
         }),
     )
+    .signed_as(world, "operator")
+    .with_key(format!("{prefix}-complete"))
+    .send(world)
+    .await;
+    assert_eq!(done.status, 200, "{}", done.body);
+    assert_eq!(done.json()["state"], "done");
+
+    done
+}
+
+/// A completed task is reopened, and its history survives the reopen.
+///
+/// The gap the ASMA-7869 LSA hit: `reopen_task` was advertised, mapped to `ready`
+/// and given a resume receipt, and then refused — because the domain rejected every
+/// terminal source before it ever looked at what was being asked for. This is the
+/// path end to end, plus the two things that must stay refused.
+///
+/// See `_docs/ai-orchestration/reports/2026-08-17-13-47-report-kontor-reopen-task-terminal-gap.md`.
+#[tokio::test]
+async fn a_completed_task_reopens_without_rewriting_what_it_recorded() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "reopen").await;
+    settle_every_seat(&world, &seed, &runs, "reopen").await;
+    let done = discharge_the_profile_and_complete(&world, &seed, "reopen").await;
+    assert_eq!(done.status, 200, "{}", done.body);
+    assert_eq!(done.json()["state"], "done");
+    let completed_revision = done.json()["revision"].as_u64().expect("a revision");
+
+    let lifecycle = format!(
+        "/v1/projects/{}/epics/{}/lifecycle",
+        seed.project, seed.epic
+    );
+    // What the completion recorded, read before the reopen so it can be compared
+    // afterwards: the gates it was granted on, and the runs that produced them.
+    let before = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let gates_before = before.json()["tasks"][0]["gates"].clone();
+    let runs_before = before.json()["tasks"][0]["team_runs"].clone();
+
+    // An ordinary transition out of a terminal task is still refused, and the
+    // refusal still names terminality — a resume carries the same kind of receipt
+    // a reopen does, so this is the assertion that keeps the two apart.
+    let resumed = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "resume", "task_id": seed.task,
+            "expected_revision": completed_revision, "reason": "Carry on"
+        }),
+    )
     .signed_as(&world, "operator")
-    .with_key("endgame-complete-final")
+    .with_key("reopen-resume")
     .send(&world)
     .await;
+    assert_eq!(resumed.status, 409, "{}", resumed.body);
+    assert_eq!(resumed.code(), "revision_conflict");
+    assert!(
+        resumed.body.contains("terminal"),
+        "the refusal names the rule that stopped it: {}",
+        resumed.body
+    );
+
+    // From here on, nothing may reach the runtime: a reopen claims no seat.
+    world.fake.take_calls();
+
+    let reopened = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "reopen_task", "task_id": seed.task,
+            "expected_revision": completed_revision,
+            "reason": "The completion no longer covers the work"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("reopen-reopen")
+    .send(&world)
+    .await;
+    assert_eq!(reopened.status, 200, "{}", reopened.body);
+    assert_eq!(reopened.json()["state"], "ready", "{}", reopened.body);
+    assert!(
+        reopened.json()["revision"].as_u64().expect("a revision") > completed_revision,
+        "the task moved forward rather than back: {}",
+        reopened.body
+    );
+    assert!(
+        reopened.json()["receipt_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "the reopen is recorded as a durable command: {}",
+        reopened.body
+    );
+
+    // Nothing the completion was granted on was rewritten. The gates still read
+    // exactly as they did, and the runs that produced them are still closed —
+    // reopening says the completion no longer covers the work, not that the
+    // history was wrong.
+    let after = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        after.json()["tasks"][0]["gates"],
+        gates_before,
+        "a reopen must not touch a single gate verdict: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["tasks"][0]["team_runs"],
+        runs_before,
+        "and it must not reopen a team run or an agent run: {}",
+        after.body
+    );
+    assert_eq!(after.json()["tasks"][0]["state"], "ready");
+
+    // The runtime was never asked for anything between the completion and the
+    // reopened task: a reopen claims no seat and starts nothing.
+    let calls = world.fake.take_calls();
+    assert!(
+        calls.is_empty(),
+        "a reopen reaches no runtime at all: {calls:?}"
+    );
+
+    // A second reopen is refused, and not by terminality: the task is open, so
+    // there is nothing to reopen, and answering otherwise would let a reopen stand
+    // in for a resume and skip the receipt rule that governs one.
+    let reopened_revision = reopened.json()["revision"].as_u64().expect("a revision");
+    let again = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "reopen_task", "task_id": seed.task,
+            "expected_revision": reopened_revision, "reason": "Again"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("reopen-again")
+    .send(&world)
+    .await;
+    assert_eq!(again.status, 400, "{}", again.body);
+    assert!(
+        again.body.contains("task reopen"),
+        "the refusal names what was refused: {}",
+        again.body
+    );
+
+    // And the reopened task can be completed again on fresh evidence, which is
+    // the point of reopening it: the whole close-out path is available, not a
+    // task parked in `ready` forever.
+    let recompleted = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "complete_task", "task_id": seed.task,
+            "expected_revision": reopened_revision, "reason": "Now it really is done",
+            "evidence": before.json()["tasks"][0]["required_artifacts"].clone(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("reopen-recomplete")
+    .send(&world)
+    .await;
+    assert_eq!(recompleted.status, 200, "{}", recompleted.body);
+    assert_eq!(recompleted.json()["state"], "done");
+}
+
+#[tokio::test]
+async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "endgame").await;
+
+    let settled = settle_every_seat(&world, &seed, &runs, "endgame").await;
+    // Every declared role slot is terminal, so the team's closure was certified
+    // from the frozen template rather than asserted by anyone.
+    assert!(
+        settled.json()["team_run_closed"].is_string(),
+        "the team run closes once its declared slots are done: {}",
+        settled.body
+    );
+    assert!(settled.json()["team_pending"].is_null());
+
+    // The task can now be completed: it cites the certified team closure, which
+    // the store re-proves against its own rows.
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+    let lifecycle = format!(
+        "/v1/projects/{}/epics/{}/lifecycle",
+        seed.project, seed.epic
+    );
+    let completed = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "complete_task", "task_id": seed.task,
+            "expected_revision": task_revision, "reason": "The work is done"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("endgame-complete-early")
+    .send(&world)
+    .await;
+    // Before any gate is recorded the task stops on its pinned profile's own
+    // closure — not on a missing team certificate. `unsupported_capability` here
+    // would mean the certificate is still absent; a domain refusal about profile
+    // closure means it was derived, cited and re-proved by the store, and the
+    // task stopped on its own declared work.
+    assert_ne!(
+        completed.code(),
+        "unsupported_capability",
+        "the team closure certificate is derived and cited, not missing: {}",
+        completed.body
+    );
+    assert_eq!(
+        completed.status, 400,
+        "the task stops on its pinned profile's own closure: {}",
+        completed.body
+    );
+
+    let done = discharge_the_profile_and_complete(&world, &seed, "endgame").await;
     assert_eq!(done.status, 200, "{}", done.body);
     assert_eq!(done.json()["state"], "done");
 
