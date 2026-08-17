@@ -51,11 +51,11 @@ use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CommitteeRunDto,
     CompletionOutcomeDto, CompletionStateDto, CoreTeamApplyRequest, CoreTeamDto,
     CoreTeamMaterializeRequest, CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest,
-    EnsureQuickSessionRequest, InvokeConsultationRequest, ProfileApplyRequest, ProfileCatalogDto,
-    ProfilePreviewDto, ProfilePreviewRequest, PromotedSessionDto, PromotionApplyRequest,
-    PromotionPreviewDto, QuickRolesDto, QuickSessionDto, RecordFindingsRequest,
-    RemediateCompletionRequest, RosterUpgradePreviewDto, RosterUpgradePreviewRequest,
-    SettleConsultationRequest,
+    CoreTeamSeatDto, CoreTeamSeatSelectionDto, EnsureQuickSessionRequest,
+    InvokeConsultationRequest, ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto,
+    ProfilePreviewRequest, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
+    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RemediateCompletionRequest,
+    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
     AppliedTopologyUpgradeDto, CodeHelpEntryDto, DesiredBindingDto, PinnedSpecDto,
@@ -102,15 +102,16 @@ use kontor_core::repository::{
     CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository,
     MiniProjectTopologySnapshot, NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun,
     NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent, NewGateEvaluation,
-    NewNativeContainerBinding, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamRun,
-    ProjectRepository, ProjectTopologyDefault, RealmRepository, RepositoryError, RunRepository,
-    RuntimeBinding, SeatLivenessObservation, SpecRepository, TaskTransitionRequest,
-    TicketRepository, TopologyRepository, WorkflowRepository,
+    NewMiniProject, NewNativeContainerBinding, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault, RealmRepository,
+    RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
+    SpecRepository, StoredCoreTeamRevision, StoredEpicRoster, StoredPromotion, StoredQuickSession,
+    TaskTransitionRequest, TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
-    ContextPolicySnapshot, EffectiveContextPolicy, IntakeReceipt, IntakeResult, ModelRung,
-    NodeProjectionCapability, ProjectSessionTopologySpec, RequestedContextPolicy,
+    ContextPolicySnapshot, EffectiveContextPolicy, EpicPresence, IntakeReceipt, IntakeResult,
+    ModelRung, NodeProjectionCapability, ProjectSessionTopologySpec, RequestedContextPolicy,
     RoleCatalogRevision, Shareability, ShareabilityTier, SourceIdentity, SourceProcessingState,
     TeamRunSnapshot, TopologySnapshot, TriggerSpec,
 };
@@ -145,6 +146,26 @@ use kontor_store::{
     StoredConflict, StoredTeamDraft, StoredTeamsProjection, TurnDispatch,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
+use kontor_teams::{CoreTeamRevision, CoreTeamSeat, CoreTeamSeatSelection};
+
+/// One epic's roster, with the epic-side facts that travel with it.
+struct FrozenRoster {
+    /// The Core Team revision the epic is staffed from.
+    revision: CoreTeamRevision,
+    /// The epic roster row's own revision, which a write must present.
+    revision_of_epic: AggregateRevision,
+    /// The Quick session this epic came from, when it came from one.
+    quick_session_id: Option<QuickSessionId>,
+}
+
+/// The adopted session base a Quick session is placed under.
+struct SessionBase {
+    /// The logical root node.
+    node: SessionTopologyNode,
+    /// The native project its runtime reported for that node, when it has
+    /// reported one.
+    native_id: Option<ExternalId>,
+}
 
 /// The realm-scoped operation a pack registration binds its key to.
 ///
@@ -2109,6 +2130,618 @@ impl Services {
         Ok((current, target_snapshot, effects))
     }
 
+    // -- Project Core Team ---------------------------------------------------
+    //
+    // The Core Team is configuration: which standard roles this project staffs
+    // an epic with. Nothing here creates a seat, a run or a topology node. The
+    // seats appear when an epic materializes its frozen roster, which is a
+    // different operation against a different aggregate.
+
+    /// The project's current published Core Team, as the domain models it.
+    fn stored_core_team(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Option<CoreTeamRevision>, ApiError> {
+        let stored = self
+            .state()?
+            .with_store(|store| store.get_current_core_team(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        stored
+            .map(|stored| {
+                Ok(CoreTeamRevision {
+                    version: stored.version,
+                    catalog_hash: stored.catalog_hash,
+                    seats: serde_json::from_value(stored.seats).map_err(|_| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "a stored Core Team revision cannot be read by this build",
+                        )
+                    })?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Resolve one caller's selections into the next immutable revision.
+    ///
+    /// Every selection is resolved against the exact catalog revision it names,
+    /// and all of them must name the same one: a revision records a single
+    /// `catalog_hash`, and a roster assembled from two catalogs could not say
+    /// which one it was resolved against.
+    fn resolve_core_team(
+        &self,
+        project_id: ProjectId,
+        seats: &[CoreTeamSeatSelectionDto],
+        current: Option<&CoreTeamRevision>,
+    ) -> Result<CoreTeamRevision, ApiError> {
+        let first = seats
+            .first()
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "a Core Team names at least one role",
+                )
+            })?
+            .role
+            .catalog_revision
+            .clone();
+        if seats.iter().any(|seat| seat.role.catalog_revision != first) {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "every Core Team selection resolves against one catalog revision",
+            ));
+        }
+        let catalog_id =
+            RoleCatalogId::parse(&first.id).map_err(|error| self.refuse_domain(&error))?;
+        let catalog = self.catalog_revision(catalog_id, first.version)?;
+        let selections: Vec<CoreTeamSeatSelection> = seats
+            .iter()
+            .map(|seat| CoreTeamSeatSelection {
+                role_code: seat.role.role_code.clone(),
+                custom_display_name: seat.role.custom_display_name.clone(),
+                presence: seat.presence,
+                ad_hoc_allowed: seat.ad_hoc_allowed,
+            })
+            .collect();
+        let version = current
+            .map_or(Ok(SpecVersion::FIRST), |current| current.version.next())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let _ = project_id;
+        CoreTeamRevision::resolve(version, &catalog, &selections)
+            .map_err(|error| self.refuse_domain(&error))
+    }
+
+    // -- Quick sessions ------------------------------------------------------
+
+    /// The project's adopted session base, with its exact native readback.
+    ///
+    /// Both halves are required. A base whose configured node has never been
+    /// read back, or whose readback disagrees with the container it is bound
+    /// to, is `placement_blocked` — never a reason to create a replacement
+    /// native project, which is how an ad-hoc session ends up in a workspace
+    /// nobody is watching.
+    fn session_base(&self, project_id: ProjectId) -> Result<SessionBase, ApiError> {
+        let state = self.state()?;
+        let spec = self.pinned_spec(project_id)?;
+        let node = state
+            .with_store(|store| store.list_topology_nodes(project_id, None))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|node| node.kind == spec.root_kind && node.parent_id.is_none())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this project has no adopted session base to place a Quick session under",
+                )
+            })?;
+        // The observation is evidence, and evidence can legitimately be absent:
+        // a base nothing has been placed under yet has never been read back.
+        // What is refused above is a base that does not exist at all, because
+        // there is then nothing to place under and the only way forward would
+        // be to invent a native project — which is exactly the fallback this
+        // path must never take.
+        let native_id = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|container| container.identity.native_id.clone());
+        Ok(SessionBase { native_id, node })
+    }
+
+    /// The Quick session one command already opened, if any.
+    fn quick_session_for_intent(
+        &self,
+        project_id: ProjectId,
+        intent: &CanonicalDocument,
+    ) -> Result<Option<StoredQuickSession>, ApiError> {
+        self.state()?
+            .with_store(|store| store.get_quick_session_by_intent(project_id, intent.hash()))
+            .map_err(|error| self.refuse(&error))
+    }
+
+    /// Project one stored Quick session onto the wire.
+    fn quick_session_dto(
+        &self,
+        session: &StoredQuickSession,
+        replayed: bool,
+    ) -> Result<QuickSessionDto, ApiError> {
+        let state = self.state()?;
+        let catalog =
+            self.catalog_revision(session.role.catalog_id, session.role.catalog_revision)?;
+        let segment = catalog
+            .role(&session.role.role_code)
+            .map(|entry| entry.segment)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the catalog revision this seat is pinned to no longer declares it",
+                )
+            })?;
+        Ok(QuickSessionDto {
+            realm_id: state.realm_id(),
+            quick_session_id: session.id,
+            role: ResolvedRoleRefDto {
+                catalog_revision: RevisionRefDto {
+                    id: session.role.catalog_id.to_string(),
+                    version: session.role.catalog_revision,
+                },
+                role_code: session.role.role_code.clone(),
+                standard_title: session.role.standard_title.clone(),
+                segment,
+                custom_display_name: session.role.custom_display_name.clone(),
+            },
+            topology_node_id: session.topology_node_id,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: session.id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: session.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    // -- Promotion and epic rosters ------------------------------------------
+
+    /// One Quick session, or a refusal that it does not exist here.
+    fn quick_session_row(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+    ) -> Result<StoredQuickSession, ApiError> {
+        self.state()?
+            .with_store(|store| store.get_quick_session(project_id, quick_session_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such Quick session exists in this project",
+                )
+            })
+    }
+
+    /// An epic, when it exists.
+    fn epic_row_opt(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<Option<kontor_core::repository::MiniProject>, ApiError> {
+        self.state()?
+            .with_store(|store| store.get_mini_project(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))
+    }
+
+    /// A Quick session that may still be promoted, and the roster it would
+    /// freeze.
+    fn promotable(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+    ) -> Result<(StoredQuickSession, FrozenRoster), ApiError> {
+        let session = self.quick_session_row(project_id, quick_session_id)?;
+        if self
+            .state()?
+            .with_store(|store| store.get_promotion(quick_session_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some()
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "this Quick session has already been promoted",
+            ));
+        }
+        // The base is re-read here rather than trusted from the row: a session
+        // whose base has drifted since it was opened must not carry that drift
+        // into a new epic. Compared only where both sides have something to
+        // say: a base since read back as a *different* native project is drift
+        // and refuses, while one that has still never been read back is not a
+        // disagreement, and treating it as one would block every promotion in a
+        // realm whose runtime has not answered yet.
+        let base = self.session_base(project_id)?;
+        if matches!(
+            (&base.native_id, &session.psw_native_id),
+            (Some(observed), Some(placed)) if observed != placed
+        ) {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the session base no longer reads back as the one this session was placed under",
+            ));
+        }
+        let current = self.stored_core_team(project_id)?.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::NotFound,
+                "this project has published no Core Team revision",
+            )
+        })?;
+        Ok((
+            session,
+            FrozenRoster {
+                revision: current,
+                revision_of_epic: AggregateRevision::INITIAL,
+                quick_session_id: Some(quick_session_id),
+            },
+        ))
+    }
+
+    /// The roster one epic froze, or a refusal that it has none.
+    fn frozen_roster(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<FrozenRoster, ApiError> {
+        let stored = self
+            .state()?
+            .with_store(|store| store.get_epic_roster(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this epic has frozen no Core Team roster",
+                )
+            })?;
+        Ok(FrozenRoster {
+            revision: CoreTeamRevision {
+                version: stored.core_team_version,
+                catalog_hash: stored.catalog_hash,
+                seats: serde_json::from_value(stored.seats).map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "a stored epic roster cannot be read by this build",
+                    )
+                })?,
+            },
+            revision_of_epic: stored.revision,
+            quick_session_id: stored.quick_session_id,
+        })
+    }
+
+    /// One project Core Team revision by version.
+    fn published_core_team(
+        &self,
+        project_id: ProjectId,
+        version: SpecVersion,
+    ) -> Result<CoreTeamRevision, ApiError> {
+        let current = self.stored_core_team(project_id)?.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::NotFound,
+                "this project has published no Core Team revision",
+            )
+        })?;
+        if current.version != version {
+            return Err(self.deny(
+                ApiErrorCode::NotFound,
+                "this project has not published that Core Team revision as its current one",
+            ));
+        }
+        Ok(current)
+    }
+
+    /// Write the roster an epic is staffed from.
+    fn freeze_roster(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        roster: &FrozenRoster,
+        quick_session_id: Option<QuickSessionId>,
+        now: Timestamp,
+    ) -> Result<(), ApiError> {
+        let seats = serde_json::to_value(&roster.revision.seats).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the frozen roster could not be canonicalized",
+            )
+        })?;
+        self.state()?
+            .with_store(|store| {
+                store.put_epic_roster(&StoredEpicRoster {
+                    project_id,
+                    mini_project_id: epic_id,
+                    core_team_version: roster.revision.version,
+                    catalog_hash: roster.revision.catalog_hash.clone(),
+                    seats: seats.clone(),
+                    quick_session_id,
+                    revision: AggregateRevision::INITIAL,
+                    pinned_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))
+    }
+
+    /// Create every required/default seat the roster declares and the control
+    /// plane does not already hold, and report all of them.
+    ///
+    /// On-demand roles are left absent: their declaration says an epic *may*
+    /// need them, which is not the same as permission to open them at bootstrap.
+    fn materialize_roster_seats(
+        &self,
+        project_id: ProjectId,
+        control: &SessionTopologyNode,
+        roster: &FrozenRoster,
+        now: Timestamp,
+    ) -> Result<Vec<(CoreTeamSeat, SeatBindingId)>, ApiError> {
+        let state = self.state()?;
+        let held = state
+            .with_store(|store| store.list_seat_bindings(project_id, control.id))
+            .map_err(|error| self.refuse(&error))?;
+        let deadline = now
+            .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
+            .unwrap_or(now);
+        let mut seats = Vec::new();
+        for seat in roster
+            .revision
+            .seats
+            .iter()
+            .filter(|seat| seat.presence != EpicPresence::OnDemand)
+        {
+            if let Some(existing) = held.iter().find(|binding| {
+                binding.role_slot_id == seat.role_slot_id && binding.is_non_terminal()
+            }) {
+                seats.push((seat.clone(), existing.id));
+                continue;
+            }
+            let id = SeatBindingId::generate();
+            state
+                .with_store(|store| {
+                    store.create_seat_binding(&NewSeatBinding {
+                        id,
+                        project_id,
+                        topology_node_id: control.id,
+                        role_slot_id: seat.role_slot_id.clone(),
+                        role: seat.role.clone(),
+                        // A Core Team seat is persistent control-plane presence,
+                        // not delivery work: no task, no TeamRun, and so no
+                        // mission slot consumed.
+                        task_id: None,
+                        team_run_id: None,
+                        attach_deadline: deadline,
+                        parent_seat_binding_id: None,
+                        created_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+            seats.push((seat.clone(), id));
+        }
+        Ok(seats)
+    }
+
+    /// The immutable capsule promotion hands to the epic's lead architect.
+    ///
+    /// Server-owned throughout. The promotion contract carries no body, so
+    /// every field here is read from what Kontor durably knows about the
+    /// source: its identity, the base it ran in, its purpose, and the roster
+    /// and epic it is being handed to.
+    fn promotion_handoff(
+        &self,
+        session: &StoredQuickSession,
+        roster: &FrozenRoster,
+        epic_id: MiniProjectId,
+        lsa: SeatBindingId,
+    ) -> Result<serde_json::Value, ApiError> {
+        Ok(serde_json::json!({
+            "schema_version": 1,
+            "realm_id": self.state()?.realm_id().to_string(),
+            "continuation": "cross_engine_handoff",
+            "source": {
+                "quick_session_id": session.id.to_string(),
+                "topology_node_id": session.topology_node_id.to_string(),
+                "seat_binding_id": session.seat_binding_id.to_string(),
+                "role_code": session.role.role_code.as_str(),
+                "session_base": session.psw_native_id.as_ref().map(ExternalId::as_str),
+                "opened_at": session.created_at.to_string(),
+            },
+            "purpose": session.purpose.as_str(),
+            "target": {
+                "epic_id": epic_id.to_string(),
+                "lsa_seat_binding_id": lsa.to_string(),
+                "core_team_version": roster.revision.version.get(),
+                "catalog": roster.revision.catalog_hash.as_str(),
+            },
+            "recommended_next_action":
+                "Continue the work opened in the Quick session, now under this epic.",
+        }))
+    }
+
+    /// The digest an apply must name to prove it saw this promotion preview.
+    fn promotion_hash(
+        &self,
+        session: &StoredQuickSession,
+        roster: &FrozenRoster,
+        effects: &[TopologyUpgradeEffectDto],
+    ) -> Result<ContentHash, ApiError> {
+        self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "promotion_preview",
+            "source": session.id.to_string(),
+            "source_revision": session.revision.get(),
+            "core_team_version": roster.revision.version.get(),
+            "catalog": roster.revision.catalog_hash.as_str(),
+            "effects": effect_digest(effects),
+        }))
+    }
+
+    /// The digest a roster-upgrade apply must name.
+    fn roster_upgrade_hash(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        target: &CoreTeamRevision,
+        effects: &[TopologyUpgradeEffectDto],
+    ) -> Result<ContentHash, ApiError> {
+        self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "epic_roster_upgrade_preview",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "target_version": target.version.get(),
+            "catalog": target.catalog_hash.as_str(),
+            "effects": effect_digest(effects),
+        }))
+    }
+
+    /// Find the published revision one roster preview was computed against.
+    ///
+    /// Recomputed rather than remembered, for the reason a topology upgrade
+    /// recomputes its own: a stored preview would let an apply commit a diff
+    /// the realm no longer has.
+    fn target_of_roster_preview(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        preview_hash: &ContentHash,
+    ) -> Result<FrozenRoster, ApiError> {
+        let current = self.frozen_roster(project_id, epic_id)?;
+        let target = self.stored_core_team(project_id)?.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::NotFound,
+                "this project has published no Core Team revision",
+            )
+        })?;
+        let effects = roster_upgrade_effects(&current, &target)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if &self.roster_upgrade_hash(project_id, epic_id, &target, &effects)? != preview_hash {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "no currently published roster still produces the previewed effects",
+            ));
+        }
+        Ok(FrozenRoster {
+            revision: target,
+            revision_of_epic: current.revision_of_epic,
+            quick_session_id: current.quick_session_id,
+        })
+    }
+
+    /// One epic's roster, with the seats that are actually filling it.
+    fn epic_core_team_dto(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        roster: &FrozenRoster,
+    ) -> Result<CoreTeamDto, ApiError> {
+        let state = self.state()?;
+        let control = self
+            .state()?
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|node| node.kind == self.domain.delivery.control_kind);
+        let held = match &control {
+            Some(node) => state
+                .with_store(|store| store.list_seat_bindings(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?,
+            None => Vec::new(),
+        };
+        let mut seats = self.core_team_seat_dtos(&roster.revision)?;
+        for seat in &mut seats {
+            // Scoped by the epic in the route, which is what makes reporting a
+            // binding here honest: this projection is one epic's control plane.
+            seat.seat_binding_id = held
+                .iter()
+                .find(|binding| {
+                    binding.role.role_code == seat.role.role_code && binding.is_non_terminal()
+                })
+                .map(|binding| binding.id);
+        }
+        Ok(CoreTeamDto {
+            realm_id: state.realm_id(),
+            project_id,
+            seats,
+            revision: roster.revision_of_epic,
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    /// The digest an apply must name to prove it saw this preview.
+    fn core_team_hash(
+        &self,
+        project_id: ProjectId,
+        proposed: &CoreTeamRevision,
+        effects: &[TopologyUpgradeEffectDto],
+    ) -> Result<ContentHash, ApiError> {
+        self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "core_team_preview",
+            "project": project_id.to_string(),
+            // The revision this would become and the exact catalog it resolved
+            // against are both in the digest: the same seats resolved against a
+            // corrected catalog are not the same authorization.
+            "version": proposed.version.get(),
+            "catalog": proposed.catalog_hash.as_str(),
+            "effects": effects
+                .iter()
+                .map(|effect| {
+                    serde_json::json!({
+                        "subject": effect.subject,
+                        "effect": effect.effect,
+                        "detail": effect.detail,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    /// Project one stored revision's seats onto the wire.
+    fn core_team_seat_dtos(
+        &self,
+        revision: &CoreTeamRevision,
+    ) -> Result<Vec<CoreTeamSeatDto>, ApiError> {
+        revision
+            .seats
+            .iter()
+            .map(|seat| {
+                let catalog =
+                    self.catalog_revision(seat.role.catalog_id, seat.role.catalog_revision)?;
+                let segment = catalog
+                    .role(&seat.role.role_code)
+                    .map(|entry| entry.segment)
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the catalog revision this seat is pinned to no longer declares it",
+                        )
+                    })?;
+                Ok(CoreTeamSeatDto {
+                    role: ResolvedRoleRefDto {
+                        catalog_revision: RevisionRefDto {
+                            id: seat.role.catalog_id.to_string(),
+                            version: seat.role.catalog_revision,
+                        },
+                        role_code: seat.role.role_code.clone(),
+                        standard_title: seat.role.standard_title.clone(),
+                        segment,
+                        custom_display_name: seat.role.custom_display_name.clone(),
+                    },
+                    presence: seat.presence,
+                    ad_hoc_allowed: seat.ad_hoc_allowed,
+                    seat_binding_id: None,
+                })
+            })
+            .collect()
+    }
+
     /// The digest an apply must name to prove it saw this preview.
     fn upgrade_hash(
         &self,
@@ -3639,6 +4272,230 @@ fn shareability_dto(stamp: &Shareability) -> ShareabilityDto {
 }
 
 /// One pinned specification reference.
+/// The revision a Core Team write must present.
+///
+/// One ahead of the published version, so that "nothing published yet" and
+/// "version one is published" are different values. Collapsing them would let
+/// an apply written against an unconfigured project land on a project that had
+/// meanwhile published its first roster.
+fn core_team_revision_of(current: Option<&CoreTeamRevision>) -> AggregateRevision {
+    current.map_or(AggregateRevision::INITIAL, |current| {
+        AggregateRevision::parse(u64::from(current.version.get()).saturating_add(1))
+            .unwrap_or(AggregateRevision::INITIAL)
+    })
+}
+
+/// What publishing `proposed` would change about the roster.
+///
+/// Reported per role slot, in slot order, so the same edit always produces the
+/// same digest. Presence and ad-hoc eligibility are part of a seat's identity
+/// here: changing either changes which epics staff the role and whether it can
+/// open a Quick session, and neither is visible as an add or a remove.
+fn core_team_effects(
+    current: Option<&CoreTeamRevision>,
+    proposed: &CoreTeamRevision,
+) -> kontor_core::DomainResult<Vec<TopologyUpgradeEffectDto>> {
+    let before: BTreeMap<&RoleSlotId, &CoreTeamSeat> = current
+        .map(|current| {
+            current
+                .seats
+                .iter()
+                .map(|seat| (&seat.role_slot_id, seat))
+                .collect()
+        })
+        .unwrap_or_default();
+    let after: BTreeMap<&RoleSlotId, &CoreTeamSeat> = proposed
+        .seats
+        .iter()
+        .map(|seat| (&seat.role_slot_id, seat))
+        .collect();
+
+    let mut effects = Vec::new();
+    let mut push =
+        |slot: &RoleSlotId, effect: &str, detail: String| -> kontor_core::DomainResult<()> {
+            effects.push(TopologyUpgradeEffectDto {
+                subject: format!("core_team_seat:{slot}"),
+                topology_node_id: None,
+                effect: effect.to_owned(),
+                detail: BoundedText::parse(&detail)?,
+            });
+            Ok(())
+        };
+    for (slot, seat) in &after {
+        match before.get(slot) {
+            None => push(
+                slot,
+                "seat_added",
+                format!(
+                    "{} joins the Core Team as {} ({})",
+                    seat.role.role_code,
+                    seat.presence,
+                    if seat.ad_hoc_allowed {
+                        "quick-eligible"
+                    } else {
+                        "not quick-eligible"
+                    }
+                ),
+            )?,
+            Some(existing)
+                if existing.presence != seat.presence
+                    || existing.ad_hoc_allowed != seat.ad_hoc_allowed =>
+            {
+                push(
+                    slot,
+                    "seat_policy_changed",
+                    format!(
+                        "{} moves from {} to {}",
+                        seat.role.role_code, existing.presence, seat.presence
+                    ),
+                )?;
+            }
+            Some(_) => {}
+        }
+    }
+    for (slot, seat) in &before {
+        if !after.contains_key(slot) {
+            push(
+                slot,
+                "seat_removed",
+                format!("{} leaves the Core Team", seat.role.role_code),
+            )?;
+        }
+    }
+    Ok(effects)
+}
+
+/// The stable part of an effect list, for a preview digest.
+fn effect_digest(effects: &[TopologyUpgradeEffectDto]) -> Vec<serde_json::Value> {
+    effects
+        .iter()
+        .map(|effect| {
+            serde_json::json!({
+                "subject": effect.subject,
+                "effect": effect.effect,
+                "detail": effect.detail,
+            })
+        })
+        .collect()
+}
+
+/// What promoting one Quick session would do.
+///
+/// Node and seat identities are deliberately absent. They are minted by the
+/// apply, inside the transaction that records them, so that a preview commits
+/// nothing and two previews of the same unchanged source agree.
+fn promotion_effects(
+    session: &StoredQuickSession,
+    roster: &FrozenRoster,
+) -> kontor_core::DomainResult<Vec<TopologyUpgradeEffectDto>> {
+    let mut effects = vec![
+        TopologyUpgradeEffectDto {
+            subject: "mini_project".to_owned(),
+            topology_node_id: None,
+            effect: "epic_created".to_owned(),
+            detail: BoundedText::parse(&format!(
+                "a tracker-neutral epic is created for {}",
+                session.purpose.as_str()
+            ))?,
+        },
+        TopologyUpgradeEffectDto {
+            subject: "topology_node:esw".to_owned(),
+            topology_node_id: None,
+            effect: "node_created".to_owned(),
+            detail: BoundedText::parse("the epic gets its own session workspace")?,
+        },
+        TopologyUpgradeEffectDto {
+            subject: "topology_node:ecp".to_owned(),
+            topology_node_id: None,
+            effect: "node_created".to_owned(),
+            detail: BoundedText::parse("exactly one control plane is created inside it")?,
+        },
+    ];
+    for seat in roster
+        .revision
+        .seats
+        .iter()
+        .filter(|seat| seat.presence != EpicPresence::OnDemand)
+    {
+        effects.push(TopologyUpgradeEffectDto {
+            subject: format!("seat:{}", seat.role_slot_id),
+            topology_node_id: None,
+            effect: "seat_created".to_owned(),
+            detail: BoundedText::parse(&format!(
+                "{} is seated in the epic control plane",
+                seat.role.role_code
+            ))?,
+        });
+    }
+    effects.push(TopologyUpgradeEffectDto {
+        subject: "handoff".to_owned(),
+        topology_node_id: None,
+        effect: "handoff_delivered".to_owned(),
+        detail: BoundedText::parse("the source's work is handed to the epic's LSA seat")?,
+    });
+    // Stated as an effect because it is one a caller must be able to see: the
+    // source survives, and promotion is not a move.
+    effects.push(TopologyUpgradeEffectDto {
+        subject: "source".to_owned(),
+        topology_node_id: Some(session.topology_node_id),
+        effect: "source_left_idle".to_owned(),
+        detail: BoundedText::parse("the Quick session remains as durable provenance")?,
+    });
+    Ok(effects)
+}
+
+/// What moving one epic's roster pin would do.
+fn roster_upgrade_effects(
+    current: &FrozenRoster,
+    target: &CoreTeamRevision,
+) -> kontor_core::DomainResult<Vec<TopologyUpgradeEffectDto>> {
+    let held: BTreeSet<&RoleSlotId> = current
+        .revision
+        .seats
+        .iter()
+        .map(|seat| &seat.role_slot_id)
+        .collect();
+    let mut effects = Vec::new();
+    for seat in target
+        .seats
+        .iter()
+        .filter(|seat| seat.presence != EpicPresence::OnDemand)
+    {
+        if !held.contains(&seat.role_slot_id) {
+            effects.push(TopologyUpgradeEffectDto {
+                subject: format!("seat:{}", seat.role_slot_id),
+                topology_node_id: None,
+                effect: "seat_created".to_owned(),
+                detail: BoundedText::parse(&format!(
+                    "{} joins this epic's control plane",
+                    seat.role.role_code
+                ))?,
+            });
+        }
+    }
+    // Reported, never performed. A role the project dropped keeps its seat in
+    // an epic already running under it, because closing that seat would end a
+    // session someone is working in.
+    for seat in &current.revision.seats {
+        if !target
+            .seats
+            .iter()
+            .any(|candidate| candidate.role_slot_id == seat.role_slot_id)
+        {
+            effects.push(TopologyUpgradeEffectDto {
+                subject: format!("seat:{}", seat.role_slot_id),
+                topology_node_id: None,
+                effect: "seat_left_in_place".to_owned(),
+                detail: BoundedText::parse(&format!(
+                    "{} is no longer on the project roster and keeps its existing seat",
+                    seat.role.role_code
+                ))?,
+            });
+        }
+    }
+    Ok(effects)
+}
+
 fn pinned_spec_dto(snapshot: &TopologySnapshot) -> PinnedSpecDto {
     PinnedSpecDto {
         id: snapshot.spec_id,
@@ -5369,106 +6226,708 @@ impl ApplicationOperations for Services {
             .await
     }
 
-    fn core_team(&self, _project_id: ProjectId) -> Result<CoreTeamDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Core Team service is not composed in this build",
-        ))
+    fn core_team(&self, project_id: ProjectId) -> Result<CoreTeamDto, ApiError> {
+        let state = self.state()?;
+        // A project that does not exist has no configuration to report, and
+        // answering with an empty roster would make it look configurable.
+        self.project_row(project_id)?;
+        // A project that has published nothing has no Core Team — and it must
+        // not be told it has an empty one. Every valid roster contains a
+        // required LSA and TPM, so an empty seat list is a state this domain
+        // cannot reach; answering with one would be indistinguishable from a
+        // real roster that happens to seat nobody, and a caller would act on it.
+        let stored = self.stored_core_team(project_id)?.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::NotFound,
+                "this project has published no Core Team revision",
+            )
+        })?;
+        Ok(CoreTeamDto {
+            realm_id: state.realm_id(),
+            project_id,
+            // `seat_binding_id` is absent throughout: this is the roster a
+            // project staffs epics *from*. The seats that fill it belong to one
+            // epic's control plane, and the route that returns them is scoped by
+            // an `epic_id` this one does not have.
+            seats: self.core_team_seat_dtos(&stored)?,
+            revision: core_team_revision_of(Some(&stored)),
+            snapshot_cursor: self.cursor()?,
+        })
     }
+
     fn preview_core_team(
         &self,
-        _project_id: ProjectId,
-        _request: &CoreTeamPreviewRequest,
+        project_id: ProjectId,
+        request: &CoreTeamPreviewRequest,
     ) -> Result<CoreTeamPreviewDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Core Team service is not composed in this build",
-        ))
+        let state = self.state()?;
+        self.project_row(project_id)?;
+        let stored = self.stored_core_team(project_id)?;
+        // Pure: the candidate revision is resolved and hashed, and nothing is
+        // written. No draft, no id, no receipt — an apply recomputes this from
+        // current state and compares the hash, so a stored plan here would only
+        // be a second answer able to disagree with the Realm.
+        let proposed = self.resolve_core_team(project_id, &request.seats, stored.as_ref())?;
+        let effects = core_team_effects(stored.as_ref(), &proposed)
+            .map_err(|error| self.refuse_domain(&error))?;
+        Ok(CoreTeamPreviewDto {
+            realm_id: state.realm_id(),
+            preview_hash: self.core_team_hash(project_id, &proposed, &effects)?,
+            effects,
+        })
     }
+
     async fn apply_core_team(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _request: &CoreTeamApplyRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &CoreTeamApplyRequest,
     ) -> Result<CoreTeamOutcomeDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Core Team service is not composed in this build",
-        ))
+        let state = self.state()?;
+        let project = self.project_row(project_id)?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "core_team_apply",
+            "project": project_id.to_string(),
+            "preview": request.preview_hash.as_str(),
+        }))?;
+        // Replay is judged before the expected revision, unlike a topology
+        // upgrade. Publishing moves this aggregate's revision, so a retry after
+        // a lost acknowledgement necessarily presents the revision it read
+        // before the first attempt. Checking that first would refuse the retry
+        // for the sole reason that the original call succeeded.
+        let replayed = self
+            .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
+            .is_some();
+
+        if !replayed {
+            let stored = self.stored_core_team(project_id)?;
+            let current = core_team_revision_of(stored.as_ref());
+            if current != request.expected_revision {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the Core Team moved since the caller read it",
+                    )
+                    .with_revision(Some(current)));
+            }
+            // Recomputed rather than remembered, then held to the hash the
+            // caller was shown. What was authorized is this exact roster
+            // resolved against these exact catalog revisions.
+            let proposed = self.resolve_core_team(project_id, &request.seats, stored.as_ref())?;
+            let effects = core_team_effects(stored.as_ref(), &proposed)
+                .map_err(|error| self.refuse_domain(&error))?;
+            if self.core_team_hash(project_id, &proposed, &effects)? != request.preview_hash {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the apply does not match the named preview",
+                ));
+            }
+            let seats = serde_json::to_value(&proposed.seats).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the resolved Core Team could not be canonicalized",
+                )
+            })?;
+            state
+                .with_store(|store| {
+                    store.publish_core_team_revision(&StoredCoreTeamRevision {
+                        project_id,
+                        version: proposed.version,
+                        catalog_hash: proposed.catalog_hash.clone(),
+                        seats,
+                        published_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::ApplyCoreTeam,
+            AggregateRef::Project { project_id },
+            project.revision,
+            &intent,
+        )?;
+        let core_team = self.core_team(project_id)?;
+        Ok(CoreTeamOutcomeDto {
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: core_team.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+            core_team,
+        })
     }
     async fn materialize_core_team(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _epic_id: MiniProjectId,
-        _request: &CoreTeamMaterializeRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamMaterializeRequest,
     ) -> Result<CoreTeamOutcomeDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Core Team service is not composed in this build",
-        ))
+        let state = self.state()?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        if epic.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the epic moved since the caller read it",
+                )
+                .with_revision(Some(epic.revision)));
+        }
+        // The roster the epic froze, never the project's current one. An epic
+        // staffed from whatever the project happens to say today would quietly
+        // acquire roles decided after it started.
+        let roster = self.frozen_roster(project_id, epic_id)?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "core_team_materialize",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+        }))?;
+        let replayed = self
+            .replayed(
+                key,
+                &intent,
+                Some(&AggregateRef::MiniProject {
+                    mini_project_id: epic_id,
+                }),
+            )?
+            .is_some();
+        if !replayed {
+            let control = self.ensure_scope_chain(
+                project_id,
+                &self.resolve_scope(
+                    project_id,
+                    &SemanticTopologyTargetDto::EpicControl { epic_id },
+                )?,
+            )?;
+            // Missing seats only. Every seat already there keeps its identity,
+            // because a seat binding is what a running agent is attached to.
+            self.materialize_roster_seats(project_id, &control, &roster, kontor_api::now())?;
+        }
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::MaterializeCoreTeam,
+            AggregateRef::MiniProject {
+                mini_project_id: epic_id,
+            },
+            epic.revision,
+            &intent,
+        )?;
+        Ok(CoreTeamOutcomeDto {
+            core_team: self.epic_core_team_dto(project_id, epic_id, &roster)?,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
     }
-    fn quick_roles(&self, _project_id: ProjectId) -> Result<QuickRolesDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Quick work service is not composed in this build",
-        ))
+    fn quick_roles(&self, project_id: ProjectId) -> Result<QuickRolesDto, ApiError> {
+        let state = self.state()?;
+        self.project_row(project_id)?;
+        // Derived, never stored. There is no Quick Team aggregate: the roles a
+        // Quick session may be opened against are exactly the current Core Team
+        // entries marked `ad_hoc_allowed`, so a second list here could disagree
+        // with the roster the moment either was edited.
+        let roster = self.stored_core_team(project_id)?.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::NotFound,
+                "this project has published no Core Team revision",
+            )
+        })?;
+        let mut roles = Vec::new();
+        for seat in roster.seats.iter().filter(|seat| seat.ad_hoc_allowed) {
+            let catalog =
+                self.catalog_revision(seat.role.catalog_id, seat.role.catalog_revision)?;
+            let entry = catalog.role(&seat.role.role_code).ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the catalog revision this seat is pinned to no longer declares it",
+                )
+            })?;
+            roles.push(role_entry_dto(entry));
+        }
+        Ok(QuickRolesDto {
+            realm_id: state.realm_id(),
+            project_id,
+            roles,
+            snapshot_cursor: self.cursor()?,
+        })
     }
+
     async fn ensure_quick_session(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _request: &EnsureQuickSessionRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &EnsureQuickSessionRequest,
     ) -> Result<QuickSessionDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Quick work service is not composed in this build",
-        ))
+        let state = self.state()?;
+        let project = self.project_row(project_id)?;
+        let purpose = BoundedText::parse(request.purpose.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+
+        // Everything below is checked before the first native effect, in the
+        // order the architecture fixes: the roster, then the role's ad-hoc
+        // eligibility, then the exact base readback.
+        let roster = self.stored_core_team(project_id)?.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::NotFound,
+                "this project has published no Core Team revision",
+            )
+        })?;
+        let catalog_id = RoleCatalogId::parse(&request.role.catalog_revision.id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let seat = roster
+            .seats
+            .iter()
+            .find(|seat| {
+                seat.role.role_code == request.role.role_code
+                    && seat.role.catalog_id == catalog_id
+                    && seat.role.catalog_revision == request.role.catalog_revision.version
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "that role is not on this project's Core Team at that catalog revision",
+                )
+            })?;
+        if !seat.ad_hoc_allowed {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "that Core Team role may not open a Quick session",
+            ));
+        }
+
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "quick_session_ensure",
+            "project": project_id.to_string(),
+            "role": seat.role.role_code.as_str(),
+            "catalog": seat.role.catalog_revision.get(),
+            "purpose": purpose.as_str(),
+        }))?;
+        // The command record is what makes a lost acknowledgement safe: a retry
+        // finds the same receipt and reads back the session it already opened,
+        // rather than placing a second workspace for the same request.
+        let replayed = self
+            .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
+            .is_some();
+        if let Some(existing) = self.quick_session_for_intent(project_id, &intent)? {
+            return self.quick_session_dto(&existing, replayed);
+        }
+
+        let base = self.session_base(project_id)?;
+        let mut role = seat.role.clone();
+        role.custom_display_name
+            .clone_from(&request.role.custom_display_name);
+        let now = kontor_api::now();
+        let session = StoredQuickSession {
+            id: QuickSessionId::generate(),
+            project_id,
+            role,
+            role_slot_id: seat.role_slot_id.clone(),
+            topology_node_id: TopologyNodeId::generate(),
+            seat_binding_id: SeatBindingId::generate(),
+            psw_topology_node_id: base.node.id,
+            psw_native_id: base.native_id.clone(),
+            purpose,
+            intent_hash: intent.hash().clone(),
+            // Idle, and only ever moved from idle by an explicit archive after
+            // a promotion has delivered its handoff.
+            disposition: SourceDisposition::Idle,
+            revision: AggregateRevision::INITIAL,
+            created_at: now,
+        };
+
+        // The QSW is a child container in the adopted base, placed under the
+        // kind the pinned specification declares for it. Its node id is the one
+        // frozen above rather than one discovered by searching the topology for
+        // a node of that kind: two Quick sessions in one project are both QSW
+        // nodes below the same base, and a search cannot tell them apart.
+        let topology = self.project_topology(project_id)?;
+        let spec = self.pinned_spec(project_id)?;
+        let kind = self.domain.delivery.quick_kind.clone();
+        let declared = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the pinned specification declares no Quick session kind",
+                )
+            })?;
+        if !declared
+            .projection_capabilities
+            .contains(&NodeProjectionCapability::SessionHost)
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the pinned specification does not declare the Quick session kind a session host",
+            ));
+        }
+        state
+            .with_store(|store| {
+                store.create_topology_node(&NewSessionTopologyNode {
+                    id: session.topology_node_id,
+                    project_id,
+                    mini_project_id: None,
+                    topology: topology.clone(),
+                    kind: kind.clone(),
+                    parent_id: Some(session.psw_topology_node_id),
+                    task_id: None,
+                    created_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let deadline = now
+            .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
+            .unwrap_or(now);
+        state
+            .with_store(|store| {
+                store.create_seat_binding(&NewSeatBinding {
+                    id: session.seat_binding_id,
+                    project_id,
+                    topology_node_id: session.topology_node_id,
+                    role_slot_id: session.role_slot_id.clone(),
+                    role: session.role.clone(),
+                    // A Quick session is not delivery work: it has no task and
+                    // no TeamRun, and therefore consumes no mission slot.
+                    task_id: None,
+                    team_run_id: None,
+                    attach_deadline: deadline,
+                    parent_seat_binding_id: None,
+                    created_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state
+            .with_store(|store| store.create_quick_session(&session))
+            .map_err(|error| self.refuse(&error))?;
+
+        self.record(
+            key,
+            project_id,
+            CommandKind::EnsureQuickSession,
+            AggregateRef::Project { project_id },
+            project.revision,
+            &intent,
+        )?;
+        self.quick_session_dto(&session, false)
     }
     fn preview_promotion(
         &self,
-        _project_id: ProjectId,
-        _quick_session_id: QuickSessionId,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
     ) -> Result<PromotionPreviewDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Quick work service is not composed in this build",
-        ))
+        let state = self.state()?;
+        let (session, roster) = self.promotable(project_id, quick_session_id)?;
+        let effects =
+            promotion_effects(&session, &roster).map_err(|error| self.refuse_domain(&error))?;
+        Ok(PromotionPreviewDto {
+            realm_id: state.realm_id(),
+            quick_session_id,
+            preview_hash: self.promotion_hash(&session, &roster, &effects)?,
+            effects,
+        })
     }
+
     async fn apply_promotion(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _quick_session_id: QuickSessionId,
-        _request: &PromotionApplyRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+        request: &PromotionApplyRequest,
     ) -> Result<PromotedSessionDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Quick work service is not composed in this build",
-        ))
+        let state = self.state()?;
+        let now = kontor_api::now();
+
+        // A promotion already recorded is resumed, never restarted. The row was
+        // written before the first effect and carries the ids those effects
+        // use, so everything below reconciles what is already there and fills
+        // in whichever suffix is missing.
+        let existing = state
+            .with_store(|store| store.get_promotion(quick_session_id))
+            .map_err(|error| self.refuse(&error))?;
+        let (session, roster) = match &existing {
+            Some(promotion) => {
+                if promotion.preview_hash != request.preview_hash {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "this source is already being promoted under a different preview",
+                    ));
+                }
+                let session = self.quick_session_row(project_id, quick_session_id)?;
+                let roster = self.frozen_roster(project_id, promotion.mini_project_id)?;
+                (session, roster)
+            }
+            None => {
+                let (session, roster) = self.promotable(project_id, quick_session_id)?;
+                if session.revision != request.expected_revision {
+                    return Err(self
+                        .deny(
+                            ApiErrorCode::RevisionConflict,
+                            "the source moved since the caller previewed it",
+                        )
+                        .with_revision(Some(session.revision)));
+                }
+                let effects = promotion_effects(&session, &roster)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                if self.promotion_hash(&session, &roster, &effects)? != request.preview_hash {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "the apply does not match the named preview",
+                    ));
+                }
+                (session, roster)
+            }
+        };
+
+        let epic_id = match &existing {
+            Some(promotion) => promotion.mini_project_id,
+            None => {
+                let epic_id = MiniProjectId::generate();
+                state
+                    .with_store(|store| {
+                        store.begin_promotion(&StoredPromotion {
+                            quick_session_id,
+                            project_id,
+                            mini_project_id: epic_id,
+                            preview_hash: request.preview_hash.clone(),
+                            // The fixed contract authorizes no archive, so the
+                            // source stays idle. Reporting an archive the
+                            // request never asked for would be claiming an
+                            // effect nobody authorized.
+                            source_disposition: SourceDisposition::Idle,
+                            handoff: None,
+                            handoff_hash: None,
+                            lsa_seat_binding_id: None,
+                            completed_at: None,
+                            created_at: now,
+                        })
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                epic_id
+            }
+        };
+
+        // A tracker-neutral MiniProject in the ordinary pre-execution planning
+        // lifecycle. No TeamRun starts, no phase is skipped, and no ASMA Epic
+        // policy activates — that needs a confirmed Jira Epic binding, which
+        // this contract carries no way to supply.
+        if self.epic_row_opt(project_id, epic_id)?.is_none() {
+            let name = ExternalName::parse(session.purpose.as_str())
+                .map_err(|error| self.refuse_domain(&error))?;
+            state
+                .with_store(|store| {
+                    store.create_mini_project(&NewMiniProject {
+                        id: epic_id,
+                        project_id,
+                        name: name.clone(),
+                        created_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
+        // ESW as its own native project, then exactly one ECP inside it, both
+        // through the OP-02 chain that owns placement.
+        self.ensure_scope_chain(
+            project_id,
+            &self.resolve_scope(project_id, &SemanticTopologyTargetDto::Epic { epic_id })?,
+        )?;
+        let control = self.ensure_scope_chain(
+            project_id,
+            &self.resolve_scope(
+                project_id,
+                &SemanticTopologyTargetDto::EpicControl { epic_id },
+            )?,
+        )?;
+
+        // Freeze the roster before any seat is created, so the seats and the
+        // record of what they were created from cannot disagree.
+        if existing.is_none() {
+            self.freeze_roster(project_id, epic_id, &roster, Some(quick_session_id), now)?;
+        }
+        let seats = self.materialize_roster_seats(project_id, &control, &roster, now)?;
+        let lsa = seats
+            .iter()
+            .find(|(seat, _)| seat.role.role_code.as_str() == "LSA")
+            .map(|(_, id)| *id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the frozen roster has no LSA seat to hand the work to",
+                )
+            })?;
+
+        // Delivery last, and success only after it. A promotion that reported
+        // done with the handoff still undelivered would leave the epic's lead
+        // architect holding an epic and none of the work that justified it.
+        if existing.as_ref().and_then(|it| it.completed_at).is_none() {
+            let handoff = self.promotion_handoff(&session, &roster, epic_id, lsa)?;
+            let document = self.intent(&handoff)?;
+            state
+                .with_store(|store| {
+                    store.complete_promotion(quick_session_id, &handoff, document.hash(), lsa, now)
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
+        let epic = self.epic_row(project_id, epic_id)?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::PromoteQuickSession,
+            AggregateRef::MiniProject {
+                mini_project_id: epic_id,
+            },
+            epic.revision,
+            &self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "promotion_apply",
+                "project": project_id.to_string(),
+                "source": quick_session_id.to_string(),
+                "preview": request.preview_hash.as_str(),
+            }))?,
+        )?;
+        Ok(PromotedSessionDto {
+            epic_id,
+            quick_session_id,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if existing.is_some() {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
     }
     fn preview_roster_upgrade(
         &self,
-        _project_id: ProjectId,
-        _epic_id: MiniProjectId,
-        _request: &RosterUpgradePreviewRequest,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &RosterUpgradePreviewRequest,
     ) -> Result<RosterUpgradePreviewDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the epic roster service is not composed in this build",
-        ))
+        let state = self.state()?;
+        let current = self.frozen_roster(project_id, epic_id)?;
+        // The target the caller named, not whichever revision happens to be
+        // current. An upgrade that silently retargeted itself would move a
+        // running epic onto a roster nobody looked at.
+        let target = self.published_core_team(project_id, request.target.version)?;
+        let effects = roster_upgrade_effects(&current, &target)
+            .map_err(|error| self.refuse_domain(&error))?;
+        Ok(RosterUpgradePreviewDto {
+            realm_id: state.realm_id(),
+            epic_id,
+            preview_hash: self.roster_upgrade_hash(project_id, epic_id, &target, &effects)?,
+            effects,
+        })
     }
     async fn apply_roster_upgrade(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _epic_id: MiniProjectId,
-        _request: &TopologyUpgradeApplyRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TopologyUpgradeApplyRequest,
     ) -> Result<CoreTeamOutcomeDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the epic roster service is not composed in this build",
-        ))
+        let state = self.state()?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "epic_roster_upgrade",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "preview": request.preview_hash.as_str(),
+        }))?;
+        let replayed = self
+            .replayed(
+                key,
+                &intent,
+                Some(&AggregateRef::MiniProject {
+                    mini_project_id: epic_id,
+                }),
+            )?
+            .is_some();
+
+        let roster = if replayed {
+            self.frozen_roster(project_id, epic_id)?
+        } else {
+            let current = self.frozen_roster(project_id, epic_id)?;
+            if current.revision_of_epic != request.expected_revision {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the epic's roster moved since the caller previewed it",
+                    )
+                    .with_revision(Some(current.revision_of_epic)));
+            }
+            // The target is recovered from the preview digest rather than
+            // remembered, exactly as a topology upgrade does it: what the
+            // caller authorized is a diff, named by its hash.
+            let target =
+                self.target_of_roster_preview(project_id, epic_id, &request.preview_hash)?;
+            let now = kontor_api::now();
+            self.freeze_roster(project_id, epic_id, &target, current.quick_session_id, now)?;
+            let control = self.ensure_scope_chain(
+                project_id,
+                &self.resolve_scope(
+                    project_id,
+                    &SemanticTopologyTargetDto::EpicControl { epic_id },
+                )?,
+            )?;
+            // Additions only. A role that left the project's roster is not
+            // retired here: an agent is attached to that seat, and silently
+            // closing it is not an upgrade, it is a dismissal.
+            self.materialize_roster_seats(project_id, &control, &target, now)?;
+            self.frozen_roster(project_id, epic_id)?
+        };
+
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::UpgradeEpicRoster,
+            AggregateRef::MiniProject {
+                mini_project_id: epic_id,
+            },
+            epic.revision,
+            &intent,
+        )?;
+        Ok(CoreTeamOutcomeDto {
+            core_team: self.epic_core_team_dto(project_id, epic_id, &roster)?,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
     }
     fn advisor_profiles(&self, _project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
         Err(self.deny(

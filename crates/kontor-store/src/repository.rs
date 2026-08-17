@@ -19,15 +19,16 @@ use kontor_core::calendar::{
     ScheduleOverride, WeeklyWindow, WorkCalendarAssignment, WorkScope,
 };
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
+    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ContentHash,
     CredentialAlias, CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey,
     GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
-    ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleCatalogId, RoleCode,
-    RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId,
-    SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
-    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
-    TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+    ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, QuickSessionId, RealmId,
+    RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
+    ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId, TaskId,
+    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
@@ -47,10 +48,11 @@ use kontor_core::repository::{
     PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, RealmEventPage,
     RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
     RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SourceEventIngest, SpecRepository, StoredCapacityConfiguration, Task,
-    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
-    validate_dependency_graph,
+    SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
+    StoredCapacityConfiguration, StoredCoreTeamRevision, StoredEpicRoster, StoredPromotion,
+    StoredQuickSession, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun,
+    TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, TopologyRepository,
+    WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
@@ -1050,6 +1052,478 @@ fn role_catalog_in(
         subject: "role catalog",
     })?;
     stored_document(&json, &hash)
+}
+
+/// Project Core Team configuration.
+///
+/// Inherent rather than a trait: there is one implementation, and a port here
+/// would be a second thing to keep in agreement with the two statements below.
+impl SqliteStore {
+    /// Publish the next immutable Core Team revision for one project.
+    ///
+    /// The version is checked against what is already stored inside the same
+    /// transaction rather than trusted from the caller. Two applies racing on
+    /// the same project would otherwise both read version *n*, both compute
+    /// *n+1*, and the second would land on the primary key with a message about
+    /// a unique index rather than about the roster it failed to publish.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the version is not the next
+    /// one for this project.
+    pub fn publish_core_team_revision(
+        &self,
+        revision: &StoredCoreTeamRevision,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let current: Option<i64> = transaction
+            .query_row(
+                "SELECT MAX(version) FROM core_team_revisions WHERE project_id = ?1",
+                params![revision.project_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .flatten();
+        let expected = current.map_or(1, |version| version.saturating_add(1));
+        if version_column(revision.version) != expected {
+            return Err(RepositoryError::Conflict {
+                subject: "core team revision",
+                rule: "must be the next revision for this project",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO core_team_revisions
+                     (project_id, version, catalog_hash, seats, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    revision.project_id.to_string(),
+                    version_column(revision.version),
+                    revision.catalog_hash.as_str(),
+                    revision.seats.to_string(),
+                    text(revision.published_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Record one Quick session and the ids its placement used.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the session already exists.
+    pub fn create_quick_session(&self, session: &StoredQuickSession) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let role =
+            serde_json::to_string(&session.role).map_err(|error| RepositoryError::Backend {
+                detail: format!("a quick session role could not be encoded: {error}"),
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO quick_sessions
+                     (id, project_id, role, role_slot_id, topology_node_id, seat_binding_id,
+                      psw_topology_node_id, psw_native_id, purpose, intent_hash, disposition,
+                      revision, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    session.id.to_string(),
+                    session.project_id.to_string(),
+                    role,
+                    session.role_slot_id.as_str(),
+                    session.topology_node_id.to_string(),
+                    session.seat_binding_id.to_string(),
+                    session.psw_topology_node_id.to_string(),
+                    session.psw_native_id.as_ref().map(ExternalId::as_str),
+                    session.purpose.as_str(),
+                    session.intent_hash.as_str(),
+                    session.disposition.as_str(),
+                    i64::try_from(session.revision.get()).unwrap_or(i64::MAX),
+                    text(session.created_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// One Quick session in one project.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_quick_session(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.quick_session_where("id = ?2", project_id, &quick_session_id.to_string())
+    }
+
+    /// The Quick session one command opened, if it already opened one.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_quick_session_by_intent(
+        &self,
+        project_id: ProjectId,
+        intent_hash: &ContentHash,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.quick_session_where("intent_hash = ?2", project_id, intent_hash.as_str())
+    }
+
+    /// One Quick session, addressed by whichever unique column names it.
+    fn quick_session_where(
+        &self,
+        predicate: &str,
+        project_id: ProjectId,
+        value: &str,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.connection
+            .query_row(
+                &format!(
+                    "SELECT id, role, role_slot_id, topology_node_id, seat_binding_id,
+                            psw_topology_node_id, psw_native_id, purpose, intent_hash,
+                            disposition, revision, created_at
+                     FROM quick_sessions WHERE project_id = ?1 AND {predicate}"
+                ),
+                params![project_id.to_string(), value],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, String>(11)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredQuickSession {
+                    id: QuickSessionId::parse(&columns.0)?,
+                    project_id,
+                    role: serde_json::from_str(&columns.1).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a stored quick session role is unreadable: {error}"),
+                        }
+                    })?,
+                    role_slot_id: RoleSlotId::parse(&columns.2)?,
+                    topology_node_id: TopologyNodeId::parse(&columns.3)?,
+                    seat_binding_id: SeatBindingId::parse(&columns.4)?,
+                    psw_topology_node_id: TopologyNodeId::parse(&columns.5)?,
+                    psw_native_id: columns.6.as_deref().map(ExternalId::parse).transpose()?,
+                    purpose: BoundedText::parse(&columns.7)?,
+                    intent_hash: ContentHash::parse(&columns.8)?,
+                    disposition: SourceDisposition::parse(&columns.9)?,
+                    revision: AggregateRevision::parse(
+                        u64::try_from(columns.10).unwrap_or_default(),
+                    )?,
+                    created_at: read_timestamp(&columns.11)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Move one Quick session's source disposition, bumping its revision.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] when the session does not exist.
+    pub fn set_quick_session_disposition(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+        disposition: SourceDisposition,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE quick_sessions SET disposition = ?3, revision = revision + 1
+                 WHERE project_id = ?1 AND id = ?2",
+                params![
+                    project_id.to_string(),
+                    quick_session_id.to_string(),
+                    disposition.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "quick session",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Authorize one promotion, freezing the ids its effects will use.
+    ///
+    /// Written before the first effect on purpose: the ids in this row are what
+    /// a resumed apply reconciles against, so recording them afterwards would
+    /// leave exactly the window where a retry builds a second epic.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the source is already
+    /// promoted.
+    pub fn begin_promotion(&self, promotion: &StoredPromotion) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO quick_session_promotions
+                     (quick_session_id, project_id, mini_project_id, preview_hash,
+                      source_disposition, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    promotion.quick_session_id.to_string(),
+                    promotion.project_id.to_string(),
+                    promotion.mini_project_id.to_string(),
+                    promotion.preview_hash.as_str(),
+                    promotion.source_disposition.as_str(),
+                    text(promotion.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "quick session promotion",
+                        rule: "a Quick session is promoted exactly once",
+                    }
+                }
+                other => backend(other),
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Record that a promotion's handoff reached its seat.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] when no promotion is in flight.
+    pub fn complete_promotion(
+        &self,
+        quick_session_id: QuickSessionId,
+        handoff: &serde_json::Value,
+        handoff_hash: &ContentHash,
+        lsa_seat_binding_id: SeatBindingId,
+        completed_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE quick_session_promotions
+                 SET handoff = ?2, handoff_hash = ?3, lsa_seat_binding_id = ?4, completed_at = ?5
+                 WHERE quick_session_id = ?1",
+                params![
+                    quick_session_id.to_string(),
+                    handoff.to_string(),
+                    handoff_hash.as_str(),
+                    lsa_seat_binding_id.to_string(),
+                    text(completed_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "quick session promotion",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// The promotion of one Quick session, in flight or complete.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_promotion(
+        &self,
+        quick_session_id: QuickSessionId,
+    ) -> RepositoryResult<Option<StoredPromotion>> {
+        self.connection
+            .query_row(
+                "SELECT project_id, mini_project_id, preview_hash, source_disposition,
+                        handoff, handoff_hash, lsa_seat_binding_id, completed_at, created_at
+                 FROM quick_session_promotions WHERE quick_session_id = ?1",
+                params![quick_session_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredPromotion {
+                    quick_session_id,
+                    project_id: ProjectId::parse(&columns.0)?,
+                    mini_project_id: MiniProjectId::parse(&columns.1)?,
+                    preview_hash: ContentHash::parse(&columns.2)?,
+                    source_disposition: SourceDisposition::parse(&columns.3)?,
+                    handoff: columns
+                        .4
+                        .map(|handoff| serde_json::from_str(&handoff))
+                        .transpose()
+                        .map_err(|error| RepositoryError::Backend {
+                            detail: format!("a stored handoff is unreadable: {error}"),
+                        })?,
+                    handoff_hash: columns.5.as_deref().map(ContentHash::parse).transpose()?,
+                    lsa_seat_binding_id: columns
+                        .6
+                        .as_deref()
+                        .map(SeatBindingId::parse)
+                        .transpose()?,
+                    completed_at: columns.7.as_deref().map(read_timestamp).transpose()?,
+                    created_at: read_timestamp(&columns.8)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Freeze, or move, the roster one epic is staffed from.
+    ///
+    /// # Errors
+    /// Returns a backend error.
+    pub fn put_epic_roster(&self, roster: &StoredEpicRoster) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO epic_rosters
+                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
+                      quick_session_id, revision, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (project_id, mini_project_id) DO UPDATE SET
+                     core_team_version = excluded.core_team_version,
+                     catalog_hash = excluded.catalog_hash,
+                     seats = excluded.seats,
+                     revision = epic_rosters.revision + 1,
+                     pinned_at = excluded.pinned_at",
+                params![
+                    roster.project_id.to_string(),
+                    roster.mini_project_id.to_string(),
+                    version_column(roster.core_team_version),
+                    roster.catalog_hash.as_str(),
+                    roster.seats.to_string(),
+                    roster.quick_session_id.map(|id| id.to_string()),
+                    i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
+                    text(roster.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// The roster one epic is staffed from.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_epic_roster(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<StoredEpicRoster>> {
+        self.connection
+            .query_row(
+                "SELECT core_team_version, catalog_hash, seats, quick_session_id, revision,
+                        pinned_at
+                 FROM epic_rosters WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredEpicRoster {
+                    project_id,
+                    mini_project_id,
+                    core_team_version: read_version(columns.0)?,
+                    catalog_hash: ContentHash::parse(&columns.1)?,
+                    seats: serde_json::from_str(&columns.2).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a stored epic roster is unreadable: {error}"),
+                        }
+                    })?,
+                    quick_session_id: columns
+                        .3
+                        .as_deref()
+                        .map(QuickSessionId::parse)
+                        .transpose()?,
+                    revision: AggregateRevision::parse(
+                        u64::try_from(columns.4).unwrap_or_default(),
+                    )?,
+                    pinned_at: read_timestamp(&columns.5)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Read the revision a project is currently configured with.
+    ///
+    /// The highest published version, which is the only definition of current
+    /// this schema has.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_current_core_team(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Option<StoredCoreTeamRevision>> {
+        let found: Option<(i64, String, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT version, catalog_hash, seats, created_at
+                 FROM core_team_revisions
+                 WHERE project_id = ?1
+                 ORDER BY version DESC
+                 LIMIT 1",
+                params![project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(version, catalog_hash, seats, created_at)| {
+                Ok(StoredCoreTeamRevision {
+                    project_id,
+                    version: read_version(version)?,
+                    catalog_hash: ContentHash::parse(&catalog_hash)?,
+                    seats: serde_json::from_str(&seats).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("stored core team seats are not valid JSON: {error}"),
+                        }
+                    })?,
+                    published_at: read_timestamp(&created_at)?,
+                })
+            })
+            .transpose()
+    }
 }
 
 impl TopologyRepository for SqliteStore {

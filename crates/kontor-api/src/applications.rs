@@ -49,8 +49,8 @@ use kontor_core::id::{
     Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
 use kontor_core::spec::{
-    CodeCategory, CodeLifecycle, RoleSegment, ShareabilityClass, ShareabilityClassifier,
-    ShareabilityProvenance,
+    CodeCategory, CodeLifecycle, EpicPresence, RoleSegment, ShareabilityClass,
+    ShareabilityClassifier, ShareabilityProvenance,
 };
 use kontor_core::state::{PlacementState, TopologyLifecycle};
 use serde::{Deserialize, Serialize};
@@ -614,11 +614,22 @@ pub struct AppliedProfileDto {
     pub receipt: MutationReceiptDto,
 }
 
-/// One Core Team seat: the standard role, and the seat filling it if any.
+/// One Core Team seat: the standard role, the policy it is held under, and the
+/// seat filling it if any.
+///
+/// Presence and ad-hoc eligibility are reported, not just accepted. A Core Team
+/// edit states the whole roster, so a caller that could not read the policy of
+/// the seats it is not changing would have to invent one for each of them — and
+/// the first such edit would silently rewrite every other seat's presence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamSeatDto {
     /// The role, as the server resolved it.
     pub role: ResolvedRoleRefDto,
+    /// When a concrete epic materializes it.
+    #[schema(value_type = String)]
+    pub presence: EpicPresence,
+    /// Whether the role may open a Quick session.
+    pub ad_hoc_allowed: bool,
     /// The binding filling it, once one has been materialized.
     #[schema(value_type = Option<String>)]
     pub seat_binding_id: Option<SeatBindingId>,
@@ -643,12 +654,35 @@ pub struct CoreTeamDto {
     pub snapshot_cursor: kontor_core::id::EventCursor,
 }
 
+/// One Core Team seat as a caller states it: the role, and the policy the
+/// project holds that role under.
+///
+/// [`RoleSelectionDto`] carries the catalog revision, the code and an optional
+/// label — every fact about *which* role. It deliberately carries no policy,
+/// because the same role is selected in places that have no epic presence to
+/// state. A Core Team entry does have one, and it cannot be derived: presence
+/// is not a function of the role code or of display order, and
+/// `GET /quick-roles` answers from `ad_hoc_allowed` specifically. Inferring
+/// either would hard-code project policy into the server and make that
+/// projection dishonest, so both are stated once, here.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamSeatSelectionDto {
+    /// The role this seat fills.
+    pub role: RoleSelectionDto,
+    /// When a concrete epic materializes it.
+    #[schema(value_type = String)]
+    pub presence: EpicPresence,
+    /// Whether the role may open a Quick session.
+    pub ad_hoc_allowed: bool,
+}
+
 /// A proposed Core Team composition.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamPreviewRequest {
     /// The roles the Core Team should seat, in order.
-    pub seats: Vec<RoleSelectionDto>,
+    pub seats: Vec<CoreTeamSeatSelectionDto>,
 }
 
 /// What a Core Team change would do.
@@ -669,7 +703,7 @@ pub struct CoreTeamPreviewDto {
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamApplyRequest {
     /// The roles the Core Team should seat, in order.
-    pub seats: Vec<RoleSelectionDto>,
+    pub seats: Vec<CoreTeamSeatSelectionDto>,
     /// The hash the preview answered with.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,

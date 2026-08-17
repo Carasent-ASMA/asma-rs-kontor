@@ -136,6 +136,28 @@ closed_enum! {
         /// The epic is the aggregate: the pin is the epic's, and the revision it
         /// moves to is immutable and shared.
         UpgradeTopology => "upgrade_topology",
+        /// Publish the next immutable Project Core Team revision.
+        ///
+        /// The project is the aggregate. This changes project configuration and
+        /// nothing else: it seats no epic, because a Core Team is the roster an
+        /// epic is staffed *from*, and a running epic holds the revision it
+        /// froze at promotion.
+        ApplyCoreTeam => "apply_core_team",
+        /// Open one ad-hoc Quick session under the project's session base.
+        ///
+        /// The project is the aggregate. A Quick session creates no MiniProject
+        /// and no TeamRun, so there is no narrower one to name.
+        EnsureQuickSession => "ensure_quick_session",
+        /// Turn one Quick session into an epic.
+        ///
+        /// The epic is the aggregate, because the epic is what the command
+        /// brings into existence and what every later command about this work
+        /// will address.
+        PromoteQuickSession => "promote_quick_session",
+        /// Materialize one epic's frozen roster into seats.
+        MaterializeCoreTeam => "materialize_core_team",
+        /// Move one epic's roster pin to another published revision.
+        UpgradeEpicRoster => "upgrade_epic_roster",
         /// Bring a provider-account profile into existence, or prove the one
         /// with that label matches.
         ///
@@ -384,6 +406,17 @@ impl CommandKind {
             Self::ObserveSeat | Self::RetireSeat => witness(matches!(target, A::Project)),
             Self::PublishTopologySpec => witness(matches!(target, A::Project)),
             Self::UpgradeTopology => witness(matches!(target, A::MiniProject)),
+            // The project, and only the project. A Core Team is project
+            // configuration: allowing an epic here would let a receipt claim
+            // that publishing a roster changed one running epic, which is the
+            // one thing publishing a roster deliberately does not do.
+            Self::ApplyCoreTeam | Self::EnsureQuickSession => witness(matches!(target, A::Project)),
+            // The epic each of these is about. Promotion names the epic it
+            // creates rather than the project it creates it in: the receipt has
+            // to be findable from the thing that now exists.
+            Self::PromoteQuickSession
+            | Self::MaterializeCoreTeam
+            | Self::UpgradeEpicRoster => witness(matches!(target, A::MiniProject)),
         }
     }
 

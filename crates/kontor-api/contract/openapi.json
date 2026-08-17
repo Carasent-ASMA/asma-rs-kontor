@@ -8242,7 +8242,7 @@
           "seats": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/RoleSelectionDto"
+              "$ref": "#/components/schemas/CoreTeamSeatSelectionDto"
             },
             "description": "The roles the Core Team should seat, in order."
           }
@@ -8358,7 +8358,7 @@
           "seats": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/RoleSelectionDto"
+              "$ref": "#/components/schemas/CoreTeamSeatSelectionDto"
             },
             "description": "The roles the Core Team should seat, in order."
           }
@@ -8367,11 +8367,21 @@
       },
       "CoreTeamSeatDto": {
         "type": "object",
-        "description": "One Core Team seat: the standard role, and the seat filling it if any.",
+        "description": "One Core Team seat: the standard role, the policy it is held under, and the\nseat filling it if any.\n\nPresence and ad-hoc eligibility are reported, not just accepted. A Core Team\nedit states the whole roster, so a caller that could not read the policy of\nthe seats it is not changing would have to invent one for each of them — and\nthe first such edit would silently rewrite every other seat's presence.",
         "required": [
-          "role"
+          "role",
+          "presence",
+          "ad_hoc_allowed"
         ],
         "properties": {
+          "ad_hoc_allowed": {
+            "type": "boolean",
+            "description": "Whether the role may open a Quick session."
+          },
+          "presence": {
+            "type": "string",
+            "description": "When a concrete epic materializes it."
+          },
           "role": {
             "$ref": "#/components/schemas/ResolvedRoleRefDto",
             "description": "The role, as the server resolved it."
@@ -8384,6 +8394,30 @@
             "description": "The binding filling it, once one has been materialized."
           }
         }
+      },
+      "CoreTeamSeatSelectionDto": {
+        "type": "object",
+        "description": "One Core Team seat as a caller states it: the role, and the policy the\nproject holds that role under.\n\n[`RoleSelectionDto`] carries the catalog revision, the code and an optional\nlabel — every fact about *which* role. It deliberately carries no policy,\nbecause the same role is selected in places that have no epic presence to\nstate. A Core Team entry does have one, and it cannot be derived: presence\nis not a function of the role code or of display order, and\n`GET /quick-roles` answers from `ad_hoc_allowed` specifically. Inferring\neither would hard-code project policy into the server and make that\nprojection dishonest, so both are stated once, here.",
+        "required": [
+          "role",
+          "presence",
+          "ad_hoc_allowed"
+        ],
+        "properties": {
+          "ad_hoc_allowed": {
+            "type": "boolean",
+            "description": "Whether the role may open a Quick session."
+          },
+          "presence": {
+            "type": "string",
+            "description": "When a concrete epic materializes it."
+          },
+          "role": {
+            "$ref": "#/components/schemas/RoleSelectionDto",
+            "description": "The role this seat fills."
+          }
+        },
+        "additionalProperties": false
       },
       "DesiredBindingDto": {
         "type": "object",

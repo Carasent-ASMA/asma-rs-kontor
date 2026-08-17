@@ -1551,6 +1551,14 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     // one epic's pin, so the epic is what it names.
     ("publish_topology_spec", "project", "witness", None),
     ("upgrade_topology", "mini_project", "witness", None),
+    // Project configuration, and deliberately nothing else: publishing a roster
+    // seats no epic, so no epic aggregate is a legal target for it.
+    ("apply_core_team", "project", "witness", None),
+    ("ensure_quick_session", "project", "witness", None),
+    // Promotion and the two roster commands are about one epic.
+    ("promote_quick_session", "mini_project", "witness", None),
+    ("materialize_core_team", "mini_project", "witness", None),
+    ("upgrade_epic_roster", "mini_project", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.

@@ -19,15 +19,16 @@ use crate::calendar::{
     WorkCalendarAssignment, WorkScope,
 };
 use crate::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
+    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ConnectorKey,
     ContentHash, CredentialAlias, EventCursor, ExecutionAuthorizationId, ExternalId,
     ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, GuardrailEvaluationId,
     IdempotencyKey, IntakeDecisionId, IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId,
-    PhaseKey, ProjectId, RealmId, RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId,
-    RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId, SpecVersion,
-    StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
-    TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    PhaseKey, ProjectId, QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId,
+    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId,
+    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
+    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
+    WorkProfileKey,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -177,6 +178,146 @@ pub struct ProjectTopologyDefault {
     pub topology: TopologySnapshot,
     /// Selection instant.
     pub selected_at: Timestamp,
+}
+
+/// One immutable published Project Core Team revision, as it is stored.
+///
+/// The seats are held as the canonical document the application layer resolved,
+/// rather than as columns this layer would have to re-validate. The store's
+/// obligation is that the revision it returns is byte-identical to the one that
+/// was published — not that it can independently re-derive a role's standard
+/// title, which is the catalog's job and is already pinned by `catalog_hash`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCoreTeamRevision {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Monotonic revision within the project.
+    pub version: SpecVersion,
+    /// Canonical hash of the exact role catalog the seats resolved against.
+    pub catalog_hash: ContentHash,
+    /// The resolved seats, in their published order.
+    pub seats: serde_json::Value,
+    /// Publication instant.
+    pub published_at: Timestamp,
+}
+
+/// One durable Quick session, as it is stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredQuickSession {
+    /// Session identity.
+    pub id: QuickSessionId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The exact catalog role its seat fills.
+    pub role: CatalogRoleRef,
+    /// The stable slot the role occupies.
+    pub role_slot_id: RoleSlotId,
+    /// The QSW hosting it.
+    pub topology_node_id: TopologyNodeId,
+    /// Its one seat.
+    pub seat_binding_id: SeatBindingId,
+    /// The session base it was placed under.
+    pub psw_topology_node_id: TopologyNodeId,
+    /// The native project observed for that base at placement, when one had
+    /// been observed by then.
+    pub psw_native_id: Option<ExternalId>,
+    /// What the session is for. Recorded, never interpreted.
+    pub purpose: BoundedText,
+    /// The canonical intent of the command that opened it, which is how a
+    /// retry that lost its answer finds this row instead of opening a second.
+    pub intent_hash: ContentHash,
+    /// What has become of the source.
+    pub disposition: SourceDisposition,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// What promotion does with the Quick session it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceDisposition {
+    /// Keep the source durable and idle. The default, and the only one a
+    /// promotion that was not asked to archive may produce.
+    Idle,
+    /// Archive the source, after the handoff has been delivered.
+    Archive,
+}
+
+impl SourceDisposition {
+    /// The stable spelling used in JSON and SQLite.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Archive => "archive",
+        }
+    }
+
+    /// Parse the stable spelling.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::Invalid`] for any other text.
+    pub fn parse(text: &str) -> DomainResult<Self> {
+        match text {
+            "idle" => Ok(Self::Idle),
+            "archive" => Ok(Self::Archive),
+            _ => Err(DomainError::invalid(
+                "SourceDisposition",
+                "is not a known value",
+            )),
+        }
+    }
+}
+
+/// One promotion of one Quick session into an epic.
+///
+/// Written before the first effect, carrying the ids those effects use, so a
+/// resumed apply reconciles the same MiniProject rather than building a second.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredPromotion {
+    /// The source session.
+    pub quick_session_id: QuickSessionId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic this promotion creates, frozen at authorization.
+    pub mini_project_id: MiniProjectId,
+    /// The digest of the plan this apply was authorized against.
+    pub preview_hash: ContentHash,
+    /// What the source becomes once delivery succeeds.
+    pub source_disposition: SourceDisposition,
+    /// The exact delivered handoff, once it has been delivered.
+    pub handoff: Option<serde_json::Value>,
+    /// That handoff's digest.
+    pub handoff_hash: Option<ContentHash>,
+    /// The seat it was delivered to.
+    pub lsa_seat_binding_id: Option<SeatBindingId>,
+    /// When delivery completed. Absent while the promotion is still in flight.
+    pub completed_at: Option<Timestamp>,
+    /// Authorization instant.
+    pub created_at: Timestamp,
+}
+
+/// The roster one epic is staffed from, frozen at promotion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredEpicRoster {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic.
+    pub mini_project_id: MiniProjectId,
+    /// The Core Team revision this epic pinned.
+    pub core_team_version: SpecVersion,
+    /// The catalog that revision resolved against.
+    pub catalog_hash: ContentHash,
+    /// The frozen seats, in their published order.
+    pub seats: serde_json::Value,
+    /// The session this epic was promoted from, when it was.
+    pub quick_session_id: Option<QuickSessionId>,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Freezing instant.
+    pub pinned_at: Timestamp,
 }
 
 /// One immutable topology snapshot pinned to a MiniProject/epic.

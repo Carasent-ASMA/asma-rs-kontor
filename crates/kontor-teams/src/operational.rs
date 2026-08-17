@@ -16,20 +16,13 @@ use kontor_core::id::{
     Timestamp, TopologyKindKey, TopologyNodeId,
 };
 use kontor_core::spec::{CatalogRoleRef, CodeLifecycle, RoleCatalogRevision, TopologySnapshot};
+
+// The presence policy is catalog vocabulary, not application state: the wire
+// contract and this layer resolve the same spelling. Re-exported so existing
+// `kontor_teams::EpicPresence` callers keep one path to it.
+pub use kontor_core::spec::EpicPresence;
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
-
-kontor_core::closed_enum! {
-    /// When one Core Team role is present in a concrete epic.
-    EpicPresence, "EpicPresence" {
-        /// Every epic must materialize the role.
-        Required => "required",
-        /// New epics materialize the role unless explicitly changed.
-        Default => "default",
-        /// The role remains absent until an authorized request needs it.
-        OnDemand => "on_demand",
-    }
-}
 
 kontor_core::closed_enum! {
     /// What promotion does with the source Quick session.

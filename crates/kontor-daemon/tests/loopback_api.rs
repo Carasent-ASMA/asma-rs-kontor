@@ -11323,8 +11323,6 @@ async fn every_successor_contract_refuses_rather_than_answering_emptily() {
     let project = world.project;
 
     let reads = [
-        format!("/v1/projects/{project}/core-team"),
-        format!("/v1/projects/{project}/quick-roles"),
         format!("/v1/projects/{project}/advisor-profiles"),
         format!("/v1/projects/{project}/committee-templates"),
         format!("/v1/projects/{project}/completion-profiles"),
@@ -11373,6 +11371,48 @@ async fn every_successor_contract_refuses_rather_than_answering_emptily() {
         advanced.json().get("receipt_id").is_none(),
         "a refusal must not carry a receipt: {}",
         advanced.body
+    );
+}
+
+/// A composed Core Team route is held to the same rule the uncomposed ones are.
+///
+/// `GET /core-team` no longer answers `unavailable` — OP-04 composed it — so the
+/// rule it now has to keep is the one that guard existed to protect: a project
+/// that has published no revision is told exactly that, rather than handed an
+/// empty roster. Every valid Core Team seats a required `LSA` and `TPM`, so an
+/// empty seat list is a state no apply can produce, and a caller reading one
+/// would conclude the project was deliberately staffed with nobody.
+#[tokio::test]
+async fn an_unconfigured_project_has_no_core_team_rather_than_an_empty_one() {
+    let world = World::open().await;
+    let answer = Call::get(format!("/v1/projects/{}/core-team", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        answer.status, 404,
+        "an unconfigured project must refuse rather than answer: {}",
+        answer.body
+    );
+    assert_eq!(answer.code(), "not_found");
+    assert!(
+        answer.json().get("seats").is_none(),
+        "the refusal carried a roster: {}",
+        answer.body
+    );
+
+    // Quick roles are a projection of that same absent roster, and an empty
+    // picker is the tempting lie here: it reads as "this project allows no
+    // ad-hoc work" rather than "this project has not been configured".
+    let roles = Call::get(format!("/v1/projects/{}/quick-roles", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(roles.status, 404, "{}", roles.body);
+    assert!(
+        roles.json().get("roles").is_none(),
+        "the refusal carried a picker: {}",
+        roles.body
     );
 }
 
@@ -13040,4 +13080,754 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(old.status, 200, "{}", old.body);
     assert_eq!(old.json()["spec"]["version"], 1);
+}
+
+// ---------------------------------------------------------------------------
+// KON-OP-04 CP1 — the composed Project Core Team.
+//
+// Configuration, not a TeamRun: nothing below creates a seat, a run or a
+// topology node. What is proved is that a roster can be previewed, published
+// and read back across a restart of the read path, that the mandatory roles
+// cannot be talked out of the roster, and that the policy a caller states is
+// the policy the server persists rather than one it inferred.
+// ---------------------------------------------------------------------------
+
+/// The seeded role catalog every Core Team test resolves against.
+const SEEDED_CATALOG: &str = "01936f5a-1000-7000-8000-000000000002";
+
+/// One `CoreTeamSeatSelectionDto`.
+fn seat(role_code: &str, presence: &str, ad_hoc_allowed: bool) -> serde_json::Value {
+    serde_json::json!({
+        "role": {
+            "catalog_revision": {"id": SEEDED_CATALOG, "version": 1},
+            "role_code": role_code,
+        },
+        "presence": presence,
+        "ad_hoc_allowed": ad_hoc_allowed,
+    })
+}
+
+/// A roster is previewed, published and read back as what was published.
+#[tokio::test]
+async fn a_core_team_is_previewed_applied_and_read_back() {
+    let composed = compose_realm("/tmp/kontor-op04-core-team").await;
+    let world = &composed.world;
+    let project = &composed.project;
+
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/core-team:preview"),
+        &serde_json::json!({"seats": [seat("SA", "default", true)]}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let preview_hash = previewed.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    // A preview commits nothing: the project still has no roster to read.
+    let before = Call::get(format!("/v1/projects/{project}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(
+        before.status, 404,
+        "the preview published a roster: {}",
+        before.body
+    );
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/core-team:apply"),
+        &serde_json::json!({
+            "seats": [seat("SA", "default", true)],
+            "preview_hash": preview_hash,
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("core-team-first")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["receipt"]["applied"], "created");
+
+    let read = Call::get(format!("/v1/projects/{project}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let seats = read.json()["seats"].as_array().expect("seats").clone();
+    let codes: Vec<&str> = seats
+        .iter()
+        .map(|entry| entry["role"]["role_code"].as_str().expect("a code"))
+        .collect();
+    // The mandatory epic roles are inserted rather than assumed, and stay
+    // distinct: `SA` is a different seat from `LSA` and never stands in for it.
+    assert!(codes.contains(&"LSA"), "no LSA seat: {}", read.body);
+    assert!(codes.contains(&"TPM"), "no TPM seat: {}", read.body);
+    assert!(codes.contains(&"SA"), "no SA seat: {}", read.body);
+    for entry in &seats {
+        let code = entry["role"]["role_code"].as_str().expect("a code");
+        if code == "LSA" || code == "TPM" {
+            assert_eq!(
+                entry["presence"], "required",
+                "{code} must be required: {}",
+                read.body
+            );
+        }
+        // The standard title is the catalog's, never the caller's.
+        assert!(
+            entry["role"]["standard_title"]
+                .as_str()
+                .is_some_and(|title| !title.is_empty()),
+            "{code} carries no resolved title: {}",
+            read.body
+        );
+    }
+    // The policy the caller stated is the policy that came back — not one
+    // derived from the role code or from the order the seats were sent in.
+    let sa = seats
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "SA")
+        .expect("the SA seat");
+    assert_eq!(sa["presence"], "default", "{}", read.body);
+    assert_eq!(sa["ad_hoc_allowed"], true, "{}", read.body);
+}
+
+/// A repeated apply publishes one revision, not two.
+#[tokio::test]
+async fn a_repeated_core_team_apply_publishes_one_revision() {
+    let composed = compose_realm("/tmp/kontor-op04-core-team-replay").await;
+    let world = &composed.world;
+    let project = &composed.project;
+
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/core-team:preview"),
+        &serde_json::json!({"seats": [seat("QA", "on_demand", false)]}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let preview_hash = previewed.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let body = serde_json::json!({
+        "seats": [seat("QA", "on_demand", false)],
+        "preview_hash": preview_hash,
+        "expected_revision": 1,
+    });
+
+    let first = Call::post(format!("/v1/projects/{project}/core-team:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key("core-team-once")
+        .send(world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["receipt"]["applied"], "created");
+    let revision = first.json()["core_team"]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    // The retry presents the revision it read *before* the first call, which is
+    // the only revision a caller that lost the response could present.
+    let replayed = Call::post(format!("/v1/projects/{project}/core-team:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key("core-team-once")
+        .send(world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["core_team"]["revision"],
+        revision,
+        "the replay published a second revision: {}",
+        replayed.body
+    );
+}
+
+/// The mandatory roles cannot be weakened, and an unknown code is refused.
+#[tokio::test]
+async fn a_core_team_refuses_a_weakened_mandatory_role_and_an_unknown_code() {
+    let composed = compose_realm("/tmp/kontor-op04-core-team-refusals").await;
+    let world = &composed.world;
+    let project = &composed.project;
+
+    for (case, seats) in [
+        ("a weakened LSA", vec![seat("LSA", "on_demand", true)]),
+        ("an unknown code", vec![seat("ZZZ", "default", false)]),
+        (
+            "a duplicate code",
+            vec![seat("SA", "default", true), seat("SA", "required", false)],
+        ),
+    ] {
+        let refused = Call::post(
+            format!("/v1/projects/{project}/core-team:preview"),
+            &serde_json::json!({"seats": seats}),
+        )
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+        assert!(
+            refused.status.is_client_error() || refused.status.is_server_error(),
+            "{case} was accepted: {}",
+            refused.body
+        );
+    }
+}
+
+/// The request shape is closed: no raw role, no caller-authored title.
+#[tokio::test]
+async fn a_core_team_refuses_a_raw_role_and_a_caller_authored_title() {
+    let composed = compose_realm("/tmp/kontor-op04-core-team-closed").await;
+    let world = &composed.world;
+    let project = &composed.project;
+
+    for (case, body) in [
+        (
+            "a raw role string",
+            serde_json::json!({"seats": [{"role": "LSA", "presence": "required", "ad_hoc_allowed": false}]}),
+        ),
+        (
+            "a caller-authored standard title",
+            serde_json::json!({"seats": [{
+                "role": {
+                    "catalog_revision": {"id": SEEDED_CATALOG, "version": 1},
+                    "role_code": "SA",
+                    "standard_title": "Chief Architect Of Everything",
+                },
+                "presence": "default",
+                "ad_hoc_allowed": true,
+            }]}),
+        ),
+        (
+            "an omitted presence",
+            serde_json::json!({"seats": [{
+                "role": {
+                    "catalog_revision": {"id": SEEDED_CATALOG, "version": 1},
+                    "role_code": "SA",
+                },
+                "ad_hoc_allowed": true,
+            }]}),
+        ),
+    ] {
+        let refused = Call::post(format!("/v1/projects/{project}/core-team:preview"), &body)
+            .signed_as(world, "admin")
+            .send(world)
+            .await;
+        assert!(
+            refused.status.is_client_error() || refused.status.is_server_error(),
+            "{case} was accepted: {}",
+            refused.body
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KON-OP-04 CP2/CP3/CP4 — Quick sessions, promotion and the epic roster.
+//
+// Every test below drives a write path and reads it back. A route table whose
+// operations all refuse passes every contract test and admits no work; the only
+// way to tell a composed service from a well-shaped refusal is to make
+// something happen.
+// ---------------------------------------------------------------------------
+
+/// Adopt and read back the project session base a Quick session hangs under.
+///
+/// OP-02 owns this: the base is ensured, materialized and then observed. A
+/// Quick session deliberately refuses to place itself when this has not
+/// happened, so every test that opens one has to do it first.
+async fn adopt_session_base(world: &World, project: &str, project_revision: u64) {
+    let answer = Call::post(
+        format!("/v1/projects/{project}/topology:ensure"),
+        &serde_json::json!({
+            "target": {"scope": "project_root"},
+            "expected_revision": project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("base-ensure-{project}"))
+    .send(world)
+    .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    // The base is only a *bound* base once its runtime has answered for it.
+    world.daemon.reconcile().await;
+}
+
+/// Publish a Core Team, and answer with the project's revision afterwards.
+async fn publish_core_team(world: &World, project: &str, seats: serde_json::Value) -> u64 {
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/core-team:preview"),
+        &serde_json::json!({"seats": seats}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let preview_hash = previewed.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let applied = Call::post(
+        format!("/v1/projects/{project}/core-team:apply"),
+        &serde_json::json!({
+            "seats": seats,
+            "preview_hash": preview_hash,
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("core-team-{project}"))
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    applied.json()["core_team"]["revision"]
+        .as_u64()
+        .expect("a revision")
+}
+
+/// Quick roles are exactly the ad-hoc-eligible Core Team entries.
+#[tokio::test]
+async fn quick_roles_are_the_ad_hoc_eligible_core_team_entries() {
+    let composed = compose_realm("/tmp/kontor-op04-quick-roles").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true), seat("QA", "default", false),]),
+    )
+    .await;
+
+    let roles = Call::get(format!("/v1/projects/{project}/quick-roles"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(roles.status, 200, "{}", roles.body);
+    let answered = roles.json();
+    let codes: Vec<&str> = answered["roles"]
+        .as_array()
+        .expect("roles")
+        .iter()
+        .map(|entry| entry["role_code"].as_str().expect("a code"))
+        .collect();
+    assert!(
+        codes.contains(&"SA"),
+        "SA is quick-eligible: {}",
+        roles.body
+    );
+    assert!(
+        codes.contains(&"LSA"),
+        "the inserted LSA is quick-eligible: {}",
+        roles.body
+    );
+    // Stated `ad_hoc_allowed: false`, so it is not offered — and TPM is
+    // inserted as a mandatory role that is deliberately not quick-eligible.
+    assert!(
+        !codes.contains(&"QA"),
+        "QA must not be offered: {}",
+        roles.body
+    );
+    assert!(
+        !codes.contains(&"TPM"),
+        "TPM must not be offered: {}",
+        roles.body
+    );
+}
+
+/// A Quick session is opened once, and a lost acknowledgement reuses it.
+#[tokio::test]
+async fn a_quick_session_is_opened_once_and_replays_to_the_same_ids() {
+    let composed = compose_realm("/tmp/kontor-op04-quick-ensure").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+
+    let body = serde_json::json!({
+        "role": {
+            "catalog_revision": {"id": SEEDED_CATALOG, "version": 1},
+            "role_code": "SA",
+        },
+        "purpose": "Look into the flaky import",
+    });
+    let opened = Call::post(
+        format!("/v1/projects/{project}/quick-sessions:ensure"),
+        &body,
+    )
+    .signed_as(world, "operator")
+    .with_key("quick-once")
+    .send(world)
+    .await;
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    let session = opened.json()["quick_session_id"]
+        .as_str()
+        .expect("a session id")
+        .to_owned();
+    let node = opened.json()["topology_node_id"]
+        .as_str()
+        .expect("a node id")
+        .to_owned();
+    assert_eq!(opened.json()["role"]["role_code"], "SA");
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/quick-sessions:ensure"),
+        &body,
+    )
+    .signed_as(world, "operator")
+    .with_key("quick-once")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["quick_session_id"],
+        session.as_str(),
+        "the retry opened a second session: {}",
+        replayed.body
+    );
+    assert_eq!(
+        replayed.json()["topology_node_id"],
+        node.as_str(),
+        "the retry placed a second workspace: {}",
+        replayed.body
+    );
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+}
+
+/// A role the roster does not mark ad-hoc cannot open a session.
+#[tokio::test]
+async fn a_quick_ineligible_role_cannot_open_a_session() {
+    let composed = compose_realm("/tmp/kontor-op04-quick-refusal").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("QA", "default", false)]),
+    )
+    .await;
+
+    for (case, code) in [
+        ("a quick-ineligible role", "QA"),
+        ("an unknown role", "ZZZ"),
+    ] {
+        let refused = Call::post(
+            format!("/v1/projects/{project}/quick-sessions:ensure"),
+            &serde_json::json!({
+                "role": {
+                    "catalog_revision": {"id": SEEDED_CATALOG, "version": 1},
+                    "role_code": code,
+                },
+                "purpose": "Should not open",
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("quick-refuse-{code}"))
+        .send(world)
+        .await;
+        assert!(
+            refused.status.is_client_error(),
+            "{case} opened a session: {}",
+            refused.body
+        );
+    }
+}
+
+/// A promotion builds one epic, seats the frozen roster and hands the work on.
+#[tokio::test]
+async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
+    let composed = compose_realm("/tmp/kontor-op04-promotion").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true), seat("QA", "on_demand", false),]),
+    )
+    .await;
+
+    let opened = Call::post(
+        format!("/v1/projects/{project}/quick-sessions:ensure"),
+        &serde_json::json!({
+            "role": {
+                "catalog_revision": {"id": SEEDED_CATALOG, "version": 1},
+                "role_code": "SA",
+            },
+            "purpose": "Investigate the retry storm",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("quick-to-promote")
+    .send(world)
+    .await;
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    let session = opened.json()["quick_session_id"]
+        .as_str()
+        .expect("a session id")
+        .to_owned();
+
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:preview"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let preview_hash = previewed.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let effects = previewed.json()["effects"]
+        .as_array()
+        .expect("effects")
+        .clone();
+    // On-demand roles are declared, not seated: their presence in the roster is
+    // not permission to open them at bootstrap.
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| effect["subject"].as_str() == Some("seat:qa")),
+        "an on-demand role was planned: {}",
+        previewed.body
+    );
+
+    let body = serde_json::json!({"preview_hash": preview_hash, "expected_revision": 1});
+    let applied = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
+        &body,
+    )
+    .signed_as(world, "operator")
+    .with_key("promote-once")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic")
+        .to_owned();
+    assert_eq!(applied.json()["quick_session_id"], session.as_str());
+
+    // The epic carries the roster it was staffed from, with its seats filled.
+    let roster = Call::get(format!(
+        "/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    // A GET on a materialize route is not a read; what matters is the roster is
+    // reachable through the epic's own materialize command below.
+    assert!(roster.status.is_client_error(), "{}", roster.body);
+
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("materialize-once")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let seats = materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("seats")
+        .clone();
+    let lsa = seats
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "LSA")
+        .expect("an LSA seat");
+    assert!(
+        lsa["seat_binding_id"].as_str().is_some(),
+        "the epic's LSA is unseated: {}",
+        materialized.body
+    );
+    let tpm = seats
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "TPM")
+        .expect("a TPM seat");
+    assert!(
+        tpm["seat_binding_id"].as_str().is_some(),
+        "the epic's TPM is unseated: {}",
+        materialized.body
+    );
+    assert_ne!(
+        lsa["seat_binding_id"], tpm["seat_binding_id"],
+        "LSA and TPM collapsed into one seat: {}",
+        materialized.body
+    );
+    // On-demand stays absent even after an explicit materialize.
+    let qa = seats
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "QA")
+        .expect("the QA entry is still declared");
+    assert!(
+        qa["seat_binding_id"].is_null(),
+        "an on-demand role was seated: {}",
+        materialized.body
+    );
+
+    // Promoting again returns the same epic rather than building a second.
+    let again = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
+        &body,
+    )
+    .signed_as(world, "operator")
+    .with_key("promote-once")
+    .send(world)
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(
+        again.json()["epic_id"],
+        epic.as_str(),
+        "the retry promoted to a second epic: {}",
+        again.body
+    );
+    assert_eq!(again.json()["receipt"]["applied"], "unchanged");
+}
+
+/// A later project edit does not touch an epic already staffed.
+#[tokio::test]
+async fn a_later_core_team_edit_leaves_a_promoted_epic_frozen() {
+    let composed = compose_realm("/tmp/kontor-op04-frozen").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+
+    let opened = Call::post(
+        format!("/v1/projects/{project}/quick-sessions:ensure"),
+        &serde_json::json!({
+            "role": {
+                "catalog_revision": {"id": SEEDED_CATALOG, "version": 1},
+                "role_code": "SA",
+            },
+            "purpose": "Freeze me",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("quick-frozen")
+    .send(world)
+    .await;
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    let session = opened.json()["quick_session_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:preview"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let applied = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
+        &serde_json::json!({
+            "preview_hash": previewed.json()["preview_hash"].as_str().expect("hash"),
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("promote-frozen")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("epic").to_owned();
+
+    // The project adds a role after the epic was staffed.
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/core-team:preview"),
+        &serde_json::json!({"seats": [seat("SA", "default", true), seat("QA", "default", false)]}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let edited = Call::post(
+        format!("/v1/projects/{project}/core-team:apply"),
+        &serde_json::json!({
+            "seats": [seat("SA", "default", true), seat("QA", "default", false)],
+            "preview_hash": previewed.json()["preview_hash"].as_str().expect("hash"),
+            "expected_revision": 2,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("core-team-second")
+    .send(world)
+    .await;
+    assert_eq!(edited.status, 200, "{}", edited.body);
+
+    // The epic still reports the roster it froze: no QA, whatever the project
+    // now says.
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("materialize-frozen")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let answered = materialized.json();
+    let codes: Vec<&str> = answered["core_team"]["seats"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .map(|entry| entry["role"]["role_code"].as_str().expect("a code"))
+        .collect();
+    assert!(
+        !codes.contains(&"QA"),
+        "a later project edit reached into a running epic: {}",
+        materialized.body
+    );
+
+    // The explicit upgrade is how it moves, and it adds only the new role.
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-preview"),
+        &serde_json::json!({"target": {"id": SEEDED_CATALOG, "version": 2}}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let upgraded = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-apply"),
+        &serde_json::json!({
+            "preview_hash": previewed.json()["preview_hash"].as_str().expect("hash"),
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("roster-upgrade")
+    .send(world)
+    .await;
+    assert_eq!(upgraded.status, 200, "{}", upgraded.body);
+    let answered = upgraded.json();
+    let codes: Vec<&str> = answered["core_team"]["seats"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .map(|entry| entry["role"]["role_code"].as_str().expect("a code"))
+        .collect();
+    assert!(
+        codes.contains(&"QA"),
+        "the explicit upgrade did not add the new role: {}",
+        upgraded.body
+    );
 }
