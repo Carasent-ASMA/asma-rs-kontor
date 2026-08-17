@@ -95,14 +95,14 @@ pub const DEFAULT_EVIDENCE_WINDOW_SECONDS: i64 = 60;
 pub const DEFAULT_CAPACITY: CapacityConfig = CapacityConfig {
     global_max_in_flight: 16,
     project_max_in_flight: 8,
-    mission_max_in_flight: 8,
+    mission_max_in_flight: 7,
     account_max_in_flight: 4,
     provider_max_in_flight: 4,
     runtime_max_in_flight: 8,
     adaptive: AdaptiveWindowConfig {
         initial: 4,
         floor: 1,
-        ceiling: 8,
+        ceiling: 7,
         growth_step: 1,
     },
 };
@@ -778,23 +778,34 @@ mod tests {
         }
     }
 
-    /// The ceilings are configuration now, and the default is the set the
-    /// composition root used to compile in. Written out as literals rather than
-    /// compared against `DEFAULT_CAPACITY` itself, because a test that read the
-    /// constant would agree with any edit to it — including the one that silently
-    /// changes what every existing deployment admits.
+    /// The ceilings are configuration, and the default is the Operational set.
+    /// Written out as literals rather than compared against `DEFAULT_CAPACITY`
+    /// itself, because a test that read the constant would agree with any edit
+    /// to it — including the one that silently changes what every existing
+    /// deployment admits.
+    ///
+    /// The mission ceiling and the adaptive ceiling are seven, not eight. Seven
+    /// is the number the Operational policy fixes, and the pair matters: the
+    /// adaptive window may never grow wider than the mission ceiling it admits
+    /// against, or a pass could admit work the mission budget then refuses.
     #[test]
-    fn the_default_capacity_is_the_set_that_used_to_be_compiled_in() {
+    fn the_default_capacity_is_the_operational_set() {
         assert_eq!(DEFAULT_CAPACITY.global_max_in_flight, 16);
         assert_eq!(DEFAULT_CAPACITY.project_max_in_flight, 8);
-        assert_eq!(DEFAULT_CAPACITY.mission_max_in_flight, 8);
+        assert_eq!(DEFAULT_CAPACITY.mission_max_in_flight, 7);
         assert_eq!(DEFAULT_CAPACITY.account_max_in_flight, 4);
         assert_eq!(DEFAULT_CAPACITY.provider_max_in_flight, 4);
         assert_eq!(DEFAULT_CAPACITY.runtime_max_in_flight, 8);
         assert_eq!(DEFAULT_CAPACITY.adaptive.initial, 4);
         assert_eq!(DEFAULT_CAPACITY.adaptive.floor, 1);
-        assert_eq!(DEFAULT_CAPACITY.adaptive.ceiling, 8);
+        assert_eq!(DEFAULT_CAPACITY.adaptive.ceiling, 7);
         assert_eq!(DEFAULT_CAPACITY.adaptive.growth_step, 1);
+        const {
+            assert!(
+                DEFAULT_CAPACITY.adaptive.ceiling <= DEFAULT_CAPACITY.mission_max_in_flight,
+                "the window may not grow past the ceiling it admits against"
+            );
+        }
         DEFAULT_CAPACITY
             .validate()
             .expect("the shipped default is a set the domain accepts");

@@ -34,6 +34,10 @@ kontor-store = { path = "../kontor-store", version = "=0.1.0" }
 kontor-profiles = { path = "../kontor-profiles", version = "=0.1.0" }
 kontor-teams = { path = "../kontor-teams", version = "=0.1.0" }
 kontor-scheduler = { path = "../kontor-scheduler", version = "=0.1.0" }
+# Admission policy — which observation moves the adaptive window, and what a
+# cooldown means — is the account layer's. The composition root is where that
+# policy meets the store that persists it and the scheduler that reads it.
+kontor-accounts = { path = "../kontor-accounts", version = "=0.1.0" }
 kontor-context = { path = "../kontor-context", version = "=0.1.0" }
 # The connector specification catalogue KON-MVP-14 compiled and validated. The
 # daemon reads it and never re-derives one: a second mapping of the same ticket

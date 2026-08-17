@@ -638,6 +638,9 @@
     "epic_kind": "ESW",
     "control_kind": "ECP",
     "task_kind": "TSW",
+    "quick_kind": "QSW",
+    "advisor_kind": "ASW",
+    "committee_kind": "CSW",
     "control_role_code": "TPM",
     "role_bindings": [
       {
