@@ -49,10 +49,11 @@ use kontor_core::repository::{
     RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
     RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
     SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredCapacityConfiguration, StoredCoreTeamRevision, StoredEpicRoster, StoredPromotion,
-    StoredQuickSession, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun,
-    TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, TopologyRepository,
-    WorkflowRepository, validate_dependency_graph,
+    StoredCapacityConfiguration, StoredCompletionProfile, StoredCompletionWake,
+    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
+    StoredQuickSession, StoredRemediationProposal, Task, TaskInspection, TaskTransitionRequest,
+    TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository,
+    TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
@@ -1567,6 +1568,490 @@ impl SqliteStore {
                 })
             })
             .transpose()
+    }
+
+    /// Every published Completion Profile revision, oldest first.
+    ///
+    /// The built-in `operational_default@1` is deliberately *not* a row here.
+    /// It ships with the build, so seeding it per project would mean one copy
+    /// per project that a later build could not correct, and a project created
+    /// before the seed ran would silently have a different catalog from one
+    /// created after. The read path adds it.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_completion_profiles(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<StoredCompletionProfile>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, version, name, definition, definition_hash, published_at
+                 FROM completion_profile_revisions
+                 WHERE project_id = ?1
+                 ORDER BY id, version",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut published = Vec::new();
+        for row in rows {
+            let columns = row.map_err(backend)?;
+            published.push(StoredCompletionProfile {
+                project_id,
+                id: ExternalName::parse(&columns.0)?,
+                version: read_version(columns.1)?,
+                name: ExternalName::parse(&columns.2)?,
+                definition: serde_json::from_str(&columns.3).map_err(|error| {
+                    RepositoryError::Backend {
+                        detail: format!("a stored completion profile is unreadable: {error}"),
+                    }
+                })?,
+                definition_hash: ContentHash::parse(&columns.4)?,
+                published_at: read_timestamp(&columns.5)?,
+            });
+        }
+        Ok(published)
+    }
+
+    /// Publish one immutable Completion Profile revision.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when that exact revision already
+    /// stands. A published revision is immutable, so a second write of one is
+    /// never an update.
+    pub fn publish_completion_profile(
+        &self,
+        profile: &StoredCompletionProfile,
+    ) -> RepositoryResult<()> {
+        self.connection
+            .execute(
+                "INSERT INTO completion_profile_revisions
+                     (project_id, id, version, name, definition, definition_hash, published_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    profile.project_id.to_string(),
+                    profile.id.as_str(),
+                    version_column(profile.version),
+                    profile.name.as_str(),
+                    profile.definition.to_string(),
+                    profile.definition_hash.as_str(),
+                    text(profile.published_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "completion profile revision",
+                        rule: "a published revision is immutable and published once",
+                    }
+                }
+                other => backend(other),
+            })?;
+        Ok(())
+    }
+
+    /// Read one epic's durable completion run.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_epic_completion(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<StoredEpicCompletion>> {
+        self.connection
+            .query_row(
+                "SELECT profile_id, profile_version, definition_hash, state, revision, updated_at
+                 FROM epic_completion WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredEpicCompletion {
+                    project_id,
+                    mini_project_id,
+                    profile_id: ExternalName::parse(&columns.0)?,
+                    profile_version: read_version(columns.1)?,
+                    definition_hash: ContentHash::parse(&columns.2)?,
+                    state: serde_json::from_str(&columns.3).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a stored completion state is unreadable: {error}"),
+                        }
+                    })?,
+                    revision: AggregateRevision::parse(
+                        u64::try_from(columns.4).unwrap_or_default(),
+                    )?,
+                    updated_at: read_timestamp(&columns.5)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Start one epic's completion run.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the epic already has one. A
+    /// second run for one epic would be a second immutable round lineage over
+    /// the same work.
+    pub fn create_epic_completion(
+        &self,
+        completion: &StoredEpicCompletion,
+    ) -> RepositoryResult<()> {
+        self.connection
+            .execute(
+                "INSERT INTO epic_completion
+                     (project_id, mini_project_id, profile_id, profile_version, definition_hash,
+                      state, revision, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    completion.project_id.to_string(),
+                    completion.mini_project_id.to_string(),
+                    completion.profile_id.as_str(),
+                    version_column(completion.profile_version),
+                    completion.definition_hash.as_str(),
+                    completion.state.to_string(),
+                    i64::try_from(completion.revision.get()).unwrap_or(i64::MAX),
+                    text(completion.updated_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "epic completion",
+                        rule: "one epic has exactly one completion run",
+                    }
+                }
+                other => backend(other),
+            })?;
+        Ok(())
+    }
+
+    /// Store one epic's next completion state under an optimistic-concurrency
+    /// check.
+    ///
+    /// The expected revision is compared *in the `UPDATE`* rather than by a read
+    /// followed by a write: two callers advancing one epic from the same revision
+    /// would both pass a separate check, and the second would overwrite the
+    /// first's transition along with the effects it had already planned.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the run has moved since the
+    /// caller read it, and [`RepositoryError::NotFound`] when it does not exist.
+    pub fn update_epic_completion(
+        &self,
+        completion: &StoredEpicCompletion,
+        expected_revision: AggregateRevision,
+    ) -> RepositoryResult<()> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE epic_completion
+                    SET state = ?3, revision = ?4, updated_at = ?5
+                  WHERE project_id = ?1 AND mini_project_id = ?2 AND revision = ?6",
+                params![
+                    completion.project_id.to_string(),
+                    completion.mini_project_id.to_string(),
+                    completion.state.to_string(),
+                    i64::try_from(completion.revision.get()).unwrap_or(i64::MAX),
+                    text(completion.updated_at),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 1 {
+            return Ok(());
+        }
+        // Nothing changed: either the run is gone or it moved. Which one it is
+        // decides the caller's answer, so it is read rather than guessed.
+        let exists = self
+            .connection
+            .query_row(
+                "SELECT 1 FROM epic_completion WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![
+                    completion.project_id.to_string(),
+                    completion.mini_project_id.to_string()
+                ],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(backend)?
+            .is_some();
+        Err(if exists {
+            RepositoryError::Conflict {
+                subject: "epic completion",
+                rule: "the completion run moved since the caller read it",
+            }
+        } else {
+            RepositoryError::NotFound {
+                subject: "epic completion",
+            }
+        })
+    }
+
+    /// Append one wake intent, returning `false` when it already stood.
+    ///
+    /// `false` is the replay answer: the intent for this exact
+    /// `(epic, revision, reason, seat)` is already recorded, so the caller reuses
+    /// its receipt rather than opening a second turn.
+    ///
+    /// # Errors
+    /// Returns a backend error.
+    pub fn append_completion_wake(&self, wake: &StoredCompletionWake) -> RepositoryResult<bool> {
+        let inserted = self
+            .connection
+            .execute(
+                "INSERT OR IGNORE INTO epic_completion_wakes
+                     (project_id, mini_project_id, completion_revision, reason, seat_binding_id,
+                      receipt, appended_at, acknowledged_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    wake.project_id.to_string(),
+                    wake.mini_project_id.to_string(),
+                    i64::try_from(wake.completion_revision.get()).unwrap_or(i64::MAX),
+                    wake.reason.as_str(),
+                    wake.seat_binding_id.to_string(),
+                    wake.receipt.as_str(),
+                    text(wake.appended_at),
+                    wake.acknowledged_at.map(text),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(inserted == 1)
+    }
+
+    /// Record that the runtime took the turn one wake intent asked for.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] when no such intent stands.
+    pub fn acknowledge_completion_wake(
+        &self,
+        wake: &StoredCompletionWake,
+        acknowledged_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE epic_completion_wakes
+                    SET acknowledged_at = ?6
+                  WHERE project_id = ?1 AND mini_project_id = ?2 AND completion_revision = ?3
+                    AND reason = ?4 AND seat_binding_id = ?5",
+                params![
+                    wake.project_id.to_string(),
+                    wake.mini_project_id.to_string(),
+                    i64::try_from(wake.completion_revision.get()).unwrap_or(i64::MAX),
+                    wake.reason.as_str(),
+                    wake.seat_binding_id.to_string(),
+                    text(acknowledged_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(RepositoryError::NotFound {
+                subject: "completion wake intent",
+            })
+        }
+    }
+
+    /// The distinct artifact-contract keys one task has durable evidence for.
+    ///
+    /// Keys only. The completion ticket gate asks whether a declared artifact is
+    /// evidenced, not what its locator is, and handing it the locators would put
+    /// this read in the position of deciding which of several records for one key
+    /// counts — a decision the gate does not need and must not make twice.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_task_artifact_keys(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<BTreeSet<ExternalName>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT DISTINCT artifact_key FROM artifact_evidence
+                 WHERE project_id = ?1 AND task_id = ?2
+                 ORDER BY artifact_key",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(backend)?;
+        let mut keys = BTreeSet::new();
+        for row in rows {
+            keys.insert(ExternalName::parse(&row.map_err(backend)?)?);
+        }
+        Ok(keys)
+    }
+
+    /// Record one epic LSA remediation proposal for a failed round.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when a proposal already stands for
+    /// that round. Replacing it would change the bounded correction the TPM is
+    /// about to route, after the round it answers was already fixed.
+    pub fn insert_remediation_proposal(
+        &self,
+        proposal: &StoredRemediationProposal,
+    ) -> RepositoryResult<()> {
+        self.connection
+            .execute(
+                "INSERT INTO epic_completion_remediation_proposals
+                     (project_id, mini_project_id, round, failed_round_evidence, proposal,
+                      lsa_seat_binding_id, proposed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    proposal.project_id.to_string(),
+                    proposal.mini_project_id.to_string(),
+                    i64::from(proposal.round),
+                    proposal.failed_round_evidence.as_str(),
+                    proposal.proposal.as_str(),
+                    proposal.lsa_seat_binding_id.to_string(),
+                    text(proposal.proposed_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "remediation proposal",
+                        rule: "one failed round has one bounded proposal",
+                    }
+                }
+                other => backend(other),
+            })?;
+        Ok(())
+    }
+
+    /// Read the proposal standing for one epic's failed round.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_remediation_proposal(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+        round: u8,
+    ) -> RepositoryResult<Option<StoredRemediationProposal>> {
+        self.connection
+            .query_row(
+                "SELECT failed_round_evidence, proposal, lsa_seat_binding_id, proposed_at
+                 FROM epic_completion_remediation_proposals
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND round = ?3",
+                params![
+                    project_id.to_string(),
+                    mini_project_id.to_string(),
+                    i64::from(round)
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredRemediationProposal {
+                    project_id,
+                    mini_project_id,
+                    round,
+                    failed_round_evidence: ContentHash::parse(&columns.0)?,
+                    proposal: ContentHash::parse(&columns.1)?,
+                    lsa_seat_binding_id: SeatBindingId::parse(&columns.2)?,
+                    proposed_at: read_timestamp(&columns.3)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Every wake intent for one epic, oldest revision first.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_completion_wakes(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<StoredCompletionWake>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT completion_revision, reason, seat_binding_id, receipt, appended_at,
+                        acknowledged_at
+                 FROM epic_completion_wakes
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                 ORDER BY completion_revision, reason, seat_binding_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .map_err(backend)?;
+        let mut wakes = Vec::new();
+        for row in rows {
+            let columns = row.map_err(backend)?;
+            wakes.push(StoredCompletionWake {
+                project_id,
+                mini_project_id,
+                completion_revision: AggregateRevision::parse(
+                    u64::try_from(columns.0).unwrap_or_default(),
+                )?,
+                reason: ExternalName::parse(&columns.1)?,
+                seat_binding_id: SeatBindingId::parse(&columns.2)?,
+                receipt: ContentHash::parse(&columns.3)?,
+                appended_at: read_timestamp(&columns.4)?,
+                acknowledged_at: columns.5.as_deref().map(read_timestamp).transpose()?,
+            });
+        }
+        Ok(wakes)
     }
 }
 

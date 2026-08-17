@@ -1559,6 +1559,13 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("promote_quick_session", "mini_project", "witness", None),
     ("materialize_core_team", "mini_project", "witness", None),
     ("upgrade_epic_roster", "mini_project", "witness", None),
+    // Publishing a Completion Profile is project configuration, for the same
+    // reason as `apply_core_team`: it deliberately does not move any running
+    // epic's frozen pin, so no epic aggregate is a legal target for it.
+    ("apply_completion_profile", "project", "witness", None),
+    // The two completion writes are about one epic's own frozen run.
+    ("advance_completion", "mini_project", "witness", None),
+    ("remediate_completion", "mini_project", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.

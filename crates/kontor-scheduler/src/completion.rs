@@ -18,13 +18,21 @@ use serde::{Deserialize, Serialize};
 
 /// A bounded polling fallback, used only when callbacks are unavailable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PollingFallback {
     /// Maximum consecutive polls while one phase makes no progress.
     pub max_attempts: u8,
 }
 
 /// One immutable Completion Profile definition.
+///
+/// This is the strict wire spec `completion-profiles:preview` and
+/// `completion-profiles:apply` decode a caller's `definition` into. Unknown
+/// fields are refused *before* the definition is hashed, so a caller cannot
+/// smuggle an unmodelled key past validation and then have it counted in the
+/// preview hash the apply is compared against.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompletionProfile {
     /// Stable logical profile id.
     pub id: ExternalName,
@@ -763,34 +771,95 @@ pub fn advance(
     })
 }
 
-/// Stable outstanding items for the read projection.
+/// One typed reason completion cannot leave the phase it stands in.
+///
+/// The read projection reports these rather than rendered strings: a caller
+/// deciding *which* missing thing to go and produce needs the task, round or
+/// receipt kind as data, and a phrase it has to parse is not data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompletionBlocker {
+    /// A declared ticket goal, artifact or gate is absent or failing.
+    Ticket(TicketGateBlocker),
+    /// The pinned integration TeamRun has not reported its outcome.
+    ///
+    /// Which template is pinned is already readable from the profile revision
+    /// this completion froze, so it is not restated per blocker.
+    IntegrationTeamRun,
+    /// One Committee round has not settled a typed aggregate verdict.
+    CommitteeVerdict {
+        /// One-based round.
+        round: u8,
+    },
+    /// The LSA proposal and TPM route are not both durable yet.
+    RemediationAuthorization {
+        /// One-based remediation round.
+        round: u8,
+    },
+    /// The authorized remediation TeamRun has not reported its outcome.
+    RemediationResult {
+        /// One-based remediation round.
+        round: u8,
+    },
+    /// One fixed closeout receipt is still missing.
+    Closeout(CloseoutRequirement),
+}
+
+/// Stable typed blockers for the read projection.
 ///
 /// # Errors
 /// Only if persisted ticket declarations/evidence violate their uniqueness
 /// contract.
-pub fn outstanding(state: &CompletionState) -> DomainResult<Vec<String>> {
+pub fn blockers(state: &CompletionState) -> DomainResult<Vec<CompletionBlocker>> {
     match state.phase {
         CompletionPhase::Tickets => Ok(ticket_gate_blockers(
             &state.ticket_requirements,
             &state.ticket_evidence,
         )?
         .into_iter()
-        .map(ticket_blocker_text)
+        .map(CompletionBlocker::Ticket)
         .collect()),
-        CompletionPhase::Integration => Ok(vec!["integration_team_run".to_owned()]),
-        CompletionPhase::Verdict(round) => Ok(vec![format!("committee_verdict_round_{round}")]),
+        CompletionPhase::Integration => Ok(vec![CompletionBlocker::IntegrationTeamRun]),
+        CompletionPhase::Verdict(round) => Ok(vec![CompletionBlocker::CommitteeVerdict { round }]),
         CompletionPhase::AwaitRemediation(round) => {
-            Ok(vec![format!("remediation_authorization_round_{round}")])
+            Ok(vec![CompletionBlocker::RemediationAuthorization { round }])
         }
         CompletionPhase::Remediating(round) => {
-            Ok(vec![format!("remediation_result_round_{round}")])
+            Ok(vec![CompletionBlocker::RemediationResult { round }])
         }
         CompletionPhase::Closeout => Ok(closeout_blockers(&state.closeout)
             .into_iter()
-            .map(|requirement| requirement.as_str().to_owned())
+            .map(CompletionBlocker::Closeout)
             .collect()),
         CompletionPhase::Done | CompletionPhase::NeedsHuman => Ok(Vec::new()),
     }
+}
+
+/// Stable outstanding items, rendered from [`blockers`].
+///
+/// One projection computes what is missing and this one only renders it, so a
+/// phase can never report a blocker in one form and not the other.
+///
+/// # Errors
+/// Only if persisted ticket declarations/evidence violate their uniqueness
+/// contract.
+pub fn outstanding(state: &CompletionState) -> DomainResult<Vec<String>> {
+    Ok(blockers(state)?
+        .into_iter()
+        .map(|blocker| match blocker {
+            CompletionBlocker::Ticket(ticket) => ticket_blocker_text(ticket),
+            CompletionBlocker::IntegrationTeamRun => "integration_team_run".to_owned(),
+            CompletionBlocker::CommitteeVerdict { round } => {
+                format!("committee_verdict_round_{round}")
+            }
+            CompletionBlocker::RemediationAuthorization { round } => {
+                format!("remediation_authorization_round_{round}")
+            }
+            CompletionBlocker::RemediationResult { round } => {
+                format!("remediation_result_round_{round}")
+            }
+            CompletionBlocker::Closeout(requirement) => requirement.as_str().to_owned(),
+        })
+        .collect())
 }
 
 fn validate_integration(integration: &IntegrationRecord) -> DomainResult<()> {

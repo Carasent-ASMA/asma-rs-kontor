@@ -184,6 +184,23 @@ closed_enum! {
         /// assignee the connector accepts. A claim can name only the principal,
         /// so a claim receipt must not be citable as an arbitrary assignment.
         ClaimTicket => "claim_ticket",
+        /// Publish the next immutable epic Completion Profile revision.
+        ///
+        /// The project is the aggregate, for the same reason as
+        /// [`CommandKind::ApplyCoreTeam`]: a published profile is project
+        /// configuration, and publishing one deliberately does not move any
+        /// running epic's frozen pin.
+        ApplyCompletionProfile => "apply_completion_profile",
+        /// Commit one deterministic completion transition for one epic.
+        AdvanceCompletion => "advance_completion",
+        /// Record one epic's LSA remediation proposal or TPM next-round route.
+        ///
+        /// Distinct from [`CommandKind::AdvanceCompletion`] because the two
+        /// carry different authority: advancing reconciles observations any
+        /// operator may present, while remediation is the exact epic LSA and TPM
+        /// seats acting. One kind covering both would let an advance receipt be
+        /// replayed as the authority that launched a remediation round.
+        RemediateCompletion => "remediate_completion",
     }
 }
 
@@ -417,6 +434,15 @@ impl CommandKind {
             Self::PromoteQuickSession
             | Self::MaterializeCoreTeam
             | Self::UpgradeEpicRoster => witness(matches!(target, A::MiniProject)),
+            // Publishing a Completion Profile is project configuration; the two
+            // completion writes are about one epic's own frozen run. Splitting
+            // them here is what stops a profile publication from being citable
+            // as authority over an epic that had already pinned another
+            // revision.
+            Self::ApplyCompletionProfile => witness(matches!(target, A::Project)),
+            Self::AdvanceCompletion | Self::RemediateCompletion => {
+                witness(matches!(target, A::MiniProject))
+            }
         }
     }
 

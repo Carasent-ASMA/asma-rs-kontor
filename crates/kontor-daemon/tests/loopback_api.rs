@@ -11309,28 +11309,27 @@ async fn an_invented_topology_scope_is_refused() {
     );
 }
 
-/// Every successor contract refuses; none of them pretends.
+/// Every *uncomposed* successor contract refuses; none of them pretends.
 ///
-/// OP-04, OP-05 and OP-06 own the behaviour behind these routes. The contract
-/// is fixed now so the authority rules and the closed argument lists are one
-/// decision rather than one per successor — which is only safe if the daemon
-/// is honest about having no service yet. The failure this pins is the tempting
-/// one: an empty catalog, an empty roster, a completion state with nothing
-/// outstanding. Each of those is indistinguishable from a real answer, and a
-/// caller would act on it.
+/// OP-04 and OP-05 still own the behaviour behind these routes. The contract is
+/// fixed so the authority rules and the closed argument lists are one decision
+/// rather than one per successor — which is only safe if the daemon is honest
+/// about having no service yet. The failure this pins is the tempting one: an
+/// empty catalog, an empty roster. Either is indistinguishable from a real
+/// answer, and a caller would act on it.
+///
+/// OP-06's completion routes are composed and are held to the stricter rule in
+/// [`completion_answers_from_its_own_repository_and_never_synthesizes`]: they
+/// must answer where they have authority and refuse *precisely* where their
+/// dependency is missing, rather than refusing everything.
 #[tokio::test]
-async fn every_successor_contract_refuses_rather_than_answering_emptily() {
+async fn every_uncomposed_successor_contract_refuses_rather_than_answering_emptily() {
     let world = World::open().await;
     let project = world.project;
 
     let reads = [
         format!("/v1/projects/{project}/advisor-profiles"),
         format!("/v1/projects/{project}/committee-templates"),
-        format!("/v1/projects/{project}/completion-profiles"),
-        format!(
-            "/v1/projects/{project}/epics/{}/completion",
-            MiniProjectId::generate()
-        ),
     ];
     for uri in reads {
         let answer = Call::get(&uri)
@@ -11353,26 +11352,187 @@ async fn every_successor_contract_refuses_rather_than_answering_emptily() {
             );
         }
     }
+}
 
-    // A write refuses before it can commit, and hands back no receipt.
-    let advanced = Call::post(
-        format!(
-            "/v1/projects/{project}/epics/{}/completion:advance",
-            MiniProjectId::generate()
-        ),
-        &serde_json::json!({"expected_revision": 1}),
+/// Completion answers from its own rows, and refuses where its inputs are absent.
+///
+/// The two halves matter equally. A composed catalog must actually answer —
+/// including the built-in profile every project may pin — or the ticket that
+/// composed it delivered nothing. And a completion that has not started must be
+/// a `404`, never an invented empty state: a phase with nothing outstanding
+/// reads exactly like an epic that has finished.
+#[tokio::test]
+async fn completion_answers_from_its_own_repository_and_never_synthesizes() {
+    let world = World::open().await;
+    let project = world.project;
+
+    // The catalog answers, and the built-in profile is in it.
+    let catalog = Call::get(format!("/v1/projects/{project}/completion-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    assert_eq!(catalog.realm(), world.realm_id());
+    let revisions = catalog.json()["revisions"]
+        .as_array()
+        .expect("revisions")
+        .clone();
+    assert_eq!(
+        revisions.len(),
+        1,
+        "only the built-in profile is published yet: {}",
+        catalog.body
+    );
+    assert_eq!(revisions[0]["id"], "operational_default");
+    assert_eq!(revisions[0]["version"], 1);
+    // An append-only catalog stands at its publication count, so a first apply
+    // presents `1`.
+    assert_eq!(catalog.json()["revision"], 1);
+
+    // An epic with no completion run is absent, not empty.
+    let epic = MiniProjectId::generate();
+    let missing = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    for absent in ["phase", "blockers", "revision"] {
+        assert!(
+            missing.json().get(absent).is_none(),
+            "a refusal carried `{absent}`: {}",
+            missing.body
+        );
+    }
+
+    // Publishing the built-in id back is refused: two definitions answering to
+    // one pinned name is what an epic's pin exists to prevent.
+    let shadow = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:preview"),
+        &serde_json::json!({"definition": {
+            "id": "operational_default",
+            "version": 1,
+            "name": "Shadow",
+            "integration_team": "team-c",
+            "verdict_committee": "independent_review",
+            "max_remediation_rounds": 1,
+            "polling_fallback": null
+        }}),
     )
-    .signed_as(&world, "operator")
-    .with_key("advance-before-the-service-exists")
+    .signed_as(&world, "admin")
     .send(&world)
     .await;
-    assert_eq!(advanced.status, 503, "{}", advanced.body);
-    assert_eq!(advanced.code(), "unavailable");
+    assert_eq!(shadow.status, 400, "{}", shadow.body);
+
+    // An unknown field is refused before anything is hashed, so a caller cannot
+    // get an unmodelled key counted into the preview hash its apply is compared
+    // against.
+    let smuggled = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:preview"),
+        &serde_json::json!({"definition": {
+            "id": "house-style",
+            "version": 1,
+            "name": "House style",
+            "integration_team": "team-c",
+            "verdict_committee": "independent_review",
+            "max_remediation_rounds": 1,
+            "polling_fallback": null,
+            "skip_closeout": true
+        }}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(smuggled.status, 400, "{}", smuggled.body);
+
+    // A well-formed definition previews, publishes once, and the catalog moves.
+    let definition = serde_json::json!({
+        "id": "house-style",
+        "version": 1,
+        "name": "House style",
+        "integration_team": "team-c",
+        "verdict_committee": "independent_review",
+        "max_remediation_rounds": 1,
+        "polling_fallback": {"max_attempts": 3}
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:preview"),
+        &serde_json::json!({"definition": definition}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
     assert!(
-        advanced.json().get("receipt_id").is_none(),
-        "a refusal must not carry a receipt: {}",
-        advanced.body
+        preview.json()["violations"]
+            .as_array()
+            .expect("violations")
+            .is_empty(),
+        "a valid definition has no violations: {}",
+        preview.body
     );
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+
+    let apply = serde_json::json!({
+        "definition": definition,
+        "preview_hash": hash,
+        "expected_revision": 1
+    });
+    let published = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:apply"),
+        &apply,
+    )
+    .signed_as(&world, "admin")
+    .with_key("publish-house-style")
+    .send(&world)
+    .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    assert_eq!(published.json()["published"]["id"], "house-style");
+    assert_eq!(published.json()["receipt"]["applied"], "created");
+    assert_eq!(published.json()["receipt"]["revision"], 2);
+
+    // The same key replays to the same receipt and publishes nothing further.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:apply"),
+        &apply,
+    )
+    .signed_as(&world, "admin")
+    .with_key("publish-house-style")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["receipt"]["revision"],
+        2,
+        "a replay publishes no second revision: {}",
+        replayed.body
+    );
+
+    // And the stale expected revision the first apply consumed now conflicts.
+    let stale = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:apply"),
+        &serde_json::json!({
+            "definition": {
+                "id": "house-style",
+                "version": 2,
+                "name": "House style",
+                "integration_team": "team-c",
+                "verdict_committee": "independent_review",
+                "max_remediation_rounds": 1,
+                "polling_fallback": {"max_attempts": 3}
+            },
+            "preview_hash": hash,
+            "expected_revision": 1
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("publish-house-style-v2")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
 }
 
 /// A composed Core Team route is held to the same rule the uncomposed ones are.

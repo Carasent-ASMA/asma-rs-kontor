@@ -3354,7 +3354,7 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
             req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
         ],
-        about: "One epic's completion state and what is still outstanding.",
+        about: "One epic's completion state and what is still blocking it.",
     },
     ToolSpec {
         name: "kontor_completion_advance",
@@ -3402,13 +3402,15 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The revision the caller read.",
             ),
             req(
-                "reason",
+                "action",
                 Place::Body,
-                ArgType::ExternalName,
-                "Why. Recorded, never interpreted.",
+                ArgType::Json,
+                "Which remediation authority is acting: an `lsa_proposal` naming the \
+                 failed round, its evidence and the bounded correction, or a `tpm_route` \
+                 naming the round and the routed task set.",
             ),
         ],
-        about: "Send one epic's completion back for remediation.",
+        about: "Record one epic's LSA remediation proposal or TPM next-round route.",
     },
 ];
 

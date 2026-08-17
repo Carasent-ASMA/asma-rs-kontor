@@ -28,7 +28,7 @@ use kontor_core::id::{
     CalendarProfileId, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash,
     CredentialAlias, CurrencyCode, EventCursor, ExternalId, ExternalIssueTypeKey, ExternalName,
     GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, Money, PhaseKey, ProjectId, RealmId,
-    RoleKey, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, ScheduleOverrideId,
+    RoleKey, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, ScheduleOverrideId, SeatBindingId,
     SemanticMilestoneKey, SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId,
     TeamRunId, TeamTemplateId, TicketLinkId, TicketObservationId, Timestamp, TriggerKey,
     WorkCalendarId, WorkProfileKey, parse_utc_timestamp,
@@ -45,7 +45,8 @@ use kontor_core::repository::{
     NewMiniProject, NewObservation, NewProject, NewRuntimeEvent, NewSourceEvent, NewTask,
     NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance,
     ProjectRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RunClosure,
-    RunRepository, RuntimeBinding, SourceEventIngest, SpecRepository, TaskTransitionRequest,
+    RunRepository, RuntimeBinding, SourceEventIngest, SpecRepository, StoredCompletionProfile,
+    StoredCompletionWake, StoredEpicCompletion, StoredRemediationProposal, TaskTransitionRequest,
     TeamRunAdvance, TeamRunClosure, TicketRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
@@ -6796,4 +6797,241 @@ fn ensure_disposed_refusal(fixture: &WaiverFixture) -> String {
         })
         .expect_err("the contradiction must be refused")
         .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Epic completion (KON-OP-06)
+// ---------------------------------------------------------------------------
+
+/// A published Completion Profile revision is immutable and published once.
+#[test]
+fn a_published_completion_profile_revision_cannot_be_republished() {
+    let fixture = fixture();
+    let revision = |version: u32| StoredCompletionProfile {
+        project_id: fixture.project,
+        id: name("house-style"),
+        version: SpecVersion::parse(version).expect("a version"),
+        name: name("House style"),
+        definition: serde_json::json!({"id": "house-style", "version": version}),
+        definition_hash: ContentHash::of(format!("house-style-{version}").as_bytes()),
+        published_at: now(),
+    };
+
+    fixture
+        .store
+        .publish_completion_profile(&revision(1))
+        .expect("the first revision publishes");
+    let conflict = fixture
+        .store
+        .publish_completion_profile(&revision(1))
+        .expect_err("an immutable revision is published once");
+    assert!(
+        matches!(conflict, RepositoryError::Conflict { .. }),
+        "expected a conflict, got {conflict:?}"
+    );
+    // A *next* version is an ordinary publication, not a replacement.
+    fixture
+        .store
+        .publish_completion_profile(&revision(2))
+        .expect("the next revision publishes");
+
+    let published = fixture
+        .store
+        .list_completion_profiles(fixture.project)
+        .expect("the catalog reads back");
+    assert_eq!(published.len(), 2, "both revisions stand");
+    assert_eq!(published[0].version.get(), 1, "oldest first");
+    assert_eq!(published[1].version.get(), 2);
+    // The other project shares neither row.
+    assert!(
+        fixture
+            .store
+            .list_completion_profiles(fixture.other_project)
+            .expect("readable")
+            .is_empty(),
+        "a published profile belongs to exactly one project"
+    );
+}
+
+/// Two advances from one revision cannot both win.
+///
+/// The compare-and-swap is what makes the planned effects safe: if the second
+/// write landed, it would overwrite the first transition *and* the effect
+/// identities that were recorded with it, leaving dispatched work no state
+/// claims.
+#[test]
+fn a_completion_transition_from_a_superseded_revision_changes_nothing() {
+    let fixture = fixture();
+    let epic = MiniProjectId::generate();
+    let completion = |revision: u64, phase: &str| StoredEpicCompletion {
+        project_id: fixture.project,
+        mini_project_id: epic,
+        profile_id: name("operational_default"),
+        profile_version: SpecVersion::parse(1).expect("a version"),
+        definition_hash: ContentHash::of(b"operational_default@1"),
+        state: serde_json::json!({"phase": phase}),
+        revision: AggregateRevision::parse(revision).expect("a revision"),
+        updated_at: now(),
+    };
+
+    fixture
+        .store
+        .create_epic_completion(&completion(1, "tickets"))
+        .expect("the run starts");
+    let twice = fixture
+        .store
+        .create_epic_completion(&completion(1, "tickets"))
+        .expect_err("one epic has one completion run");
+    assert!(
+        matches!(twice, RepositoryError::Conflict { .. }),
+        "expected a conflict, got {twice:?}"
+    );
+
+    let first = AggregateRevision::parse(1).expect("a revision");
+    fixture
+        .store
+        .update_epic_completion(&completion(2, "integration"), first)
+        .expect("the first transition commits");
+    let lost = fixture
+        .store
+        .update_epic_completion(&completion(2, "closeout"), first)
+        .expect_err("a superseded revision writes nothing");
+    assert!(
+        matches!(lost, RepositoryError::Conflict { .. }),
+        "expected a conflict, got {lost:?}"
+    );
+
+    let stored = fixture
+        .store
+        .get_epic_completion(fixture.project, epic)
+        .expect("readable")
+        .expect("the run stands");
+    assert_eq!(stored.revision.get(), 2);
+    assert_eq!(
+        stored.state["phase"], "integration",
+        "the losing write must not have overwritten the winner"
+    );
+    // An epic in another project is absent, never this one's row.
+    assert!(
+        fixture
+            .store
+            .get_epic_completion(fixture.other_project, epic)
+            .expect("readable")
+            .is_none()
+    );
+}
+
+/// One observation wakes the TPM once, however many times it is delivered.
+#[test]
+fn a_replayed_completion_wake_reuses_its_intent_instead_of_adding_a_second() {
+    let fixture = fixture();
+    let epic = MiniProjectId::generate();
+    let seat = SeatBindingId::generate();
+    let wake = |revision: u64, reason: &str, seat: SeatBindingId| StoredCompletionWake {
+        project_id: fixture.project,
+        mini_project_id: epic,
+        completion_revision: AggregateRevision::parse(revision).expect("a revision"),
+        reason: name(reason),
+        seat_binding_id: seat,
+        receipt: ContentHash::of(b"wake"),
+        appended_at: now(),
+        acknowledged_at: None,
+    };
+
+    assert!(
+        fixture
+            .store
+            .append_completion_wake(&wake(1, "completion_advanced", seat))
+            .expect("the intent appends"),
+        "the first delivery appends"
+    );
+    assert!(
+        !fixture
+            .store
+            .append_completion_wake(&wake(1, "completion_advanced", seat))
+            .expect("the replay is not an error"),
+        "a duplicate observation must not append a second turn"
+    );
+    // A different revision, reason or seat is a different observation.
+    assert!(
+        fixture
+            .store
+            .append_completion_wake(&wake(2, "completion_advanced", seat))
+            .expect("appends"),
+    );
+    assert!(
+        fixture
+            .store
+            .append_completion_wake(&wake(1, "remediation_routed", seat))
+            .expect("appends"),
+    );
+
+    fixture
+        .store
+        .acknowledge_completion_wake(&wake(1, "completion_advanced", seat), now())
+        .expect("the runtime took the turn");
+    let wakes = fixture
+        .store
+        .list_completion_wakes(fixture.project, epic)
+        .expect("readable");
+    assert_eq!(wakes.len(), 3, "three distinct observations, three intents");
+    let acknowledged: Vec<_> = wakes
+        .iter()
+        .filter(|wake| wake.acknowledged_at.is_some())
+        .collect();
+    assert_eq!(
+        acknowledged.len(),
+        1,
+        "only the acknowledged intent is settled"
+    );
+    assert_eq!(acknowledged[0].completion_revision.get(), 1);
+    assert_eq!(acknowledged[0].reason.as_str(), "completion_advanced");
+}
+
+/// One failed round holds one bounded proposal.
+#[test]
+fn a_second_remediation_proposal_for_one_round_is_refused() {
+    let fixture = fixture();
+    let epic = MiniProjectId::generate();
+    let proposal = |correction: &str| StoredRemediationProposal {
+        project_id: fixture.project,
+        mini_project_id: epic,
+        round: 1,
+        failed_round_evidence: ContentHash::of(b"round-1-findings"),
+        proposal: ContentHash::of(correction.as_bytes()),
+        lsa_seat_binding_id: SeatBindingId::generate(),
+        proposed_at: now(),
+    };
+
+    fixture
+        .store
+        .insert_remediation_proposal(&proposal("narrow the change"))
+        .expect("the proposal records");
+    let second = fixture
+        .store
+        .insert_remediation_proposal(&proposal("something else entirely"))
+        .expect_err("one round has one proposal");
+    assert!(
+        matches!(second, RepositoryError::Conflict { .. }),
+        "expected a conflict, got {second:?}"
+    );
+
+    let stored = fixture
+        .store
+        .get_remediation_proposal(fixture.project, epic, 1)
+        .expect("readable")
+        .expect("the proposal stands");
+    assert_eq!(
+        stored.proposal,
+        ContentHash::of(b"narrow the change"),
+        "the first proposal is the one a route will read"
+    );
+    assert!(
+        fixture
+            .store
+            .get_remediation_proposal(fixture.project, epic, 2)
+            .expect("readable")
+            .is_none(),
+        "an unproposed round has nothing to route"
+    );
 }

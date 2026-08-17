@@ -921,6 +921,243 @@ pub struct SettleConsultationRequest {
     pub expected_revision: AggregateRevision,
 }
 
+/// Which phase one epic's completion stands in.
+///
+/// A typed union rather than a string, because the round is data a caller acts
+/// on: deciding whether a second Committee round is still permitted means
+/// reading the round, and a caller that had to parse `"verdict round 2"` out of
+/// a phrase would be re-implementing the state machine to do it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum CompletionPhaseDto {
+    /// Waiting for every declared ticket goal, artifact and gate.
+    TicketGate,
+    /// Waiting for the pinned integration TeamRun.
+    Integration,
+    /// Waiting for one Committee round to settle.
+    Verdict {
+        /// One-based round.
+        round: u8,
+    },
+    /// A round failed; waiting for the exact epic LSA's proposal.
+    AwaitingLsa {
+        /// The failed round.
+        round: u8,
+    },
+    /// An authorized remediation round is in flight.
+    Remediation {
+        /// One-based remediation round.
+        round: u8,
+    },
+    /// Waiting for the fixed closeout receipts.
+    Closeout,
+    /// Terminal: every prerequisite is evidenced.
+    Done,
+    /// Terminal: human input is required.
+    NeedsHuman,
+}
+
+/// One fixed closeout prerequisite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseoutRequirementDto {
+    /// The approved integration outcome was merged.
+    Merge,
+    /// The release was confirmed.
+    Release,
+    /// Delivered module/service revisions were inventoried.
+    VersionInventory,
+    /// The final summary was recorded.
+    Summary,
+    /// Stakeholders were notified.
+    Notification,
+    /// The epic resources were archived.
+    Archive,
+}
+
+/// One typed reason completion cannot leave the phase it stands in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(tag = "blocker", rename_all = "snake_case")]
+pub enum CompletionBlockerDto {
+    /// No evidence record exists for a declared ticket.
+    MissingTicket {
+        /// The ticket.
+        #[schema(value_type = String)]
+        task_id: TaskId,
+    },
+    /// A declared goal has not been certified.
+    MissingTicketGoal {
+        /// The ticket.
+        #[schema(value_type = String)]
+        task_id: TaskId,
+        /// The missing goal key.
+        #[schema(value_type = String)]
+        goal: ExternalName,
+    },
+    /// A declared artifact/evidence key is absent.
+    MissingTicketEvidence {
+        /// The ticket.
+        #[schema(value_type = String)]
+        task_id: TaskId,
+        /// The missing evidence key.
+        #[schema(value_type = String)]
+        evidence: ExternalName,
+    },
+    /// The pinned integration TeamRun has not reported.
+    IntegrationTeamRun,
+    /// One Committee round has not settled a typed aggregate verdict.
+    CommitteeVerdict {
+        /// One-based round.
+        round: u8,
+    },
+    /// The LSA proposal and TPM route are not both durable yet.
+    RemediationAuthorization {
+        /// One-based remediation round.
+        round: u8,
+    },
+    /// The authorized remediation TeamRun has not reported.
+    RemediationResult {
+        /// One-based remediation round.
+        round: u8,
+    },
+    /// One closeout receipt is still missing.
+    Closeout {
+        /// Which prerequisite.
+        requirement: CloseoutRequirementDto,
+    },
+}
+
+/// One Committee aggregate verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitteeVerdictDto {
+    /// Approved.
+    Pass,
+    /// Rejected.
+    Fail,
+}
+
+/// One durable step in the deliberation path already tried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct DeliberationStepDto {
+    /// The role(s) that acted.
+    #[schema(value_type = String)]
+    pub role: ExternalName,
+    /// The consultation or recovery mechanism used.
+    #[schema(value_type = String)]
+    pub consultation: ExternalName,
+    /// The completion/remediation round.
+    pub round: u8,
+    /// Its outcome.
+    #[schema(value_type = String)]
+    pub outcome: ExternalName,
+}
+
+/// One immutable Committee round in the epic's lineage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CompletionRoundDto {
+    /// One-based round.
+    pub round: u8,
+    /// The typed aggregate verdict.
+    pub verdict: CommitteeVerdictDto,
+    /// The immutable finding/evidence digest.
+    #[schema(value_type = String)]
+    pub evidence: ContentHash,
+    /// The roles and consultations that produced it.
+    pub deliberation: Vec<DeliberationStepDto>,
+}
+
+/// One repository's integration outcome.
+///
+/// Polyrepo integration is a collection of these plus the root pointer where one
+/// applies. Completion never assumes one repository, one branch or one commit,
+/// so there is no single-revision field for it to assume into.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RepositoryOutcomeDto {
+    /// Repository/module name.
+    #[schema(value_type = String)]
+    pub repository: ExternalName,
+    /// Pull-request or equivalent integration reference.
+    #[schema(value_type = String)]
+    pub pull_request: ExternalName,
+    /// Delivered module revision.
+    #[schema(value_type = String)]
+    pub module_revision: ExternalName,
+    /// Root-pointer revision when this module has one.
+    #[schema(value_type = String)]
+    pub root_pointer_revision: Option<ExternalName>,
+}
+
+/// One durable integration result, initial or remediation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct IntegrationRecordDto {
+    /// Receipt for the integration TeamRun/result.
+    #[schema(value_type = String)]
+    pub receipt: ContentHash,
+    /// Per-repository results, in a stable order.
+    pub repositories: Vec<RepositoryOutcomeDto>,
+}
+
+/// The closeout receipts recorded so far.
+///
+/// Receipt ids and inventoried revisions, never caller booleans: `done` is a
+/// conjunction over authoritative records, and a boolean would let a caller
+/// assert one it does not hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CloseoutEvidenceDto {
+    /// Merge confirmation.
+    #[schema(value_type = String)]
+    pub merge_receipt: Option<ContentHash>,
+    /// Release confirmation, or its typed not-applicable disposition.
+    #[schema(value_type = String)]
+    pub release_receipt: Option<ContentHash>,
+    /// Delivered module/service revisions, keyed by module/service name.
+    #[schema(value_type = Object)]
+    pub delivered_versions: std::collections::BTreeMap<String, String>,
+    /// Final summary receipt.
+    #[schema(value_type = String)]
+    pub summary_receipt: Option<ContentHash>,
+    /// Notification receipt.
+    #[schema(value_type = String)]
+    pub notification_receipt: Option<ContentHash>,
+    /// Archive receipt.
+    #[schema(value_type = String)]
+    pub archive_receipt: Option<ContentHash>,
+}
+
+/// One recorded intent to wake the epic's existing TPM seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CompletionWakeDto {
+    /// The completion revision this wake reports.
+    #[schema(value_type = u64)]
+    pub completion_revision: AggregateRevision,
+    /// Why the seat is being woken.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+    /// The existing seat woken. Never a seat the wake created.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// The receipt the wake was recorded under.
+    #[schema(value_type = String)]
+    pub receipt: ContentHash,
+    /// Whether the runtime has acknowledged the turn.
+    pub acknowledged: bool,
+}
+
+/// The mandatory context a `needs_human` completion carries.
+///
+/// Both fields are required by construction. A stalling path that could enter
+/// human attention without them would be handing an operator a request with no
+/// recommendation and no record of what had already been tried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct NeedsHumanDto {
+    /// The concrete recommended resolution.
+    #[schema(value_type = String)]
+    pub recommended_resolution: ExternalName,
+    /// Every role, consultation, failed round and remediation already used.
+    pub tried_deliberation_path: Vec<DeliberationStepDto>,
+}
+
 /// One epic's completion state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CompletionStateDto {
@@ -933,9 +1170,19 @@ pub struct CompletionStateDto {
     /// The pinned completion profile it is judged against.
     pub profile: ProfileRevisionDto,
     /// Which phase it currently stands in.
-    pub phase: String,
-    /// What is still outstanding, in a stable order.
-    pub outstanding: Vec<String>,
+    pub phase: CompletionPhaseDto,
+    /// What is still blocking that phase, in a stable order.
+    pub blockers: Vec<CompletionBlockerDto>,
+    /// Initial and remediation integration results, oldest first.
+    pub integrations: Vec<IntegrationRecordDto>,
+    /// The immutable Committee round lineage, oldest first.
+    pub rounds: Vec<CompletionRoundDto>,
+    /// The closeout receipts recorded so far.
+    pub closeout: CloseoutEvidenceDto,
+    /// The wake intents this completion has appended, oldest first.
+    pub wakes: Vec<CompletionWakeDto>,
+    /// Present only in the `needs_human` phase.
+    pub needs_human: Option<NeedsHumanDto>,
     /// The revision a write must present.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
@@ -953,16 +1200,48 @@ pub struct AdvanceCompletionRequest {
     pub expected_revision: AggregateRevision,
 }
 
-/// Send one epic's completion back for remediation.
+/// One of the two remediation authorities, as a closed tagged action.
+///
+/// Remediation takes two distinct seats acting in order, so the request names
+/// which one is acting rather than carrying a free-text reason. A single
+/// untyped `reason` could not express the rule the pinned policy enforces: the
+/// LSA proposes the bounded correction and the TPM routes it, and neither
+/// receipt alone may launch a round.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RemediationActionDto {
+    /// The exact epic LSA's bounded proposal for a failed round.
+    LsaProposal {
+        /// The failed round being answered.
+        round: u8,
+        /// The immutable evidence digest of that failed round, as the proposer
+        /// read it. A proposal naming another round's evidence is refused rather
+        /// than applied to the round it happens to be filed against.
+        #[schema(value_type = String)]
+        failed_round_evidence: ContentHash,
+        /// The digest of the proposed bounded correction.
+        #[schema(value_type = String)]
+        proposal: ContentHash,
+    },
+    /// The exact epic TPM's route for an already approved proposal.
+    TpmRoute {
+        /// The remediation round being routed.
+        round: u8,
+        /// The digest of the routed task set, dependencies and team selections.
+        #[schema(value_type = String)]
+        route: ContentHash,
+    },
+}
+
+/// Record one epic's remediation authority.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemediateCompletionRequest {
     /// The completion revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
-    /// Why. Recorded, never interpreted.
-    #[schema(value_type = String)]
-    pub reason: ExternalName,
+    /// Which authority is acting, and over what.
+    pub action: RemediationActionDto,
 }
 
 /// What a completion write produced.

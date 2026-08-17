@@ -58,12 +58,13 @@ pub mod model;
 pub mod ready;
 
 pub use completion::{
-    CommitteeVerdict, CompiledCompletion, CompletionCommand, CompletionEdge,
+    CommitteeVerdict, CompiledCompletion, CompletionBlocker, CompletionCommand, CompletionEdge,
     CompletionEdgeCondition, CompletionNode, CompletionNodeKey, CompletionNodeKind,
     CompletionObservation, CompletionPhase, CompletionProfile, CompletionProfileRef,
     CompletionRound, CompletionSignal, CompletionState, CompletionTransition, IntegrationRecord,
     PollingFallback, RemediationApproval, RemediationAuthorization, RemediationRecord,
-    RepositoryOutcome, SignalDelivery, advance, compile, operational_default, outstanding, start,
+    RepositoryOutcome, SignalDelivery, advance, blockers, compile, operational_default,
+    outstanding, start,
 };
 pub use model::{
     AccountAdmissionEvidence, AccountCapabilityKey, AccountPin, AdaptiveWindow,

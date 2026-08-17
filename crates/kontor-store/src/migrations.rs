@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 31;
+pub const SCHEMA_VERSION: i64 = 32;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -148,6 +148,12 @@ const MIGRATIONS: &[&str] = &[
     // freezes at that moment -- plus the four OP-04 commands. The promotion row
     // carries its ids so a resumed apply reconciles rather than rebuilds.
     include_str!("../migrations/0031_quick_sessions_and_promotion.sql"),
+    // Schema v32. Published epic Completion Profiles, one durable completion run
+    // per epic, and the TPM wake outbox -- plus the three OP-06 commands. The
+    // wake's primary key is the one-wake-per-observation rule, so a replayed
+    // callback collides with the intent already standing instead of opening a
+    // second turn.
+    include_str!("../migrations/0032_epic_completion.sql"),
 ];
 
 const _: () = assert!(
