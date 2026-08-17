@@ -1,9 +1,13 @@
 # KON-OP-04 code review
 
 Date: 2026-08-17
-Status: remediated; focused recovery proofs pass
+Status: changes requested — superseded by `REVIEW-ROUND-2.md`
 Scope: the OP-04 composition in `090b61f`, reviewed against `ARCHITECTURE.md`
 Seat: inspector (`code` work profile, `code-review` phase)
+
+This is round 1, and it records what round 1 concluded. The remediation in
+`751ad35` is re-reviewed in `REVIEW-ROUND-2.md`, which carries the passing
+verdict.
 
 Companion to `ARCHITECTURE.md` and `IMPLEMENTATION.md`. That pair decides and
 records; this one reports what the build does under failure, which is the only
@@ -162,12 +166,13 @@ Recorded because these were the parts most likely to be got wrong, and were not:
 
 ## Gate
 
-`code-review-gate`: **passed after remediation** — promotion and roster now
-commit together before effects; Quick-session retries reconcile their frozen
-node and seat ids. The new loopback recovery tests prove both interrupted
-states resume to completion, and `operational_promotion` proves the store rolls
-back both promotion records when its roster write fails.
+`code-review-gate`: **not passed** — changes requested on findings 1 and 2.
 
-`cargo test --workspace --quiet` reaches an unrelated existing sandbox failure:
-`kontor-cli/tests/memory_parity.rs` cannot bind loopback (`Operation not
-permitted`). All OP-04-focused recovery tests pass.
+Both are ordering changes of a few lines each, in code whose surrounding
+comments already describe the correct behaviour. Each needs a test that fails
+before the fix: a promotion whose first apply is interrupted after
+`begin_promotion` and resumes, and an ensure whose `quick_sessions` write fails
+after the node exists.
+
+That verdict is round 1's and stands as recorded. The remediation that answered
+it is reviewed in `REVIEW-ROUND-2.md`, which carries the second verdict.
