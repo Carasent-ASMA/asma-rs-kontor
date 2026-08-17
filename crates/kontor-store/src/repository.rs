@@ -1142,7 +1142,20 @@ impl SqliteStore {
                     text(session.created_at),
                 ],
             )
-            .map_err(backend)?;
+            .map_err(|error| match error {
+                // Two ensures of the same request racing. The loser has written
+                // nothing else yet — the row is deliberately first — so it can
+                // simply read the winner's session and return that.
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "quick session",
+                        rule: "one command opens one session",
+                    }
+                }
+                other => backend(other),
+            })?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -1263,16 +1276,26 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Authorize one promotion, freezing the ids its effects will use.
+    /// Authorize one promotion, freezing the ids and the roster its effects
+    /// will use.
     ///
-    /// Written before the first effect on purpose: the ids in this row are what
-    /// a resumed apply reconciles against, so recording them afterwards would
-    /// leave exactly the window where a retry builds a second epic.
+    /// Both rows are written before the first effect, and in one transaction.
+    /// They are the two things a resumed apply reads to know what it is
+    /// resuming: the promotion row says which epic, the roster row says which
+    /// seats. Writing either one later — or the two separately — leaves a
+    /// window where a failure has recorded the source as promoted while the
+    /// resume path cannot find what it was promoted into. Since the promotion
+    /// row is keyed by its source and nothing deletes it, a source caught in
+    /// that window would be permanently unpromotable.
     ///
     /// # Errors
     /// Returns [`RepositoryError::Conflict`] when the source is already
     /// promoted.
-    pub fn begin_promotion(&self, promotion: &StoredPromotion) -> RepositoryResult<()> {
+    pub fn begin_promotion(
+        &self,
+        promotion: &StoredPromotion,
+        roster: &StoredEpicRoster,
+    ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
         transaction
             .execute(
@@ -1300,6 +1323,27 @@ impl SqliteStore {
                 }
                 other => backend(other),
             })?;
+        // Legal before the MiniProject exists: `epic_rosters` deliberately
+        // carries no foreign key to `mini_projects`, because the roster is what
+        // the epic is built *from*.
+        transaction
+            .execute(
+                "INSERT INTO epic_rosters
+                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
+                      quick_session_id, revision, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    roster.project_id.to_string(),
+                    roster.mini_project_id.to_string(),
+                    version_column(roster.core_team_version),
+                    roster.catalog_hash.as_str(),
+                    roster.seats.to_string(),
+                    roster.quick_session_id.map(|id| id.to_string()),
+                    i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
+                    text(roster.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }

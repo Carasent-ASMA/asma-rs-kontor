@@ -146,7 +146,7 @@ use kontor_store::{
     StoredConflict, StoredTeamDraft, StoredTeamsProjection, TurnDispatch,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
-use kontor_teams::{CoreTeamRevision, CoreTeamSeat, CoreTeamSeatSelection};
+use kontor_teams::{CoreTeamRevision, CoreTeamSeat, CoreTeamSeatSelection, MANDATORY_LEAD_ROLE};
 
 /// One epic's roster, with the epic-side facts that travel with it.
 struct FrozenRoster {
@@ -2439,7 +2439,33 @@ impl Services {
         Ok(current)
     }
 
-    /// Write the roster an epic is staffed from.
+    /// The stored shape of one epic's frozen roster.
+    fn epic_roster_row(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        roster: &FrozenRoster,
+        quick_session_id: Option<QuickSessionId>,
+        now: Timestamp,
+    ) -> Result<StoredEpicRoster, ApiError> {
+        Ok(StoredEpicRoster {
+            project_id,
+            mini_project_id: epic_id,
+            core_team_version: roster.revision.version,
+            catalog_hash: roster.revision.catalog_hash.clone(),
+            seats: serde_json::to_value(&roster.revision.seats).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the frozen roster could not be canonicalized",
+                )
+            })?,
+            quick_session_id,
+            revision: AggregateRevision::INITIAL,
+            pinned_at: now,
+        })
+    }
+
+    /// Move the roster an epic is staffed from.
     fn freeze_roster(
         &self,
         project_id: ProjectId,
@@ -2448,25 +2474,9 @@ impl Services {
         quick_session_id: Option<QuickSessionId>,
         now: Timestamp,
     ) -> Result<(), ApiError> {
-        let seats = serde_json::to_value(&roster.revision.seats).map_err(|_| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "the frozen roster could not be canonicalized",
-            )
-        })?;
+        let row = self.epic_roster_row(project_id, epic_id, roster, quick_session_id, now)?;
         self.state()?
-            .with_store(|store| {
-                store.put_epic_roster(&StoredEpicRoster {
-                    project_id,
-                    mini_project_id: epic_id,
-                    core_team_version: roster.revision.version,
-                    catalog_hash: roster.revision.catalog_hash.clone(),
-                    seats: seats.clone(),
-                    quick_session_id,
-                    revision: AggregateRevision::INITIAL,
-                    pinned_at: now,
-                })
-            })
+            .with_store(|store| store.put_epic_roster(&row))
             .map_err(|error| self.refuse(&error))
     }
 
@@ -6526,41 +6536,12 @@ impl ApplicationOperations for Services {
         // The command record is what makes a lost acknowledgement safe: a retry
         // finds the same receipt and reads back the session it already opened,
         // rather than placing a second workspace for the same request.
-        let replayed = self
-            .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
-            .is_some();
-        if let Some(existing) = self.quick_session_for_intent(project_id, &intent)? {
-            return self.quick_session_dto(&existing, replayed);
-        }
+        self.replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?;
 
-        let base = self.session_base(project_id)?;
-        let mut role = seat.role.clone();
-        role.custom_display_name
-            .clone_from(&request.role.custom_display_name);
-        let now = kontor_api::now();
-        let session = StoredQuickSession {
-            id: QuickSessionId::generate(),
-            project_id,
-            role,
-            role_slot_id: seat.role_slot_id.clone(),
-            topology_node_id: TopologyNodeId::generate(),
-            seat_binding_id: SeatBindingId::generate(),
-            psw_topology_node_id: base.node.id,
-            psw_native_id: base.native_id.clone(),
-            purpose,
-            intent_hash: intent.hash().clone(),
-            // Idle, and only ever moved from idle by an explicit archive after
-            // a promotion has delivered its handoff.
-            disposition: SourceDisposition::Idle,
-            revision: AggregateRevision::INITIAL,
-            created_at: now,
-        };
-
-        // The QSW is a child container in the adopted base, placed under the
-        // kind the pinned specification declares for it. Its node id is the one
-        // frozen above rather than one discovered by searching the topology for
-        // a node of that kind: two Quick sessions in one project are both QSW
-        // nodes below the same base, and a search cannot tell them apart.
+        // The pinned specification is consulted before anything is written: a
+        // vocabulary that does not declare a Quick session kind, or declares it
+        // as something that cannot host a seat, is `placement_blocked` and
+        // leaves no trace.
         let topology = self.project_topology(project_id)?;
         let spec = self.pinned_spec(project_id)?;
         let kind = self.domain.delivery.quick_kind.clone();
@@ -6583,44 +6564,115 @@ impl ApplicationOperations for Services {
                 "the pinned specification does not declare the Quick session kind a session host",
             ));
         }
-        state
-            .with_store(|store| {
-                store.create_topology_node(&NewSessionTopologyNode {
-                    id: session.topology_node_id,
+
+        let base = self.session_base(project_id)?;
+        let now = kontor_api::now();
+
+        // The row comes first, and it carries the ids the effects will use.
+        //
+        // It is the only thing that can reconcile a retry: the node cannot be
+        // found by searching, because two Quick sessions in one project are
+        // both QSW nodes below the same base and a search cannot tell them
+        // apart. Created after its effects, it would leave any failure in
+        // between with an orphaned node and an unattached seat binding that
+        // nothing can attribute — and an unattached seat binding is exactly the
+        // artefact the OP-REQ-039 phantom was made of. The columns are plain
+        // `TEXT` with no foreign keys precisely so the row can be written while
+        // the things it names do not exist yet.
+        let existing = self.quick_session_for_intent(project_id, &intent)?;
+        let session = match existing.clone() {
+            Some(session) => session,
+            None => {
+                let mut role = seat.role.clone();
+                role.custom_display_name
+                    .clone_from(&request.role.custom_display_name);
+                let planned = StoredQuickSession {
+                    id: QuickSessionId::generate(),
                     project_id,
-                    mini_project_id: None,
-                    topology: topology.clone(),
-                    kind: kind.clone(),
-                    parent_id: Some(session.psw_topology_node_id),
-                    task_id: None,
+                    role,
+                    role_slot_id: seat.role_slot_id.clone(),
+                    topology_node_id: TopologyNodeId::generate(),
+                    seat_binding_id: SeatBindingId::generate(),
+                    psw_topology_node_id: base.node.id,
+                    psw_native_id: base.native_id.clone(),
+                    purpose,
+                    intent_hash: intent.hash().clone(),
+                    // Idle, and only ever moved from idle by an explicit archive
+                    // after a promotion has delivered its handoff.
+                    disposition: SourceDisposition::Idle,
+                    revision: AggregateRevision::INITIAL,
                     created_at: now,
+                };
+                match state.with_store(|store| store.create_quick_session(&planned)) {
+                    Ok(()) => planned,
+                    // Another ensure of the same request won the race. It has a
+                    // session and this one has written nothing, so the answer is
+                    // theirs — reconciling below against their ids rather than
+                    // placing a second workspace under the same base.
+                    Err(RepositoryError::Conflict { .. }) => self
+                        .quick_session_for_intent(project_id, &intent)?
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "a Quick session was claimed by another command and then vanished",
+                            )
+                        })?,
+                    Err(error) => return Err(self.refuse(&error)),
+                }
+            }
+        };
+
+        // Everything below reconciles by the ids that row already froze, so a
+        // resumed ensure completes whichever suffix is missing rather than
+        // starting again.
+        if state
+            .with_store(|store| store.get_topology_node(project_id, session.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_none()
+        {
+            state
+                .with_store(|store| {
+                    store.create_topology_node(&NewSessionTopologyNode {
+                        id: session.topology_node_id,
+                        project_id,
+                        mini_project_id: None,
+                        topology: topology.clone(),
+                        kind: kind.clone(),
+                        parent_id: Some(session.psw_topology_node_id),
+                        task_id: None,
+                        created_at: now,
+                    })
                 })
-            })
-            .map_err(|error| self.refuse(&error))?;
-        let deadline = now
-            .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
-            .unwrap_or(now);
-        state
-            .with_store(|store| {
-                store.create_seat_binding(&NewSeatBinding {
-                    id: session.seat_binding_id,
-                    project_id,
-                    topology_node_id: session.topology_node_id,
-                    role_slot_id: session.role_slot_id.clone(),
-                    role: session.role.clone(),
-                    // A Quick session is not delivery work: it has no task and
-                    // no TeamRun, and therefore consumes no mission slot.
-                    task_id: None,
-                    team_run_id: None,
-                    attach_deadline: deadline,
-                    parent_seat_binding_id: None,
-                    created_at: now,
+                .map_err(|error| self.refuse(&error))?;
+        }
+        let seated = state
+            .with_store(|store| store.list_seat_bindings(project_id, session.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .any(|binding| binding.id == session.seat_binding_id);
+        if !seated {
+            let deadline = now
+                .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
+                .unwrap_or(now);
+            state
+                .with_store(|store| {
+                    store.create_seat_binding(&NewSeatBinding {
+                        id: session.seat_binding_id,
+                        project_id,
+                        topology_node_id: session.topology_node_id,
+                        role_slot_id: session.role_slot_id.clone(),
+                        role: session.role.clone(),
+                        // A Quick session is not delivery work: it has no task
+                        // and no TeamRun, and so consumes no mission slot.
+                        task_id: None,
+                        team_run_id: None,
+                        attach_deadline: deadline,
+                        parent_seat_binding_id: None,
+                        created_at: now,
+                    })
                 })
-            })
-            .map_err(|error| self.refuse(&error))?;
-        state
-            .with_store(|store| store.create_quick_session(&session))
-            .map_err(|error| self.refuse(&error))?;
+                .map_err(|error| self.refuse(&error))?;
+        }
 
         self.record(
             key,
@@ -6630,8 +6682,13 @@ impl ApplicationOperations for Services {
             project.revision,
             &intent,
         )?;
-        self.quick_session_dto(&session, false)
+        // `unchanged` means this command had already opened this session — read
+        // from the durable row rather than from the receipt ledger, because a
+        // second key naming the same request reconciles the same session and
+        // reporting that as `created` would claim a workspace it did not place.
+        self.quick_session_dto(&session, existing.is_some())
     }
+
     fn preview_promotion(
         &self,
         project_id: ProjectId,
@@ -6704,24 +6761,43 @@ impl ApplicationOperations for Services {
             Some(promotion) => promotion.mini_project_id,
             None => {
                 let epic_id = MiniProjectId::generate();
+                // Both reconciliation keys, in one transaction, before the
+                // first effect. The architecture orders the transaction this
+                // way — freeze the Core Team revision at step 2, create the
+                // MiniProject at step 4 — and the resume path depends on it:
+                // it reads the frozen roster before anything else, so a roster
+                // written after the effects would leave any failure in between
+                // recorded as promoted and impossible to resume. The promotion
+                // row is keyed by its source and nothing deletes it, so that
+                // source would be unpromotable for good.
+                let roster_row = self.epic_roster_row(
+                    project_id,
+                    epic_id,
+                    &roster,
+                    Some(quick_session_id),
+                    now,
+                )?;
                 state
                     .with_store(|store| {
-                        store.begin_promotion(&StoredPromotion {
-                            quick_session_id,
-                            project_id,
-                            mini_project_id: epic_id,
-                            preview_hash: request.preview_hash.clone(),
-                            // The fixed contract authorizes no archive, so the
-                            // source stays idle. Reporting an archive the
-                            // request never asked for would be claiming an
-                            // effect nobody authorized.
-                            source_disposition: SourceDisposition::Idle,
-                            handoff: None,
-                            handoff_hash: None,
-                            lsa_seat_binding_id: None,
-                            completed_at: None,
-                            created_at: now,
-                        })
+                        store.begin_promotion(
+                            &StoredPromotion {
+                                quick_session_id,
+                                project_id,
+                                mini_project_id: epic_id,
+                                preview_hash: request.preview_hash.clone(),
+                                // The fixed contract authorizes no archive, so
+                                // the source stays idle. Reporting an archive
+                                // the request never asked for would be claiming
+                                // an effect nobody authorized.
+                                source_disposition: SourceDisposition::Idle,
+                                handoff: None,
+                                handoff_hash: None,
+                                lsa_seat_binding_id: None,
+                                completed_at: None,
+                                created_at: now,
+                            },
+                            &roster_row,
+                        )
                     })
                     .map_err(|error| self.refuse(&error))?;
                 epic_id
@@ -6761,15 +6837,13 @@ impl ApplicationOperations for Services {
             )?,
         )?;
 
-        // Freeze the roster before any seat is created, so the seats and the
-        // record of what they were created from cannot disagree.
-        if existing.is_none() {
-            self.freeze_roster(project_id, epic_id, &roster, Some(quick_session_id), now)?;
-        }
+        // The roster was frozen with the promotion row above, so the seats and
+        // the record of what they were created from cannot disagree, and a
+        // resumed apply finds both.
         let seats = self.materialize_roster_seats(project_id, &control, &roster, now)?;
         let lsa = seats
             .iter()
-            .find(|(seat, _)| seat.role.role_code.as_str() == "LSA")
+            .find(|(seat, _)| seat.role.role_code.as_str() == MANDATORY_LEAD_ROLE)
             .map(|(_, id)| *id)
             .ok_or_else(|| {
                 self.deny(
@@ -6889,6 +6963,17 @@ impl ApplicationOperations for Services {
             let target =
                 self.target_of_roster_preview(project_id, epic_id, &request.preview_hash)?;
             let now = kontor_api::now();
+            // The pin moves before the seats are materialized, so a failure in
+            // between leaves the epic pinned to the target with some of its new
+            // seats missing. That is the safe half to lose: materialization is
+            // additive and reconciles by role slot, so re-running it finishes
+            // the job and never disturbs a seat already held.
+            //
+            // The cost is a confusing refusal. `put_epic_roster` bumps the
+            // roster revision, so the caller's own failed attempt moves it, and
+            // their next try is refused with "the epic's roster moved since the
+            // caller previewed it" — naming an edit that was theirs. Re-reading
+            // the epic and previewing again clears it.
             self.freeze_roster(project_id, epic_id, &target, current.quick_session_id, now)?;
             let control = self.ensure_scope_chain(
                 project_id,

@@ -21,6 +21,23 @@ use kontor_core::spec::{CatalogRoleRef, CodeLifecycle, RoleCatalogRevision, Topo
 // contract and this layer resolve the same spelling. Re-exported so existing
 // `kontor_teams::EpicPresence` callers keep one path to it.
 pub use kontor_core::spec::EpicPresence;
+
+/// The role code every epic must seat as its lead architect.
+///
+/// Exported because two layers need the same spelling: this module inserts the
+/// seat, and the composition root has to find it again to hand the promotion's
+/// work to. Two literals would agree until the day one of them was corrected.
+///
+/// It is still a literal, which is a compromise. Topology kinds and the control
+/// seat's role are read from `OperationalDelivery` so a deployment can correct
+/// them without a code change, and these two belong there for the same reason —
+/// a catalog that spells its lead architect differently currently gets a
+/// refusal naming a role it never had. Moving them is a change to the profile
+/// pack specification, which OP-01 owns.
+pub const MANDATORY_LEAD_ROLE: &str = "LSA";
+
+/// The role code every epic must seat as its technical program manager.
+pub const MANDATORY_PROGRAM_ROLE: &str = "TPM";
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 
@@ -104,7 +121,7 @@ impl CoreTeamRevision {
             seats.push(resolve_seat(catalog, selection)?);
         }
 
-        for (code, quick) in [("TPM", false), ("LSA", true)] {
+        for (code, quick) in [(MANDATORY_PROGRAM_ROLE, false), (MANDATORY_LEAD_ROLE, true)] {
             let role_code = RoleCode::parse(code)?;
             match seats.iter().find(|seat| seat.role.role_code == role_code) {
                 Some(seat) if seat.presence != EpicPresence::Required => {

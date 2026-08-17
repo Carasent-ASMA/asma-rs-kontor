@@ -38,12 +38,13 @@ use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, 
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
-    AgentRunId, CanonicalDocument, ContentHash, MiniProjectId, ProjectId, TaskId, TeamRunId,
-    TopologyNodeId,
+    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ContentHash, MiniProjectId,
+    ProjectId, QuickSessionId, SeatBindingId, TaskId, TeamRunId, TopologyNodeId,
 };
 use kontor_core::repository::{
     NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunClosure,
-    RunRepository, TopologyRepository, WorkflowRepository,
+    RunRepository, SourceDisposition, StoredEpicRoster, StoredPromotion, StoredQuickSession,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::state::{
     Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
@@ -13829,5 +13830,293 @@ async fn a_later_core_team_edit_leaves_a_promoted_epic_frozen() {
         codes.contains(&"QA"),
         "the explicit upgrade did not add the new role: {}",
         upgraded.body
+    );
+}
+
+// ---------------------------------------------------------------------------
+// KON-OP-04 — resuming what a first attempt did not finish.
+//
+// Both commands below write one durable row before their effects, and both are
+// meant to be resumable from it. Every other OP-04 test drives a call that
+// succeeds; these two construct the state a *failed* call leaves behind and
+// make the next attempt finish the job. Without them the ordering that makes
+// resumption possible is unverified, and getting it backwards costs the
+// subject permanently: neither row has a delete, an abort or a reset.
+// ---------------------------------------------------------------------------
+
+/// Open one Quick session and answer with its id and the preview of promoting it.
+async fn quick_session_ready_to_promote(
+    world: &World,
+    project: &str,
+    purpose: &str,
+    key: &str,
+) -> (String, String) {
+    let opened = Call::post(
+        format!("/v1/projects/{project}/quick-sessions:ensure"),
+        &serde_json::json!({
+            "role": {
+                "catalog_revision": {"id": SEEDED_CATALOG, "version": 1},
+                "role_code": "SA",
+            },
+            "purpose": purpose,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await;
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    let session = opened.json()["quick_session_id"]
+        .as_str()
+        .expect("a session id")
+        .to_owned();
+
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:preview"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let hash = previewed.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    (session, hash)
+}
+
+/// A promotion interrupted right after it was authorized still finishes.
+///
+/// This is the state a failure anywhere in the effects leaves behind: the
+/// source is recorded as promoted, and nothing else has happened yet. Because
+/// `quick_session_promotions` is keyed by its source and has no delete, a
+/// resume that cannot read what it needs is not a retryable error — it is a
+/// Quick session that can never be promoted, by any caller, ever.
+#[tokio::test]
+async fn a_promotion_interrupted_after_authorization_resumes_to_completion() {
+    let composed = compose_realm("/tmp/kontor-op04-resume-promotion").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let (session, preview_hash) =
+        quick_session_ready_to_promote(world, project, "Resume me", "quick-resume").await;
+
+    // Authorize the promotion exactly as the apply's first step does, then stop
+    // — no MiniProject, no nodes, no seats, no handoff.
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let quick_session_id = QuickSessionId::parse(&session).expect("a session id");
+    let epic_id = MiniProjectId::generate();
+    let now = kontor_api::now();
+    world.daemon.state().with_store(|store| {
+        let core = store
+            .get_current_core_team(project_id)
+            .expect("the roster reads")
+            .expect("a published roster");
+        store
+            .begin_promotion(
+                &StoredPromotion {
+                    quick_session_id,
+                    project_id,
+                    mini_project_id: epic_id,
+                    preview_hash: ContentHash::parse(&preview_hash).expect("a hash"),
+                    source_disposition: SourceDisposition::Idle,
+                    handoff: None,
+                    handoff_hash: None,
+                    lsa_seat_binding_id: None,
+                    completed_at: None,
+                    created_at: now,
+                },
+                &StoredEpicRoster {
+                    project_id,
+                    mini_project_id: epic_id,
+                    core_team_version: core.version,
+                    catalog_hash: core.catalog_hash.clone(),
+                    seats: core.seats.clone(),
+                    quick_session_id: Some(quick_session_id),
+                    revision: AggregateRevision::INITIAL,
+                    pinned_at: now,
+                },
+            )
+            .expect("the promotion is authorized");
+    });
+
+    // The next attempt has to finish it, against the epic already frozen.
+    let resumed = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
+        &serde_json::json!({"preview_hash": preview_hash, "expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("promote-resume")
+    .send(world)
+    .await;
+    assert_eq!(
+        resumed.status, 200,
+        "an interrupted promotion could not be resumed: {}",
+        resumed.body
+    );
+    assert_eq!(
+        resumed.json()["epic_id"],
+        epic_id.to_string().as_str(),
+        "the resume built a second epic: {}",
+        resumed.body
+    );
+
+    // And it is a real epic, with the seats the frozen roster called for.
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic_id}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("materialize-resumed")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let answered = materialized.json();
+    let lsa = answered["core_team"]["seats"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "LSA")
+        .expect("an LSA seat");
+    assert!(
+        lsa["seat_binding_id"].as_str().is_some(),
+        "the resumed epic never seated its LSA: {}",
+        materialized.body
+    );
+}
+
+/// An ensure interrupted after its row was written completes the placement.
+///
+/// The `quick_sessions` row carries the node and seat ids, and is written
+/// first precisely so this state is recoverable. If the retry returned the row
+/// without reconciling, the session would exist forever with no workspace and
+/// no seat — and because the row occupies the intent, no later call could
+/// place one either.
+#[tokio::test]
+async fn an_ensure_interrupted_after_its_row_completes_the_node_and_seat() {
+    let composed = compose_realm("/tmp/kontor-op04-resume-ensure").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let purpose = "Half-placed session";
+    // The canonical intent the daemon derives for this exact request.
+    let intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "quick_session_ensure",
+        "project": project_id.to_string(),
+        "role": "SA",
+        "catalog": 1,
+        "purpose": purpose,
+    }))
+    .expect("a canonical intent");
+    let node_id = TopologyNodeId::generate();
+    let seat_binding_id = SeatBindingId::generate();
+    let session_id = QuickSessionId::generate();
+
+    // The row exists and claims those ids; neither the node nor the seat does.
+    world.daemon.state().with_store(|store| {
+        let core = store
+            .get_current_core_team(project_id)
+            .expect("the roster reads")
+            .expect("a published roster");
+        let seats: Vec<kontor_teams::CoreTeamSeat> =
+            serde_json::from_value(core.seats.clone()).expect("the roster decodes");
+        let chosen = seats
+            .iter()
+            .find(|entry| entry.role.role_code.as_str() == "SA")
+            .expect("the SA seat");
+        let base = store
+            .list_topology_nodes(project_id, None)
+            .expect("the nodes read")
+            .into_iter()
+            .find(|node| node.parent_id.is_none())
+            .expect("an adopted base");
+        store
+            .create_quick_session(&StoredQuickSession {
+                id: session_id,
+                project_id,
+                role: chosen.role.clone(),
+                role_slot_id: chosen.role_slot_id.clone(),
+                topology_node_id: node_id,
+                seat_binding_id,
+                psw_topology_node_id: base.id,
+                psw_native_id: None,
+                purpose: BoundedText::parse(purpose).expect("a purpose"),
+                intent_hash: intent.hash().clone(),
+                disposition: SourceDisposition::Idle,
+                revision: AggregateRevision::INITIAL,
+                created_at: kontor_api::now(),
+            })
+            .expect("the interrupted session is recorded");
+    });
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_topology_node(project_id, node_id))
+            .expect("the node reads")
+            .is_none(),
+        "the fixture placed a node it was supposed to leave missing"
+    );
+
+    let ensured = Call::post(
+        format!("/v1/projects/{project}/quick-sessions:ensure"),
+        &serde_json::json!({
+            "role": {
+                "catalog_revision": {"id": SEEDED_CATALOG, "version": 1},
+                "role_code": "SA",
+            },
+            "purpose": purpose,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("ensure-resume")
+    .send(world)
+    .await;
+    assert_eq!(ensured.status, 200, "{}", ensured.body);
+    assert_eq!(
+        ensured.json()["quick_session_id"],
+        session_id.to_string().as_str(),
+        "the retry opened a second session instead of finishing this one: {}",
+        ensured.body
+    );
+
+    // The claimed ids are now real, rather than a row pointing at nothing.
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_topology_node(project_id, node_id))
+            .expect("the node reads")
+            .is_some(),
+        "the resumed ensure left its session without a workspace: {}",
+        ensured.body
+    );
+    let seated = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_seat_bindings(project_id, node_id))
+        .expect("the seats read")
+        .into_iter()
+        .any(|binding| binding.id == seat_binding_id);
+    assert!(
+        seated,
+        "the resumed ensure left its session without a seat: {}",
+        ensured.body
     );
 }
