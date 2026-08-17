@@ -29,8 +29,8 @@ function operationalClient(overrides: Record<string, unknown> = {}) {
       pinned_spec: { id: 'operational-topology', version: 1, canonical_hash: 'topology-hash' },
       nodes: [{
         topology_node_id: 'psw-1', kind_key: 'PSW', lifecycle: 'active', placement: 'confirmed',
-        desired_binding: { runtime_kind: 'paseo.project', projection_capabilities: [] },
-        observed_binding: { native_id: 'prj-1', native_name: 'Project', runtime_kind: 'paseo.project', observed_at: '2026-08-17T00:00:00Z', cwd: '/work' },
+        desired_binding: { runtime_kind: 'native.project', projection_capabilities: [] },
+        observed_binding: { native_id: 'prj-1', native_name: 'Project', runtime_kind: 'native.project', observed_at: '2026-08-17T00:00:00Z', cwd: '/work' },
         seats: [{ seat_binding_id: 'seat-lsa', role_slot_id: 'lsa', lifecycle: 'active', role: { catalog_revision: REVISION, role_code: 'LSA', segment: 'leadership', standard_title: 'Lead Software Architect' } }],
       }],
     })),

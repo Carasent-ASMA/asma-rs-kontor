@@ -122,6 +122,41 @@ describe('client requests', () => {
     )
   })
 
+  it('sends each Operational route the verb its contract declares', async () => {
+    // The mutant this kills: a route reached with the wrong method. `#json`
+    // defaults to GET, so a POST-only path reached through it is answered 405
+    // before any handler runs — invisible to a suite that only asserts paths.
+    const { client, calls } = clientWith(() => json({ realm_id: REALM }))
+    const role = { catalog_revision: { id: 'standard-roles', version: 1 }, role_code: 'ADV' }
+
+    await client.topology('p', 'e')
+    await client.coreTeam('p')
+    await client.quickRoles('p')
+    await client.projectCapacity('p')
+    await client.completion('p', 'e')
+    await client.previewCoreTeam('p', { seats: [] })
+    await client.previewPromotion('p', 'q')
+    await client.ensureQuickSession('p', { purpose: 'why', role }, 'quick-1')
+    await client.applyPromotion('p', 'q', { expected_revision: 1, preview_hash: 'h' }, 'promote-1')
+    await client.advanceCompletion('p', 'e', { expected_revision: 2 }, 'advance-1')
+
+    expect(calls.map((call) => `${call.init?.method ?? 'GET'} ${new URL(call.url).pathname}`)).toEqual([
+      'GET /v1/projects/p/topology:inspect',
+      'GET /v1/projects/p/core-team',
+      'GET /v1/projects/p/quick-roles',
+      'GET /v1/projects/p/capacity',
+      'GET /v1/projects/p/epics/e/completion',
+      'POST /v1/projects/p/core-team:preview',
+      'POST /v1/projects/p/quick-sessions/q/promotion:preview',
+      'POST /v1/projects/p/quick-sessions:ensure',
+      'POST /v1/projects/p/quick-sessions/q/promotion:apply',
+      'POST /v1/projects/p/epics/e/completion:advance',
+    ])
+    // A pure preview replays nothing, so it carries no key and no body.
+    expect(new Headers(calls[6]?.init?.headers).get('Idempotency-Key')).toBeNull()
+    expect(calls[6]?.init?.body).toBeUndefined()
+  })
+
   it('reports a refusal with the contract code rather than as a channel failure', async () => {
     const { client } = clientWith(() =>
       json(

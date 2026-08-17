@@ -352,10 +352,18 @@ export class KontorClient {
     )
   }
 
-  /** Preview promoting one Quick session to an epic. */
+  /**
+   * Preview promoting one Quick session to an epic.
+   *
+   * POST, because the contract declares this path POST-only and a GET is
+   * refused with 405 before the handler runs. It carries no body and no
+   * idempotency key: the handler is addressed entirely by its path, and a pure
+   * preview records nothing to replay.
+   */
   async previewPromotion(projectId: string, quickSessionId: string): Promise<PromotionPreview> {
     return this.#json<PromotionPreview>(
       `/v1/projects/${encodeURIComponent(projectId)}/quick-sessions/${encodeURIComponent(quickSessionId)}/promotion:preview`,
+      { method: 'POST' },
     )
   }
 

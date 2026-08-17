@@ -265,7 +265,7 @@ function TopologyPanel({
   return (
     <>
       <p className="caveat">
-        PSW/QSW/ESW/ECP are logical lineage. A Paseo ESW is a separate native project;
+        PSW/QSW/ESW/ECP are logical lineage. An ESW is a separate native project;
         its ECP is one ordinary workspace, not a nested native project.
       </p>
       <div className="table-scroll">
@@ -435,7 +435,7 @@ function QuickSessionPanel({
 
   return (
     <>
-      <p className="caveat">A Quick Session (QSW) is one ad-hoc seat. Promotion previews a logical PSW→ESW lineage; it does not nest one Paseo project inside another.</p>
+      <p className="caveat">A Quick Session (QSW) is one ad-hoc seat. Promotion previews a logical PSW→ESW lineage; it does not nest one native project inside another.</p>
       <form
         className="operation-form"
         aria-label="New Quick Session"
