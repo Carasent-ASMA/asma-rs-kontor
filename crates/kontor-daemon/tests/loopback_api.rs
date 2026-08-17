@@ -10984,66 +10984,57 @@ async fn the_configured_capacity_and_not_a_compiled_one_decides_what_is_admitted
 }
 
 // ---------------------------------------------------------------------------
-// The topology vocabulary, before it has a service
+// The topology vocabulary
 // ---------------------------------------------------------------------------
 
-/// A contract that exists before its service refuses; it does not improvise.
+/// A reference read refuses rather than improvises.
 ///
-/// The whole topology vocabulary is registered, authorized and documented in one
-/// go so the route table, the registry, the generated clients and the authority
-/// rules are a single decision rather than one per successor. None of it has an
-/// application service yet, and the tempting failure is precise: answering an
-/// empty projection. A caller cannot tell that from a project that genuinely has
-/// no topology, so an empty success here would be a lie that reads as data. The
-/// honest answer is a typed refusal, and this pins it.
+/// The tempting failure in this family is precise: answering an empty catalog or
+/// an empty projection. A caller cannot tell that from a revision that genuinely
+/// declares nothing, so an empty success would be a lie that reads as data. Each
+/// of these names something that does not exist, and each is told so.
 #[tokio::test]
-async fn a_contract_only_topology_route_refuses_instead_of_reporting_success() {
+async fn a_reference_read_for_something_absent_is_not_found_rather_than_empty() {
     let world = World::open().await;
-    let catalog = kontor_core::id::RoleCatalogId::generate();
+    let absent = kontor_core::id::RoleCatalogId::generate();
 
-    for (call, tier) in [
-        (
-            Call::get(format!("/v1/catalog/role-catalogs/{catalog}/1")),
-            "observer",
-        ),
-        (
-            Call::get(format!("/v1/catalog/role-catalogs/{catalog}/1/roles/lsa")),
-            "observer",
-        ),
-        (
-            Call::get(format!(
-                "/v1/projects/{}/epics/{}/code-help",
-                world.project,
-                MiniProjectId::generate()
-            )),
-            "observer",
-        ),
+    for call in [
+        Call::get(format!("/v1/catalog/role-catalogs/{absent}/1")),
+        Call::get(format!("/v1/catalog/role-catalogs/{absent}/1/roles/lsa")),
+        Call::get(format!(
+            "/v1/projects/{}/epics/{}/code-help",
+            world.project,
+            MiniProjectId::generate()
+        )),
     ] {
-        let answer = call.signed_as(&world, tier).send(&world).await;
+        let answer = call.signed_as(&world, "observer").send(&world).await;
         assert_eq!(
-            answer.status, 503,
-            "a read with no service behind it must refuse: {}",
+            answer.status, 404,
+            "a read for something absent must say so: {}",
             answer.body
         );
-        assert_eq!(answer.code(), "unavailable");
+        assert_eq!(answer.code(), "not_found");
     }
 
-    // The one write in this family refuses before it can commit anything, and
-    // says so with the same code rather than inventing a receipt.
+    // A publish whose candidate is not a specification document at all is
+    // refused before it can commit anything, and carries no receipt.
     let published = Call::post(
         format!("/v1/projects/{}/topology-specs:publish", world.project),
         &serde_json::json!({
-            "candidate": { "name": "Standard" },
+            "candidate": { "schema_version": 1, "name": "Standard" },
             "validation_hash": "0".repeat(64),
             "expected_revision": 1,
         }),
     )
     .signed_as(&world, "admin")
-    .with_key("publish-before-the-service-exists")
+    .with_key("publish-a-non-document")
     .send(&world)
     .await;
-    assert_eq!(published.status, 503, "{}", published.body);
-    assert_eq!(published.code(), "unavailable");
+    assert!(
+        published.status.is_client_error(),
+        "a candidate that is not a specification must be refused: {}",
+        published.body
+    );
     assert!(
         published.json().get("receipt_id").is_none(),
         "a refusal must not carry a receipt: {}",
@@ -11053,22 +11044,23 @@ async fn a_contract_only_topology_route_refuses_instead_of_reporting_success() {
 
 /// The authority on these routes is real, not decoration.
 ///
-/// Every one of them refuses today, so a tier that was never checked would look
-/// exactly like a tier that was. The difference is the code: an observer asking
-/// for an admin operation must be told `forbidden` *before* the service is found
-/// missing, which is the only evidence that the check runs at all.
+/// Deciding which node kinds may ever exist in a project is the Admin tier's
+/// defining Operational power. An observer holding the wrong credential must be
+/// refused, and the same call at the right tier must actually work — a check
+/// that only ever met a refusing service would look identical to no check.
 #[tokio::test]
-async fn the_specification_routes_check_authority_before_they_find_no_service() {
+async fn deciding_the_vocabulary_is_admin_authority_and_the_check_is_real() {
     let world = World::open().await;
+    let draft_body = serde_json::json!({
+        "name": "Standard",
+        "root_kind": "PSW",
+        "node_kinds": [],
+    });
 
     for call in [
         Call::post(
             format!("/v1/projects/{}/topology-specs:draft", world.project),
-            &serde_json::json!({
-                "name": "Standard",
-                "root_kind": "PSW",
-                "node_kinds": [],
-            }),
+            &draft_body,
         ),
         Call::post(
             format!("/v1/projects/{}/topology-specs:validate", world.project),
@@ -11078,27 +11070,48 @@ async fn the_specification_routes_check_authority_before_they_find_no_service() 
         let refused = call.signed_as(&world, "observer").send(&world).await;
         assert_eq!(
             refused.status, 403,
-            "an observer must be refused before the missing service is reached: {}",
+            "an observer must not decide the vocabulary: {}",
             refused.body
         );
         assert_eq!(refused.code(), "forbidden");
     }
 
-    // The same route, at the authority it actually requires, gets past the check
-    // and lands on the honest "no service yet".
+    // The same route at the authority it requires builds a candidate.
     let drafted = Call::post(
         format!("/v1/projects/{}/topology-specs:draft", world.project),
-        &serde_json::json!({
-            "name": "Standard",
-            "root_kind": "PSW",
-            "node_kinds": [],
-        }),
+        &draft_body,
     )
     .signed_as(&world, "admin")
     .send(&world)
     .await;
-    assert_eq!(drafted.status, 503, "{}", drafted.body);
-    assert_eq!(drafted.code(), "unavailable");
+    assert_eq!(drafted.status, 200, "{}", drafted.body);
+    // The identity, the version and the schema generation are the server's, not
+    // the caller's — the request has no field for any of them.
+    assert_eq!(drafted.json()["candidate"]["version"], 1);
+    assert!(
+        drafted.json()["candidate"]["spec_id"].as_str().is_some(),
+        "the server names the lineage: {}",
+        drafted.body
+    );
+
+    // An empty vocabulary drafts but does not validate: drafting is for building
+    // one up, and judging it is a separate answer.
+    let judged = Call::post(
+        format!("/v1/projects/{}/topology-specs:validate", world.project),
+        &serde_json::json!({ "candidate": drafted.json()["candidate"] }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(judged.status, 200, "{}", judged.body);
+    assert!(
+        !judged.json()["violations"]
+            .as_array()
+            .expect("violations")
+            .is_empty(),
+        "a vocabulary with no node kinds is not publishable: {}",
+        judged.body
+    );
 }
 
 /// A seat's role is selected, never asserted.
@@ -12357,4 +12370,674 @@ async fn a_plan_admits_against_the_width_that_was_learned() {
     let counted = plan.json()["ready"].as_array().expect("ready").len()
         + plan.json()["blocked"].as_array().expect("blocked").len();
     assert_eq!(counted, 6, "{}", plan.body);
+}
+
+// ---------------------------------------------------------------------------
+// OP-03 CP2, first clause — publication, catalog lookup and code help.
+//
+// The Admin tier's defining Operational power is deciding which node kinds may
+// ever exist in a project. Without these operations the composed semantic
+// topology consumes a specification nobody can publish, read or move, and no
+// client can find out what its own codes mean.
+// ---------------------------------------------------------------------------
+
+/// A minimal but legal vocabulary: one root, one child that hosts sessions.
+fn vocabulary(root: &str, child: Option<&str>) -> serde_json::Value {
+    let mut kinds = vec![serde_json::json!({
+        "kind": root,
+        "allowed_parents": [],
+        "cardinality": {"minimum": 1, "maximum": 1},
+        "projection_capabilities": ["native_root"],
+        "read_only": false,
+        "name_template": "Project Session Workspace",
+        "code_help": {
+            "full_name": "Project Session Workspace",
+            "meaning": "Logical root grouping every session scope of one project.",
+            "category": "session_topology",
+            "lifecycle": "current"
+        }
+    })];
+    if let Some(child) = child {
+        kinds.push(serde_json::json!({
+            "kind": child,
+            "allowed_parents": [root],
+            "cardinality": {"minimum": 0},
+            "projection_capabilities": ["native_child", "session_host"],
+            "read_only": false,
+            "name_template": "Epic Session Workspace",
+            "code_help": {
+                "full_name": "Epic Session Workspace",
+                "meaning": "One epic's own session scope.",
+                "category": "session_topology",
+                "lifecycle": "current"
+            }
+        }));
+    }
+    serde_json::Value::Array(kinds)
+}
+
+/// Draft, validate and publish, then read the exact document back.
+#[tokio::test]
+async fn a_vocabulary_is_drafted_validated_published_and_read_back() {
+    let composed = compose_realm("/tmp/kontor-cp2-publish").await;
+    let world = &composed.world;
+
+    let drafted = Call::post(
+        format!("/v1/projects/{}/topology-specs:draft", composed.project),
+        &serde_json::json!({
+            "name": "House vocabulary",
+            "root_kind": "PSW",
+            "node_kinds": vocabulary("PSW", Some("ESW")),
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("vocab-draft")
+    .send(world)
+    .await;
+    assert_eq!(drafted.status, 200, "{}", drafted.body);
+    let candidate = drafted.json()["candidate"].clone();
+
+    let judged = Call::post(
+        format!("/v1/projects/{}/topology-specs:validate", composed.project),
+        &serde_json::json!({"candidate": candidate}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(judged.status, 200, "{}", judged.body);
+    assert_eq!(
+        judged.json()["violations"].as_array().map(Vec::len),
+        Some(0),
+        "a complete vocabulary is publishable: {}",
+        judged.body
+    );
+    let validation_hash = judged.json()["validation_hash"]
+        .as_str()
+        .expect("a validation hash")
+        .to_owned();
+    assert_eq!(
+        validation_hash,
+        drafted.json()["candidate_hash"].as_str().expect("a hash"),
+        "the draft and the verdict are about the same bytes"
+    );
+
+    let published = Call::post(
+        format!("/v1/projects/{}/topology-specs:publish", composed.project),
+        &serde_json::json!({
+            "candidate": candidate,
+            "validation_hash": validation_hash,
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("vocab-publish")
+    .send(world)
+    .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    assert_eq!(published.json()["receipt"]["applied"], "created");
+    let spec_id = published.json()["spec"]["id"]
+        .as_str()
+        .expect("a spec id")
+        .to_owned();
+    assert_eq!(published.json()["spec"]["version"], 1);
+
+    // The exact document comes back, with the hash the publication returned.
+    let read = Call::get(format!(
+        "/v1/projects/{}/topology-specs/{spec_id}/1",
+        composed.project
+    ))
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    assert_eq!(read.json()["spec"]["canonical_hash"], validation_hash);
+    assert_eq!(read.json()["document"]["root_kind"], "PSW");
+    assert!(
+        read.json()["shareability"]["class"].as_str().is_some(),
+        "a published revision carries its classification: {}",
+        read.body
+    );
+}
+
+/// A published revision cannot change in place, and a replay is not a change.
+///
+/// This is negative proof six, and it is the reason publication is a separate
+/// operation from drafting at all: a revision something is already pinned to
+/// must mean the same thing tomorrow.
+#[tokio::test]
+async fn a_published_specification_cannot_change_in_place() {
+    let composed = compose_realm("/tmp/kontor-cp2-immutable").await;
+    let world = &composed.world;
+
+    let draft = async |key: &str, child: Option<&str>| -> Answer {
+        Call::post(
+            format!("/v1/projects/{}/topology-specs:draft", composed.project),
+            &serde_json::json!({
+                "name": "House vocabulary",
+                "root_kind": "PSW",
+                "node_kinds": vocabulary("PSW", child),
+            }),
+        )
+        .signed_as(world, "admin")
+        .with_key(key)
+        .send(world)
+        .await
+    };
+    let publish = async |key: &str, candidate: &serde_json::Value, hash: &str| -> Answer {
+        Call::post(
+            format!("/v1/projects/{}/topology-specs:publish", composed.project),
+            &serde_json::json!({
+                "candidate": candidate,
+                "validation_hash": hash,
+                "expected_revision": composed.project_revision,
+            }),
+        )
+        .signed_as(world, "admin")
+        .with_key(key)
+        .send(world)
+        .await
+    };
+
+    let first = draft("immutable-draft-1", Some("ESW")).await;
+    let candidate = first.json()["candidate"].clone();
+    let hash = first.json()["candidate_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let published = publish("immutable-publish-1", &candidate, &hash).await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    let spec_id = published.json()["spec"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+
+    // Republishing the identical bytes is a replay, not a second publication.
+    let replayed = publish("immutable-publish-1", &candidate, &hash).await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        published.json()["receipt"]["receipt_id"],
+        "a replay answers from the original receipt"
+    );
+
+    // Different bytes under the same identity and version are refused — and the
+    // validation says so before the publish is even attempted.
+    let mut edited = candidate.clone();
+    edited["node_kinds"] = vocabulary("PSW", None);
+    let edited_hash = Call::post(
+        format!("/v1/projects/{}/topology-specs:validate", composed.project),
+        &serde_json::json!({"candidate": edited}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(edited_hash.status, 200, "{}", edited_hash.body);
+    // The edit is a perfectly legal vocabulary. What it may not be is *this*
+    // revision, and that is publication's answer rather than the verdict's.
+    assert_eq!(
+        edited_hash.json()["violations"].as_array().map(Vec::len),
+        Some(0),
+        "{}",
+        edited_hash.body
+    );
+    let hash = edited_hash.json()["validation_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let refused = publish("immutable-publish-2", &edited, &hash).await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+
+    // And the stored document is still the one that was published.
+    let read = Call::get(format!(
+        "/v1/projects/{}/topology-specs/{spec_id}/1",
+        composed.project
+    ))
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(
+        read.json()["document"]["node_kinds"]
+            .as_array()
+            .map(Vec::len),
+        Some(2),
+        "the published revision did not change underneath the pin: {}",
+        read.body
+    );
+}
+
+/// A publish under a stale project revision writes nothing.
+#[tokio::test]
+async fn publishing_under_a_stale_revision_writes_nothing() {
+    let composed = compose_realm("/tmp/kontor-cp2-stale-publish").await;
+    let world = &composed.world;
+
+    let drafted = Call::post(
+        format!("/v1/projects/{}/topology-specs:draft", composed.project),
+        &serde_json::json!({
+            "name": "House vocabulary",
+            "root_kind": "PSW",
+            "node_kinds": vocabulary("PSW", Some("ESW")),
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("stale-draft")
+    .send(world)
+    .await;
+    let candidate = drafted.json()["candidate"].clone();
+    let hash = drafted.json()["candidate_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let spec_id = candidate["spec_id"].as_str().expect("an id").to_owned();
+
+    let stale = Call::post(
+        format!("/v1/projects/{}/topology-specs:publish", composed.project),
+        &serde_json::json!({
+            "candidate": candidate,
+            "validation_hash": hash,
+            "expected_revision": composed.project_revision + 7,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("stale-publish")
+    .send(world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(stale.code(), "revision_conflict");
+
+    let read = Call::get(format!(
+        "/v1/projects/{}/topology-specs/{spec_id}/1",
+        composed.project
+    ))
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(
+        read.status, 404,
+        "a refused publish left nothing behind: {}",
+        read.body
+    );
+}
+
+/// A hash that does not name the candidate is refused.
+#[tokio::test]
+async fn publishing_a_document_the_validation_never_saw_is_refused() {
+    let composed = compose_realm("/tmp/kontor-cp2-hash").await;
+    let world = &composed.world;
+
+    let drafted = Call::post(
+        format!("/v1/projects/{}/topology-specs:draft", composed.project),
+        &serde_json::json!({
+            "name": "House vocabulary",
+            "root_kind": "PSW",
+            "node_kinds": vocabulary("PSW", Some("ESW")),
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("hash-draft")
+    .send(world)
+    .await;
+
+    let refused = Call::post(
+        format!("/v1/projects/{}/topology-specs:publish", composed.project),
+        &serde_json::json!({
+            "candidate": drafted.json()["candidate"],
+            "validation_hash": "0".repeat(64),
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("hash-publish")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+}
+
+/// The catalog answers what a code means; an unknown code is never guessed.
+///
+/// This is negative proof four's second half. A client that had to keep its own
+/// glossary would eventually disagree with the server about what its own state
+/// says, so the server is the only place these words live — and it says so when
+/// it does not know one.
+#[tokio::test]
+async fn the_catalog_resolves_a_known_code_and_refuses_an_unknown_one() {
+    let composed = compose_realm("/tmp/kontor-cp2-catalog").await;
+    let world = &composed.world;
+    let catalog = "01936f5a-1000-7000-8000-000000000002";
+
+    let whole = Call::get(format!("/v1/catalog/role-catalogs/{catalog}/1"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(whole.status, 200, "{}", whole.body);
+    let roles = whole.json()["roles"].as_array().expect("roles").clone();
+    assert!(
+        !roles.is_empty(),
+        "the catalog declares roles: {}",
+        whole.body
+    );
+    let known = roles[0]["role_code"].as_str().expect("a code").to_owned();
+
+    let resolved = Call::get(format!(
+        "/v1/catalog/role-catalogs/{catalog}/1/roles/{known}"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(resolved.status, 200, "{}", resolved.body);
+    assert_eq!(resolved.json()["role_code"], known.as_str());
+    assert!(
+        resolved.json()["standard_title"]
+            .as_str()
+            .is_some_and(|title| !title.is_empty()),
+        "a resolved role carries the catalog's own title: {}",
+        resolved.body
+    );
+    assert!(
+        resolved.json()["responsibility_summary"]
+            .as_str()
+            .is_some_and(|summary| !summary.is_empty()),
+        "and what it is responsible for: {}",
+        resolved.body
+    );
+
+    // A code no revision declares is not found, and no title is invented.
+    let unknown = Call::get(format!("/v1/catalog/role-catalogs/{catalog}/1/roles/ZZZ"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+    assert_eq!(unknown.code(), "not_found");
+    assert!(
+        !unknown.body.contains("standard_title"),
+        "an unknown code must not come back with a guessed title: {}",
+        unknown.body
+    );
+
+    // A revision that does not exist is likewise not found.
+    let absent = Call::get(format!("/v1/catalog/role-catalogs/{catalog}/99"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(absent.status, 404, "{}", absent.body);
+}
+
+/// Code help explains every code an epic's pinned revisions define.
+#[tokio::test]
+async fn code_help_explains_the_codes_an_epic_is_actually_pinned_to() {
+    let composed = compose_realm("/tmp/kontor-cp2-help").await;
+    let world = &composed.world;
+
+    // The epic has to be pinned before there is anything to explain, which
+    // ensuring its scope does.
+    let ensured = Call::post(
+        format!("/v1/projects/{}/topology:ensure", composed.project),
+        &serde_json::json!({
+            "target": {"scope": "epic", "epic_id": composed.epic},
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("help-ensure")
+    .send(world)
+    .await;
+    assert_eq!(ensured.status, 200, "{}", ensured.body);
+
+    let help = Call::get(format!(
+        "/v1/projects/{}/epics/{}/code-help",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(help.status, 200, "{}", help.body);
+    let entries = help.json()["entries"].as_array().expect("entries").clone();
+
+    let entry = |code: &str| {
+        entries
+            .iter()
+            .find(|entry| entry["code"] == code)
+            .unwrap_or_else(|| panic!("`{code}` is explained: {}", help.body))
+            .clone()
+    };
+    // A declared kind, a historical one, and a role — one projection, because a
+    // client rendering a transcript has a code in hand and does not know which
+    // family it came from.
+    assert_eq!(entry("ECP")["category"], "session_topology");
+    assert_eq!(entry("ECP")["lifecycle"], "current");
+    assert_eq!(
+        entry("TSC")["lifecycle"],
+        "compatibility",
+        "a historical code is still explained honestly: {}",
+        help.body
+    );
+    assert_eq!(entry("TPM")["category"], "role");
+    assert!(
+        entry("TPM")["meaning"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "every entry says what the code means: {}",
+        help.body
+    );
+
+    // Sorted by category then code, so two reads produce the same list.
+    let ordered: Vec<(String, String)> = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry["category"].as_str().expect("a category").to_owned(),
+                entry["code"].as_str().expect("a code").to_owned(),
+            )
+        })
+        .collect();
+    let mut sorted = ordered.clone();
+    sorted.sort();
+    assert_eq!(ordered, sorted, "{}", help.body);
+
+    // Every entry cites the revision it was read from, so a client can tell two
+    // vocabularies apart rather than merging them.
+    for entry in &entries {
+        assert!(
+            entry["source"]["id"].as_str().is_some(),
+            "an entry names the revision it came from: {entry}"
+        );
+    }
+}
+
+/// An epic's pin moves only through the exact preview that was authorized.
+#[tokio::test]
+async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
+    let composed = compose_realm("/tmp/kontor-cp2-upgrade").await;
+    let world = &composed.world;
+
+    let ensured = Call::post(
+        format!("/v1/projects/{}/topology:ensure", composed.project),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": composed.epic},
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("upgrade-ensure")
+    .send(world)
+    .await;
+    assert_eq!(ensured.status, 200, "{}", ensured.body);
+    let pinned_before = ensured.json()["projection"]["pinned_spec"].clone();
+
+    // Publish a second revision of the *bundled* lineage: a vocabulary that
+    // keeps the root and the epic kind but drops the control plane.
+    let bundled = pinned_before["id"].as_str().expect("a spec id").to_owned();
+    let drafted = Call::post(
+        format!("/v1/projects/{}/topology-specs:draft", composed.project),
+        &serde_json::json!({
+            "base": {"id": bundled, "version": pinned_before["version"]},
+            "name": "Narrowed vocabulary",
+            "root_kind": "PSW",
+            "node_kinds": vocabulary("PSW", Some("ESW")),
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("upgrade-draft")
+    .send(world)
+    .await;
+    assert_eq!(drafted.status, 200, "{}", drafted.body);
+    assert_eq!(
+        drafted.json()["candidate"]["version"],
+        2,
+        "an edit drafts the next version of the lineage: {}",
+        drafted.body
+    );
+    let candidate = drafted.json()["candidate"].clone();
+    let hash = drafted.json()["candidate_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let published = Call::post(
+        format!("/v1/projects/{}/topology-specs:publish", composed.project),
+        &serde_json::json!({
+            "candidate": candidate,
+            "validation_hash": hash,
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("upgrade-publish")
+    .send(world)
+    .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+
+    // The preview says what the move would cost, and commits nothing.
+    let preview = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/topology:upgrade-preview",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({"target_spec": {"id": bundled, "version": 2}}),
+    )
+    .signed_as(world, "admin")
+    .with_key("upgrade-preview")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["current_spec"]["version"], 1);
+    assert_eq!(preview.json()["target_spec"]["version"], 2);
+    let effects = preview.json()["effects"]
+        .as_array()
+        .expect("effects")
+        .clone();
+    assert!(
+        effects.iter().any(|effect| effect["effect"] == "withdrawn"),
+        "dropping a kind is named: {}",
+        preview.body
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| effect["subject"] == "node" && effect["effect"] == "orphaned"),
+        "the control-plane node standing on the dropped kind is named: {}",
+        preview.body
+    );
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let unmoved = Call::get(format!(
+        "/v1/projects/{}/topology:inspect?epic_id={}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(
+        unmoved.json()["pinned_spec"]["version"],
+        1,
+        "a preview commits nothing: {}",
+        unmoved.body
+    );
+
+    // A hash no published revision produces is refused.
+    let invented = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/topology:upgrade-apply",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({"preview_hash": "0".repeat(64), "expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("upgrade-invented")
+    .send(world)
+    .await;
+    assert_eq!(invented.status, 409, "{}", invented.body);
+
+    // A stale epic revision is refused too, and the pin is still where it was.
+    let stale = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/topology:upgrade-apply",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({"preview_hash": preview_hash, "expected_revision": 99}),
+    )
+    .signed_as(world, "admin")
+    .with_key("upgrade-stale")
+    .send(world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+
+    let epic_revision = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic_revision.status, 200, "{}", epic_revision.body);
+    let revision = epic_revision.json()["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    let applied = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/topology:upgrade-apply",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({"preview_hash": preview_hash, "expected_revision": revision}),
+    )
+    .signed_as(world, "admin")
+    .with_key("upgrade-apply")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["pinned_spec"]["version"], 2);
+    assert_eq!(applied.json()["receipt"]["applied"], "created");
+
+    // The replay answers from what is durable and moves nothing again.
+    let replayed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/topology:upgrade-apply",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({"preview_hash": preview_hash, "expected_revision": revision}),
+    )
+    .signed_as(world, "admin")
+    .with_key("upgrade-apply")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(replayed.json()["pinned_spec"]["version"], 2);
+
+    // The revision the epic *left* is untouched — it is immutable, and other
+    // epics may still be pinned to it.
+    let old = Call::get(format!(
+        "/v1/projects/{}/topology-specs/{bundled}/1",
+        composed.project
+    ))
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(old.status, 200, "{}", old.body);
+    assert_eq!(old.json()["spec"]["version"], 1);
 }
