@@ -845,7 +845,7 @@ async fn preparation_refuses_two_projects_carrying_one_epic_name() {
 }
 
 #[tokio::test]
-async fn preparation_refuses_two_workspaces_at_one_canonical_worktree() {
+async fn preparation_refuses_duplicate_canonical_workspace_aliases() {
     let recorded = daemon();
     recorded.forget_queued_rpc("fetch_workspaces_request");
     recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_TWO));
@@ -859,7 +859,7 @@ async fn preparation_refuses_two_workspaces_at_one_canonical_worktree() {
     let refused = plane
         .prepare_workspace()
         .await
-        .expect_err("two workspaces at one path is a diverged hierarchy");
+        .expect_err("two workspaces with one title and path are ambiguous");
     assert!(matches!(refused, RuntimeError::WorkspaceMismatch { .. }));
     assert_eq!(
         plane.daemon.count("workspace create"),
@@ -3439,8 +3439,7 @@ const WORKSPACE_LIST_NODE: &str = fixture!("protocol/workspace-list-node.json");
 const WORKSPACE_LIST_NODE_STALE_TITLE: &str =
     fixture!("protocol/workspace-list-node-stale-title.json");
 /// What the plane's own scope renders for `NODE_A`'s task-scoped container.
-const CANONICAL_NODE_TITLE: &str =
-    "TSW · ASMA-7755 · KON-11 [kontor-node-01890000-0000-7000-8000-0000000000b1]";
+const CANONICAL_NODE_TITLE: &str = "TSW · ASMA-7755 · KON-11";
 const WORKSPACE_LIST_OTHER_NODE: &str = fixture!("protocol/workspace-list-other-node.json");
 const WORKSPACE_NODE_OTHER_PROJECT: &str = fixture!("protocol/workspace-node-other-project.json");
 
@@ -3509,8 +3508,8 @@ fn retitle(node_id: TopologyNodeId) -> RetitleContainerRequest {
     }
 }
 
-/// A container is addressed by the node that owns it, and the label Paseo
-/// reports back is that node's — not the team run's.
+/// A container is addressed by the node that owns it while its title stays
+/// human-readable.
 #[tokio::test]
 async fn a_container_is_keyed_by_topology_node_and_not_by_team_run() {
     let recorded = RecordedPaseo::new()
@@ -3534,7 +3533,7 @@ async fn a_container_is_keyed_by_topology_node_and_not_by_team_run() {
     assert_eq!(
         outcome.snapshot.correlation.label.topology_node_id(),
         node_id,
-        "the correlation Paseo reported names the node, not a run"
+        "Kontor keeps the node correlation internally"
     );
     assert_eq!(
         outcome.snapshot.binding.identity.native_id.as_str(),
@@ -3556,9 +3555,8 @@ async fn a_container_is_keyed_by_topology_node_and_not_by_team_run() {
 /// A lost acknowledgement must not leave two containers behind.
 ///
 /// The create reached Paseo and the answer did not come back. On the retry the
-/// workspace is already there carrying this node's label, so it is adopted
-/// rather than made a second time — which is the whole reason correlation is by
-/// label and not by name.
+/// workspace is already there under the unique title and canonical path, so it
+/// is adopted rather than made a second time.
 #[tokio::test]
 async fn a_lost_acknowledgement_adopts_the_container_it_already_made() {
     let recorded = RecordedPaseo::new()
@@ -3632,9 +3630,9 @@ async fn a_restart_reconciles_by_the_stored_native_id() {
     );
 }
 
-/// A stored container that now reports another node's label is a collision.
+/// Once Kontor stored the native id, a later title edit does not change identity.
 #[tokio::test]
-async fn a_stored_container_reporting_another_nodes_label_is_refused() {
+async fn a_stored_container_is_reconciled_by_id_after_title_drift() {
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
         .announcing(&v(SERVER_INFO))
@@ -3644,25 +3642,56 @@ async fn a_stored_container_reporting_another_nodes_label_is_refused() {
 
     let mut request = child_request(node(NODE_A), Some(bound_root(node(NODE_B))));
     request.bound_native_id = Some(external(WORKSPACE_ID));
-    let refusal = plane
+    let outcome = plane
         .adapter
         .prepare_container(&request)
         .await
-        .expect_err("the container belongs to another node");
-    assert_eq!(refusal, RuntimeError::CorrelationFailed);
+        .expect("the stored id remains authoritative");
+    assert!(!outcome.created);
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
+    );
 }
 
-/// A container already carrying another node's label is never adopted, however
-/// exactly its path and name match.
+/// A duplicated logical alias is ambiguous and is never guessed.
 #[tokio::test]
-async fn a_container_owned_by_another_node_is_never_adopted() {
+async fn duplicate_canonical_titles_and_paths_block_creation() {
+    let mut duplicates = v(WORKSPACE_LIST_NODE);
+    let mut second = duplicates["entries"][0].clone();
+    second["id"] = serde_json::json!("wks_duplicate");
+    duplicates["entries"]
+        .as_array_mut()
+        .expect("entries are an array")
+        .push(second);
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", duplicates);
+    let plane = Plane::fresh(recorded);
+
+    let refused = plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect_err("two logical aliases are ambiguous");
+    assert!(
+        matches!(refused, RuntimeError::WorkspaceMismatch { .. }),
+        "the ambiguity is explicit: {refused:?}"
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// A workspace without the exact clean alias is somebody else's work.
+#[tokio::test]
+async fn a_nonmatching_alias_is_foreign_and_unmanaged() {
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
         .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
         .announcing(&v(SERVER_INFO))
         .answering_rpc("project.list.request", v(PROJECT_LIST))
-        // The census shows a workspace at exactly this path and title — owned by
-        // another node. The readback after the create shows ours.
+        // This fixture carries a legacy suffixed title.
         .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_OTHER_NODE))
         .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
     let plane = Plane::fresh(recorded);
@@ -3671,38 +3700,8 @@ async fn a_container_owned_by_another_node_is_never_adopted() {
         .adapter
         .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
         .await
-        .expect("this node gets its own container");
-    assert!(
-        outcome.created,
-        "another node's container is not this node's to take"
-    );
-}
-
-/// A workspace carrying no Kontor node label is somebody else's work.
-///
-/// The team-run label the older contract planted is exactly that: it names a
-/// run, not a place, so a node must not read it as its own prior effect.
-#[tokio::test]
-async fn an_unlabelled_child_is_foreign_and_unmanaged() {
-    let recorded = RecordedPaseo::new()
-        .answering(&PaseoCommand::version(), VERSION)
-        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
-        .announcing(&v(SERVER_INFO))
-        .answering_rpc("project.list.request", v(PROJECT_LIST))
-        // WORKSPACE_LIST_ONE carries a `kontor-team-` label.
-        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_ONE))
-        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
-    let plane = Plane::fresh(recorded);
-
-    let outcome = plane
-        .adapter
-        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
-        .await
         .expect("the foreign workspace is left alone");
-    assert!(
-        outcome.created,
-        "a team-run label is not a node label and must not be adopted"
-    );
+    assert!(outcome.created, "only the exact clean alias may be adopted");
     assert!(
         !plane
             .daemon
@@ -3946,7 +3945,7 @@ async fn a_container_created_outside_the_bound_parent_is_refused() {
 /// for a child that names a task.
 ///
 /// The regression this pins is a workspace called `Task Session Workspace ·
-/// 0189…` in a live Realm. Paseo has no rename, so that title is permanent.
+/// 0189…` or one exposing an internal correlation id in a live Realm.
 #[tokio::test]
 async fn a_task_scoped_child_is_titled_from_its_ticket_and_not_from_its_node_id() {
     let recorded = RecordedPaseo::new()
@@ -3974,35 +3973,18 @@ async fn a_task_scoped_child_is_titled_from_its_ticket_and_not_from_its_node_id(
 
     let titles = plane.daemon.titles("workspace create");
     assert_eq!(titles.len(), 1, "one container, one title: {titles:?}");
+    assert_eq!(titles[0], "TSW · ASMA-7755 · KON-11");
     assert!(
-        titles[0].starts_with("TSW · ASMA-7755 · KON-11"),
-        "the title is the ticket's, not the node's: {}",
+        !titles[0].contains(&node_id.to_string()),
+        "machine identity stays in Kontor's binding: {}",
         titles[0]
     );
-    // The node id belongs in the bracketed correlation label and nowhere else.
-    // That half is machine-read; the half in front of it is what a human sees.
-    let (display, correlation) = titles[0]
-        .split_once(" [")
-        .expect("a created title carries its correlation label");
-    assert_eq!(
-        display, "TSW · ASMA-7755 · KON-11",
-        "the visible half is exactly the ticket's title"
-    );
-    assert!(
-        !display.contains(&node_id.to_string()),
-        "a node id is an identity, and Paseo has no rename: {display}"
-    );
-    assert!(
-        correlation.contains(&node_id.to_string()),
-        "and the machine-read half still names the node: {correlation}"
-    );
 
-    // The correlation is unchanged: the label Paseo reports back still names
-    // the node, which is what every later readback resolves by.
+    // The internal correlation remains available without leaking into display.
     assert_eq!(
         outcome.snapshot.correlation.label.topology_node_id(),
         node_id,
-        "the node correlation must survive the renaming rule"
+        "the binding still names the topology node"
     );
     assert_eq!(outcome.snapshot.topology_node_id(), node_id);
 }

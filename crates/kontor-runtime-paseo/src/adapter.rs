@@ -33,9 +33,8 @@
 //! Three more absences are 0.3.1's own and are handled here rather than papered
 //! over:
 //!
-//! * a workspace has no labels, so its correlation label rides in the one string
-//!   a create can write and a readback returns — see
-//!   [`crate::wire::workspace_label_suffix`];
+//! * workspace titles are human-readable aliases; durable Kontor bindings hold
+//!   the native identities used after first discovery;
 //! * an agent snapshot has no `projectId`, so "is this agent in the epic
 //!   project?" is answered through its workspace, which does carry one;
 //! * the canonical timeline carries no permission items, so a permission's fate
@@ -67,9 +66,8 @@ use kontor_runtime::capability::{
     RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
 };
 use kontor_runtime::container::{
-    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerLabel,
-    ContainerOutcome, ContainerProjection, ContainerRequest, RetitleContainerOutcome,
-    RetitleContainerRequest,
+    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
+    ContainerProjection, ContainerRequest, RetitleContainerOutcome, RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -101,7 +99,7 @@ use crate::wire::{
     PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjection, PaseoSendAccepted,
     PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck, PaseoTimelineCursor,
     PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage, label,
-    normalize_entry, stream_permission_external_id, workspace_label_suffix,
+    normalize_entry, stream_permission_external_id,
 };
 
 /// Everything Paseo 0.3.1 can prove at trust grade A.
@@ -332,24 +330,9 @@ pub struct PaseoConfig {
     ///
     /// Adoption is by **exact readback of the configured id** and carries no
     /// authority over the container: it is never renamed, never archived, and
-    /// children of it that carry no Kontor label are left alone as
-    /// [`PaseoChildOwnership::ForeignUnmanaged`] rather than absorbed.
+    /// children of it remain outside Kontor unless a topology binding names
+    /// their exact native ids.
     pub adopted_containers: BTreeMap<TopologyNodeId, ExternalId>,
-}
-
-/// What a child container inside a bound root belongs to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PaseoChildOwnership {
-    /// It carries this node's Kontor label.
-    ThisNode,
-    /// It carries another node's Kontor label.
-    AnotherNode(TopologyNodeId),
-    /// It carries no Kontor label at all.
-    ///
-    /// Somebody else's work living in a container Kontor adopted. It is never
-    /// adopted, never renamed and never archived — Kontor's authority over an
-    /// adopted root does not extend to the things it already contained.
-    ForeignUnmanaged,
 }
 
 impl PaseoConfig {
@@ -1905,17 +1888,13 @@ impl PaseoAdapter {
                         rule: "the bound container is not in the parent this node is placed under",
                     })?;
                 let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
-                // A child *does* carry a label, so the collision is checkable:
-                // the container Kontor stored for this node now reporting
-                // another node's label is a disagreement, not a rebinding.
                 (
                     identity.clone(),
-                    ContainerCorrelationEvidence::establish(
+                    ContainerCorrelationEvidence::by_exact_id(
                         request.topology_node_id,
-                        workspace.reported_label().unwrap_or_default(),
                         identity,
                         request.requested_at,
-                    )?,
+                    ),
                 )
             }
             ContainerProjection::LogicalOnly => {
@@ -2007,28 +1986,31 @@ impl PaseoAdapter {
 
     /// Bind a node to a container below the exact bound parent.
     ///
-    /// Candidates are selected by **this node's label** and by nothing else. A
-    /// workspace at the right path carrying another node's label belongs to that
-    /// node; one carrying no label at all is somebody else's work that happens
-    /// to live in a container Kontor adopted.
+    /// Before a durable native id exists, the human-readable title is the
+    /// logical alias inside the exact bound project and canonical task path.
+    /// After binding, reconciliation is always by the stored native id.
     async fn bind_native_child(
         &self,
         request: &ContainerRequest,
         project_id: &ExternalId,
         generation: u64,
     ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
-        let label = request.correlation().to_string();
-        // Resolved before anything is searched for or created, so a task this
-        // plane has no scope for is refused before any native mutation rather
-        // than named after a node id.
-        let title = self.container_title(request.task_id, request.display_name.as_str(), &label)?;
+        let title = self.container_title(request.task_id, request.display_name.as_str())?;
+        let cwd = request
+            .cwd
+            .as_ref()
+            .ok_or(RuntimeError::WorkspaceMismatch {
+                rule: "a native_child must say which directory it works in",
+            })?;
         let existing = self.fetch_workspaces(project_id.as_str()).await?;
         let mut mine = existing
-            .iter()
+            .into_iter()
             .filter(|workspace| {
-                self.child_ownership(workspace, request) == PaseoChildOwnership::ThisNode
+                workspace.project_id == project_id.as_str()
+                    && workspace.visible_title() == title
+                    && WorkspaceRoot::parse(&workspace.workspace_directory)
+                        .is_ok_and(|root| &root == cwd)
             })
-            .cloned()
             .collect::<Vec<_>>();
 
         let (workspace, created) = match mine.len() {
@@ -2036,17 +2018,8 @@ impl PaseoAdapter {
             // stops a lost acknowledgement from leaving two containers behind.
             1 => (mine.remove(0), false),
             0 => {
-                let command = PaseoCommand::workspace_create(
-                    request
-                        .cwd
-                        .as_ref()
-                        .ok_or(RuntimeError::WorkspaceMismatch {
-                            rule: "a native_child must say which directory it works in",
-                        })?
-                        .as_str(),
-                    project_id.as_str(),
-                    &title,
-                );
+                let command =
+                    PaseoCommand::workspace_create(cwd.as_str(), project_id.as_str(), &title);
                 let output = self.transport.run(&command).await?;
                 let created: PaseoCliWorkspaceCreated = output.parse("PaseoCliWorkspaceCreated")?;
                 // The CLI answer omits `projectId`, so the readback is what says
@@ -2059,11 +2032,9 @@ impl PaseoAdapter {
                     .ok_or(RuntimeError::CorrelationFailed)?;
                 (workspace, true)
             }
-            // Two containers carrying one node's label is a hierarchy that has
-            // diverged. Choosing one would put half of a node's seats in each.
             _ => {
                 return Err(RuntimeError::WorkspaceMismatch {
-                    rule: "several Paseo workspaces carry this topology node's label",
+                    rule: "several Paseo workspaces carry this task's canonical title and path",
                 });
             }
         };
@@ -2074,16 +2045,15 @@ impl PaseoAdapter {
             });
         }
         let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
-        let correlation = ContainerCorrelationEvidence::establish(
+        let correlation = ContainerCorrelationEvidence::by_exact_id(
             request.topology_node_id,
-            workspace.reported_label().unwrap_or_default(),
             identity.clone(),
             request.requested_at,
-        )?;
+        );
         Ok((identity, correlation, created))
     }
 
-    /// The title one native container must carry, correlation label and all.
+    /// The human-readable title one native container must carry.
     ///
     /// **The one renderer.** Both entry points that decide a container's name go
     /// through it — the bind path that creates one and the retitle path that
@@ -2103,44 +2073,16 @@ impl PaseoAdapter {
     /// project and epic roots, whose titles are structural rather than
     /// ticket-scoped, and there is no task scope to render them from.
     ///
-    /// The correlation label is appended here rather than by the callers, because
-    /// it is part of the title Paseo stores: a rename that dropped it would strip
-    /// the evidence every readback resolves this container by.
-    ///
     /// # Errors
     /// Returns [`RuntimeError::WorkspaceMismatch`] when the plane holds no scope
     /// for the named task. Refusing is the whole point: falling back to the
     /// structural name would produce exactly the title this rule exists to
     /// prevent.
-    fn container_title(
-        &self,
-        task_id: Option<TaskId>,
-        structural: &str,
-        label: &str,
-    ) -> RuntimeResult<String> {
-        let display = match task_id {
+    fn container_title(&self, task_id: Option<TaskId>, structural: &str) -> RuntimeResult<String> {
+        Ok(match task_id {
             Some(task_id) => self.config.scope.workspace_display_name_for(task_id)?,
             None => structural.to_owned(),
-        };
-        Ok(workspace_label_suffix(&display, label))
-    }
-
-    /// Who a child container inside a bound root belongs to.
-    #[must_use]
-    fn child_ownership(
-        &self,
-        workspace: &PaseoWorkspace,
-        request: &ContainerRequest,
-    ) -> PaseoChildOwnership {
-        match workspace.reported_label().map(ContainerLabel::parse) {
-            Some(Ok(label)) if label.topology_node_id() == request.topology_node_id => {
-                PaseoChildOwnership::ThisNode
-            }
-            Some(Ok(label)) => PaseoChildOwnership::AnotherNode(label.topology_node_id()),
-            // No Kontor node label at all — including a workspace carrying the
-            // older team-run label, which names a run and not a place.
-            Some(Err(_)) | None => PaseoChildOwnership::ForeignUnmanaged,
-        }
+        })
     }
 
     async fn read_project_by_id(&self, project_id: &str) -> RuntimeResult<PaseoProject> {
@@ -2694,23 +2636,15 @@ impl PaseoAdapter {
                 rule: "the bound project no longer holds the addressed native container",
             })?;
 
-        let label = ContainerLabel::for_node(request.topology_node_id);
         let identity = self.identity(ExternalId::parse(&before.id)?, generation);
-        // The label is proved *before* the rename, because the rename rewrites the
-        // string it lives in: a container whose title does not already name this
-        // node is not this node's container, and renaming it would make it look
-        // like one.
-        let correlation = ContainerCorrelationEvidence::establish(
+        let correlation = ContainerCorrelationEvidence::by_exact_id(
             request.topology_node_id,
-            before.reported_label().unwrap_or_default(),
             identity.clone(),
             request.requested_at,
-        )?;
-        let desired = ExternalName::parse(&self.container_title(
-            request.task_id,
-            request.structural_name.as_str(),
-            &label.to_string(),
-        )?)
+        );
+        let desired = ExternalName::parse(
+            &self.container_title(request.task_id, request.structural_name.as_str())?,
+        )
         .map_err(RuntimeError::Domain)?;
         let changed = before.visible_title() != desired.as_str();
         Ok(PaseoRetitlePlan {
@@ -3423,27 +3357,20 @@ impl RuntimeAdapter for PaseoAdapter {
         }
         let project = self.require_project()?;
 
+        let workspace_title = self
+            .config
+            .scope
+            .workspace_display_name_for(request.task_id)?;
         let existing = self.fetch_workspaces(project.project_id.as_str()).await?;
         let mut exact = existing
             .into_iter()
             .filter(|workspace| {
                 workspace.project_id == project.project_id.as_str()
+                    && workspace.visible_title() == workspace_title
                     && WorkspaceRoot::parse(&workspace.workspace_directory)
                         .is_ok_and(|root| root == request.root)
             })
             .collect::<Vec<_>>();
-
-        // 0.3.1 has no workspace labels, so the correlation label travels in the
-        // title — the one string a create writes and a readback returns. See
-        // `wire::workspace_label_suffix` for why that is a real round trip and
-        // not a fabricated one.
-        let workspace_title = workspace_label_suffix(
-            &self
-                .config
-                .scope
-                .workspace_display_name_for(request.task_id)?,
-            &WorkspaceLabel::for_team_run(request.team_run_id).to_string(),
-        );
         let (workspace, created) = match exact.len() {
             1 => (exact.remove(0), false),
             0 => {
@@ -3471,17 +3398,11 @@ impl RuntimeAdapter for PaseoAdapter {
         self.verify_workspace_placement(&workspace, &project, &task_scope.canonical_worktree_cwd)?;
 
         let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
-        // What Paseo *reported*, extracted from the title it returned. A
-        // workspace whose title Paseo rewrote, or that an operator renamed,
-        // reports nothing here and fails correlation — which is the point:
-        // passing Kontor's own computed label in instead would make this
-        // evidence prove nothing while looking identical.
-        let correlation = WorkspaceCorrelationEvidence::establish(
+        let correlation = WorkspaceCorrelationEvidence::by_exact_id(
             request.team_run_id,
-            workspace.reported_label().unwrap_or_default(),
             identity.clone(),
             request.requested_at,
-        )?;
+        );
         let snapshot = WorkspaceBindingSnapshot {
             binding: WorkspaceBinding {
                 id: request.workspace_binding_id,

@@ -146,9 +146,8 @@ impl PaseoCommand {
     /// than asking Paseo to provision one of its own, which would put the role
     /// in a tree Kontor never prepared.
     ///
-    /// There is no `--label`: 0.3.1's `workspace create` does not have one and
-    /// its workspaces carry no labels at all, so the correlation label rides in
-    /// the title. See [`crate::wire::workspace_label_suffix`].
+    /// There is no `--label`: Kontor therefore stores the native workspace id
+    /// in its own durable binding rather than exposing machine identity here.
     #[must_use]
     pub fn workspace_create(canonical_cwd: &str, project_id: &str, title: &str) -> Self {
         Self::mutate(
