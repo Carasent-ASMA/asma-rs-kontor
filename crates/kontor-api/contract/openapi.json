@@ -381,61 +381,6 @@
         }
       }
     },
-    "/v1/commands/{kind}": {
-      "post": {
-        "tags": [
-          "control"
-        ],
-        "summary": "Record one control-plane command intent.",
-        "description": "The kind, the target and the desired state are checked against the domain's own\ncompatibility matrix before anything is written, and the revision is checked\nagainst what the aggregate currently stands at — so a caller working from a\nstale read is told the current revision and nothing is mutated. The write\nitself is `kontor-store`'s single transaction: intent, target row, outbox\nentry, first durable transition, desired state and the intent event, or none of\nthem.",
-        "operationId": "command",
-        "parameters": [
-          {
-            "name": "kind",
-            "in": "path",
-            "description": "The command kind",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "Idempotency-Key",
-            "in": "header",
-            "description": "The caller's stable key",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CommandRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Recorded, or replayed unchanged",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReceiptResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Stale revision or a reused idempotency key"
-          }
-        }
-      }
-    },
     "/v1/context-policy/preview": {
       "post": {
         "tags": [
@@ -4686,48 +4631,6 @@
             "type": "integer",
             "format": "int64",
             "description": "The position this read is consistent with."
-          }
-        }
-      },
-      "CommandRequest": {
-        "type": "object",
-        "description": "What a command asks for, as a caller states it.",
-        "required": [
-          "project_id",
-          "target",
-          "expected_revision",
-          "intent",
-          "payload"
-        ],
-        "properties": {
-          "desired_state": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The desired run state, for the commands that carry one."
-          },
-          "expected_revision": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The revision the caller computed the intent against.",
-            "minimum": 0
-          },
-          "intent": {
-            "type": "object",
-            "description": "The canonical intent document. Must carry a `schema_version`."
-          },
-          "payload": {
-            "type": "object",
-            "description": "The canonical dispatch payload. Must carry a `schema_version`."
-          },
-          "project_id": {
-            "type": "string",
-            "description": "The acting project."
-          },
-          "target": {
-            "type": "object",
-            "description": "The aggregate the command targets."
           }
         }
       },

@@ -318,7 +318,7 @@ impl ToolSpec {
 
 /// Every operation a Paseo Lead Architect can reach, and nothing else.
 ///
-/// The three public `/v1` routes deliberately absent are listed in
+/// The public `/v1` routes deliberately absent are listed in
 /// [`NON_AGENT_ROUTES`]. The parity oracle proves that this table plus that list
 /// covers the generated contract exactly.
 pub static REGISTRY: &[ToolSpec] = &[
@@ -2335,12 +2335,6 @@ pub static NON_AGENT_ROUTES: &[NonAgentRoute] = &[
         path: "/v1/openapi.json",
         reason: "the contract document itself, consumed by tests and build tooling",
     },
-    NonAgentRoute {
-        method: Method::Post,
-        path: "/v1/commands/{kind}",
-        reason: "the generic intent surface; the concrete application tools supersede it, \
-                 and exposing it would bypass this closed tool vocabulary",
-    },
 ];
 
 #[cfg(test)]
@@ -2452,8 +2446,8 @@ mod tests {
     }
 
     #[test]
-    fn the_allowlist_names_three_routes_no_tool_also_claims() {
-        assert_eq!(NON_AGENT_ROUTES.len(), 3);
+    fn the_allowlist_names_two_routes_no_tool_also_claims() {
+        assert_eq!(NON_AGENT_ROUTES.len(), 2);
         for route in NON_AGENT_ROUTES {
             assert!(
                 !route.reason.is_empty(),

@@ -14,22 +14,16 @@ use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{Json, http::header::HeaderName};
 use futures::stream::Stream;
-use kontor_core::id::CommandReceiptId;
-use kontor_core::id::{
-    AgentRunId, CanonicalDocument, EventCursor, IdempotencyKey, ProjectId, TaskId,
-};
-use kontor_core::realm::{RealmCursor, ReceiptEnvelope};
-use kontor_core::receipt::CommandKind;
-use kontor_core::repository::{
-    CommandRepository, NewCommandIntent, RealmRepository, RunInspection, TaskInspection,
-};
+use kontor_core::id::{AgentRunId, EventCursor, IdempotencyKey, ProjectId, TaskId};
+use kontor_core::realm::RealmCursor;
+use kontor_core::repository::{RealmRepository, RunInspection, TaskInspection};
 use kontor_core::state::{DerivedRunState, Freshness};
 use serde::Deserialize;
 
 use crate::auth::CallerCapability;
 use crate::dto::{
-    BindingDto, ContextPolicyDto, EventDto, GapDto, HealthDto, ProjectionDto, RealmDto, ReceiptDto,
-    ReceiptResponse, RunDto, SnapshotDto, TaskDto, run_revisions, task_revisions,
+    BindingDto, ContextPolicyDto, EventDto, GapDto, HealthDto, ProjectionDto, RealmDto, RunDto,
+    SnapshotDto, TaskDto, run_revisions, task_revisions,
 };
 use crate::error::{ApiError, ApiErrorCode};
 use crate::state::ApiState;
@@ -160,211 +154,6 @@ pub async fn task_snapshot(
         snapshot_cursor: cursor,
         value: task_dto(&inspection),
     }))
-}
-
-/// Which authority one command kind demands.
-///
-/// The split is by what the command *is authority over*, not by how disruptive it
-/// looks: granting execution capability and approving or revoking a schedule
-/// override are decisions about who may act at all, so they sit with the admin
-/// tier alongside credentials. Everything else is ordinary operator work.
-#[must_use]
-pub const fn command_authority(kind: CommandKind) -> CallerCapability {
-    match kind {
-        // Granting or withdrawing authority to act — over a schedule, over a
-        // bounded execution scope, or over the existence of the project and the
-        // fleet a run authenticates as — is a decision about who may act at all,
-        // so all of it sits with the admin tier.
-        CommandKind::AuthorizeExecution
-        | CommandKind::ApproveScheduleOverride
-        | CommandKind::RevokeScheduleOverride
-        | CommandKind::RevokeExecutionAuthorization
-        | CommandKind::EnsureProject
-        | CommandKind::EnsureAccountProfile
-        | CommandKind::ApplyEpicGraph
-        | CommandKind::SelectTaskProfile
-        | CommandKind::SelectTaskTeam
-        | CommandKind::SelectTaskAccount
-        | CommandKind::ReplaceSeat => CallerCapability::Admin,
-        _ => CallerCapability::Operator,
-    }
-}
-
-/// Record one control-plane command intent.
-///
-/// The kind, the target and the desired state are checked against the domain's own
-/// compatibility matrix before anything is written, and the revision is checked
-/// against what the aggregate currently stands at — so a caller working from a
-/// stale read is told the current revision and nothing is mutated. The write
-/// itself is `kontor-store`'s single transaction: intent, target row, outbox
-/// entry, first durable transition, desired state and the intent event, or none of
-/// them.
-#[utoipa::path(
-    post, path = "/v1/commands/{kind}", tag = "control",
-    params(
-        ("kind" = String, Path, description = "The command kind"),
-        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
-    ),
-    request_body = crate::dto::CommandRequest,
-    responses(
-        (status = 200, body = ReceiptResponse, description = "Recorded, or replayed unchanged"),
-        (status = 409, description = "Stale revision or a reused idempotency key")
-    )
-)]
-pub async fn command(
-    State(state): State<ApiState>,
-    caller: Caller,
-    Path(kind): Path<String>,
-    headers: HeaderMap,
-    Json(request): Json<crate::dto::CommandRequest>,
-) -> Result<Json<ReceiptResponse>, ApiError> {
-    let kind = CommandKind::parse(&kind)
-        .map_err(|_| state.refuse(ApiErrorCode::NotFound, "no such command kind exists"))?;
-    caller.require(&state, command_authority(kind))?;
-    let key = idempotency_key(&state, &headers)?;
-
-    // The matrix decides whether this command may target that aggregate at all,
-    // and whether it must carry a desired state. Refused before the revision is
-    // read, so an incompatible pair never reaches a row.
-    kind.ensure_compatible(&request.target, request.desired_state)
-        .map_err(|error| ApiError::from_domain(state.realm_id(), &error))?;
-
-    let intent = canonical(&state, &request.intent)?;
-    let payload = canonical(&state, &request.payload)?;
-    let recorded_at = now();
-
-    let realm_id = state.realm_id();
-    let outcome = state.with_store(|store| -> Result<(bool, _), ApiError> {
-        // The current revision, read before anything is written. A caller working
-        // from a stale read is answered with the number it needs and nothing is
-        // mutated; the compare-and-swap inside the write is still what makes that
-        // refusal safe under a race.
-        let current = store
-            .snapshot_target_revision(request.project_id, &request.target)
-            .map_err(|error| ApiError::from_repository(realm_id, &error))?
-            .open(realm_id)
-            .map_err(|error| ApiError::from_domain(realm_id, &error))?;
-        let Some(current) = current else {
-            return Err(ApiError::new(
-                realm_id,
-                ApiErrorCode::NotFound,
-                "the command target does not exist in this project",
-            ));
-        };
-        if current != request.expected_revision {
-            return Err(ApiError::new(
-                realm_id,
-                ApiErrorCode::RevisionConflict,
-                "the target aggregate moved since the caller read it",
-            )
-            .with_revision(Some(current)));
-        }
-
-        // A replay is answered from the durable receipt and never re-recorded.
-        //
-        // Going through the write path instead would compare this call's
-        // wall-clock earliest-dispatch instant against the stored one and refuse
-        // an honest retry for differing by the seconds it took to arrive. The
-        // durable record already says whether this is the same command, so that is
-        // what decides — `ensure_replay` for the target and the intent, and the
-        // kind and revision the store would otherwise have compared.
-        if let Some(existing) = store
-            .get_receipt_by_key(&key)
-            .map_err(|error| ApiError::from_repository(realm_id, &error))?
-        {
-            let reused = ApiError::new(
-                realm_id,
-                ApiErrorCode::IdempotencyConflict,
-                "the idempotency key was already used for a different command",
-            );
-            existing
-                .ensure_replay(&request.target, &intent)
-                .map_err(|_| reused.clone())?;
-            if existing.kind != kind
-                || existing.project_id != request.project_id
-                || existing.target_revision != request.expected_revision
-            {
-                return Err(reused);
-            }
-            return Ok((true, existing));
-        }
-        let envelope = ReceiptEnvelope::new(
-            realm_id,
-            NewCommandIntent {
-                project_id: request.project_id,
-                receipt_id: CommandReceiptId::generate(),
-                idempotency_key: key.clone(),
-                kind,
-                target: request.target,
-                target_revision: request.expected_revision,
-                intent,
-                payload,
-                desired: request.desired_state,
-                not_before: recorded_at,
-                created_at: recorded_at,
-            },
-        );
-        let receipt = store
-            .record_intent_in_realm(&envelope)
-            .map_err(|error| intent_refusal(realm_id, store, &request, &error))?;
-        Ok((false, receipt))
-    })?;
-
-    // The intent event committed with the receipt, so the control-plane log moved
-    // and every durable subscriber is owed a wake-up.
-    state.signals().appended();
-    let (replayed, receipt) = outcome;
-    Ok(Json(ReceiptResponse {
-        envelope: ReceiptEnvelope::new(state.realm_id(), ReceiptDto::from(&receipt)),
-        replayed,
-    }))
-}
-
-/// Turn a refused intent into the refusal the caller is owed.
-///
-/// The store merges "unknown target" and "its revision moved" into one conflict,
-/// because from inside the write they are the same failed compare-and-swap. From
-/// out here they are different answers, so the target is re-read to say which —
-/// and a revision conflict carries the number the caller needs.
-fn intent_refusal(
-    realm_id: kontor_core::id::RealmId,
-    store: &kontor_store::SqliteStore,
-    request: &crate::dto::CommandRequest,
-    error: &kontor_core::repository::RepositoryError,
-) -> ApiError {
-    use kontor_core::repository::RepositoryError;
-    match error {
-        RepositoryError::Domain(kontor_core::DomainError::Invalid { subject, .. })
-            if *subject == "CommandReceipt" =>
-        {
-            ApiError::new(
-                realm_id,
-                ApiErrorCode::IdempotencyConflict,
-                "the idempotency key was already used for a different command",
-            )
-        }
-        RepositoryError::Conflict { .. } => {
-            let current = store
-                .snapshot_target_revision(request.project_id, &request.target)
-                .ok()
-                .and_then(|snapshot| snapshot.open(realm_id).ok())
-                .flatten();
-            match current {
-                None => ApiError::new(
-                    realm_id,
-                    ApiErrorCode::NotFound,
-                    "the command target does not exist in this project",
-                ),
-                Some(current) => ApiError::new(
-                    realm_id,
-                    ApiErrorCode::RevisionConflict,
-                    "the target aggregate moved while the intent was being recorded",
-                )
-                .with_revision(Some(current)),
-            }
-        }
-        other => ApiError::from_repository(realm_id, other),
-    }
 }
 
 /// Where a durable subscriber wants to resume.
@@ -666,16 +455,6 @@ pub async fn context_policy_preview(
 
     // No receipt, because nothing happened.
     Ok(Json(ContextPolicyDto::of(&snapshot, None)))
-}
-
-/// Canonicalize one caller-supplied document.
-///
-/// The document must carry its own `schema_version`, because that is what
-/// [`CanonicalDocument`] is: a byte-frozen document with a declared generation and
-/// a digest, not arbitrary JSON.
-fn canonical(state: &ApiState, value: &serde_json::Value) -> Result<CanonicalDocument, ApiError> {
-    CanonicalDocument::from_value(value)
-        .map_err(|error| ApiError::from_domain(state.realm_id(), &error))
 }
 
 /// Build the wire view of one run inspection.

@@ -188,32 +188,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/commands/{kind}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Record one control-plane command intent.
-         * @description The kind, the target and the desired state are checked against the domain's own
-         *     compatibility matrix before anything is written, and the revision is checked
-         *     against what the aggregate currently stands at — so a caller working from a
-         *     stale read is told the current revision and nothing is mutated. The write
-         *     itself is `kontor-store`'s single transaction: intent, target row, outbox
-         *     entry, first durable transition, desired state and the intent event, or none of
-         *     them.
-         */
-        post: operations["command"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/context-policy/preview": {
         parameters: {
             query?: never;
@@ -1816,24 +1790,6 @@ export interface components {
              * @description The position this read is consistent with.
              */
             snapshot_cursor: number;
-        };
-        /** @description What a command asks for, as a caller states it. */
-        CommandRequest: {
-            /** @description The desired run state, for the commands that carry one. */
-            desired_state?: string | null;
-            /**
-             * Format: int64
-             * @description The revision the caller computed the intent against.
-             */
-            expected_revision: number;
-            /** @description The canonical intent document. Must carry a `schema_version`. */
-            intent: Record<string, never>;
-            /** @description The canonical dispatch payload. Must carry a `schema_version`. */
-            payload: Record<string, never>;
-            /** @description The acting project. */
-            project_id: string;
-            /** @description The aggregate the command targets. */
-            target: Record<string, never>;
         };
         /**
          * @description What a caller states when asking a seat to compact.
@@ -4527,43 +4483,6 @@ export interface operations {
             };
             /** @description The pack advertises no such category */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    command: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description The caller's stable key */
-                "Idempotency-Key": string;
-            };
-            path: {
-                /** @description The command kind */
-                kind: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CommandRequest"];
-            };
-        };
-        responses: {
-            /** @description Recorded, or replayed unchanged */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ReceiptResponse"];
-                };
-            };
-            /** @description Stale revision or a reused idempotency key */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };

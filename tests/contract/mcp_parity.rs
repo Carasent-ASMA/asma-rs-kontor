@@ -9,7 +9,7 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 29 mapped operations and exactly three allowlisted ones. The canary is not a
+//! 29 mapped operations and exactly two allowlisted ones. The canary is not a
 //! claim that 29 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
@@ -443,12 +443,12 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         NON_AGENT_ROUTES.len(),
-        3,
+        2,
         "the allowlist changed; an omission must be reviewed, not added"
     );
     assert_eq!(
         documented().len(),
-        73,
+        72,
         "the contract's operation count changed; parity must be re-decided"
     );
 }

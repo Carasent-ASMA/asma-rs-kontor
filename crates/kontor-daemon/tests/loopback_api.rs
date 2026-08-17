@@ -93,15 +93,25 @@ const PERMISSION_WAIT: &str = r#"{
   ]
 }"#;
 
-/// One canonical command body against a task, which is a witness-rule target.
-fn resume_task_body(world: &World, revision: u64) -> serde_json::Value {
+/// One well-formed Delivery Team draft.
+///
+/// The generic idempotency, authority and realm-qualification proofs used to
+/// ride on `/v1/commands/{kind}`, which accepted a command name and worked out
+/// which aggregate it meant. That route is gone, so those proofs ride on a
+/// concrete operation instead: this is the smallest realm write that takes a
+/// caller-supplied key and answers with a realm-qualified projection.
+fn typed_draft(slug: &str) -> serde_json::Value {
     serde_json::json!({
-        "project_id": world.project.to_string(),
-        "target": {"kind": "task", "task_id": world.task.to_string()},
-        "expected_revision": revision,
-        "desired_state": serde_json::Value::Null,
-        "intent": {"schema_version": 1, "marker": "resume"},
-        "payload": {"schema_version": 1, "marker": "resume-payload"},
+        "id": format!("team-{slug}"),
+        "name": "A team",
+        "slots": [{
+            "id": "lead",
+            "role": {
+                "catalog_revision": {"id": "standard-roles", "version": 1},
+                "role_code": "LSA",
+            },
+            "capabilities": {"context": {"class": "standard"}},
+        }],
     })
 }
 
@@ -334,7 +344,7 @@ async fn every_answer_a_receipt_and_every_frame_name_the_realm() {
         assert_eq!(answer.realm(), world.realm_id(), "{uri} names its realm");
     }
 
-    let receipt = Call::post("/v1/commands/resume_task", &resume_task_body(&world, 1))
+    let receipt = Call::post("/v1/teams/drafts:save", &typed_draft("realm-qualified"))
         .signed_as(&world, "operator")
         .with_key("realm-qualified-1")
         .send(&world)
@@ -407,7 +417,7 @@ async fn the_authority_tiers_are_enforced_per_route() {
         200
     );
     // An observer does not write.
-    let refused = Call::post("/v1/commands/resume_task", &resume_task_body(&world, 1))
+    let refused = Call::post("/v1/teams/drafts:save", &typed_draft("observer-write"))
         .signed_as(&world, "observer")
         .with_key("observer-may-not-write")
         .send(&world)
@@ -415,9 +425,9 @@ async fn the_authority_tiers_are_enforced_per_route() {
     assert_eq!(refused.status, 403);
     assert_eq!(refused.code(), "forbidden");
 
-    // An operator writes an ordinary control-plane command.
+    // An operator writes an ordinary application operation.
     assert_eq!(
-        Call::post("/v1/commands/resume_task", &resume_task_body(&world, 1))
+        Call::post("/v1/teams/drafts:save", &typed_draft("operator-write"))
             .signed_as(&world, "operator")
             .with_key("operator-writes")
             .send(&world)
@@ -426,27 +436,23 @@ async fn the_authority_tiers_are_enforced_per_route() {
         200
     );
 
-    // Authority over who may act at all is the admin tier's, and an operator does
+    // Bringing a project into existence is an admin act, and an operator does
     // not reach it.
-    let authorize = serde_json::json!({
-        "project_id": world.project.to_string(),
-        "target": {"kind": "task", "task_id": world.task.to_string()},
-        "expected_revision": 1,
-        "desired_state": serde_json::Value::Null,
-        "intent": {"schema_version": 1, "marker": "authorize"},
-        "payload": {"schema_version": 1, "marker": "authorize-payload"},
+    let ensure = serde_json::json!({
+        "name": "Tier probe",
+        "root_path": "/tmp/kontor-tier-probe",
     });
-    let operator = Call::post("/v1/commands/authorize_execution", &authorize)
+    let operator = Call::post("/v1/projects:ensure", &ensure)
         .signed_as(&world, "operator")
-        .with_key("operator-may-not-authorize")
+        .with_key("operator-may-not-ensure")
         .send(&world)
         .await;
     assert_eq!(operator.status, 403);
     assert_eq!(operator.code(), "forbidden");
 
-    let admin = Call::post("/v1/commands/authorize_execution", &authorize)
+    let admin = Call::post("/v1/projects:ensure", &ensure)
         .signed_as(&world, "admin")
-        .with_key("admin-authorizes")
+        .with_key("admin-ensures")
         .send(&world)
         .await;
     assert_eq!(admin.status, 200, "{}", admin.body);
@@ -567,36 +573,34 @@ async fn the_registry_key_matches_what_the_fake_issues() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_replayed_command_returns_the_original_receipt_and_a_reused_key_conflicts() {
+async fn a_replayed_write_returns_the_original_answer_and_a_reused_key_conflicts() {
     let world = World::open().await;
-    let body = resume_task_body(&world, 1);
+    let body = typed_draft("replay");
 
-    let first = Call::post("/v1/commands/resume_task", &body)
+    let first = Call::post("/v1/teams/drafts:save", &body)
         .signed_as(&world, "operator")
         .with_key("replay-me")
         .send(&world)
         .await;
     assert_eq!(first.status, 200, "{}", first.body);
-    assert_eq!(first.json()["replayed"], serde_json::json!(false));
 
-    let replay = Call::post("/v1/commands/resume_task", &body)
+    let replay = Call::post("/v1/teams/drafts:save", &body)
         .signed_as(&world, "operator")
         .with_key("replay-me")
         .send(&world)
         .await;
     assert_eq!(replay.status, 200, "{}", replay.body);
-    assert_eq!(replay.json()["replayed"], serde_json::json!(true));
     assert_eq!(
-        replay.json()["value"]["receipt_id"],
-        first.json()["value"]["receipt_id"],
-        "an exact replay returns the receipt that was already durable"
+        replay.json()["snapshot_cursor"],
+        first.json()["snapshot_cursor"],
+        "an exact replay answers from what was already durable rather than writing again"
     );
 
-    // The same key with a different intent is a different command wearing a used
+    // The same key with different bytes is a different command wearing a used
     // key.
     let mut changed = body.clone();
-    changed["intent"] = serde_json::json!({"schema_version": 1, "marker": "something-else"});
-    let conflict = Call::post("/v1/commands/resume_task", &changed)
+    changed["name"] = serde_json::json!("Something else");
+    let conflict = Call::post("/v1/teams/drafts:save", &changed)
         .signed_as(&world, "operator")
         .with_key("replay-me")
         .send(&world)
@@ -608,7 +612,7 @@ async fn a_replayed_command_returns_the_original_receipt_and_a_reused_key_confli
 #[tokio::test]
 async fn a_mutation_without_an_idempotency_key_is_refused() {
     let world = World::open().await;
-    let answer = Call::post("/v1/commands/resume_task", &resume_task_body(&world, 1))
+    let answer = Call::post("/v1/teams/drafts:save", &typed_draft("keyless"))
         .signed_as(&world, "operator")
         .send(&world)
         .await;
@@ -618,59 +622,97 @@ async fn a_mutation_without_an_idempotency_key_is_refused() {
 
 #[tokio::test]
 async fn a_stale_revision_reports_the_current_one_and_mutates_nothing() {
-    let world = World::open().await;
-    let answer = Call::post("/v1/commands/resume_task", &resume_task_body(&world, 7))
-        .signed_as(&world, "operator")
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "stale").await;
+    let category = first_category(&world).await;
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/profile-selection",
+        seed.project, seed.task
+    );
+    let selection = |revision: u64| {
+        serde_json::json!({
+            "expected_revision": revision,
+            "work_profile_category": category,
+            "reason": "Confirm the pin",
+        })
+    };
+
+    let answer = Call::post(&uri, &selection(seed.task_revision + 6))
+        .signed_as(&world, "admin")
         .with_key("stale-revision")
         .send(&world)
         .await;
-    assert_eq!(answer.status, 409);
+    assert_eq!(answer.status, 409, "{}", answer.body);
     assert_eq!(answer.code(), "revision_conflict");
     assert_eq!(
         answer.json()["current_revision"],
-        serde_json::json!(1),
+        serde_json::json!(seed.task_revision),
         "a stale revision is answered with the revision the caller needs"
     );
     assert_eq!(answer.realm(), world.realm_id());
 
     // Nothing was written: the key is still free for the right revision.
-    let accepted = Call::post("/v1/commands/resume_task", &resume_task_body(&world, 1))
-        .signed_as(&world, "operator")
+    let accepted = Call::post(&uri, &selection(seed.task_revision))
+        .signed_as(&world, "admin")
         .with_key("stale-revision")
         .send(&world)
         .await;
     assert_eq!(accepted.status, 200, "{}", accepted.body);
-    assert_eq!(accepted.json()["replayed"], serde_json::json!(false));
 }
 
 #[tokio::test]
-async fn a_command_against_an_unknown_target_is_not_found() {
-    let world = World::open().await;
-    let mut body = resume_task_body(&world, 1);
-    body["target"] = serde_json::json!({"kind": "task", "task_id": TaskId::generate().to_string()});
-    let answer = Call::post("/v1/commands/resume_task", &body)
-        .signed_as(&world, "operator")
-        .with_key("unknown-target")
-        .send(&world)
-        .await;
-    assert_eq!(answer.status, 404);
+async fn a_write_against_an_unknown_target_is_not_found() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "unknown").await;
+    let category = first_category(&world).await;
+    let answer = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/profile-selection",
+            seed.project,
+            TaskId::generate()
+        ),
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "work_profile_category": category,
+            "reason": "Against nothing",
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("unknown-target")
+    .send(&world)
+    .await;
+    assert_eq!(answer.status, 404, "{}", answer.body);
     assert_eq!(answer.code(), "not_found");
 }
 
+/// There is no dynamic intent route to address at all.
+///
+/// `/v1/commands/{kind}` used to accept a command name and a target and work
+/// out which aggregate it meant. It is gone, and this is what stops it coming
+/// back: the closed tool vocabulary and the parity oracle both assume every
+/// operation is a named route, and a generic surface reachable beside them
+/// would bypass the registry that makes that assumption true. A concrete route
+/// cannot address the wrong aggregate, because the aggregate is in its path.
 #[tokio::test]
-async fn a_command_kind_that_may_not_target_that_aggregate_is_refused() {
+async fn there_is_no_generic_command_route_behind_the_named_operations() {
     let world = World::open().await;
-    // `launch_run` moves a run's desired state; a task is not a legal target for
-    // it, and the domain's own matrix is what says so.
-    let mut body = resume_task_body(&world, 1);
-    body["desired_state"] = serde_json::json!("run_requested");
-    let answer = Call::post("/v1/commands/launch_run", &body)
-        .signed_as(&world, "operator")
-        .with_key("wrong-target-kind")
+    for kind in ["resume_task", "launch_run", "authorize_execution"] {
+        let answer = Call::post(
+            format!("/v1/commands/{kind}"),
+            &serde_json::json!({"target": {"kind": "task"}}),
+        )
+        .signed_as(&world, "admin")
+        .with_key("no-generic-surface")
         .send(&world)
         .await;
-    assert_eq!(answer.status, 400);
-    assert_eq!(answer.code(), "invalid_request");
+        assert_eq!(
+            answer.status, 404,
+            "/v1/commands/{kind} must not be routable: {}",
+            answer.body
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1731,19 +1773,29 @@ async fn the_credential_file_is_owner_only() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_command_naming_another_realms_project_resolves_to_nothing() {
+async fn a_write_naming_another_realms_project_resolves_to_nothing() {
     let world = World::open().await;
     let other = World::open().await;
 
-    let mut body = resume_task_body(&world, 1);
-    body["project_id"] = serde_json::json!(other.project.to_string());
-    body["target"] = serde_json::json!({"kind": "task", "task_id": other.task.to_string()});
-    let answer = Call::post("/v1/commands/resume_task", &body)
-        .signed_as(&world, "operator")
-        .with_key("another-realms-work")
-        .send(&world)
-        .await;
-    assert_eq!(answer.status, 404);
+    // The ids are real — they simply belong to a different database file, which
+    // is the whole of the isolation boundary. The answer names *this* realm, so
+    // a caller can tell "not here" from "not anywhere".
+    let answer = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/profile-selection",
+            other.project, other.task
+        ),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "work_profile_category": "delivery",
+            "reason": "Another realm's work",
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("another-realms-work")
+    .send(&world)
+    .await;
+    assert_eq!(answer.status, 404, "{}", answer.body);
     assert_eq!(answer.code(), "not_found");
     assert_eq!(answer.realm(), world.realm_id());
 }

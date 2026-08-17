@@ -230,7 +230,6 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/tasks/{task_id}",
             get(control::task_snapshot),
         )
-        .route("/v1/commands/{kind}", post(control::command))
         .route("/v1/events", get(control::events))
         // The declarative application operations. Every one of them answers with
         // the durable projection its service produced, not with an intent.

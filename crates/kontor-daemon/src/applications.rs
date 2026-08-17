@@ -238,6 +238,24 @@ impl Services {
         ApiError::new(self.realm_id, code, rule)
     }
 
+    /// Refuse a Teams write, naming a reused key as one.
+    ///
+    /// The Teams store guards its own replay table, and the only conflict it can
+    /// raise is a key already bound to different content. The generic mapping
+    /// turns any repository conflict into `revision_conflict`, which tells a
+    /// client to re-read and retry — and a retry never clears a reused key. So
+    /// the one conflict this path can produce is named for what it is, the same
+    /// way `projects:ensure` already names it.
+    fn reused_team_key(&self, error: &RepositoryError) -> ApiError {
+        match error {
+            RepositoryError::Conflict { .. } => self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the idempotency key was already used for a different Teams command",
+            ),
+            other => self.refuse(other),
+        }
+    }
+
     fn artifact_keys(&self, values: &[String]) -> Result<BTreeSet<ArtifactKey>, ApiError> {
         values
             .iter()
@@ -2566,7 +2584,7 @@ impl ApplicationOperations for Services {
                     },
                 )
             })
-            .map_err(|error| self.refuse(&error))?;
+            .map_err(|error| self.reused_team_key(&error))?;
         teams_projection_dto(state.realm_id(), stored).map_err(|_| {
             self.deny(
                 ApiErrorCode::Unavailable,
@@ -2584,7 +2602,7 @@ impl ApplicationOperations for Services {
         let fingerprint = format!("publish:{team_id}");
         let stored = state
             .with_store(|store| store.publish_team(key.as_str(), &fingerprint, team_id))
-            .map_err(|error| self.refuse(&error))?
+            .map_err(|error| self.reused_team_key(&error))?
             .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "no Teams draft has that id"))?;
         teams_projection_dto(state.realm_id(), stored).map_err(|_| {
             self.deny(
