@@ -111,16 +111,21 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0021_native_memory.sql"),
     include_str!("../migrations/0022_teams_editor.sql"),
     // ⚠️ MERGE HAZARD — these two numbers are contested and must be renumbered
-    // when `feat/ASMA-7871-kontor-operational-bindings` integrates.
+    // before this branch integrates. Two branches already hold *different*
+    // scripts here:
     //
-    // That branch holds *different* scripts at 0023–0027 and is at
-    // `SCHEMA_VERSION = 27`; the live realm has already run its 0023–0025
-    // (`user_version = 25`). An applied migration can never be renumbered without
-    // breaking every database that ran it, so the direction is forced rather than
-    // chosen: **theirs keep their numbers and these two move to the end.** The
-    // exact numbers are whatever their final count plus one and plus two are, so
-    // they are settled at merge and not guessable now — the branch was still
-    // adding scripts when this was written.
+    //   `feat/ASMA-7871-kontor-operational-bindings`  0023–0027, at 27
+    //   `feat/ASMA-7872-kontor-operational-app-services`  + 0028–0029, at 29
+    //
+    // The live realm has already run 7871's five (`user_version = 27`). An
+    // applied migration can never be renumbered without breaking every database
+    // that ran it, so the direction is forced rather than chosen: **both of
+    // theirs keep their numbers and these two move to the end.**
+    //
+    // Merge order is set by LSA · ASMA-7869 — 7871, then 7872, then this — which
+    // makes the targets `0030` and `0031` at `SCHEMA_VERSION = 31`. Re-derive
+    // them from master rather than trusting this line if either branch grows
+    // another script before it lands.
     //
     // The renumber is mechanical, and all five steps are required together
     // because the list is positional (`the index *is* the version it upgrades
