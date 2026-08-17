@@ -92,6 +92,7 @@ use kontor_runtime::workspace::{
 use crate::client::{
     PaseoCommand, PaseoRpc, PaseoTransport, ensure_frame_bounded, permission_mode,
 };
+use crate::mcp::{PaseoMcp, RENAME_WORKSPACE_TOOL};
 use crate::wire::{
     MAX_DIRECTORY_PAGE, MAX_DIRECTORY_PAGES, MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES,
     PASEO_APP_VERSION, PaseoAgent, PaseoAgentAnswer, PaseoAgentPage, PaseoAgentStatus,
@@ -847,6 +848,12 @@ impl SeatFacts for PaseoSeatFacts<'_> {
 pub struct PaseoAdapter {
     config: PaseoConfig,
     transport: Box<dyn PaseoTransport>,
+    /// The daemon's MCP facade, when this plane has a route to it.
+    ///
+    /// Optional because it is a *third* surface, and an adapter that cannot
+    /// reach it must say so rather than fail at the moment of use: with no route
+    /// the retitle capability is undeclared, so a caller can tell before asking.
+    mcp: Option<Box<dyn PaseoMcp>>,
     state: Mutex<PaseoState>,
 }
 
@@ -932,6 +939,7 @@ impl PaseoAdapter {
         Ok(Self {
             config,
             transport,
+            mcp: None,
             state: Mutex::new(PaseoState {
                 generation: checkpoint.generation,
                 server: None,
@@ -985,6 +993,19 @@ impl PaseoAdapter {
                 request_seq: 0,
             }),
         })
+    }
+
+    /// Give this adapter a route to the daemon's MCP facade.
+    ///
+    /// A builder rather than a constructor argument, because every other
+    /// operation this adapter performs works without it: the facade is needed for
+    /// the one verb the CLI and the session socket do not have. An adapter built
+    /// without it is fully functional and honestly declares one capability
+    /// fewer.
+    #[must_use]
+    pub fn with_mcp(mut self, mcp: Box<dyn PaseoMcp>) -> Self {
+        self.mcp = Some(mcp);
+        self
     }
 
     /// The plane this adapter drives.
@@ -1999,8 +2020,8 @@ impl PaseoAdapter {
         let label = request.correlation().to_string();
         // Resolved before anything is searched for or created, so a task this
         // plane has no scope for is refused before any native mutation rather
-        // than named after a node id it can never be renamed away from.
-        let display_name = self.child_display_name(request)?;
+        // than named after a node id.
+        let title = self.container_title(request.task_id, request.display_name.as_str(), &label)?;
         let existing = self.fetch_workspaces(project_id.as_str()).await?;
         let mut mine = existing
             .iter()
@@ -2024,7 +2045,7 @@ impl PaseoAdapter {
                         })?
                         .as_str(),
                     project_id.as_str(),
-                    &workspace_label_suffix(&display_name, &label),
+                    &title,
                 );
                 let output = self.transport.run(&command).await?;
                 let created: PaseoCliWorkspaceCreated = output.parse("PaseoCliWorkspaceCreated")?;
@@ -2062,34 +2083,46 @@ impl PaseoAdapter {
         Ok((identity, correlation, created))
     }
 
-    /// The title one native child must carry.
+    /// The title one native container must carry, correlation label and all.
     ///
-    /// A child that names a delivery task **is** that task's session workspace,
-    /// so its title comes from the same authoritative scope
+    /// **The one renderer.** Both entry points that decide a container's name go
+    /// through it — the bind path that creates one and the retitle path that
+    /// corrects one — so they cannot disagree about what a single workspace is
+    /// called. A retitle computing its own answer is how a repair renames a
+    /// container that was already right.
+    ///
+    /// A container that names a delivery task **is** that task's session
+    /// workspace, so its title comes from the authoritative scope
     /// `prepare_workspace` renders from — `TSW · {jira issue} · {short code}`.
-    /// One renderer, so this adapter's two entry points cannot disagree about
-    /// what one workspace is called.
+    /// The `structural` name the control plane derived from the node kind's
+    /// template is deliberately not used for one: admission builds it from that
+    /// template and the topology node id, and a node id is an identity, which is
+    /// unreadable to the humans a title exists for.
     ///
-    /// The caller's `display_name` is deliberately not used for one. Topology
-    /// admission builds it from the node kind's template and the topology node
-    /// id, and a node id is an identity: a native title made out of one is
-    /// unreadable to the humans the title exists for, and Paseo has no
-    /// supported rename, so it is unreadable permanently.
-    ///
-    /// A child that names no task keeps the caller's name. Those are the
+    /// A container that names no task keeps the structural name. Those are the
     /// project and epic roots, whose titles are structural rather than
     /// ticket-scoped, and there is no task scope to render them from.
     ///
+    /// The correlation label is appended here rather than by the callers, because
+    /// it is part of the title Paseo stores: a rename that dropped it would strip
+    /// the evidence every readback resolves this container by.
+    ///
     /// # Errors
-    /// Returns [`RuntimeError::WorkspaceMismatch`] when the plane holds no
-    /// scope for the named task. Refusing is the whole point: falling back to
-    /// the caller's name would produce exactly the title this rule exists to
+    /// Returns [`RuntimeError::WorkspaceMismatch`] when the plane holds no scope
+    /// for the named task. Refusing is the whole point: falling back to the
+    /// structural name would produce exactly the title this rule exists to
     /// prevent.
-    fn child_display_name(&self, request: &ContainerRequest) -> RuntimeResult<String> {
-        match request.task_id {
-            Some(task_id) => self.config.scope.workspace_display_name_for(task_id),
-            None => Ok(request.display_name.as_str().to_owned()),
-        }
+    fn container_title(
+        &self,
+        task_id: Option<TaskId>,
+        structural: &str,
+        label: &str,
+    ) -> RuntimeResult<String> {
+        let display = match task_id {
+            Some(task_id) => self.config.scope.workspace_display_name_for(task_id)?,
+            None => structural.to_owned(),
+        };
+        Ok(workspace_label_suffix(&display, label))
     }
 
     /// Who a child container inside a bound root belongs to.
@@ -2587,6 +2620,151 @@ impl PaseoAdapter {
     }
 }
 
+/// Everything a retitle decides before it renames anything.
+///
+/// Held as one value so the preview and the apply cannot disagree: they share the
+/// derivation that produced it, and the apply's only extra step is the call.
+struct PaseoRetitlePlan {
+    /// The binding this container is repaired under.
+    snapshot: ContainerBindingSnapshot,
+    /// The workspace as the daemon reports it now.
+    before: PaseoWorkspace,
+    /// The title it must end up carrying.
+    desired: ExternalName,
+    /// Whether that differs from what it carries now.
+    changed: bool,
+}
+
+impl PaseoAdapter {
+    /// Locate the addressed container, derive its title, and decide nothing else.
+    ///
+    /// The lookup is by durable native id inside the *bound* project. Not by
+    /// title, which is the value being corrected, and not by `cwd`, which several
+    /// workspaces legitimately share — a rename that searched by either could
+    /// rename the wrong tree, and there is usually no way to tell afterwards.
+    ///
+    /// The generation is a bound rather than an equality. A Paseo workspace
+    /// outlives the Kontor process that bound it, and this repair exists
+    /// precisely for containers bound before a restart, so an *older* generation
+    /// in the request is the normal case. A *newer* one names a generation this
+    /// adapter has never reached, which cannot describe anything it bound.
+    ///
+    /// # Errors
+    /// * [`RuntimeError::UnsupportedCapability`] — the plane does not declare the
+    ///   capability.
+    /// * [`RuntimeError::StaleBinding`] — the request names a generation ahead of
+    ///   this adapter's, the bound project no longer holds the native id, or this
+    ///   adapter's own ledger has the node bound to a different container.
+    /// * [`RuntimeError::WorkspaceMismatch`] — the plane holds no scope for the
+    ///   node's task, so no title can be derived.
+    /// * [`RuntimeError::CorrelationFailed`] — the workspace found does not carry
+    ///   this node's label.
+    async fn retitle_plan(
+        &self,
+        request: &RetitleContainerRequest,
+    ) -> RuntimeResult<PaseoRetitlePlan> {
+        let declared = self.declared().await?;
+        if !declared.supports(RuntimeCapability::RetitleContainer) {
+            return Err(self.refuse(RuntimeCapability::RetitleContainer, &declared));
+        }
+        let generation = self.generation();
+        if request.generation > generation {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the request names a runtime generation this plane has not reached",
+            });
+        }
+        // An in-ledger binding for this node must be the one being addressed.
+        // After a restart there is none — that is the contract, and it is why the
+        // native id Kontor persisted is what finds the container again.
+        if let Some(held) = self.lock().containers.get(&request.topology_node_id)
+            && held.binding.identity.native_id != request.bound_native_id
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "this node is bound to a different native container on this plane",
+            });
+        }
+
+        let project = self.require_project()?;
+        let before = self
+            .fetch_workspaces(project.project_id.as_str())
+            .await?
+            .into_iter()
+            .find(|workspace| workspace.id == request.bound_native_id.as_str())
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the bound project no longer holds the addressed native container",
+            })?;
+
+        let label = ContainerLabel::for_node(request.topology_node_id);
+        let identity = self.identity(ExternalId::parse(&before.id)?, generation);
+        // The label is proved *before* the rename, because the rename rewrites the
+        // string it lives in: a container whose title does not already name this
+        // node is not this node's container, and renaming it would make it look
+        // like one.
+        let correlation = ContainerCorrelationEvidence::establish(
+            request.topology_node_id,
+            before.reported_label().unwrap_or_default(),
+            identity.clone(),
+            request.requested_at,
+        )?;
+        let desired = ExternalName::parse(&self.container_title(
+            request.task_id,
+            request.structural_name.as_str(),
+            &label.to_string(),
+        )?)
+        .map_err(RuntimeError::Domain)?;
+        let changed = before.visible_title() != desired.as_str();
+        Ok(PaseoRetitlePlan {
+            snapshot: ContainerBindingSnapshot {
+                binding: ContainerBinding {
+                    id: request.container_binding_id,
+                    topology_node_id: request.topology_node_id,
+                    projection: ContainerProjection::NativeChild,
+                    identity,
+                    root: WorkspaceRoot::parse(&before.workspace_directory).ok(),
+                    bound_at: request.requested_at,
+                },
+                capabilities: declared,
+                correlation,
+            },
+            desired,
+            changed,
+            before,
+        })
+    }
+
+    /// Read the addressed container back after a rename.
+    ///
+    /// By the same native id inside the same bound project. The project it came
+    /// back under is checked here; the directory is checked by the caller, which
+    /// is the only place that holds what it was before.
+    ///
+    /// # Errors
+    /// * [`RuntimeError::StaleBinding`] — the native id is gone, which a rename
+    ///   must never cause.
+    /// * [`RuntimeError::WorkspaceMismatch`] — the container came back under
+    ///   another project.
+    async fn retitle_readback(
+        &self,
+        request: &RetitleContainerRequest,
+    ) -> RuntimeResult<PaseoWorkspace> {
+        let project = self.require_project()?;
+        let after = self
+            .fetch_workspaces(project.project_id.as_str())
+            .await?
+            .into_iter()
+            .find(|workspace| workspace.id == request.bound_native_id.as_str())
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the addressed native container is gone after the rename",
+            })?;
+        if after.project_id != project.project_id.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the renamed container came back under another project",
+            });
+        }
+        Ok(after)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RuntimeAdapter
 // ---------------------------------------------------------------------------
@@ -2616,18 +2794,30 @@ impl PaseoAdapter {
     /// protocol mismatch, so the transport never produces a gated connection to
     /// grade.
     async fn declared(&self) -> RuntimeResult<RuntimeCapabilities> {
-        match self.fetch_server_info().await {
+        let mut capabilities = match self.fetch_server_info().await {
             Ok(info) => {
                 let degraded = !info.missing_required().is_empty() || !info.is_pinned_baseline();
                 self.lock().server = Some(info);
                 if degraded {
-                    Ok(self.config.degraded_capabilities())
+                    self.config.degraded_capabilities()
                 } else {
-                    Ok(self.config.capabilities())
+                    self.config.capabilities()
                 }
             }
-            Err(_) => Ok(self.config.degraded_capabilities()),
+            Err(_) => self.config.degraded_capabilities(),
+        };
+        // Retitling is the one operation that does not travel over either surface
+        // the rest of this adapter speaks, so it is declared from whether this
+        // plane has a route to the daemon's MCP facade rather than from the
+        // version gate. Declared at every grade on purpose: a rename sets a title
+        // and reads it back, so there is no readback a degraded daemon could
+        // mislead a *placement* decision with.
+        if self.mcp.is_some() {
+            capabilities
+                .supported
+                .insert(RuntimeCapability::RetitleContainer);
         }
+        Ok(capabilities)
     }
 
     /// Everything a launch does once its seat has agreed to it.
@@ -2967,41 +3157,107 @@ impl RuntimeAdapter for PaseoAdapter {
         state.admissions.admit(request, &facts)
     }
 
-    /// Refused, and precisely.
+    /// Rename the bound workspace through the daemon's MCP facade, then read the
+    /// title back.
     ///
-    /// Neither transport this adapter speaks can ask for it. The CLI verbs it
-    /// shells out to are `workspace create` and `workspace archive`; the typed
-    /// RPC envelopes it exchanges are `project.list`, `project.add`,
-    /// `fetch_workspaces`, `fetch_agents`, `fetch_agent`,
-    /// `fetch_agent_timeline` and `send_agent_message`. None of them changes a
-    /// title. `agent update-labels` exists but addresses an agent, not the
-    /// workspace that holds it.
+    /// Neither surface the rest of this adapter speaks can do it. The CLI verbs
+    /// are `workspace create` and `workspace archive`; the session envelopes are
+    /// `project.list`, `project.add`, `fetch_workspaces`, `fetch_agents`,
+    /// `fetch_agent`, `fetch_agent_timeline` and `send_agent_message`. None
+    /// changes a title, and `agent update-labels` addresses an agent rather than
+    /// the workspace holding it. The facade's `rename_workspace` does, addressed
+    /// by workspace id, and it is the only supported way — archiving and
+    /// recreating would destroy the native id every binding, seat and readback
+    /// resolves by, and writing the daemon's own state is an undocumented
+    /// surface with no contract and no readback.
     ///
-    /// The daemon itself is not the limit: its MCP facade serves
-    /// `rename_workspace(workspace_id, title)`, so Paseo can rename — this
-    /// adapter simply has no route to the operation. The correction is therefore
-    /// named and small: teach this adapter that request, then read the title
-    /// back through `fetch_workspaces` on the same native id. Until that route
-    /// exists, claiming the capability would be a lie, and the two shortcuts
-    /// that would "work" today are both refused on purpose. Archiving and
-    /// recreating destroys the native id every Kontor binding, seat and readback
-    /// resolves by — a rename that loses the identity is not a rename. Writing
-    /// the daemon's own state directly is an undocumented internal surface with
-    /// no contract, no readback and no versioning.
-    ///
-    /// So Kontor holds the correction as pending rather than pretending to have
-    /// made it. That is the honest state, and it is visible: the topology
-    /// projection keeps reporting the title the runtime actually carries.
+    /// The container is found by its durable native id inside the bound project,
+    /// never by title — the value being corrected — and never by `cwd`, which
+    /// several workspaces share. The rename carries the id and the new title and
+    /// nothing else, so Paseo has nothing to move: parent, directory and every
+    /// running terminal stay where they are, and the readback proves it.
     ///
     /// # Errors
-    /// Always [`RuntimeError::UnsupportedCapability`].
+    /// * [`RuntimeError::UnsupportedCapability`] — this plane has no route to the
+    ///   facade, so it cannot rename anything and says so before trying.
+    /// * [`RuntimeError::StaleBinding`] — the addressed container is not in the
+    ///   named generation, or the bound project no longer holds it.
+    /// * [`RuntimeError::WorkspaceMismatch`] — the readback shows a different
+    ///   project, a different directory, or a title the rename did not achieve.
+    /// * [`RuntimeError::Transport`] — the facade could not be reached, or
+    ///   answered something that is not one result.
     async fn retitle_container(
         &self,
         request: &RetitleContainerRequest,
     ) -> RuntimeResult<RetitleContainerOutcome> {
-        let _ = request;
-        Err(RuntimeError::UnsupportedCapability {
-            capability: RuntimeCapability::RetitleContainer,
+        let mcp = self
+            .mcp
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::RetitleContainer,
+            })?;
+        let plan = self.retitle_plan(request).await?;
+        if plan.changed {
+            // The id and the new title, and nothing else. Paseo is given nothing
+            // it could move: no parent, no directory, no placement.
+            mcp.call(
+                RENAME_WORKSPACE_TOOL,
+                serde_json::json!({
+                    "workspaceId": plan.before.id,
+                    "title": plan.desired.as_str(),
+                }),
+            )
+            .await?;
+        }
+
+        // Read back rather than echoed. A rename the daemon accepted and did not
+        // perform is exactly the failure this operation exists to correct, so the
+        // answer is what the facade reports afterwards — including that the
+        // container is still in the same project, still in the same directory,
+        // and still the same id.
+        let after = self.retitle_readback(request).await?;
+        if after.workspace_directory != plan.before.workspace_directory {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the renamed container came back working in another directory",
+            });
+        }
+        if after.visible_title() != plan.desired.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the workspace did not come back carrying the title it was renamed to",
+            });
+        }
+        Ok(RetitleContainerOutcome {
+            observed_title: after.visible_title().to_owned(),
+            snapshot: plan.snapshot,
+            desired_title: plan.desired,
+            changed: plan.changed,
+        })
+    }
+
+    /// What [`Self::retitle_container`] would do, reaching nothing that writes.
+    ///
+    /// The same route, the same derivation and the same refusals, minus the one
+    /// call that changes anything. A preview against a plane with no facade route
+    /// refuses too: promising an apply that cannot happen is worse than saying so.
+    ///
+    /// # Errors
+    /// As [`Self::retitle_container`], except that no rename is attempted, so no
+    /// post-rename mismatch can be reported.
+    async fn preview_retitle_container(
+        &self,
+        request: &RetitleContainerRequest,
+    ) -> RuntimeResult<RetitleContainerOutcome> {
+        if self.mcp.is_none() {
+            return Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::RetitleContainer,
+            });
+        }
+        let plan = self.retitle_plan(request).await?;
+        Ok(RetitleContainerOutcome {
+            observed_title: plan.before.visible_title().to_owned(),
+            snapshot: plan.snapshot,
+            desired_title: plan.desired,
+            changed: plan.changed,
         })
     }
 

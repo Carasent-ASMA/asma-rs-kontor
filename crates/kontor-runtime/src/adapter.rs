@@ -453,6 +453,34 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// What [`RuntimeAdapter::retitle_container`] would do, changing nothing.
+    ///
+    /// Same request, same derivation, same lookup by durable native id — the
+    /// difference is that nothing is written. The desired title comes back
+    /// because only the plane can render it, and the observed one because only
+    /// the runtime knows it; a caller comparing them is what makes an operator's
+    /// preview worth reading.
+    ///
+    /// It refuses for the same reasons the apply does, including
+    /// [`RuntimeError::UnsupportedCapability`]. A preview that succeeded against
+    /// a runtime that cannot rename would promise an apply that cannot happen.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::UnsupportedCapability`] by default, and in an
+    /// implementation: [`RuntimeError::StaleBinding`] when the addressed
+    /// container is absent from the named generation, and
+    /// [`RuntimeError::CorrelationFailed`] when the container read back does not
+    /// carry this node's label.
+    async fn preview_retitle_container(
+        &self,
+        request: &crate::container::RetitleContainerRequest,
+    ) -> RuntimeResult<crate::container::RetitleContainerOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::RetitleContainer,
+        })
+    }
+
     /// Decide, atomically, whether one seat may be filled — and say so once.
     ///
     /// **This is where AC-4 is enforced.** An implementation keeps a table keyed

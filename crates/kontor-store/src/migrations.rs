@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 29;
+pub const SCHEMA_VERSION: i64 = 30;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -140,6 +140,10 @@ const MIGRATIONS: &[&str] = &[
     // explicit epic upgrade that moves a pin — which is why the pin row becomes
     // writable by that one operation, and why the closed kind list grows by two.
     include_str!("../migrations/0029_topology_publication.sql"),
+    // Schema v30. The container retitle command. One kind, and no title column:
+    // what a container is called is the runtime's fact, read back rather than
+    // mirrored.
+    include_str!("../migrations/0030_retitle_container_command.sql"),
 ];
 
 const _: () = assert!(

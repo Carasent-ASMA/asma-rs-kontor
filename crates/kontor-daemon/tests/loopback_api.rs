@@ -13041,3 +13041,244 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     assert_eq!(old.status, 200, "{}", old.body);
     assert_eq!(old.json()["spec"]["version"], 1);
 }
+
+/// A container whose title Kontor rendered under an older rule is repaired
+/// through `/v1`, and the caller supplies no title to do it.
+///
+/// The one shape this operation exists for: a native container that is correctly
+/// bound and visibly misnamed. The caller names the node and the revision it read;
+/// the title comes from the node's pinned kind template and the plane's typed
+/// scope, and the native container is addressed by the binding Kontor already
+/// holds.
+#[tokio::test]
+async fn a_misnamed_container_is_repaired_from_the_pinned_topology_and_never_from_a_caller() {
+    let composed = compose_realm("/tmp/kontor-op3-retitle").await;
+    let world = &composed.world;
+
+    // A real seat, because a native container only exists once something has been
+    // placed in one: arm the epic, plan it, start the plan.
+    let epic = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    let armed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/execution:arm",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({
+            "expected_revision": epic.json()["revision"],
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": composed.account,
+            "reason": "Place a seat so there is a container to repair"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("retitle-arm")
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:plan",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let started = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:start",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({"plan_hash": plan.json()["plan_hash"]}),
+    )
+    .signed_as(world, "operator")
+    .with_key("retitle-start")
+    .send(world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+
+    let projection = Call::get(format!(
+        "/v1/projects/{}/topology:inspect?epic_id={}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    let node = projection.json()["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|node| node["observed_binding"].is_object())
+        .expect("starting the plan bound a native container")
+        .clone();
+    let node_id = node["topology_node_id"]
+        .as_str()
+        .expect("a node id")
+        .to_owned();
+    let node_key = kontor_core::id::TopologyNodeId::parse(&node_id).expect("a canonical node id");
+    let canonical = world
+        .fake
+        .container_title(node_key)
+        .expect("the bound container carries a title");
+
+    // The state a repair exists for: the runtime carries a name no Kontor rule
+    // produces any more. Set on the runtime, not through Kontor — nothing in this
+    // control plane can write a native title except the operation under test.
+    world
+        .fake
+        .set_container_title(node_key, "Ticket Session Workspace · 0189-stale");
+
+    let preview_uri = format!(
+        "/v1/projects/{}/topology/nodes/{node_id}/container:retitle-preview",
+        composed.project
+    );
+    let apply_uri = format!(
+        "/v1/projects/{}/topology/nodes/{node_id}/container:retitle-apply",
+        composed.project
+    );
+    let body = serde_json::json!({"expected_revision": composed.project_revision});
+
+    let preview = Call::post(&preview_uri, &body)
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(
+        preview.json()["desired_title"],
+        canonical,
+        "the desired title is derived from the pinned topology: {}",
+        preview.body
+    );
+    assert_eq!(
+        preview.json()["observed_title"],
+        "Ticket Session Workspace · 0189-stale",
+        "and the observed one is what the runtime actually carries: {}",
+        preview.body
+    );
+    assert_eq!(preview.json()["would_change"], true);
+    assert_eq!(
+        preview.json()["bound_native_id"],
+        node["observed_binding"]["native_id"],
+        "the container named is the one the node is bound to: {}",
+        preview.body
+    );
+    // A preview is a read: it wrote nothing, so the container is still misnamed.
+    assert_eq!(
+        world.fake.container_title(node_key).as_deref(),
+        Some("Ticket Session Workspace · 0189-stale"),
+        "a preview must not have renamed anything"
+    );
+
+    // An Observer may look at nothing here, and an Operator may not repair it:
+    // what is being corrected is a decision the control plane made.
+    let observer = Call::post(&preview_uri, &body)
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(observer.status, 403, "{}", observer.body);
+    let operator = Call::post(&apply_uri, &body)
+        .signed_as(world, "operator")
+        .with_key("retitle-operator")
+        .send(world)
+        .await;
+    assert_eq!(operator.status, 403, "{}", operator.body);
+
+    let applied = Call::post(&apply_uri, &body)
+        .signed_as(world, "admin")
+        .with_key("retitle-apply")
+        .send(world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["changed"], true, "{}", applied.body);
+    assert_eq!(
+        applied.json()["observed_title"],
+        canonical,
+        "the title is read back from the runtime after the change: {}",
+        applied.body
+    );
+    assert_eq!(
+        applied.json()["bound_native_id"],
+        node["observed_binding"]["native_id"],
+        "and it is still the same native container: {}",
+        applied.body
+    );
+    assert_eq!(applied.json()["receipt"]["applied"], "created");
+
+    // The replay answers the original receipt and renames nothing a second time.
+    let replayed = Call::post(&apply_uri, &body)
+        .signed_as(world, "admin")
+        .with_key("retitle-apply")
+        .send(world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(replayed.json()["changed"], false, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        applied.json()["receipt"]["receipt_id"]
+    );
+    assert_eq!(replayed.json()["observed_title"], canonical);
+
+    // A second preview now says there is nothing to repair.
+    let settled = Call::post(&preview_uri, &body)
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["would_change"], false, "{}", settled.body);
+
+    // A stale node revision is refused, and a node holding no container has
+    // nothing to repair.
+    let stale = Call::post(&apply_uri, &serde_json::json!({"expected_revision": 99}))
+        .signed_as(world, "admin")
+        .with_key("retitle-stale")
+        .send(world)
+        .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    let unknown = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{}/container:retitle-preview",
+            composed.project,
+            kontor_core::id::TopologyNodeId::generate()
+        ),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+
+    // A caller cannot smuggle a title in: the request type has nowhere to put one.
+    let dictated = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "expected_revision": composed.project_revision,
+            "desired_title": "Whatever I feel like",
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("retitle-dictated")
+    .send(world)
+    .await;
+    assert_eq!(
+        dictated.status, 422,
+        "the request type has nowhere to put a title, so the body is rejected: {}",
+        dictated.body
+    );
+}

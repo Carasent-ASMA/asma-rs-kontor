@@ -1323,6 +1323,21 @@ impl RuntimeAdapter for AoAdapter {
         Err(self.refuse_unsupported(RuntimeCapability::RetitleContainer))
     }
 
+    /// Refused for the same reason, and before the caller commits to anything.
+    ///
+    /// A preview that succeeded here would promise an apply this runtime cannot
+    /// perform.
+    ///
+    /// # Errors
+    /// Always [`RuntimeError::UnsupportedCapability`].
+    async fn preview_retitle_container(
+        &self,
+        request: &kontor_runtime::container::RetitleContainerRequest,
+    ) -> RuntimeResult<kontor_runtime::container::RetitleContainerOutcome> {
+        let _ = request;
+        Err(self.refuse_unsupported(RuntimeCapability::RetitleContainer))
+    }
+
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
         // The seat is taken here: before the project read, long before the spawn,
         // and in one step with the check that it was there to take.

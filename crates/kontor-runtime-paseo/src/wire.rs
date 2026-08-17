@@ -397,8 +397,18 @@ impl PaseoWorkspace {
     /// See [`workspace_label_suffix`] for why a display string is carrying it.
     #[must_use]
     pub fn reported_label(&self) -> Option<&str> {
-        let titled = self.title.as_deref().unwrap_or(&self.name);
-        extract_workspace_label(titled)
+        extract_workspace_label(self.visible_title())
+    }
+
+    /// The title a human sees for this workspace.
+    ///
+    /// The raw override when it has one, and the resolved name otherwise — the
+    /// same rule [`PaseoWorkspace::reported_label`] reads the correlation label
+    /// out of, so a title comparison and a label check never disagree about which
+    /// string they are looking at.
+    #[must_use]
+    pub fn visible_title(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.name)
     }
 }
 

@@ -32,6 +32,7 @@
 pub mod adapter;
 pub mod client;
 pub mod fixture;
+pub mod mcp;
 pub mod wire;
 
 pub use adapter::{
