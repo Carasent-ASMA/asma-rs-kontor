@@ -516,6 +516,431 @@ pub struct RoleCatalogDto {
 }
 
 // ---------------------------------------------------------------------------
+// Successor-ticket contracts
+// ---------------------------------------------------------------------------
+//
+// OP-04, OP-05 and OP-06 own the behaviour below. They do not own a competing
+// wire vocabulary: the DTO, the route, the OpenAPI operation, the `ToolSpec`
+// and the generated clients are fixed here, once, so the authority rules and
+// the closed argument lists are one decision rather than one per successor.
+// Until each owning service is composed the daemon refuses with a typed
+// `unavailable` before any effect — never a successful placeholder, and never
+// a persisted placeholder aggregate.
+
+/// One immutable profile or template revision.
+///
+/// Advisor profiles, Committee templates and Completion profiles are three
+/// aggregates with one wire shape: an identity, a monotonic version, a label
+/// and the digest of the definition frozen at publish. They share these types
+/// rather than carrying three identical copies that would drift apart the first
+/// time one of them gained a field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfileRevisionDto {
+    /// Stable logical id shared by every revision.
+    pub id: String,
+    /// Monotonic version within `id`.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// Human label frozen at publish.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// The digest of the canonical definition.
+    #[schema(value_type = String)]
+    pub definition_hash: ContentHash,
+}
+
+/// Every published revision of one profile family in a project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfileCatalogDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project that owns them.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Every revision, oldest first.
+    pub revisions: Vec<ProfileRevisionDto>,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// One candidate definition, judged and committed nowhere.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfilePreviewRequest {
+    /// The complete candidate definition.
+    #[schema(value_type = Object)]
+    pub definition: serde_json::Value,
+}
+
+/// The verdict on one candidate definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfilePreviewDto {
+    /// The Realm that judged it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Every violation, in a stable order. Empty means publishable.
+    pub violations: Vec<String>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Publish one revalidated definition as an immutable revision.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileApplyRequest {
+    /// The complete definition to publish.
+    #[schema(value_type = Object)]
+    pub definition: serde_json::Value,
+    /// The hash the preview answered with.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The aggregate revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One published profile revision and the receipt that froze it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedProfileDto {
+    /// The revision now standing.
+    pub published: ProfileRevisionDto,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// One Core Team seat: the standard role, and the seat filling it if any.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamSeatDto {
+    /// The role, as the server resolved it.
+    pub role: ResolvedRoleRefDto,
+    /// The binding filling it, once one has been materialized.
+    #[schema(value_type = Option<String>)]
+    pub seat_binding_id: Option<SeatBindingId>,
+}
+
+/// One project's Core Team.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project it serves.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Its seats, in declared order.
+    pub seats: Vec<CoreTeamSeatDto>,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// A proposed Core Team composition.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamPreviewRequest {
+    /// The roles the Core Team should seat, in order.
+    pub seats: Vec<RoleSelectionDto>,
+}
+
+/// What a Core Team change would do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamPreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Every effect, in a stable order.
+    pub effects: Vec<TopologyUpgradeEffectDto>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Apply a named Core Team preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamApplyRequest {
+    /// The roles the Core Team should seat, in order.
+    pub seats: Vec<RoleSelectionDto>,
+    /// The hash the preview answered with.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The project revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Materialize the Core Team's seats for one epic.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamMaterializeRequest {
+    /// The epic revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What a Core Team write produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamOutcomeDto {
+    /// The Core Team as it now stands.
+    pub core_team: CoreTeamDto,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// The roles a Quick session may be opened against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QuickRolesDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Every selectable role, in the catalog's declared order.
+    pub roles: Vec<RoleCatalogEntryDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Open a Quick session, or return the one this key already opened.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnsureQuickSessionRequest {
+    /// The standard role the session's seat fills.
+    pub role: RoleSelectionDto,
+    /// What the session is for. Recorded, never interpreted.
+    #[schema(value_type = String)]
+    pub purpose: ExternalName,
+}
+
+/// One Quick session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QuickSessionDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The session.
+    #[schema(value_type = String)]
+    pub quick_session_id: QuickSessionId,
+    /// The role its seat fills, as the server resolved it.
+    pub role: ResolvedRoleRefDto,
+    /// The topology node hosting it.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// What promoting one Quick session would produce.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PromotionPreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The session that would be promoted.
+    #[schema(value_type = String)]
+    pub quick_session_id: QuickSessionId,
+    /// Every effect, in a stable order.
+    pub effects: Vec<TopologyUpgradeEffectDto>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Apply a named promotion preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromotionApplyRequest {
+    /// The hash the preview answered with.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The session revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One promoted Quick session, now an epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PromotedSessionDto {
+    /// The epic the session became.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// The session it was promoted from.
+    #[schema(value_type = String)]
+    pub quick_session_id: QuickSessionId,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Diff one epic's pinned roster against a published target.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RosterUpgradePreviewRequest {
+    /// The published revision to diff the epic's current pin against.
+    pub target: RevisionRefDto,
+}
+
+/// What a roster upgrade would do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RosterUpgradePreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The epic whose roster would move.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Every effect, in a stable order.
+    pub effects: Vec<TopologyUpgradeEffectDto>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Invoke one consultation against an epic.
+///
+/// A consultation names the pinned profile it runs under and the question it is
+/// asked. It does not name a model, a provider or a runtime: which seat answers
+/// is the realm's routing decision, not the caller's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InvokeConsultationRequest {
+    /// The profile or template revision to run under.
+    pub profile: RevisionRefDto,
+    /// What is being asked.
+    #[schema(value_type = String)]
+    pub question: BoundedText,
+    /// The epic revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One Advisor consultation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AdvisorRunDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The consultation.
+    #[schema(value_type = String)]
+    pub advisor_run_id: AdvisorRunId,
+    /// The epic it advises.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// The pinned profile it runs under.
+    pub profile: ProfileRevisionDto,
+    /// Its lifecycle, in the server's own vocabulary.
+    pub state: String,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// One Committee consultation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CommitteeRunDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The consultation.
+    #[schema(value_type = String)]
+    pub committee_run_id: CommitteeRunId,
+    /// The epic it advises.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// The pinned template it runs under.
+    pub template: ProfileRevisionDto,
+    /// Its lifecycle, in the server's own vocabulary.
+    pub state: String,
+    /// How many findings have been recorded so far.
+    pub findings_recorded: u32,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Record one round of Committee findings.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordFindingsRequest {
+    /// The findings document.
+    #[schema(value_type = Object)]
+    pub findings: serde_json::Value,
+    /// The run revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Settle one consultation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SettleConsultationRequest {
+    /// The run revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One epic's completion state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CompletionStateDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The epic.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// The pinned completion profile it is judged against.
+    pub profile: ProfileRevisionDto,
+    /// Which phase it currently stands in.
+    pub phase: String,
+    /// What is still outstanding, in a stable order.
+    pub outstanding: Vec<String>,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Advance one epic's completion.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdvanceCompletionRequest {
+    /// The completion revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Send one epic's completion back for remediation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemediateCompletionRequest {
+    /// The completion revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Why. Recorded, never interpreted.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// What a completion write produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CompletionOutcomeDto {
+    /// The completion state as it now stands.
+    pub state: CompletionStateDto,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+// ---------------------------------------------------------------------------
 // Native capacity and exact-seat operations
 // ---------------------------------------------------------------------------
 
@@ -2868,6 +3293,175 @@ pub trait ApplicationOperations: Send + Sync {
         request: &SeatBindingRequest,
     ) -> Result<SeatBindingOutcomeDto, ApiError>;
 
+    /// One project's Core Team.
+    fn core_team(&self, project_id: ProjectId) -> Result<CoreTeamDto, ApiError>;
+    /// What a Core Team change would do. Commits nothing.
+    fn preview_core_team(
+        &self,
+        project_id: ProjectId,
+        request: &CoreTeamPreviewRequest,
+    ) -> Result<CoreTeamPreviewDto, ApiError>;
+    /// Apply a named Core Team preview.
+    async fn apply_core_team(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &CoreTeamApplyRequest,
+    ) -> Result<CoreTeamOutcomeDto, ApiError>;
+    /// Materialize the Core Team's seats for one epic.
+    async fn materialize_core_team(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamMaterializeRequest,
+    ) -> Result<CoreTeamOutcomeDto, ApiError>;
+    /// The roles a Quick session may be opened against.
+    fn quick_roles(&self, project_id: ProjectId) -> Result<QuickRolesDto, ApiError>;
+    /// Open a Quick session, or return the one this key opened.
+    async fn ensure_quick_session(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &EnsureQuickSessionRequest,
+    ) -> Result<QuickSessionDto, ApiError>;
+    /// What promoting one Quick session would produce.
+    fn preview_promotion(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+    ) -> Result<PromotionPreviewDto, ApiError>;
+    /// Apply a named promotion preview.
+    async fn apply_promotion(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+        request: &PromotionApplyRequest,
+    ) -> Result<PromotedSessionDto, ApiError>;
+    /// What moving one epic's pinned roster would do.
+    fn preview_roster_upgrade(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &RosterUpgradePreviewRequest,
+    ) -> Result<RosterUpgradePreviewDto, ApiError>;
+    /// Apply a named roster upgrade preview.
+    async fn apply_roster_upgrade(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TopologyUpgradeApplyRequest,
+    ) -> Result<CoreTeamOutcomeDto, ApiError>;
+    /// Every published Advisor profile revision.
+    fn advisor_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
+    /// Judge one Advisor profile definition. Commits nothing.
+    fn preview_advisor_profile(
+        &self,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError>;
+    /// Publish one Advisor profile revision.
+    async fn apply_advisor_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError>;
+    /// Invoke one Advisor consultation against an epic.
+    async fn invoke_advisor_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &InvokeConsultationRequest,
+    ) -> Result<AdvisorRunDto, ApiError>;
+    /// Settle one Advisor consultation.
+    async fn settle_advisor_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+        request: &SettleConsultationRequest,
+    ) -> Result<AdvisorRunDto, ApiError>;
+    /// Every published Committee template revision.
+    fn committee_templates(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
+    /// Judge one Committee template definition. Commits nothing.
+    fn preview_committee_template(
+        &self,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError>;
+    /// Publish one Committee template revision.
+    async fn apply_committee_template(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError>;
+    /// Invoke one Committee consultation against an epic.
+    async fn invoke_committee_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &InvokeConsultationRequest,
+    ) -> Result<CommitteeRunDto, ApiError>;
+    /// Record one round of Committee findings.
+    async fn record_committee_findings(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &RecordFindingsRequest,
+    ) -> Result<CommitteeRunDto, ApiError>;
+    /// Settle one Committee consultation.
+    async fn settle_committee_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &SettleConsultationRequest,
+    ) -> Result<CommitteeRunDto, ApiError>;
+    /// Every published Completion profile revision.
+    fn completion_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
+    /// Judge one Completion profile definition. Commits nothing.
+    fn preview_completion_profile(
+        &self,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError>;
+    /// Publish one Completion profile revision.
+    async fn apply_completion_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError>;
+    /// One epic's completion state.
+    fn completion(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<CompletionStateDto, ApiError>;
+    /// Advance one epic's completion.
+    async fn advance_completion(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &AdvanceCompletionRequest,
+    ) -> Result<CompletionOutcomeDto, ApiError>;
+    /// Send one epic's completion back for remediation.
+    async fn remediate_completion(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &RemediateCompletionRequest,
+    ) -> Result<CompletionOutcomeDto, ApiError>;
+
     /// Apply one whole epic — graph, links, selections — atomically.
     async fn apply_epic(
         &self,
@@ -3966,6 +4560,810 @@ pub async fn retire_seat(
         state
             .applications()
             .retire_seat(&key, project_id, seat_binding_id, &request)
+            .await?,
+    ))
+}
+
+/// One project's Core Team.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/core-team", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    responses(
+        (status = 200, body = CoreTeamDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<CoreTeamDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().core_team(project_id)?))
+}
+
+/// What a Core Team change would do. Commits nothing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/core-team:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    request_body = CoreTeamPreviewRequest,
+    responses(
+        (status = 200, body = CoreTeamPreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<CoreTeamPreviewRequest>,
+) -> Result<Json<CoreTeamPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_core_team(project_id, &request)?,
+    ))
+}
+
+/// Apply a named Core Team preview.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/core-team:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = CoreTeamApplyRequest,
+    responses(
+        (status = 200, body = CoreTeamOutcomeDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<CoreTeamApplyRequest>,
+) -> Result<Json<CoreTeamOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_core_team(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Materialize the Core Team's seats for one epic.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = CoreTeamMaterializeRequest,
+    responses(
+        (status = 200, body = CoreTeamOutcomeDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn materialize_core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<CoreTeamMaterializeRequest>,
+) -> Result<Json<CoreTeamOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .materialize_core_team(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// The roles a Quick session may be opened against.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/quick-roles", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    responses(
+        (status = 200, body = QuickRolesDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn quick_roles(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<QuickRolesDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().quick_roles(project_id)?))
+}
+
+/// Open a Quick session, or return the one this key opened.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/quick-sessions:ensure", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = EnsureQuickSessionRequest,
+    responses(
+        (status = 200, body = QuickSessionDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn ensure_quick_session(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<EnsureQuickSessionRequest>,
+) -> Result<Json<QuickSessionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .ensure_quick_session(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// What promoting one Quick session would produce.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("quick_session_id" = String, Path, description = "The Quick session")
+    ),
+    responses(
+        (status = 200, body = PromotionPreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_promotion(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, quick_session_id)): Path<(String, String)>,
+) -> Result<Json<PromotionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let quick_session_id = parse_id(&state, QuickSessionId::parse(&quick_session_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_promotion(project_id, quick_session_id)?,
+    ))
+}
+
+/// Apply a named promotion preview.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("quick_session_id" = String, Path, description = "The Quick session"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = PromotionApplyRequest,
+    responses(
+        (status = 200, body = PromotedSessionDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_promotion(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, quick_session_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<PromotionApplyRequest>,
+) -> Result<Json<PromotedSessionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let quick_session_id = parse_id(&state, QuickSessionId::parse(&quick_session_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_promotion(&key, project_id, quick_session_id, &request)
+            .await?,
+    ))
+}
+
+/// What moving one epic's pinned roster would do.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic")
+    ),
+    request_body = RosterUpgradePreviewRequest,
+    responses(
+        (status = 200, body = RosterUpgradePreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_roster_upgrade(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<RosterUpgradePreviewRequest>,
+) -> Result<Json<RosterUpgradePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_roster_upgrade(project_id, epic_id, &request)?,
+    ))
+}
+
+/// Apply a named roster upgrade preview.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TopologyUpgradeApplyRequest,
+    responses(
+        (status = 200, body = CoreTeamOutcomeDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_roster_upgrade(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TopologyUpgradeApplyRequest>,
+) -> Result<Json<CoreTeamOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_roster_upgrade(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Every published Advisor profile revision.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/advisor-profiles", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    responses(
+        (status = 200, body = ProfileCatalogDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn advisor_profiles(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProfileCatalogDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().advisor_profiles(project_id)?))
+}
+
+/// Judge one Advisor profile definition. Commits nothing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/advisor-profiles:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    request_body = ProfilePreviewRequest,
+    responses(
+        (status = 200, body = ProfilePreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_advisor_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ProfilePreviewRequest>,
+) -> Result<Json<ProfilePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_advisor_profile(project_id, &request)?,
+    ))
+}
+
+/// Publish one Advisor profile revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/advisor-profiles:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ProfileApplyRequest,
+    responses(
+        (status = 200, body = AppliedProfileDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_advisor_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ProfileApplyRequest>,
+) -> Result<Json<AppliedProfileDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_advisor_profile(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Invoke one Advisor consultation against an epic.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/advisor-runs:invoke", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = InvokeConsultationRequest,
+    responses(
+        (status = 200, body = AdvisorRunDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn invoke_advisor_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<InvokeConsultationRequest>,
+) -> Result<Json<AdvisorRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .invoke_advisor_run(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Settle one Advisor consultation.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("advisor_run_id" = String, Path, description = "The consultation"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SettleConsultationRequest,
+    responses(
+        (status = 200, body = AdvisorRunDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn settle_advisor_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, advisor_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SettleConsultationRequest>,
+) -> Result<Json<AdvisorRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let advisor_run_id = parse_id(&state, AdvisorRunId::parse(&advisor_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .settle_advisor_run(&key, project_id, advisor_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Every published Committee template revision.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/committee-templates", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    responses(
+        (status = 200, body = ProfileCatalogDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn committee_templates(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProfileCatalogDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().committee_templates(project_id)?))
+}
+
+/// Judge one Committee template definition. Commits nothing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-templates:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    request_body = ProfilePreviewRequest,
+    responses(
+        (status = 200, body = ProfilePreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_committee_template(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ProfilePreviewRequest>,
+) -> Result<Json<ProfilePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_committee_template(project_id, &request)?,
+    ))
+}
+
+/// Publish one Committee template revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-templates:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ProfileApplyRequest,
+    responses(
+        (status = 200, body = AppliedProfileDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_committee_template(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ProfileApplyRequest>,
+) -> Result<Json<AppliedProfileDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_committee_template(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Invoke one Committee consultation against an epic.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/committee-runs:invoke", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = InvokeConsultationRequest,
+    responses(
+        (status = 200, body = CommitteeRunDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn invoke_committee_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<InvokeConsultationRequest>,
+) -> Result<Json<CommitteeRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .invoke_committee_run(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Record one round of Committee findings.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("committee_run_id" = String, Path, description = "The consultation"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = RecordFindingsRequest,
+    responses(
+        (status = 200, body = CommitteeRunDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn record_committee_findings(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<RecordFindingsRequest>,
+) -> Result<Json<CommitteeRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .record_committee_findings(&key, project_id, committee_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Settle one Committee consultation.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("committee_run_id" = String, Path, description = "The consultation"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SettleConsultationRequest,
+    responses(
+        (status = 200, body = CommitteeRunDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn settle_committee_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SettleConsultationRequest>,
+) -> Result<Json<CommitteeRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .settle_committee_run(&key, project_id, committee_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Every published Completion profile revision.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/completion-profiles", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    responses(
+        (status = 200, body = ProfileCatalogDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn completion_profiles(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProfileCatalogDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().completion_profiles(project_id)?))
+}
+
+/// Judge one Completion profile definition. Commits nothing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/completion-profiles:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    request_body = ProfilePreviewRequest,
+    responses(
+        (status = 200, body = ProfilePreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_completion_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ProfilePreviewRequest>,
+) -> Result<Json<ProfilePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_completion_profile(project_id, &request)?,
+    ))
+}
+
+/// Publish one Completion profile revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/completion-profiles:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ProfileApplyRequest,
+    responses(
+        (status = 200, body = AppliedProfileDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_completion_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ProfileApplyRequest>,
+) -> Result<Json<AppliedProfileDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_completion_profile(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// One epic's completion state.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/epics/{epic_id}/completion", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic")
+    ),
+    responses(
+        (status = 200, body = CompletionStateDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn completion(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+) -> Result<Json<CompletionStateDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(state.applications().completion(project_id, epic_id)?))
+}
+
+/// Advance one epic's completion.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/completion:advance", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = AdvanceCompletionRequest,
+    responses(
+        (status = 200, body = CompletionOutcomeDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn advance_completion(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AdvanceCompletionRequest>,
+) -> Result<Json<CompletionOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .advance_completion(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Send one epic's completion back for remediation.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/completion:remediate", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = RemediateCompletionRequest,
+    responses(
+        (status = 200, body = CompletionOutcomeDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn remediate_completion(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<RemediateCompletionRequest>,
+) -> Result<Json<CompletionOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .remediate_completion(&key, project_id, epic_id, &request)
             .await?,
     ))
 }

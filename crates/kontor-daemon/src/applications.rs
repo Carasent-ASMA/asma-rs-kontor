@@ -40,6 +40,16 @@ use kontor_api::applications::{
     WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
+    AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CommitteeRunDto,
+    CompletionOutcomeDto, CompletionStateDto, CoreTeamApplyRequest, CoreTeamDto,
+    CoreTeamMaterializeRequest, CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest,
+    EnsureQuickSessionRequest, InvokeConsultationRequest, ProfileApplyRequest, ProfileCatalogDto,
+    ProfilePreviewDto, ProfilePreviewRequest, PromotedSessionDto, PromotionApplyRequest,
+    PromotionPreviewDto, QuickRolesDto, QuickSessionDto, RecordFindingsRequest,
+    RemediateCompletionRequest, RosterUpgradePreviewDto, RosterUpgradePreviewRequest,
+    SettleConsultationRequest,
+};
+use kontor_api::applications::{
     AppliedTopologyUpgradeDto, SemanticTopologyRequest, TopologyMutationDto, TopologyNodeRequest,
     TopologyProjectionDto, TopologyUpgradeApplyRequest, TopologyUpgradePreviewDto,
     TopologyUpgradePreviewRequest,
@@ -73,12 +83,12 @@ use kontor_api::state::ApiState;
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CanonicalDocument,
-    CommandReceiptId, ConnectorKey, ContentHash, CurrencyCode, ExecutionAuthorizationId,
-    ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey,
-    Money, ProjectId, RoleCatalogId, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION,
-    SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp,
-    TopologyNodeId, TopologySpecId, TriggerKey,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
+    CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
+    ExecutionAuthorizationId, ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId,
+    MiniProjectId, ModuleKey, Money, ProjectId, QuickSessionId, RoleCatalogId, RoleSlotId,
+    RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId, SpecVersion,
+    StatusConflictId, TaskId, TeamRunId, Timestamp, TopologyNodeId, TopologySpecId, TriggerKey,
 };
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
@@ -3075,6 +3085,283 @@ impl ApplicationOperations for Services {
         Err(self.deny(
             ApiErrorCode::Unavailable,
             "exact-seat retirement is not composed in this build",
+        ))
+    }
+
+    fn core_team(&self, _project_id: ProjectId) -> Result<CoreTeamDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Core Team service is not composed in this build",
+        ))
+    }
+    fn preview_core_team(
+        &self,
+        _project_id: ProjectId,
+        _request: &CoreTeamPreviewRequest,
+    ) -> Result<CoreTeamPreviewDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Core Team service is not composed in this build",
+        ))
+    }
+    async fn apply_core_team(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _request: &CoreTeamApplyRequest,
+    ) -> Result<CoreTeamOutcomeDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Core Team service is not composed in this build",
+        ))
+    }
+    async fn materialize_core_team(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+        _request: &CoreTeamMaterializeRequest,
+    ) -> Result<CoreTeamOutcomeDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Core Team service is not composed in this build",
+        ))
+    }
+    fn quick_roles(&self, _project_id: ProjectId) -> Result<QuickRolesDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Quick work service is not composed in this build",
+        ))
+    }
+    async fn ensure_quick_session(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _request: &EnsureQuickSessionRequest,
+    ) -> Result<QuickSessionDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Quick work service is not composed in this build",
+        ))
+    }
+    fn preview_promotion(
+        &self,
+        _project_id: ProjectId,
+        _quick_session_id: QuickSessionId,
+    ) -> Result<PromotionPreviewDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Quick work service is not composed in this build",
+        ))
+    }
+    async fn apply_promotion(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _quick_session_id: QuickSessionId,
+        _request: &PromotionApplyRequest,
+    ) -> Result<PromotedSessionDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Quick work service is not composed in this build",
+        ))
+    }
+    fn preview_roster_upgrade(
+        &self,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+        _request: &RosterUpgradePreviewRequest,
+    ) -> Result<RosterUpgradePreviewDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the epic roster service is not composed in this build",
+        ))
+    }
+    async fn apply_roster_upgrade(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+        _request: &TopologyUpgradeApplyRequest,
+    ) -> Result<CoreTeamOutcomeDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the epic roster service is not composed in this build",
+        ))
+    }
+    fn advisor_profiles(&self, _project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Advisor service is not composed in this build",
+        ))
+    }
+    fn preview_advisor_profile(
+        &self,
+        _project_id: ProjectId,
+        _request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Advisor service is not composed in this build",
+        ))
+    }
+    async fn apply_advisor_profile(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Advisor service is not composed in this build",
+        ))
+    }
+    async fn invoke_advisor_run(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+        _request: &InvokeConsultationRequest,
+    ) -> Result<AdvisorRunDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Advisor service is not composed in this build",
+        ))
+    }
+    async fn settle_advisor_run(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _advisor_run_id: AdvisorRunId,
+        _request: &SettleConsultationRequest,
+    ) -> Result<AdvisorRunDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Advisor service is not composed in this build",
+        ))
+    }
+    fn committee_templates(&self, _project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Committee service is not composed in this build",
+        ))
+    }
+    fn preview_committee_template(
+        &self,
+        _project_id: ProjectId,
+        _request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Committee service is not composed in this build",
+        ))
+    }
+    async fn apply_committee_template(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Committee service is not composed in this build",
+        ))
+    }
+    async fn invoke_committee_run(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+        _request: &InvokeConsultationRequest,
+    ) -> Result<CommitteeRunDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Committee service is not composed in this build",
+        ))
+    }
+    async fn record_committee_findings(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _committee_run_id: CommitteeRunId,
+        _request: &RecordFindingsRequest,
+    ) -> Result<CommitteeRunDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Committee service is not composed in this build",
+        ))
+    }
+    async fn settle_committee_run(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _committee_run_id: CommitteeRunId,
+        _request: &SettleConsultationRequest,
+    ) -> Result<CommitteeRunDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Committee service is not composed in this build",
+        ))
+    }
+    fn completion_profiles(&self, _project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Completion service is not composed in this build",
+        ))
+    }
+    fn preview_completion_profile(
+        &self,
+        _project_id: ProjectId,
+        _request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Completion service is not composed in this build",
+        ))
+    }
+    async fn apply_completion_profile(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Completion service is not composed in this build",
+        ))
+    }
+    fn completion(
+        &self,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+    ) -> Result<CompletionStateDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Completion service is not composed in this build",
+        ))
+    }
+    async fn advance_completion(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+        _request: &AdvanceCompletionRequest,
+    ) -> Result<CompletionOutcomeDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Completion service is not composed in this build",
+        ))
+    }
+    async fn remediate_completion(
+        &self,
+        _key: &IdempotencyKey,
+        _project_id: ProjectId,
+        _epic_id: MiniProjectId,
+        _request: &RemediateCompletionRequest,
+    ) -> Result<CompletionOutcomeDto, ApiError> {
+        Err(self.deny(
+            ApiErrorCode::Unavailable,
+            "the Completion service is not composed in this build",
         ))
     }
 

@@ -323,6 +323,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/advisor-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every published Advisor profile revision. */
+        get: operations["advisor_profiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/advisor-profiles:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one Advisor profile revision. */
+        post: operations["apply_advisor_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/advisor-profiles:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Judge one Advisor profile definition. Commits nothing. */
+        post: operations["preview_advisor_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Settle one Advisor consultation. */
+        post: operations["settle_advisor_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late": {
         parameters: {
             query?: never;
@@ -485,6 +553,142 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record one round of Committee findings. */
+        post: operations["record_committee_findings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Settle one Committee consultation. */
+        post: operations["settle_committee_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/committee-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every published Committee template revision. */
+        get: operations["committee_templates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/committee-templates:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one Committee template revision. */
+        post: operations["apply_committee_template"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/committee-templates:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Judge one Committee template definition. Commits nothing. */
+        post: operations["preview_committee_template"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/completion-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every published Completion profile revision. */
+        get: operations["completion_profiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/completion-profiles:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one Completion profile revision. */
+        post: operations["apply_completion_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/completion-profiles:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Judge one Completion profile definition. Commits nothing. */
+        post: operations["preview_completion_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/connectors/{connector}/field-specs": {
         parameters: {
             query?: never;
@@ -519,6 +723,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/core-team": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One project's Core Team. */
+        get: operations["core_team"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/core-team:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply a named Core Team preview. */
+        post: operations["apply_core_team"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/core-team:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** What a Core Team change would do. Commits nothing. */
+        post: operations["preview_core_team"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}": {
         parameters: {
             query?: never;
@@ -536,6 +791,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/advisor-runs:invoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Invoke one Advisor consultation against an epic. */
+        post: operations["invoke_advisor_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/code-help": {
         parameters: {
             query?: never;
@@ -547,6 +819,91 @@ export interface paths {
         get: operations["code_help"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/committee-runs:invoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Invoke one Committee consultation against an epic. */
+        post: operations["invoke_committee_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/completion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One epic's completion state. */
+        get: operations["completion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/completion:advance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Advance one epic's completion. */
+        post: operations["advance_completion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/completion:remediate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send one epic's completion back for remediation. */
+        post: operations["remediate_completion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Materialize the Core Team's seats for one epic. */
+        post: operations["materialize_core_team"];
         delete?: never;
         options?: never;
         head?: never;
@@ -598,6 +955,40 @@ export interface paths {
         put?: never;
         /** Move a task or the epic through one legal, evidenced transition. */
         post: operations["lifecycle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply a named roster upgrade preview. */
+        post: operations["apply_roster_upgrade"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** What moving one epic's pinned roster would do. */
+        post: operations["preview_roster_upgrade"];
         delete?: never;
         options?: never;
         head?: never;
@@ -916,6 +1307,74 @@ export interface paths {
         put?: never;
         /** Create a provider-account profile, or return the one with that label. */
         post: operations["ensure_account_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/quick-roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The roles a Quick session may be opened against. */
+        get: operations["quick_roles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply a named promotion preview. */
+        post: operations["apply_promotion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** What promoting one Quick session would produce. */
+        post: operations["preview_promotion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/quick-sessions:ensure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open a Quick session, or return the one this key opened. */
+        post: operations["ensure_quick_session"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1760,6 +2219,29 @@ export interface components {
              */
             initial: number;
         };
+        /** @description Advance one epic's completion. */
+        AdvanceCompletionRequest: {
+            /**
+             * Format: int64
+             * @description The completion revision the caller believes is current.
+             */
+            expected_revision: number;
+        };
+        /** @description One Advisor consultation. */
+        AdvisorRunDto: {
+            /** @description The consultation. */
+            advisor_run_id: string;
+            /** @description The epic it advises. */
+            epic_id: string;
+            /** @description The pinned profile it runs under. */
+            profile: components["schemas"]["ProfileRevisionDto"];
+            /** @description The Realm it belongs to. */
+            realm_id: string;
+            /** @description The receipt it was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Its lifecycle, in the server's own vocabulary. */
+            state: string;
+        };
         /** @description The JSON body every refusal is reported with. */
         ApiErrorBody: {
             /** @description The stable machine-readable code. */
@@ -1839,6 +2321,13 @@ export interface components {
             external_issue_key: string;
             /** @description The link. */
             link_id: string;
+        };
+        /** @description One published profile revision and the receipt that froze it. */
+        AppliedProfileDto: {
+            /** @description The revision now standing. */
+            published: components["schemas"]["ProfileRevisionDto"];
+            /** @description The receipt it was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
         };
         /**
          * @description Which pinned specification revisions an aggregate is running under.
@@ -2267,6 +2756,26 @@ export interface components {
              */
             snapshot_cursor: number;
         };
+        /** @description One Committee consultation. */
+        CommitteeRunDto: {
+            /** @description The consultation. */
+            committee_run_id: string;
+            /** @description The epic it advises. */
+            epic_id: string;
+            /**
+             * Format: int32
+             * @description How many findings have been recorded so far.
+             */
+            findings_recorded: number;
+            /** @description The Realm it belongs to. */
+            realm_id: string;
+            /** @description The receipt it was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Its lifecycle, in the server's own vocabulary. */
+            state: string;
+            /** @description The pinned template it runs under. */
+            template: components["schemas"]["ProfileRevisionDto"];
+        };
         /**
          * @description What a caller states when asking a seat to compact.
          *
@@ -2322,6 +2831,36 @@ export interface components {
             tokens_before?: number | null;
             /** @description Why it was requested. */
             trigger: string;
+        };
+        /** @description What a completion write produced. */
+        CompletionOutcomeDto: {
+            /** @description The receipt it was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The completion state as it now stands. */
+            state: components["schemas"]["CompletionStateDto"];
+        };
+        /** @description One epic's completion state. */
+        CompletionStateDto: {
+            /** @description The epic. */
+            epic_id: string;
+            /** @description What is still outstanding, in a stable order. */
+            outstanding: string[];
+            /** @description Which phase it currently stands in. */
+            phase: string;
+            /** @description The pinned completion profile it is judged against. */
+            profile: components["schemas"]["ProfileRevisionDto"];
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
         };
         /**
          * @description One connector specification revision this build can serve.
@@ -2436,6 +2975,73 @@ export interface components {
             /** @description `total` | `growth_after_prefix`. */
             trigger_scope: string;
         };
+        /** @description Apply a named Core Team preview. */
+        CoreTeamApplyRequest: {
+            /**
+             * Format: int64
+             * @description The project revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The hash the preview answered with. */
+            preview_hash: string;
+            /** @description The roles the Core Team should seat, in order. */
+            seats: components["schemas"]["RoleSelectionDto"][];
+        };
+        /** @description One project's Core Team. */
+        CoreTeamDto: {
+            /** @description The project it serves. */
+            project_id: string;
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description Its seats, in declared order. */
+            seats: components["schemas"]["CoreTeamSeatDto"][];
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
+        };
+        /** @description Materialize the Core Team's seats for one epic. */
+        CoreTeamMaterializeRequest: {
+            /**
+             * Format: int64
+             * @description The epic revision the caller believes is current.
+             */
+            expected_revision: number;
+        };
+        /** @description What a Core Team write produced. */
+        CoreTeamOutcomeDto: {
+            /** @description The Core Team as it now stands. */
+            core_team: components["schemas"]["CoreTeamDto"];
+            /** @description The receipt it was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+        };
+        /** @description What a Core Team change would do. */
+        CoreTeamPreviewDto: {
+            /** @description Every effect, in a stable order. */
+            effects: components["schemas"]["TopologyUpgradeEffectDto"][];
+            /** @description The hash the corresponding apply must name. */
+            preview_hash: string;
+            /** @description The Realm that computed it. */
+            realm_id: string;
+        };
+        /** @description A proposed Core Team composition. */
+        CoreTeamPreviewRequest: {
+            /** @description The roles the Core Team should seat, in order. */
+            seats: components["schemas"]["RoleSelectionDto"][];
+        };
+        /** @description One Core Team seat: the standard role, and the seat filling it if any. */
+        CoreTeamSeatDto: {
+            /** @description The role, as the server resolved it. */
+            role: components["schemas"]["ResolvedRoleRefDto"];
+            /** @description The binding filling it, once one has been materialized. */
+            seat_binding_id?: string | null;
+        };
         /**
          * @description The native shape the server derived for one node.
          *
@@ -2509,6 +3115,13 @@ export interface components {
             name: string;
             /** @description Canonical absolute root path. The natural identity. */
             root_path: string;
+        };
+        /** @description Open a Quick session, or return the one this key already opened. */
+        EnsureQuickSessionRequest: {
+            /** @description What the session is for. Recorded, never interpreted. */
+            purpose: string;
+            /** @description The standard role the session's seat fills. */
+            role: components["schemas"]["RoleSelectionDto"];
         };
         /** @description The whole of one epic, read at one control-plane position. */
         EpicProjectionDto: {
@@ -2791,6 +3404,24 @@ export interface components {
             /** @description The trigger that decided, at the revision it decided under. */
             trigger: components["schemas"]["RevisionRefDto"];
         };
+        /**
+         * @description Invoke one consultation against an epic.
+         *
+         *     A consultation names the pinned profile it runs under and the question it is
+         *     asked. It does not name a model, a provider or a runtime: which seat answers
+         *     is the realm's routing decision, not the caller's.
+         */
+        InvokeConsultationRequest: {
+            /**
+             * Format: int64
+             * @description The epic revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The profile or template revision to run under. */
+            profile: components["schemas"]["RevisionRefDto"];
+            /** @description What is being asked. */
+            question: string;
+        };
         /** @description One immutable late-handoff disposition recorded after runtime cancellation. */
         LateHandoffAttestationDto: {
             /** @description The terminal run whose handoff was reconciled. */
@@ -3005,6 +3636,18 @@ export interface components {
              */
             version: number;
         };
+        /** @description Publish one revalidated definition as an immutable revision. */
+        ProfileApplyRequest: {
+            /** @description The complete definition to publish. */
+            definition: Record<string, never>;
+            /**
+             * Format: int64
+             * @description The aggregate revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The hash the preview answered with. */
+            preview_hash: string;
+        };
         /** @description One artifact contract a work profile declares. */
         ProfileArtifactDto: {
             /** @description The artifact. */
@@ -3015,6 +3658,25 @@ export interface components {
             label: string;
             /** @description The phase that produces it. */
             producer_phase: string;
+        };
+        /** @description Every published revision of one profile family in a project. */
+        ProfileCatalogDto: {
+            /** @description The project that owns them. */
+            project_id: string;
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description Every revision, oldest first. */
+            revisions: components["schemas"]["ProfileRevisionDto"][];
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
         };
         /** @description One declared handoff of the team a profile prescribes. */
         ProfileHandoffDto: {
@@ -3062,6 +3724,42 @@ export interface components {
             rejection_route?: string | null;
             /** @description Artifacts that must exist before the phase can complete. */
             required_artifacts: string[];
+        };
+        /** @description The verdict on one candidate definition. */
+        ProfilePreviewDto: {
+            /** @description The hash the corresponding apply must name. */
+            preview_hash: string;
+            /** @description The Realm that judged it. */
+            realm_id: string;
+            /** @description Every violation, in a stable order. Empty means publishable. */
+            violations: string[];
+        };
+        /** @description One candidate definition, judged and committed nowhere. */
+        ProfilePreviewRequest: {
+            /** @description The complete candidate definition. */
+            definition: Record<string, never>;
+        };
+        /**
+         * @description One immutable profile or template revision.
+         *
+         *     Advisor profiles, Committee templates and Completion profiles are three
+         *     aggregates with one wire shape: an identity, a monotonic version, a label
+         *     and the digest of the definition frozen at publish. They share these types
+         *     rather than carrying three identical copies that would drift apart the first
+         *     time one of them gained a field.
+         */
+        ProfileRevisionDto: {
+            /** @description The digest of the canonical definition. */
+            definition_hash: string;
+            /** @description Stable logical id shared by every revision. */
+            id: string;
+            /** @description Human label frozen at publish. */
+            name: string;
+            /**
+             * Format: int32
+             * @description Monotonic version within `id`.
+             */
+            version: number;
         };
         /**
          * @description What validating a work-profile category proved.
@@ -3181,6 +3879,36 @@ export interface components {
             /** @description The outcome, when the run is closed. */
             outcome?: string | null;
         };
+        /** @description One promoted Quick session, now an epic. */
+        PromotedSessionDto: {
+            /** @description The epic the session became. */
+            epic_id: string;
+            /** @description The session it was promoted from. */
+            quick_session_id: string;
+            /** @description The receipt it was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+        };
+        /** @description Apply a named promotion preview. */
+        PromotionApplyRequest: {
+            /**
+             * Format: int64
+             * @description The session revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The hash the preview answered with. */
+            preview_hash: string;
+        };
+        /** @description What promoting one Quick session would produce. */
+        PromotionPreviewDto: {
+            /** @description Every effect, in a stable order. */
+            effects: components["schemas"]["TopologyUpgradeEffectDto"][];
+            /** @description The hash the corresponding apply must name. */
+            preview_hash: string;
+            /** @description The session that would be promoted. */
+            quick_session_id: string;
+            /** @description The Realm that computed it. */
+            realm_id: string;
+        };
         Propose: {
             document: Record<string, never>;
             /** Format: int64 */
@@ -3250,6 +3978,33 @@ export interface components {
         Purge: {
             by: string;
         };
+        /** @description The roles a Quick session may be opened against. */
+        QuickRolesDto: {
+            /** @description The project. */
+            project_id: string;
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /** @description Every selectable role, in the catalog's declared order. */
+            roles: components["schemas"]["RoleCatalogEntryDto"][];
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
+        };
+        /** @description One Quick session. */
+        QuickSessionDto: {
+            /** @description The session. */
+            quick_session_id: string;
+            /** @description The Realm it belongs to. */
+            realm_id: string;
+            /** @description The receipt it was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The role its seat fills, as the server resolved it. */
+            role: components["schemas"]["ResolvedRoleRefDto"];
+            /** @description The topology node hosting it. */
+            topology_node_id: string;
+        };
         /** @description One task the planner would admit, and what it would run under. */
         ReadyTaskDto: {
             /** @description The account profile it is pinned to, if any. */
@@ -3313,6 +4068,16 @@ export interface components {
              */
             updated_at: string;
         };
+        /** @description Record one round of Committee findings. */
+        RecordFindingsRequest: {
+            /**
+             * Format: int64
+             * @description The run revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The findings document. */
+            findings: Record<string, never>;
+        };
         /** @description What `gates/{gate_id}:record` is asked for. */
         RecordGateRequest: {
             /** @description The account profile recording it. */
@@ -3366,6 +4131,16 @@ export interface components {
         RegisterPackRequest: {
             /** @description The pack document. Validated in full before anything is stored. */
             pack: Record<string, never>;
+        };
+        /** @description Send one epic's completion back for remediation. */
+        RemediateCompletionRequest: {
+            /**
+             * Format: int64
+             * @description The completion revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description Why. Recorded, never interpreted. */
+            reason: string;
         };
         /** @description What the Admin-only unusable-seat replacement is asked for. */
         ReplaceSeatRequest: {
@@ -3571,6 +4346,22 @@ export interface components {
             team_run_id: string;
             /** @description The waiver. */
             waiver_id: string;
+        };
+        /** @description What a roster upgrade would do. */
+        RosterUpgradePreviewDto: {
+            /** @description Every effect, in a stable order. */
+            effects: components["schemas"]["TopologyUpgradeEffectDto"][];
+            /** @description The epic whose roster would move. */
+            epic_id: string;
+            /** @description The hash the corresponding apply must name. */
+            preview_hash: string;
+            /** @description The Realm that computed it. */
+            realm_id: string;
+        };
+        /** @description Diff one epic's pinned roster against a published target. */
+        RosterUpgradePreviewRequest: {
+            /** @description The published revision to diff the epic's current pin against. */
+            target: components["schemas"]["RevisionRefDto"];
         };
         /** @description One agent run, as a cross-boundary reader sees it. */
         RunDto: {
@@ -3860,6 +4651,14 @@ export interface components {
             committee_run_id: string;
             /** @enum {string} */
             scope: "committee_consultation";
+        };
+        /** @description Settle one consultation. */
+        SettleConsultationRequest: {
+            /**
+             * Format: int64
+             * @description The run revision the caller believes is current.
+             */
+            expected_revision: number;
         };
         /**
          * @description What `turns:settle` is asked for.
@@ -5343,6 +6142,226 @@ export interface operations {
             };
         };
     };
+    advisor_profiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileCatalogDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_advisor_profile: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedProfileDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_advisor_profile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfilePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfilePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    settle_advisor_run: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The consultation */
+                advisor_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettleConsultationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdvisorRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     attest_late_handoff: {
         parameters: {
             query?: never;
@@ -5808,6 +6827,446 @@ export interface operations {
             };
         };
     };
+    record_committee_findings: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The consultation */
+                committee_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordFindingsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitteeRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    settle_committee_run: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The consultation */
+                committee_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettleConsultationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitteeRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    committee_templates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileCatalogDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_committee_template: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedProfileDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_committee_template: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfilePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfilePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    completion_profiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileCatalogDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_completion_profile: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedProfileDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_completion_profile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfilePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfilePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     connector_field_specs: {
         parameters: {
             query?: never;
@@ -5892,6 +7351,164 @@ export interface operations {
             };
         };
     };
+    core_team: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_core_team: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamOutcomeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_core_team: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     read_epic: {
         parameters: {
             query?: never;
@@ -5921,6 +7538,68 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    invoke_advisor_run: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvokeConsultationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdvisorRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5963,6 +7642,303 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    invoke_committee_run: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvokeConsultationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitteeRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    completion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompletionStateDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    advance_completion: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdvanceCompletionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompletionOutcomeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remediate_completion: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RemediateCompletionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompletionOutcomeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    materialize_core_team: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamMaterializeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamOutcomeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6129,6 +8105,121 @@ export interface operations {
             };
             /** @description An illegal transition, a stale revision, or unmet gates */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_roster_upgrade: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TopologyUpgradeApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamOutcomeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_roster_upgrade: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RosterUpgradePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RosterUpgradePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6842,6 +8933,224 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    quick_roles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuickRolesDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_promotion: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The Quick session */
+                quick_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromotionApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromotedSessionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_promotion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The Quick session */
+                quick_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromotionPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ensure_quick_session: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnsureQuickSessionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuickSessionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

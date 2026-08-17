@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        88,
+        115,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        89,
+        116,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -598,6 +598,38 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_capacity_override", CallerTier::Operator),
         ("kontor_seat_attention", CallerTier::Operator),
         ("kontor_seat_retire", CallerTier::Operator),
+        // KON-OP-03 successor contracts. Configuration — who the Core Team is,
+        // what an Advisor, Committee or Completion profile says, which roster
+        // an epic pins — is admin. Running a consultation, opening or promoting
+        // Quick work and moving a completion are operator acts. The catalogs
+        // themselves are reads.
+        ("kontor_core_team_get", CallerTier::Observer),
+        ("kontor_core_team_preview", CallerTier::Admin),
+        ("kontor_core_team_apply", CallerTier::Admin),
+        ("kontor_core_team_materialize", CallerTier::Operator),
+        ("kontor_quick_roles_list", CallerTier::Observer),
+        ("kontor_quick_session_ensure", CallerTier::Operator),
+        ("kontor_promotion_preview", CallerTier::Operator),
+        ("kontor_promotion_apply", CallerTier::Operator),
+        ("kontor_roster_upgrade_preview", CallerTier::Admin),
+        ("kontor_roster_upgrade_apply", CallerTier::Admin),
+        ("kontor_advisor_profiles_list", CallerTier::Observer),
+        ("kontor_advisor_profile_preview", CallerTier::Admin),
+        ("kontor_advisor_profile_apply", CallerTier::Admin),
+        ("kontor_advisor_run_invoke", CallerTier::Operator),
+        ("kontor_advisor_run_settle", CallerTier::Operator),
+        ("kontor_committee_templates_list", CallerTier::Observer),
+        ("kontor_committee_template_preview", CallerTier::Admin),
+        ("kontor_committee_template_apply", CallerTier::Admin),
+        ("kontor_committee_run_invoke", CallerTier::Operator),
+        ("kontor_committee_findings_record", CallerTier::Operator),
+        ("kontor_committee_run_settle", CallerTier::Operator),
+        ("kontor_completion_profiles_list", CallerTier::Observer),
+        ("kontor_completion_profile_preview", CallerTier::Admin),
+        ("kontor_completion_profile_apply", CallerTier::Admin),
+        ("kontor_completion_get", CallerTier::Observer),
+        ("kontor_completion_advance", CallerTier::Operator),
+        ("kontor_completion_remediate", CallerTier::Operator),
     ]);
     for tool in REGISTRY {
         assert_eq!(

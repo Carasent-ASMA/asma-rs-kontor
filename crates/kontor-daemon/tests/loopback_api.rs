@@ -11295,3 +11295,92 @@ async fn an_invented_topology_scope_is_refused() {
         answer.body
     );
 }
+
+/// Every successor contract refuses; none of them pretends.
+///
+/// OP-04, OP-05 and OP-06 own the behaviour behind these routes. The contract
+/// is fixed now so the authority rules and the closed argument lists are one
+/// decision rather than one per successor — which is only safe if the daemon
+/// is honest about having no service yet. The failure this pins is the tempting
+/// one: an empty catalog, an empty roster, a completion state with nothing
+/// outstanding. Each of those is indistinguishable from a real answer, and a
+/// caller would act on it.
+#[tokio::test]
+async fn every_successor_contract_refuses_rather_than_answering_emptily() {
+    let world = World::open().await;
+    let project = world.project;
+
+    let reads = [
+        format!("/v1/projects/{project}/core-team"),
+        format!("/v1/projects/{project}/quick-roles"),
+        format!("/v1/projects/{project}/advisor-profiles"),
+        format!("/v1/projects/{project}/committee-templates"),
+        format!("/v1/projects/{project}/completion-profiles"),
+        format!(
+            "/v1/projects/{project}/epics/{}/completion",
+            MiniProjectId::generate()
+        ),
+    ];
+    for uri in reads {
+        let answer = Call::get(&uri)
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        assert_eq!(
+            answer.status, 503,
+            "{uri} answered instead of refusing: {}",
+            answer.body
+        );
+        assert_eq!(answer.code(), "unavailable");
+        // The refusal envelope carries no projection a caller could mistake for
+        // data: no seats, no revisions, no phase.
+        for absent in ["seats", "revisions", "roles", "phase", "outstanding"] {
+            assert!(
+                answer.json().get(absent).is_none(),
+                "{uri}'s refusal carried `{absent}`: {}",
+                answer.body
+            );
+        }
+    }
+
+    // A write refuses before it can commit, and hands back no receipt.
+    let advanced = Call::post(
+        format!(
+            "/v1/projects/{project}/epics/{}/completion:advance",
+            MiniProjectId::generate()
+        ),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("advance-before-the-service-exists")
+    .send(&world)
+    .await;
+    assert_eq!(advanced.status, 503, "{}", advanced.body);
+    assert_eq!(advanced.code(), "unavailable");
+    assert!(
+        advanced.json().get("receipt_id").is_none(),
+        "a refusal must not carry a receipt: {}",
+        advanced.body
+    );
+}
+
+/// The successor contracts check authority before they find no service.
+#[tokio::test]
+async fn a_successor_contract_refuses_an_under_authorized_caller_first() {
+    let world = World::open().await;
+    // Publishing an Advisor profile is admin configuration.
+    let refused = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:apply", world.project),
+        &serde_json::json!({
+            "definition": {"schema_version": 1},
+            "preview_hash": "0".repeat(64),
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("operator-may-not-publish-a-profile")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert_eq!(refused.code(), "forbidden");
+}

@@ -611,6 +611,245 @@
         }
       }
     },
+    "/v1/projects/{project_id}/advisor-profiles": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every published Advisor profile revision.",
+        "operationId": "advisor_profiles",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileCatalogDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/advisor-profiles:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one Advisor profile revision.",
+        "operationId": "apply_advisor_profile",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedProfileDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/advisor-profiles:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Judge one Advisor profile definition. Commits nothing.",
+        "operationId": "preview_advisor_profile",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfilePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilePreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Settle one Advisor consultation.",
+        "operationId": "settle_advisor_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "advisor_run_id",
+            "in": "path",
+            "description": "The consultation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettleConsultationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late": {
       "post": {
         "tags": [
@@ -1139,6 +1378,484 @@
         }
       }
     },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record one round of Committee findings.",
+        "operationId": "record_committee_findings",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "description": "The consultation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordFindingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitteeRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Settle one Committee consultation.",
+        "operationId": "settle_committee_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "description": "The consultation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettleConsultationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitteeRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/committee-templates": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every published Committee template revision.",
+        "operationId": "committee_templates",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileCatalogDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/committee-templates:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one Committee template revision.",
+        "operationId": "apply_committee_template",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedProfileDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/committee-templates:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Judge one Committee template definition. Commits nothing.",
+        "operationId": "preview_committee_template",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfilePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilePreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/completion-profiles": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every published Completion profile revision.",
+        "operationId": "completion_profiles",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileCatalogDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/completion-profiles:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one Completion profile revision.",
+        "operationId": "apply_completion_profile",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedProfileDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/completion-profiles:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Judge one Completion profile definition. Commits nothing.",
+        "operationId": "preview_completion_profile",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfilePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilePreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/connectors/{connector}/field-specs": {
       "get": {
         "tags": [
@@ -1245,6 +1962,170 @@
         }
       }
     },
+    "/v1/projects/{project_id}/core-team": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One project's Core Team.",
+        "operationId": "core_team",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/core-team:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply a named Core Team preview.",
+        "operationId": "apply_core_team",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoreTeamApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamOutcomeDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/core-team:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "What a Core Team change would do. Commits nothing.",
+        "operationId": "preview_core_team",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoreTeamPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}": {
       "get": {
         "tags": [
@@ -1288,6 +2169,81 @@
           },
           "404": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/advisor-runs:invoke": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Invoke one Advisor consultation against an epic.",
+        "operationId": "invoke_advisor_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvokeConsultationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
           }
         }
       }
@@ -1338,6 +2294,359 @@
           },
           "404": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/committee-runs:invoke": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Invoke one Committee consultation against an epic.",
+        "operationId": "invoke_committee_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvokeConsultationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitteeRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/completion": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One epic's completion state.",
+        "operationId": "completion",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletionStateDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/completion:advance": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Advance one epic's completion.",
+        "operationId": "advance_completion",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdvanceCompletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletionOutcomeDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/completion:remediate": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Send one epic's completion back for remediation.",
+        "operationId": "remediate_completion",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemediateCompletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletionOutcomeDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Materialize the Core Team's seats for one epic.",
+        "operationId": "materialize_core_team",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoreTeamMaterializeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamOutcomeDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
           }
         }
       }
@@ -1554,6 +2863,144 @@
           },
           "409": {
             "description": "An illegal transition, a stale revision, or unmet gates"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply a named roster upgrade preview.",
+        "operationId": "apply_roster_upgrade",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopologyUpgradeApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamOutcomeDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "What moving one epic's pinned roster would do.",
+        "operationId": "preview_roster_upgrade",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RosterUpgradePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RosterUpgradePreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
           }
         }
       }
@@ -2536,6 +3983,244 @@
           },
           "409": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/quick-roles": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "The roles a Quick session may be opened against.",
+        "operationId": "quick_roles",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuickRolesDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply a named promotion preview.",
+        "operationId": "apply_promotion",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "quick_session_id",
+            "in": "path",
+            "description": "The Quick session",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromotionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromotedSessionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "What promoting one Quick session would produce.",
+        "operationId": "preview_promotion",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "quick_session_id",
+            "in": "path",
+            "description": "The Quick session",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromotionPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/quick-sessions:ensure": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Open a Quick session, or return the one this key opened.",
+        "operationId": "ensure_quick_session",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsureQuickSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuickSessionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
           }
         }
       }
@@ -5034,6 +6719,60 @@
         },
         "additionalProperties": false
       },
+      "AdvanceCompletionRequest": {
+        "type": "object",
+        "description": "Advance one epic's completion.",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The completion revision the caller believes is current.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "AdvisorRunDto": {
+        "type": "object",
+        "description": "One Advisor consultation.",
+        "required": [
+          "realm_id",
+          "advisor_run_id",
+          "epic_id",
+          "profile",
+          "state",
+          "receipt"
+        ],
+        "properties": {
+          "advisor_run_id": {
+            "type": "string",
+            "description": "The consultation."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "The epic it advises."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/ProfileRevisionDto",
+            "description": "The pinned profile it runs under."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it belongs to."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt it was committed under."
+          },
+          "state": {
+            "type": "string",
+            "description": "Its lifecycle, in the server's own vocabulary."
+          }
+        }
+      },
       "ApiErrorBody": {
         "type": "object",
         "description": "The JSON body every refusal is reported with.",
@@ -5179,6 +6918,24 @@
           "link_id": {
             "type": "string",
             "description": "The link."
+          }
+        }
+      },
+      "AppliedProfileDto": {
+        "type": "object",
+        "description": "One published profile revision and the receipt that froze it.",
+        "required": [
+          "published",
+          "receipt"
+        ],
+        "properties": {
+          "published": {
+            "$ref": "#/components/schemas/ProfileRevisionDto",
+            "description": "The revision now standing."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt it was committed under."
           }
         }
       },
@@ -5989,6 +7746,51 @@
           }
         }
       },
+      "CommitteeRunDto": {
+        "type": "object",
+        "description": "One Committee consultation.",
+        "required": [
+          "realm_id",
+          "committee_run_id",
+          "epic_id",
+          "template",
+          "state",
+          "findings_recorded",
+          "receipt"
+        ],
+        "properties": {
+          "committee_run_id": {
+            "type": "string",
+            "description": "The consultation."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "The epic it advises."
+          },
+          "findings_recorded": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many findings have been recorded so far.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it belongs to."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt it was committed under."
+          },
+          "state": {
+            "type": "string",
+            "description": "Its lifecycle, in the server's own vocabulary."
+          },
+          "template": {
+            "$ref": "#/components/schemas/ProfileRevisionDto",
+            "description": "The pinned template it runs under."
+          }
+        }
+      },
       "CompactRequestBody": {
         "type": "object",
         "description": "What a caller states when asking a seat to compact.\n\nThe safe-point facts are stated by the caller because only the operator\ndriving the session knows them; the guard refuses on either, so stating them\nhonestly is the caller's obligation and stating them at all is mandatory.",
@@ -6091,6 +7893,73 @@
           "trigger": {
             "type": "string",
             "description": "Why it was requested."
+          }
+        }
+      },
+      "CompletionOutcomeDto": {
+        "type": "object",
+        "description": "What a completion write produced.",
+        "required": [
+          "state",
+          "receipt"
+        ],
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt it was committed under."
+          },
+          "state": {
+            "$ref": "#/components/schemas/CompletionStateDto",
+            "description": "The completion state as it now stands."
+          }
+        }
+      },
+      "CompletionStateDto": {
+        "type": "object",
+        "description": "One epic's completion state.",
+        "required": [
+          "realm_id",
+          "epic_id",
+          "profile",
+          "phase",
+          "outstanding",
+          "revision",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "epic_id": {
+            "type": "string",
+            "description": "The epic."
+          },
+          "outstanding": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What is still outstanding, in a stable order."
+          },
+          "phase": {
+            "type": "string",
+            "description": "Which phase it currently stands in."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/ProfileRevisionDto",
+            "description": "The pinned completion profile it is judged against."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was read in."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
           }
         }
       },
@@ -6332,6 +8201,171 @@
           }
         }
       },
+      "CoreTeamApplyRequest": {
+        "type": "object",
+        "description": "Apply a named Core Team preview.",
+        "required": [
+          "seats",
+          "preview_hash",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller believes is current.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the preview answered with."
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoleSelectionDto"
+            },
+            "description": "The roles the Core Team should seat, in order."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CoreTeamDto": {
+        "type": "object",
+        "description": "One project's Core Team.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "seats",
+          "revision",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "The project it serves."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was read in."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoreTeamSeatDto"
+            },
+            "description": "Its seats, in declared order."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
+          }
+        }
+      },
+      "CoreTeamMaterializeRequest": {
+        "type": "object",
+        "description": "Materialize the Core Team's seats for one epic.",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epic revision the caller believes is current.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "CoreTeamOutcomeDto": {
+        "type": "object",
+        "description": "What a Core Team write produced.",
+        "required": [
+          "core_team",
+          "receipt"
+        ],
+        "properties": {
+          "core_team": {
+            "$ref": "#/components/schemas/CoreTeamDto",
+            "description": "The Core Team as it now stands."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt it was committed under."
+          }
+        }
+      },
+      "CoreTeamPreviewDto": {
+        "type": "object",
+        "description": "What a Core Team change would do.",
+        "required": [
+          "realm_id",
+          "effects",
+          "preview_hash"
+        ],
+        "properties": {
+          "effects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TopologyUpgradeEffectDto"
+            },
+            "description": "Every effect, in a stable order."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding apply must name."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that computed it."
+          }
+        }
+      },
+      "CoreTeamPreviewRequest": {
+        "type": "object",
+        "description": "A proposed Core Team composition.",
+        "required": [
+          "seats"
+        ],
+        "properties": {
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoleSelectionDto"
+            },
+            "description": "The roles the Core Team should seat, in order."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CoreTeamSeatDto": {
+        "type": "object",
+        "description": "One Core Team seat: the standard role, and the seat filling it if any.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/ResolvedRoleRefDto",
+            "description": "The role, as the server resolved it."
+          },
+          "seat_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The binding filling it, once one has been materialized."
+          }
+        }
+      },
       "DesiredBindingDto": {
         "type": "object",
         "description": "The native shape the server derived for one node.\n\nDerived, never supplied. It is what the daemon intends to materialize from\nthe pinned specification's declared capabilities — which is why a caller can\nread it and cannot write it.",
@@ -6465,6 +8499,25 @@
             "description": "Canonical absolute root path. The natural identity."
           }
         }
+      },
+      "EnsureQuickSessionRequest": {
+        "type": "object",
+        "description": "Open a Quick session, or return the one this key already opened.",
+        "required": [
+          "role",
+          "purpose"
+        ],
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "description": "What the session is for. Recorded, never interpreted."
+          },
+          "role": {
+            "$ref": "#/components/schemas/RoleSelectionDto",
+            "description": "The standard role the session's seat fills."
+          }
+        },
+        "additionalProperties": false
       },
       "EpicProjectionDto": {
         "type": "object",
@@ -7038,6 +9091,32 @@
           }
         }
       },
+      "InvokeConsultationRequest": {
+        "type": "object",
+        "description": "Invoke one consultation against an epic.\n\nA consultation names the pinned profile it runs under and the question it is\nasked. It does not name a model, a provider or a runtime: which seat answers\nis the realm's routing decision, not the caller's.",
+        "required": [
+          "profile",
+          "question",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epic revision the caller believes is current.",
+            "minimum": 0
+          },
+          "profile": {
+            "$ref": "#/components/schemas/RevisionRefDto",
+            "description": "The profile or template revision to run under."
+          },
+          "question": {
+            "type": "string",
+            "description": "What is being asked."
+          }
+        },
+        "additionalProperties": false
+      },
       "LateHandoffAttestationDto": {
         "type": "object",
         "description": "One immutable late-handoff disposition recorded after runtime cancellation.",
@@ -7463,6 +9542,32 @@
           }
         }
       },
+      "ProfileApplyRequest": {
+        "type": "object",
+        "description": "Publish one revalidated definition as an immutable revision.",
+        "required": [
+          "definition",
+          "preview_hash",
+          "expected_revision"
+        ],
+        "properties": {
+          "definition": {
+            "type": "object",
+            "description": "The complete definition to publish."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The aggregate revision the caller believes is current.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the preview answered with."
+          }
+        },
+        "additionalProperties": false
+      },
       "ProfileArtifactDto": {
         "type": "object",
         "description": "One artifact contract a work profile declares.",
@@ -7488,6 +9593,45 @@
           "producer_phase": {
             "type": "string",
             "description": "The phase that produces it."
+          }
+        }
+      },
+      "ProfileCatalogDto": {
+        "type": "object",
+        "description": "Every published revision of one profile family in a project.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "revisions",
+          "revision",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "The project that owns them."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was read in."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileRevisionDto"
+            },
+            "description": "Every revision, oldest first."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
           }
         }
       },
@@ -7613,6 +9757,76 @@
               "type": "string"
             },
             "description": "Artifacts that must exist before the phase can complete."
+          }
+        }
+      },
+      "ProfilePreviewDto": {
+        "type": "object",
+        "description": "The verdict on one candidate definition.",
+        "required": [
+          "realm_id",
+          "violations",
+          "preview_hash"
+        ],
+        "properties": {
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding apply must name."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that judged it."
+          },
+          "violations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every violation, in a stable order. Empty means publishable."
+          }
+        }
+      },
+      "ProfilePreviewRequest": {
+        "type": "object",
+        "description": "One candidate definition, judged and committed nowhere.",
+        "required": [
+          "definition"
+        ],
+        "properties": {
+          "definition": {
+            "type": "object",
+            "description": "The complete candidate definition."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProfileRevisionDto": {
+        "type": "object",
+        "description": "One immutable profile or template revision.\n\nAdvisor profiles, Committee templates and Completion profiles are three\naggregates with one wire shape: an identity, a monotonic version, a label\nand the digest of the definition frozen at publish. They share these types\nrather than carrying three identical copies that would drift apart the first\ntime one of them gained a field.",
+        "required": [
+          "id",
+          "version",
+          "name",
+          "definition_hash"
+        ],
+        "properties": {
+          "definition_hash": {
+            "type": "string",
+            "description": "The digest of the canonical definition."
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable logical id shared by every revision."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human label frozen at publish."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Monotonic version within `id`.",
+            "minimum": 0
           }
         }
       },
@@ -7834,6 +10048,81 @@
           }
         }
       },
+      "PromotedSessionDto": {
+        "type": "object",
+        "description": "One promoted Quick session, now an epic.",
+        "required": [
+          "epic_id",
+          "quick_session_id",
+          "receipt"
+        ],
+        "properties": {
+          "epic_id": {
+            "type": "string",
+            "description": "The epic the session became."
+          },
+          "quick_session_id": {
+            "type": "string",
+            "description": "The session it was promoted from."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt it was committed under."
+          }
+        }
+      },
+      "PromotionApplyRequest": {
+        "type": "object",
+        "description": "Apply a named promotion preview.",
+        "required": [
+          "preview_hash",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The session revision the caller believes is current.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the preview answered with."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PromotionPreviewDto": {
+        "type": "object",
+        "description": "What promoting one Quick session would produce.",
+        "required": [
+          "realm_id",
+          "quick_session_id",
+          "effects",
+          "preview_hash"
+        ],
+        "properties": {
+          "effects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TopologyUpgradeEffectDto"
+            },
+            "description": "Every effect, in a stable order."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding apply must name."
+          },
+          "quick_session_id": {
+            "type": "string",
+            "description": "The session that would be promoted."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that computed it."
+          }
+        }
+      },
       "Propose": {
         "type": "object",
         "required": [
@@ -7993,6 +10282,71 @@
           }
         }
       },
+      "QuickRolesDto": {
+        "type": "object",
+        "description": "The roles a Quick session may be opened against.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "roles",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "The project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was read in."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoleCatalogEntryDto"
+            },
+            "description": "Every selectable role, in the catalog's declared order."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
+          }
+        }
+      },
+      "QuickSessionDto": {
+        "type": "object",
+        "description": "One Quick session.",
+        "required": [
+          "realm_id",
+          "quick_session_id",
+          "role",
+          "topology_node_id",
+          "receipt"
+        ],
+        "properties": {
+          "quick_session_id": {
+            "type": "string",
+            "description": "The session."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it belongs to."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt it was committed under."
+          },
+          "role": {
+            "$ref": "#/components/schemas/ResolvedRoleRefDto",
+            "description": "The role its seat fills, as the server resolved it."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The topology node hosting it."
+          }
+        }
+      },
       "ReadyTaskDto": {
         "type": "object",
         "description": "One task the planner would admit, and what it would run under.",
@@ -8120,6 +10474,27 @@
           }
         }
       },
+      "RecordFindingsRequest": {
+        "type": "object",
+        "description": "Record one round of Committee findings.",
+        "required": [
+          "findings",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the caller believes is current.",
+            "minimum": 0
+          },
+          "findings": {
+            "type": "object",
+            "description": "The findings document."
+          }
+        },
+        "additionalProperties": false
+      },
       "RecordGateRequest": {
         "type": "object",
         "description": "What `gates/{gate_id}:record` is asked for.",
@@ -8199,6 +10574,27 @@
             "description": "The pack document. Validated in full before anything is stored."
           }
         }
+      },
+      "RemediateCompletionRequest": {
+        "type": "object",
+        "description": "Send one epic's completion back for remediation.",
+        "required": [
+          "expected_revision",
+          "reason"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The completion revision the caller believes is current.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why. Recorded, never interpreted."
+          }
+        },
+        "additionalProperties": false
       },
       "ReplaceSeatRequest": {
         "type": "object",
@@ -8604,6 +11000,51 @@
             "description": "The waiver."
           }
         }
+      },
+      "RosterUpgradePreviewDto": {
+        "type": "object",
+        "description": "What a roster upgrade would do.",
+        "required": [
+          "realm_id",
+          "epic_id",
+          "effects",
+          "preview_hash"
+        ],
+        "properties": {
+          "effects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TopologyUpgradeEffectDto"
+            },
+            "description": "Every effect, in a stable order."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "The epic whose roster would move."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding apply must name."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that computed it."
+          }
+        }
+      },
+      "RosterUpgradePreviewRequest": {
+        "type": "object",
+        "description": "Diff one epic's pinned roster against a published target.",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/RevisionRefDto",
+            "description": "The published revision to diff the epic's current pin against."
+          }
+        },
+        "additionalProperties": false
       },
       "RunDto": {
         "type": "object",
@@ -9263,6 +11704,22 @@
           }
         ],
         "description": "The scope a semantic topology operation acts on.\n\nA closed tagged union of the semantic ids Kontor already owns. This is the\nwhole of what a model may say about *where* it wants topology: it names a\nmeaning, and the server derives the kind, the parent and the native shape\nfrom the pinned specification. Adding a published kind to a specification\ntherefore needs no change here, and inventing a kind per call stays\nimpossible — which is the same rule stated as a type rather than as a\nvalidation."
+      },
+      "SettleConsultationRequest": {
+        "type": "object",
+        "description": "Settle one consultation.",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the caller believes is current.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "SettleTurnRequest": {
         "type": "object",

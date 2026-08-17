@@ -81,16 +81,29 @@ re-read and retry; a retry never clears a reused key. They now answer
 | --- | --- |
 | before this ticket | 66 |
 | after the reviewed commit | 73 |
-| now | 89 |
+| now | 116 |
 
-Added here: topology specification, catalog and code help (7); semantic
-topology (8); native capacity and exact-seat (9). Removed: the generic command
-route (1).
+Added: topology specification, catalog and code help (7); semantic topology (8);
+native capacity and exact-seat (9); the successor-ticket contracts (27).
+Removed: the generic command route (1).
+
+That is checkpoint 1 complete — the whole route table, the shared DTOs, the
+authority/idempotency/preview rules, the registry, the generated artifacts, and
+the successor routes failing closed — and checkpoint 2's contract half.
 
 Behaviour still lands with the services that own it. Every operation this ticket
 adds refuses with a typed `unavailable` before any effect rather than answering
 an empty projection, which a caller cannot tell from a project that genuinely has
 none.
+
+## Reused shapes
+
+Advisor profiles, Committee templates and Completion profiles are three
+aggregates with one wire shape — an identity, a monotonic version, a label and
+the digest frozen at publish. They share `ProfileRevisionDto`,
+`ProfileCatalogDto`, `ProfilePreviewRequest`, `ProfilePreviewDto`,
+`ProfileApplyRequest` and `AppliedProfileDto` rather than carrying three
+identical copies that would drift apart the first time one gained a field.
 
 ## Two forced deviations from the handoff
 
@@ -98,8 +111,11 @@ none.
 `{topology_node_id}:archive`, `{advisor_run_id}:settle` and
 `{committee_run_id}:settle`. Axum allows one parameter per path segment and
 refuses to build a router containing them. The verb moves into its own segment —
-`…/nodes/{topology_node_id}/retire` — matching `/teams/{team_id}/publish` and the
-memory routes. The successor families will need the same treatment.
+`…/nodes/{topology_node_id}/retire`, `…/advisor-runs/{advisor_run_id}/settle`,
+`…/committee-runs/{committee_run_id}/settle` — matching `/teams/{team_id}/publish`
+and the memory routes. A `verb:noun` suffix on a *literal* segment
+(`core-team:apply`, `completion:advance`) routes fine and is kept exactly as the
+handoff spells it; only a parameter segment cannot carry one.
 
 **A narrowed mutant guard.** `mcp_mutants.rs` forbids a tool name containing
 `archive`, on the reasoning that such a tool would be driving a runtime.
@@ -110,12 +126,20 @@ one still fails.
 
 ## Still open
 
-- The ~27 successor-ticket contract operations (Core Team, Quick work,
-  Promotion, Epic roster, Advisor, Committee, Completion), which is the
-  remainder of CP1.
-- CP3's behaviour: the account-owned collectors, the `AsmaExecutable` fleet edge,
-  and the persisted adaptive controller with active-TeamRun accounting.
-- CP4 entirely.
+Behaviour, not contract. Every operation this ticket adds refuses with a typed
+`unavailable`; what remains is composing the services behind them.
+
+- **CP2 behaviour** — the topology specification store, the role catalog and
+  code help, and the semantic topology operations against OP-01's store and
+  OP-02's capability-dispatched materializer.
+- **CP3 behaviour** — the account-owned collectors and their typed wire parsing,
+  removing the `AsmaExecutable` fleet edge so Kontor passes with `asma` absent,
+  and persisting raw observations before deriving availability.
+- **CP4 entirely** — the persisted adaptive controller (seeded when an epic is
+  pinned, restored on every snapshot, widened only on a second distinct clean
+  observation), active-TeamRun accounting against the mission ceiling of seven,
+  and the replay/restart, registry-drift and `asma`-absent suites.
+- The successor application services themselves are OP-04, OP-05 and OP-06's.
 
 ## Pre-existing, unchanged
 
