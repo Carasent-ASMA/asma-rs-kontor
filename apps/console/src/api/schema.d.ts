@@ -2244,6 +2244,21 @@ export interface components {
         };
         /** @description The JSON body every refusal is reported with. */
         ApiErrorBody: {
+            /**
+             * @description What the caller can do about it, in one line.
+             *
+             *     Corrective rather than descriptive: a refusal that only restates itself
+             *     leaves an operator with nothing to try.
+             */
+            action: string;
+            /**
+             * @description The structural path of the offending node, when the refusal has one.
+             *
+             *     A path and never a value: `steps[2].instruction`, not what was in it.
+             *     This is the field that turns "something in your document was refused"
+             *     into something a caller can actually go and look at.
+             */
+            at?: string | null;
             /** @description The stable machine-readable code. */
             code: string;
             /**
@@ -2265,6 +2280,13 @@ export interface components {
             realm_id: string;
             /** @description A static description of the rule that refused. Never a stored value. */
             rule: string;
+            /**
+             * @description Which type, field or state machine refused, when the refusal names one.
+             *
+             *     Always a `&'static str` written in this workspace — a type name, a field
+             *     name or an operation name — so it can never be a stored value.
+             */
+            subject?: string | null;
         };
         /**
          * @description Whether an ensure/apply wrote the row or found it already matching.

@@ -6779,9 +6779,21 @@
         "required": [
           "realm_id",
           "code",
-          "rule"
+          "rule",
+          "action"
         ],
         "properties": {
+          "action": {
+            "type": "string",
+            "description": "What the caller can do about it, in one line.\n\nCorrective rather than descriptive: a refusal that only restates itself\nleaves an operator with nothing to try."
+          },
+          "at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The structural path of the offending node, when the refusal has one.\n\nA path and never a value: `steps[2].instruction`, not what was in it.\nThis is the field that turns \"something in your document was refused\"\ninto something a caller can actually go and look at."
+          },
           "code": {
             "type": "string",
             "description": "The stable machine-readable code."
@@ -6818,6 +6830,13 @@
           "rule": {
             "type": "string",
             "description": "A static description of the rule that refused. Never a stored value."
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which type, field or state machine refused, when the refusal names one.\n\nAlways a `&'static str` written in this workspace — a type name, a field\nname or an operation name — so it can never be a stored value."
           }
         }
       },
