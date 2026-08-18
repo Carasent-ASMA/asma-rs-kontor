@@ -4,7 +4,7 @@
 //! for a pack of its own, so a preset that could not be published by an Admin
 //! cannot be shipped either.
 
-use kontor_core::consultation::{AggregationProtocol, CommitteeRole, DiversityRule};
+use kontor_core::consultation::{AggregationProtocol, CommitteeRole};
 use kontor_profiles::seeds::bundled_consultation_presets;
 
 #[test]
@@ -26,7 +26,6 @@ fn the_preset_is_an_independent_conjunction() {
     let pack = bundled_consultation_presets().expect("the presets load");
     let template = &pack.committee_templates[0];
     assert_eq!(template.aggregation, AggregationProtocol::Conjunctive);
-    assert_eq!(template.diversity, DiversityRule::DistinctProviderPerSlot);
     assert_eq!(template.reviewer_slots().len(), 2);
     assert!(
         template.judge_slot().is_some(),

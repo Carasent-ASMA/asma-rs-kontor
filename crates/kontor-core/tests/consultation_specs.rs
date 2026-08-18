@@ -9,7 +9,7 @@
 use kontor_core::consultation::{
     AdviceDisposition, AdvisorProfileSpec, AggregationProtocol, CommitteeRole, CommitteeSlotSpec,
     CommitteeTemplateSpec, CommitteeVerdict, ConsultationContextPolicy, ConsultationScope,
-    DiversityRule, MAX_COMMITTEE_ROUNDS, MemoryAccess, RecordedFinding, conjunctive_outcome,
+    MAX_COMMITTEE_ROUNDS, MemoryAccess, RecordedFinding, conjunctive_outcome,
 };
 use kontor_core::id::{
     AdvisorProfileId, BoundedText, CommitteeTemplateId, CurrencyCode, ExternalName, Money, RoleKey,
@@ -124,7 +124,6 @@ fn independent_review() -> CommitteeTemplateSpec {
             judge("judge"),
         ],
         aggregation: AggregationProtocol::Conjunctive,
-        diversity: DiversityRule::DistinctProviderPerSlot,
         allowed_caller_roles: vec![role("lead")],
         allowed_scopes: vec![ConsultationScope::Epic, ConsultationScope::Ticket],
         budget: budget(),
@@ -170,13 +169,17 @@ fn reviewers_colliding_only_on_a_fallback_rung_are_refused() {
 }
 
 #[test]
-fn shared_providers_are_allowed_when_no_distinctness_is_declared() {
+fn provider_independence_cannot_be_switched_off() {
+    // There is no opt-out to reach for. A template that could seat two reviewers
+    // on one provider could present a correlated pair as an independent verdict,
+    // and the conjunctive rule is the only protocol here — its whole premise is
+    // that the reviewers are independent readers.
     let mut template = independent_review();
-    template.diversity = DiversityRule::None;
     template.slots[1] = reviewer("reviewer-b", &["anthropic"]);
-    template
-        .validate()
-        .expect("a fixture may exercise cardinality without claiming independence");
+    assert!(
+        template.validate().is_err(),
+        "independence is structural, not declared"
+    );
 }
 
 #[test]
@@ -228,9 +231,13 @@ fn cardinality_is_data_not_three() {
     two.validate().expect("two reviewers, no Judge");
 
     let mut five = independent_review();
-    five.diversity = DiversityRule::None;
     five.slots = (0..5)
-        .map(|index| reviewer(&format!("reviewer-{index}"), &["anthropic"]))
+        .map(|index| {
+            reviewer(
+                &format!("reviewer-{index}"),
+                &[["anthropic", "openai", "google", "mistral", "meta"][index]],
+            )
+        })
         .collect();
     five.validate().expect("five reviewers");
     assert_eq!(five.reviewer_slots().len(), 5);
@@ -292,6 +299,23 @@ fn missing_required_evidence_settles_non_compliant() {
     assert_eq!(
         conjunctive_outcome(&required, &recorded),
         Some(CommitteeVerdict::NonCompliant)
+    );
+}
+
+#[test]
+fn a_judge_cannot_turn_a_dissent_into_compliance() {
+    // The Judge explains the outcome; it does not decide it. Its aggregate is
+    // not in `required`, so no value it records can move the conjunction.
+    let required = vec![slot("reviewer-a"), slot("reviewer-b")];
+    let recorded = vec![
+        finding("reviewer-a", CommitteeVerdict::Compliant, true),
+        finding("reviewer-b", CommitteeVerdict::NonCompliant, true),
+        finding("judge", CommitteeVerdict::Compliant, true),
+    ];
+    assert_eq!(
+        conjunctive_outcome(&required, &recorded),
+        Some(CommitteeVerdict::NonCompliant),
+        "a Judge aggregate must not override the rule"
     );
 }
 

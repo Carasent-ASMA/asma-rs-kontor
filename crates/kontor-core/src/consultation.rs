@@ -110,19 +110,6 @@ crate::closed_enum! {
 }
 
 crate::closed_enum! {
-    /// The independence a template requires of its reviewers.
-    DiversityRule, "DiversityRule" {
-        /// Reviewers may share a provider. Only legitimate for fixtures that
-        /// are exercising cardinality rather than independence.
-        None => "none",
-        /// No two reviewers may reach the same provider, on any rung of their
-        /// chains. A different model or a different label on one provider is
-        /// the same provider.
-        DistinctProviderPerSlot => "distinct_provider_per_slot",
-    }
-}
-
-crate::closed_enum! {
     /// One Committee's typed outcome.
     ///
     /// This closed pair *is* the verdict schema. A template that could declare
@@ -238,16 +225,19 @@ pub struct AdvisorProfileSpec {
 }
 
 impl AdvisorProfileSpec {
-    /// Validate the profile.
+    /// Every reason this profile cannot be published, in a stable order.
     ///
-    /// # Errors
-    /// Rejects an empty or duplicated caller/scope list, an unusable model
-    /// chain, a non-positive budget or consultation limit, and an oversized or
-    /// duplicated context grant.
-    pub fn validate(&self) -> DomainResult<()> {
+    /// Collected rather than short-circuited: an Admin fixing a fifteen-field
+    /// document over one round trip should not have to discover its faults one
+    /// per publish attempt. [`AdvisorProfileSpec::validate`] is the first of
+    /// these, so the two can never disagree about whether a document is
+    /// publishable.
+    #[must_use]
+    pub fn violations(&self) -> Vec<DomainError> {
         const SUBJECT: &str = "AdvisorProfileSpec";
+        let mut found = Vec::new();
         if self.version.get() == 0 {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "a published revision starts at version one",
             ));
@@ -256,39 +246,49 @@ impl AdvisorProfileSpec {
             || self.behavior.as_str().trim().is_empty()
             || self.output_requirements.as_str().trim().is_empty()
         {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "expertise, behavior and output requirements must each say something",
             ));
         }
-        self.models.validate()?;
-        self.context.validate(SUBJECT)?;
+        found.extend(self.models.validate().err());
+        found.extend(self.context.validate(SUBJECT).err());
         if self.allowed_caller_roles.is_empty() {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "a profile no role may consult is unreachable",
             ));
         }
         if has_duplicate(&self.allowed_caller_roles) {
-            return Err(DomainError::invalid(SUBJECT, "names one caller role twice"));
+            found.push(DomainError::invalid(SUBJECT, "names one caller role twice"));
         }
         if self.allowed_scopes.is_empty() {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "a profile with no allowed scope is unreachable",
             ));
         }
         if has_duplicate(&self.allowed_scopes) {
-            return Err(DomainError::invalid(SUBJECT, "names one scope twice"));
+            found.push(DomainError::invalid(SUBJECT, "names one scope twice"));
         }
-        self.budget.validate()?;
+        found.extend(self.budget.validate().err());
         if self.max_consultations == 0 {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "a consultation limit of zero would publish an Advisor that cannot be asked",
             ));
         }
-        Ok(())
+        found
+    }
+
+    /// Validate the profile.
+    ///
+    /// # Errors
+    /// Rejects an empty or duplicated caller/scope list, an unusable model
+    /// chain, a non-positive budget or consultation limit, and an oversized or
+    /// duplicated context grant.
+    pub fn validate(&self) -> DomainResult<()> {
+        self.violations().into_iter().next().map_or(Ok(()), Err)
     }
 
     /// Validate, canonicalize and hash in one step.
@@ -371,8 +371,6 @@ pub struct CommitteeTemplateSpec {
     pub slots: Vec<CommitteeSlotSpec>,
     /// How findings become one outcome.
     pub aggregation: AggregationProtocol,
-    /// The independence required of the reviewers.
-    pub diversity: DiversityRule,
     /// Roles allowed to convene it. Never empty.
     pub allowed_caller_roles: Vec<RoleKey>,
     /// Scopes it may be invoked at. Never empty.
@@ -384,40 +382,39 @@ pub struct CommitteeTemplateSpec {
 }
 
 impl CommitteeTemplateSpec {
-    /// Validate the template.
+    /// Every reason this template cannot be published, in a stable order.
     ///
-    /// # Errors
-    /// Rejects a template that could not produce an independent conjunction:
-    /// duplicate or missing slots, fewer than two reviewers, more than one
-    /// Judge, reviewers sharing a provider under a distinctness rule, a round
-    /// limit beyond the one authorized re-review, or an invalid slot, caller
-    /// list or budget.
-    pub fn validate(&self) -> DomainResult<()> {
+    /// Collected rather than short-circuited, for the same reason
+    /// [`AdvisorProfileSpec::violations`] is: a template has more fields than an
+    /// Admin should have to bisect one publish at a time.
+    #[must_use]
+    pub fn violations(&self) -> Vec<DomainError> {
         const SUBJECT: &str = "CommitteeTemplateSpec";
+        let mut found = Vec::new();
         if self.version.get() == 0 {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "a published revision starts at version one",
             ));
         }
         if self.charter.as_str().trim().is_empty() {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "the charter must say something",
             ));
         }
         if self.slots.len() > MAX_COMMITTEE_SLOTS {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "declares more slots than a Committee may seat",
             ));
         }
         let ids: Vec<&RoleSlotId> = self.slots.iter().map(|slot| &slot.id).collect();
         if has_duplicate(&ids) {
-            return Err(DomainError::invalid(SUBJECT, "declares one slot id twice"));
+            found.push(DomainError::invalid(SUBJECT, "declares one slot id twice"));
         }
         for slot in &self.slots {
-            slot.validate()?;
+            found.extend(slot.validate().err());
         }
 
         let reviewers: Vec<&CommitteeSlotSpec> = self
@@ -431,59 +428,78 @@ impl CommitteeTemplateSpec {
             .filter(|slot| slot.role == CommitteeRole::Judge)
             .count();
         if reviewers.len() < 2 {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "a Committee needs at least two reviewers to have anything to agree about",
             ));
         }
         if judges > 1 {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "at most one Judge may read the findings",
             ));
         }
-        if self.diversity == DiversityRule::DistinctProviderPerSlot {
-            for (index, slot) in reviewers.iter().enumerate() {
-                for other in &reviewers[index + 1..] {
-                    if slot
-                        .providers()
-                        .any(|provider| other.providers().any(|candidate| candidate == provider))
-                    {
-                        return Err(DomainError::invalid(
-                            SUBJECT,
-                            "two reviewers can reach the same provider, so their findings \
-                             would not be independent",
-                        ));
-                    }
+        // Structural, not declared. A conjunction over reviewers that can reach
+        // one provider is not an independent review, and there is no aggregation
+        // protocol here whose premise survives sharing one: the only rule is the
+        // conjunctive one, and it measures agreement between independent
+        // readers. A template that could switch this off could present a
+        // correlated pair as an independent verdict, which is the one lie this
+        // whole design exists to prevent. Whether a five-reviewer template can
+        // find five providers the runtime catalog actually has is a launch-time
+        // question about a run, not a reason to let publication claim
+        // independence it does not have.
+        for (index, slot) in reviewers.iter().enumerate() {
+            for other in &reviewers[index + 1..] {
+                if slot
+                    .providers()
+                    .any(|provider| other.providers().any(|candidate| candidate == provider))
+                {
+                    found.push(DomainError::invalid(
+                        SUBJECT,
+                        "two reviewers can reach the same provider, so their findings \
+                         would not be independent",
+                    ));
                 }
             }
         }
         if self.allowed_caller_roles.is_empty() {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "a template no role may convene is unreachable",
             ));
         }
         if has_duplicate(&self.allowed_caller_roles) {
-            return Err(DomainError::invalid(SUBJECT, "names one caller role twice"));
+            found.push(DomainError::invalid(SUBJECT, "names one caller role twice"));
         }
         if self.allowed_scopes.is_empty() {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "a template with no allowed scope is unreachable",
             ));
         }
         if has_duplicate(&self.allowed_scopes) {
-            return Err(DomainError::invalid(SUBJECT, "names one scope twice"));
+            found.push(DomainError::invalid(SUBJECT, "names one scope twice"));
         }
-        self.budget.validate()?;
+        found.extend(self.budget.validate().err());
         if self.round_limit == 0 || self.round_limit > MAX_COMMITTEE_ROUNDS {
-            return Err(DomainError::invalid(
+            found.push(DomainError::invalid(
                 SUBJECT,
                 "a run spends one decision round and at most one authorized re-review",
             ));
         }
-        Ok(())
+        found
+    }
+
+    /// Validate the template.
+    ///
+    /// # Errors
+    /// Rejects a template that could not produce an independent conjunction:
+    /// duplicate or missing slots, fewer than two reviewers, more than one
+    /// Judge, two reviewers who can reach one provider, a round limit beyond the
+    /// one authorized re-review, or an invalid slot, caller list or budget.
+    pub fn validate(&self) -> DomainResult<()> {
+        self.violations().into_iter().next().map_or(Ok(()), Err)
     }
 
     /// Validate, canonicalize and hash in one step.

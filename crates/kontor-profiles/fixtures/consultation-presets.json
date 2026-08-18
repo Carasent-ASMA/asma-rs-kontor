@@ -44,7 +44,6 @@
         }
       ],
       "aggregation": "conjunctive",
-      "diversity": "distinct_provider_per_slot",
       "allowed_caller_roles": ["architect"],
       "allowed_scopes": ["epic", "ticket"],
       "budget": {

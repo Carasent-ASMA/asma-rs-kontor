@@ -11794,6 +11794,227 @@ async fn an_advisor_profile_cannot_be_published_as_a_committee_template() {
     );
 }
 
+/// An unknown project refuses rather than reading as an empty catalog.
+///
+/// `consultation_catalog` resolves the project first precisely so this cannot
+/// answer `200` with no revisions — which a caller would read as "this project
+/// has published no policy" rather than "there is no such project".
+#[tokio::test]
+async fn an_unknown_project_has_no_consultation_catalog() {
+    let world = World::open().await;
+    for family in ["advisor-profiles", "committee-templates"] {
+        let answer = Call::get(format!("/v1/projects/{}/{family}", ProjectId::generate()))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        assert_eq!(
+            answer.status, 404,
+            "an unknown project must refuse: {}",
+            answer.body
+        );
+        assert!(
+            answer.json().get("revisions").is_none(),
+            "the refusal carried a catalog: {}",
+            answer.body
+        );
+    }
+}
+
+/// A publish whose receipt never landed is reconciled, not called a stranger's edit.
+///
+/// Publishing the row and recording the receipt are two transactions. A failure
+/// between them leaves the revision durable with no receipt, and a retry then
+/// arrives with no replay to find and a catalog that has moved by one. The probe
+/// for that state through the public API is the same document under a second
+/// key: `replayed` finds nothing either way, so it takes the identical branch.
+///
+/// Before reconciliation this returned `409 revision_conflict`, naming the
+/// caller's own successful write as somebody else's.
+#[tokio::test]
+async fn an_apply_whose_receipt_was_lost_reconciles_on_retry() {
+    let world = World::open().await;
+    let project = world.project;
+    let definition = advisor_definition(ADVISOR_PROFILE, 1);
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": definition}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("lost-receipt-preview")
+    .send(&world)
+    .await;
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let body = serde_json::json!({
+        "definition": definition,
+        "preview_hash": hash,
+        "expected_revision": 1,
+    });
+
+    let first = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("lost-receipt-first")
+    .send(&world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+
+    let retry = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("lost-receipt-retry")
+    .send(&world)
+    .await;
+    assert_eq!(
+        retry.status, 200,
+        "the caller's own completed publication was refused: {}",
+        retry.body
+    );
+    assert_eq!(retry.json()["published"]["version"].as_u64(), Some(1));
+
+    // Reconciled, not republished: still exactly one revision.
+    let catalog = Call::get(format!("/v1/projects/{project}/advisor-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        catalog.json()["revisions"].as_array().map(Vec::len),
+        Some(1),
+        "reconciliation published a second revision: {}",
+        catalog.body
+    );
+}
+
+/// A definition naming a role no delivery binding covers is refused before it
+/// becomes immutable.
+#[tokio::test]
+async fn a_profile_naming_an_unbound_role_is_refused() {
+    let world = World::open().await;
+    let mut definition = advisor_definition(ADVISOR_PROFILE, 1);
+    definition["allowed_caller_roles"] = serde_json::json!(["no-such-role"]);
+    let preview = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:preview", world.project),
+        &serde_json::json!({"definition": definition}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("unbound-role-preview")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert!(
+        !preview.json()["violations"]
+            .as_array()
+            .expect("violations")
+            .is_empty(),
+        "an unconvenable revision must not publish cleanly: {}",
+        preview.body
+    );
+}
+
+/// A preview reports every fault at once, not one per round trip.
+#[tokio::test]
+async fn a_preview_reports_more_than_one_violation() {
+    let world = World::open().await;
+    let mut definition = advisor_definition(ADVISOR_PROFILE, 1);
+    definition["allowed_caller_roles"] = serde_json::json!([]);
+    definition["allowed_scopes"] = serde_json::json!([]);
+    definition["max_consultations"] = serde_json::json!(0);
+    let preview = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:preview", world.project),
+        &serde_json::json!({"definition": definition}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("many-violations")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let violations = preview.json()["violations"]
+        .as_array()
+        .expect("violations")
+        .len();
+    assert!(
+        violations >= 3,
+        "three independent faults were reported as {violations}: {}",
+        preview.body
+    );
+}
+
+/// The five consultation run operations refuse; none of them pretends.
+///
+/// The catalogs are composed, so they left this family's `unavailable` guard
+/// covering nothing. These are the operations OP-05 has still to compose, and an
+/// empty run, a fabricated verdict or a receipt from any of them would be
+/// indistinguishable from real advice.
+#[tokio::test]
+async fn every_consultation_run_operation_refuses_rather_than_pretending() {
+    let world = World::open().await;
+    let project = world.project;
+    let epic = MiniProjectId::generate();
+    let run = "01991c00-0000-7000-8000-0000000000f1";
+    let writes = [
+        (
+            format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+            serde_json::json!({
+                "profile": {"id": ADVISOR_PROFILE, "version": 1},
+                "question": "Is this safe?",
+                "expected_revision": 1,
+            }),
+        ),
+        (
+            format!("/v1/projects/{project}/advisor-runs/{run}/settle"),
+            serde_json::json!({"expected_revision": 1}),
+        ),
+        (
+            format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+            serde_json::json!({
+                "profile": {"id": ADVISOR_PROFILE, "version": 1},
+                "question": "Is this compliant?",
+                "expected_revision": 1,
+            }),
+        ),
+        (
+            format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+            serde_json::json!({"findings": {}, "expected_revision": 1}),
+        ),
+        (
+            format!("/v1/projects/{project}/committee-runs/{run}/settle"),
+            serde_json::json!({"expected_revision": 1}),
+        ),
+    ];
+    for (index, (uri, body)) in writes.iter().enumerate() {
+        let answer = Call::post(uri, body)
+            .signed_as(&world, "admin")
+            .with_key(format!("run-op-{index}"))
+            .send(&world)
+            .await;
+        assert_eq!(
+            answer.status, 503,
+            "{uri} answered instead of refusing: {}",
+            answer.body
+        );
+        assert_eq!(answer.code(), "unavailable");
+        for absent in [
+            "receipt",
+            "receipt_id",
+            "state",
+            "verdict",
+            "findings_recorded",
+        ] {
+            assert!(
+                answer.json().get(absent).is_none(),
+                "{uri}'s refusal carried `{absent}`: {}",
+                answer.body
+            );
+        }
+    }
+}
+
 /// Publishing a profile seats nobody.
 ///
 /// A profile is what a consultation *would* be asked under. If publishing one

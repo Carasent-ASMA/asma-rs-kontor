@@ -88,6 +88,7 @@ use kontor_api::state::ApiState;
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::consultation::{AdvisorProfileSpec, CommitteeTemplateSpec, ConsultationFamily};
+use kontor_core::id::RoleKey;
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
@@ -2877,15 +2878,48 @@ impl Services {
         self.project_row(project_id)?;
         Ok(ProfilePreviewDto {
             realm_id: state.realm_id(),
-            violations: consultation_definition(family, &request.definition)
+            violations: self
+                .judge_consultation_definition(family, &request.definition)
                 .err()
-                .map_or_else(Vec::new, |violation| vec![violation]),
+                .unwrap_or_default(),
             preview_hash: self.consultation_preview_hash(
                 project_id,
                 family,
                 &request.definition,
             )?,
         })
+    }
+
+    /// Parse, validate and role-check one candidate definition.
+    ///
+    /// Returns the typed definition only when there is nothing left to fix, and
+    /// otherwise every reason at once. The role check is here rather than in the
+    /// specification because only the daemon holds the delivery binding: a
+    /// profile naming a role no binding covers would otherwise publish cleanly,
+    /// be immutable, and first fail when somebody tried to convene it — as a
+    /// revision that cannot be edited, only superseded.
+    fn judge_consultation_definition(
+        &self,
+        family: ConsultationFamily,
+        definition: &serde_json::Value,
+    ) -> Result<ConsultationDefinition, Vec<String>> {
+        let parsed = consultation_definition(family, definition)?;
+        let unbound: Vec<String> = parsed
+            .declared_roles()
+            .into_iter()
+            .filter(|role| self.domain.delivery.role_code(role).is_none())
+            .map(|role| {
+                format!(
+                    "declares role `{}`, which no delivery binding covers, so no seat could ever hold it",
+                    role.as_str()
+                )
+            })
+            .collect();
+        if unbound.is_empty() {
+            Ok(parsed)
+        } else {
+            Err(unbound)
+        }
     }
 
     /// The token a preview hands out and its apply must present.
@@ -2924,12 +2958,17 @@ impl Services {
         // The refusal is deliberately detail-free: a rejection reason travels
         // through `preview`, whose `violations` are typed for it, and not
         // through an error message that would carry document text into logs.
-        let definition = consultation_definition(family, &request.definition).map_err(|_| {
-            self.deny(
-                ApiErrorCode::InvalidRequest,
-                "the definition is not publishable; preview it to see why",
-            )
-        })?;
+        let definition = self
+            .judge_consultation_definition(family, &request.definition)
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the definition is not publishable; preview it to see why",
+                )
+            })?;
+        let canonical = definition
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?;
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "consultation_profile_apply",
@@ -2948,45 +2987,64 @@ impl Services {
 
         if !replayed {
             let stored = self.stored_consultation_profiles(project_id, family)?;
-            let current = consultation_catalog_revision(stored.len());
-            if current != request.expected_revision {
-                return Err(self
-                    .deny(
-                        ApiErrorCode::RevisionConflict,
-                        "the profile catalog moved since the caller read it",
-                    )
-                    .with_revision(Some(current)));
+            // Publishing the row and recording the receipt are two transactions,
+            // so a failure between them leaves the revision durable with no
+            // receipt. On retry the replay lookup finds nothing, and a plain
+            // revision check would then refuse the caller's *own* completed
+            // write as somebody else's edit — and the receipt, the only record of
+            // who published this policy, would never be written at all.
+            //
+            // The row itself settles it: this exact `(profile, version)` already
+            // carries this exact canonical hash, and the table is immutable, so
+            // nobody else can have put it there. Treat it as done and fall
+            // through to read-back and receipt.
+            //
+            // Receipt-first would be worse: a receipt written before a failed
+            // publish is permanent, so every retry would skip the write and die
+            // on read-back — a poisoned key with nothing published.
+            let already_published = stored.iter().any(|candidate| {
+                candidate.profile_id == definition.profile_id()
+                    && candidate.version == definition.version()
+                    && candidate.definition_hash == *canonical.hash()
+            });
+            if !already_published {
+                let current = consultation_catalog_revision(stored.len());
+                if current != request.expected_revision {
+                    return Err(self
+                        .deny(
+                            ApiErrorCode::RevisionConflict,
+                            "the profile catalog moved since the caller read it",
+                        )
+                        .with_revision(Some(current)));
+                }
+                if self.consultation_preview_hash(project_id, family, &request.definition)?
+                    != request.preview_hash
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "the apply does not match the named preview",
+                    ));
+                }
+                // The store holds the gap check: version one starts a profile and
+                // every later version must be exactly the next one, so a caller
+                // cannot publish over a revision a run has already pinned.
+                state
+                    .with_store(|store| {
+                        store.publish_consultation_profile_revision(
+                            &StoredConsultationProfileRevision {
+                                project_id,
+                                family,
+                                profile_id: definition.profile_id(),
+                                version: definition.version(),
+                                name: definition.name(),
+                                definition: canonical.json().to_owned(),
+                                definition_hash: canonical.hash().clone(),
+                                published_at: kontor_api::now(),
+                            },
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
             }
-            if self.consultation_preview_hash(project_id, family, &request.definition)?
-                != request.preview_hash
-            {
-                return Err(self.deny(
-                    ApiErrorCode::InvalidRequest,
-                    "the apply does not match the named preview",
-                ));
-            }
-            let canonical = definition
-                .canonicalize()
-                .map_err(|error| self.refuse_domain(&error))?;
-            // The store holds the gap check: version one starts a profile and
-            // every later version must be exactly the next one, so a caller
-            // cannot publish over a revision a run has already pinned.
-            state
-                .with_store(|store| {
-                    store.publish_consultation_profile_revision(
-                        &StoredConsultationProfileRevision {
-                            project_id,
-                            family,
-                            profile_id: definition.profile_id(),
-                            version: definition.version(),
-                            name: definition.name(),
-                            definition: canonical.json().to_owned(),
-                            definition_hash: canonical.hash().clone(),
-                            published_at: kontor_api::now(),
-                        },
-                    )
-                })
-                .map_err(|error| self.refuse(&error))?;
         }
 
         // Read back rather than echoed, so a replay answers with the revision
@@ -4555,6 +4613,21 @@ impl ConsultationDefinition {
         }
     }
 
+    /// Every role the document declares, caller side and slot side.
+    ///
+    /// The slot side matters most: each slot has to become a seat binding, and a
+    /// slot whose role resolves to no catalog code could never be seated.
+    fn declared_roles(&self) -> Vec<&RoleKey> {
+        match self {
+            Self::Advisor(spec) => spec.allowed_caller_roles.iter().collect(),
+            Self::Committee(spec) => spec
+                .allowed_caller_roles
+                .iter()
+                .chain(spec.slots.iter().map(|slot| &slot.logical_role))
+                .collect(),
+        }
+    }
+
     /// The canonical typed value, which is what gets stored and hashed.
     fn canonicalize(&self) -> Result<CanonicalDocument, kontor_core::DomainError> {
         match self {
@@ -4581,20 +4654,29 @@ impl ConsultationDefinition {
 fn consultation_definition(
     family: ConsultationFamily,
     definition: &serde_json::Value,
-) -> Result<ConsultationDefinition, String> {
+) -> Result<ConsultationDefinition, Vec<String>> {
     match family {
         ConsultationFamily::Advisor => {
             let spec: AdvisorProfileSpec = serde_json::from_value(definition.clone())
-                .map_err(|error| format!("not a valid Advisor profile: {error}"))?;
-            spec.validate().map_err(|error| error.to_string())?;
+                .map_err(|error| vec![format!("not a valid Advisor profile: {error}")])?;
+            reject(spec.violations())?;
             Ok(ConsultationDefinition::Advisor(Box::new(spec)))
         }
         ConsultationFamily::Committee => {
             let spec: CommitteeTemplateSpec = serde_json::from_value(definition.clone())
-                .map_err(|error| format!("not a valid Committee template: {error}"))?;
-            spec.validate().map_err(|error| error.to_string())?;
+                .map_err(|error| vec![format!("not a valid Committee template: {error}")])?;
+            reject(spec.violations())?;
             Ok(ConsultationDefinition::Committee(Box::new(spec)))
         }
+    }
+}
+
+/// Every violation at once, or nothing to fix.
+fn reject(violations: Vec<kontor_core::DomainError>) -> Result<(), Vec<String>> {
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations.iter().map(ToString::to_string).collect())
     }
 }
 

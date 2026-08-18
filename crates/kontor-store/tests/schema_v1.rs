@@ -265,7 +265,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 32);
+    assert_eq!(SCHEMA_VERSION, 33);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
@@ -3066,4 +3066,87 @@ fn tier_a_operational_tables_have_nowhere_to_store_a_classification() {
             .expect("readable");
         assert_eq!(columns, 0, "{table} is tier A and refuses classification");
     }
+}
+
+/// The command-receipt guards survive every rebuild of that table.
+///
+/// `0001_init.sql` created `command_receipts_identity_immutable` and
+/// `command_receipts_no_delete`. Every migration that widened the closed
+/// command-kind CHECK rebuilt the table, and `DROP TABLE` takes a table's
+/// triggers with it: v10, v12, v24, v28, v29, v30, v31 and v32 each re-created
+/// only `ix_command_receipts_state`. Both triggers were absent from v10 to v32.
+/// Pinned by name here so a ninth rebuild fails this suite instead of shipping.
+#[test]
+fn command_receipts_keep_their_immutability_and_no_delete_triggers() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    let mut names: Vec<String> = connection
+        .prepare(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'trigger' AND tbl_name = 'command_receipts'",
+        )
+        .expect("preparable")
+        .query_map([], |row| row.get(0))
+        .expect("readable")
+        .collect::<Result<Vec<String>, _>>()
+        .expect("readable");
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "command_receipts_identity_immutable".to_owned(),
+            "command_receipts_no_delete".to_owned(),
+        ],
+        "a table rebuild dropped the receipt guards again"
+    );
+}
+
+/// And they refuse, rather than merely existing.
+#[test]
+fn a_command_receipt_refuses_deletion_and_identity_rewrites() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    connection
+        .execute_batch(
+            "INSERT INTO projects (id, name, root_path, revision, created_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', 'P', '/tmp/p', 1,
+                     '2026-08-09T10:00:00Z');
+             INSERT INTO command_receipts
+                 (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                  intent_hash, state, attempts, created_at, updated_at)
+             VALUES ('0193f000-0000-7000-8000-0000000000a1',
+                     '0193f000-0000-7000-8000-000000000001', 'k1', 'apply_advisor_profile',
+                     '{\"project\":1}', 1, '{\"a\":1}',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'intent_persisted', 0, '2026-08-09T10:00:00Z', '2026-08-09T10:00:00Z');",
+        )
+        .expect("a receipt inserts");
+
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM command_receipts WHERE idempotency_key = 'k1'",
+                [],
+            )
+            .is_err(),
+        "a command receipt must refuse DELETE"
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE command_receipts SET idempotency_key = 'k2' WHERE idempotency_key = 'k1'",
+                [],
+            )
+            .is_err(),
+        "reusing a key for a different command must be impossible, not discouraged"
+    );
+    // Advancing the lifecycle is still allowed: only identity is frozen.
+    connection
+        .execute(
+            "UPDATE command_receipts SET state = 'dispatched' WHERE idempotency_key = 'k1'",
+            [],
+        )
+        .expect("a receipt may still advance its state");
 }

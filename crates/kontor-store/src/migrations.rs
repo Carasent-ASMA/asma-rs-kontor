@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 32;
+pub const SCHEMA_VERSION: i64 = 33;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -152,6 +152,10 @@ const MIGRATIONS: &[&str] = &[
     // and the two Admin publications that write them. One table for both
     // families because they are one storage shape, discriminated by `family`.
     include_str!("../migrations/0032_consultation_profiles.sql"),
+    // Schema v33. Restore the two command-receipt triggers that eight successive
+    // table rebuilds have been dropping since v10. No rebuild here: rebuilding is
+    // what lost them.
+    include_str!("../migrations/0033_restore_command_receipt_triggers.sql"),
 ];
 
 const _: () = assert!(
