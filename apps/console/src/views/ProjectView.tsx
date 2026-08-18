@@ -1,5 +1,5 @@
 /** Project-scoped Operational topology, teams, consultations and completion. */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KontorClient } from '../api/client'
 import type {
   AdvisorRun,
@@ -69,6 +69,34 @@ interface ProjectData {
   committees: Read<ProfileCatalog>
   completionProfiles: Read<ProfileCatalog>
   completion: Read<CompletionState>
+}
+
+/**
+ * One idempotency key per intent, held across retries.
+ *
+ * A retry of an uncertain request is the *same* intent, so it has to present
+ * the same key: minting a fresh one at each activation is how a retry becomes a
+ * second durable command that the daemon has no way to recognize as a replay.
+ *
+ * The key is released once the realm confirms one, because after a receipt the
+ * next activation is a new intent rather than a replay, and it is replaced
+ * whenever the intent itself changes — which is exactly what mutation rule 2
+ * asks for.
+ */
+function useIntentKey(): { keyFor: (intent: unknown) => string; release: () => void } {
+  const held = useRef<{ intent: string; key: string } | null>(null)
+  return {
+    keyFor(intent: unknown): string {
+      const fingerprint = JSON.stringify(intent)
+      if (held.current?.intent !== fingerprint) {
+        held.current = { intent: fingerprint, key: crypto.randomUUID() }
+      }
+      return held.current.key
+    },
+    release(): void {
+      held.current = null
+    },
+  }
 }
 
 /** Read one project and epic entirely through `/v1`. */
@@ -174,16 +202,17 @@ export function ProjectView({ client }: { client: OperationalClient }) {
 
           <section aria-labelledby="project-core-team">
             <h3 id="project-core-team">Project Core Team</h3>
-            {data.coreTeam.value && data.roles.value ? (
+            {data.coreTeam.value ? (
               <CoreTeamPanel
                 client={client}
                 projectId={data.projectId}
                 team={data.coreTeam.value}
-                roles={data.roles.value.roles}
+                roles={data.roles.value?.roles ?? []}
+                rolesError={data.roles.error}
                 catalogRevision={catalogRevision}
                 help={help}
               />
-            ) : <Unavailable read={{ value: null, error: data.coreTeam.error ?? data.roles.error }} />}
+            ) : <Unavailable read={data.coreTeam} />}
           </section>
 
           <section aria-labelledby="quick-sessions">
@@ -215,16 +244,18 @@ export function ProjectView({ client }: { client: OperationalClient }) {
 
           <section aria-labelledby="completion-profiles">
             <h3 id="completion-profiles">Completion Profiles</h3>
-            {data.completionProfiles.value && data.completion.value ? (
+            {data.completionProfiles.value ? (
+              <CompletionProfiles profiles={data.completionProfiles.value} />
+            ) : <Unavailable read={data.completionProfiles} />}
+            {data.completion.value ? (
               <CompletionPanel
                 client={client}
                 projectId={data.projectId}
                 epicId={data.epicId}
-                profiles={data.completionProfiles.value}
                 initial={data.completion.value}
                 help={help}
               />
-            ) : <Unavailable read={{ value: null, error: data.completion.error ?? data.completionProfiles.error }} />}
+            ) : <Unavailable read={data.completion} />}
           </section>
         </div>
       ) : (
@@ -313,6 +344,7 @@ function CoreTeamPanel({
   projectId,
   team,
   roles,
+  rolesError,
   catalogRevision,
   help,
 }: {
@@ -320,6 +352,7 @@ function CoreTeamPanel({
   projectId: string
   team: CoreTeam
   roles: readonly RoleCatalogEntry[]
+  rolesError: string | null
   catalogRevision: RevisionRef | null
   help: readonly CodeHelpEntry[]
 }) {
@@ -333,6 +366,7 @@ function CoreTeamPanel({
   const [receipt, setReceipt] = useState<MutationReceipt | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const apply = useIntentKey()
 
   useEffect(() => {
     setCurrent(team)
@@ -377,7 +411,8 @@ function CoreTeamPanel({
         <label className="field">Epic presence<select required value={presence} onChange={(event) => setPresence(event.target.value)}><option value="">Choose…</option><option value="required">required</option><option value="default">default</option><option value="on_demand">on demand</option></select></label>
         <label className="check-field"><input type="checkbox" checked={adHocAllowed} onChange={(event) => setAdHocAllowed(event.target.checked)} /> Quick-session eligible</label>
         <button type="button" onClick={add} disabled={busy || !catalogRevision || !roleCode || !presence}>Add to preview</button>
-        {!catalogRevision ? <p className="banner" role="alert">The server projected no role-catalog revision, so a valid selection cannot be written.</p> : null}
+        {rolesError ? <p className="banner" role="alert">The roster above is the server's. The role catalog is not: {rolesError}</p> : null}
+        {!rolesError && !catalogRevision ? <p className="banner" role="alert">The server projected no role-catalog revision, so a valid selection cannot be written.</p> : null}
       </fieldset>
       {seats.length ? (
         <ol className="compact-list" aria-label="proposed Core Team seats">
@@ -396,12 +431,16 @@ function CoreTeamPanel({
         <button
           type="button"
           disabled={busy || !preview}
-          onClick={() => preview && void act(
-            () => client.applyCoreTeam(projectId, { expected_revision: current.revision, preview_hash: preview.preview_hash, seats }, crypto.randomUUID()),
-            (outcome: CoreTeamOutcome) => { setCurrent(outcome.core_team); setReceipt(outcome.receipt); setPreview(null) },
-            setError,
-            setBusy,
-          )}
+          onClick={() => {
+            if (!preview) return
+            const request = { expected_revision: current.revision, preview_hash: preview.preview_hash, seats }
+            void act(
+              () => client.applyCoreTeam(projectId, request, apply.keyFor(request)),
+              (outcome: CoreTeamOutcome) => { apply.release(); setCurrent(outcome.core_team); setReceipt(outcome.receipt); setPreview(null) },
+              setError,
+              setBusy,
+            )
+          }}
         >Apply confirmed preview</button>
       </div>
       {preview ? <p className="banner" role="status">Preview <code>{preview.preview_hash}</code> · {preview.effects.length} effects. Apply is now enabled.</p> : null}
@@ -432,6 +471,8 @@ function QuickSessionPanel({
   const [promoted, setPromoted] = useState<PromotedSession | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const ensure = useIntentKey()
+  const promote = useIntentKey()
 
   return (
     <>
@@ -442,7 +483,14 @@ function QuickSessionPanel({
         onSubmit={(event) => {
           event.preventDefault()
           const role = roleSelection(catalogRevision, roleCode, label)
-          if (role) void act(() => client.ensureQuickSession(projectId, { purpose: purpose.trim(), role }, crypto.randomUUID()), setSession, setError, setBusy)
+          if (!role) return
+          const request = { purpose: purpose.trim(), role }
+          void act(
+            () => client.ensureQuickSession(projectId, request, ensure.keyFor(request)),
+            (opened: QuickSession) => { ensure.release(); setSession(opened) },
+            setError,
+            setBusy,
+          )
         }}
       >
         <RoleFields roles={roles} roleCode={roleCode} onRoleCode={setRoleCode} label={label} onLabel={setLabel} disabled={!catalogRevision} />
@@ -458,12 +506,16 @@ function QuickSessionPanel({
             <button
               type="button"
               disabled={busy || !preview}
-              onClick={() => preview && void act(
-                () => client.applyPromotion(projectId, session.quick_session_id, { expected_revision: session.receipt.revision, preview_hash: preview.preview_hash }, crypto.randomUUID()),
-                setPromoted,
-                setError,
-                setBusy,
-              )}
+              onClick={() => {
+                if (!preview) return
+                const request = { expected_revision: session.receipt.revision, preview_hash: preview.preview_hash }
+                void act(
+                  () => client.applyPromotion(projectId, session.quick_session_id, request, promote.keyFor(request)),
+                  (value: PromotedSession) => { promote.release(); setPromoted(value) },
+                  setError,
+                  setBusy,
+                )
+              }}
             >Promote confirmed preview</button>
           </div>
         </div>
@@ -495,12 +547,12 @@ function AdvisoryPanel({
       <section>
         <h4>Advisors · ASWs</h4>
         <p className="caveat">An Advisor Session Workspace is one consultation with one pinned Advisor profile.</p>
-        {advisors.value ? <ConsultationForm kind="Advisor" profiles={advisors.value.revisions} invoke={(profile, question) => client.invokeAdvisor(projectId, epic.epic_id, { expected_revision: epic.revision, profile, question }, crypto.randomUUID())} help={help} /> : <Unavailable read={advisors} />}
+        {advisors.value ? <ConsultationForm kind="Advisor" profiles={advisors.value.revisions} expectedRevision={epic.revision} invoke={(profile, question, commandId) => client.invokeAdvisor(projectId, epic.epic_id, { expected_revision: epic.revision, profile, question }, commandId)} help={help} /> : <Unavailable read={advisors} />}
       </section>
       <section>
         <h4>Committees · CSWs</h4>
         <p className="caveat">A Committee Session Workspace has a pinned protocol and membership; it is distinct from an ASW and a Delivery Team.</p>
-        {committees.value ? <ConsultationForm kind="Committee" profiles={committees.value.revisions} invoke={(profile, question) => client.invokeCommittee(projectId, epic.epic_id, { expected_revision: epic.revision, profile, question }, crypto.randomUUID())} help={help} /> : <Unavailable read={committees} />}
+        {committees.value ? <ConsultationForm kind="Committee" profiles={committees.value.revisions} expectedRevision={epic.revision} invoke={(profile, question, commandId) => client.invokeCommittee(projectId, epic.epic_id, { expected_revision: epic.revision, profile, question }, commandId)} help={help} /> : <Unavailable read={committees} />}
       </section>
     </div>
   )
@@ -509,12 +561,14 @@ function AdvisoryPanel({
 function ConsultationForm({
   kind,
   profiles,
+  expectedRevision,
   invoke,
   help,
 }: {
   kind: 'Advisor' | 'Committee'
   profiles: readonly ProfileRevision[]
-  invoke: (profile: RevisionRef, question: string) => Promise<AdvisorRun | CommitteeRun>
+  expectedRevision: number
+  invoke: (profile: RevisionRef, question: string, commandId: string) => Promise<AdvisorRun | CommitteeRun>
   help: readonly CodeHelpEntry[]
 }) {
   const [selected, setSelected] = useState(profileKey(profiles[0]))
@@ -522,12 +576,24 @@ function ConsultationForm({
   const [run, setRun] = useState<AdvisorRun | CommitteeRun | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const consult = useIntentKey()
   const profile = profiles.find((entry) => profileKey(entry) === selected)
   return (
     <>
       <form className="operation-form" aria-label={`Invoke ${kind}`} onSubmit={(event) => {
         event.preventDefault()
-        if (profile) void act(() => invoke({ id: profile.id, version: profile.version }, question.trim()), setRun, setError, setBusy)
+        if (!profile) return
+        const request = {
+          expected_revision: expectedRevision,
+          profile: { id: profile.id, version: profile.version },
+          question: question.trim(),
+        }
+        void act(
+          () => invoke(request.profile, request.question, consult.keyFor(request)),
+          (value: AdvisorRun | CommitteeRun) => { consult.release(); setRun(value) },
+          setError,
+          setBusy,
+        )
       }}>
         <label className="field">Profile<select required value={selected} onChange={(event) => setSelected(event.target.value)}>{profiles.map((entry) => <option key={profileKey(entry)} value={profileKey(entry)}>{entry.name} · {entry.id}@{entry.version}</option>)}</select></label>
         <label className="field grow">Question<input required value={question} onChange={(event) => setQuestion(event.target.value)} /></label>
@@ -546,18 +612,25 @@ function ConsultationForm({
   )
 }
 
+/** The published Completion Profile revisions, read independently of any epic. */
+function CompletionProfiles({ profiles }: { profiles: ProfileCatalog }) {
+  return (
+    <ul className="compact-list" aria-label="Completion profiles">
+      {profiles.revisions.map((profile) => <li key={profileKey(profile)}>{profile.name} · <code>{profile.id}@{profile.version}</code> · definition <code>{profile.definition_hash}</code></li>)}
+    </ul>
+  )
+}
+
 function CompletionPanel({
   client,
   projectId,
   epicId,
-  profiles,
   initial,
   help,
 }: {
   client: OperationalClient
   projectId: string
   epicId: string
-  profiles: ProfileCatalog
   initial: CompletionState
   help: readonly CodeHelpEntry[]
 }) {
@@ -566,12 +639,11 @@ function CompletionPanel({
   const [reason, setReason] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const advance = useIntentKey()
+  const remediate = useIntentKey()
   const accept = (outcome: CompletionOutcome): void => { setState(outcome.state); setReceipt(outcome.receipt) }
   return (
     <>
-      <ul className="compact-list" aria-label="Completion profiles">
-        {profiles.revisions.map((profile) => <li key={profileKey(profile)}>{profile.name} · <code>{profile.id}@{profile.version}</code> · definition <code>{profile.definition_hash}</code></li>)}
-      </ul>
       <Facts>
         <Fact label="phase" value={<CodeHelp code={state.phase} entries={help} />} />
         <Fact label="profile" value={<code>{state.profile.id}@{state.profile.version}</code>} />
@@ -579,11 +651,25 @@ function CompletionPanel({
         <Fact label="outstanding" value={state.outstanding.length ? state.outstanding.join(', ') : 'none'} />
       </Facts>
       <div className="operation-actions">
-        <button type="button" disabled={busy} onClick={() => void act(() => client.advanceCompletion(projectId, epicId, { expected_revision: state.revision }, crypto.randomUUID()), accept, setError, setBusy)}>Advance completion</button>
+        <button type="button" disabled={busy} onClick={() => {
+          const request = { expected_revision: state.revision }
+          void act(
+            () => client.advanceCompletion(projectId, epicId, request, advance.keyFor(request)),
+            (outcome: CompletionOutcome) => { advance.release(); accept(outcome) },
+            setError,
+            setBusy,
+          )
+        }}>Advance completion</button>
       </div>
       <form className="operation-form" aria-label="Return completion to remediation" onSubmit={(event) => {
         event.preventDefault()
-        void act(() => client.remediateCompletion(projectId, epicId, { expected_revision: state.revision, reason: reason.trim() }, crypto.randomUUID()), accept, setError, setBusy)
+        const request = { expected_revision: state.revision, reason: reason.trim() }
+        void act(
+          () => client.remediateCompletion(projectId, epicId, request, remediate.keyFor(request)),
+          (outcome: CompletionOutcome) => { remediate.release(); accept(outcome) },
+          setError,
+          setBusy,
+        )
       }}>
         <label className="field grow">Remediation reason<input required value={reason} onChange={(event) => setReason(event.target.value)} /></label>
         <button type="submit" disabled={busy}>Return for remediation</button>

@@ -119,6 +119,88 @@ describe('<ProjectView>', () => {
     expect(await within(section).findByText(/Confirmed receipt/)).toHaveTextContent('receipt-1')
   })
 
+  it('replays one uncertain intent under its original idempotency key', async () => {
+    // The mutant this kills: minting the key at activation. A retry of an
+    // unchanged intent must reach the daemon as the same command, or the
+    // uncertain first attempt becomes a second durable write.
+    let attempt = 0
+    const applyCoreTeam = vi.fn(async (_project: string, _request: unknown, _commandId: string) => {
+      attempt += 1
+      if (attempt === 1) throw new Error('the realm could not be reached')
+      return { core_team: { ...CORE_TEAM, revision: 4 }, receipt: RECEIPT }
+    })
+    const client = await open(operationalClient({ applyCoreTeam }))
+    const section = screen.getByRole('heading', { name: 'Project Core Team' }).closest('section') as HTMLElement
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Preview Core Team' }))
+    await waitFor(() => expect(client.previewCoreTeam).toHaveBeenCalled())
+    const apply = within(section).getByRole('button', { name: 'Apply confirmed preview' })
+
+    fireEvent.click(apply)
+    expect(await within(section).findByText('the realm could not be reached')).toBeInTheDocument()
+    fireEvent.click(apply)
+    await waitFor(() => expect(applyCoreTeam).toHaveBeenCalledTimes(2))
+
+    const first = applyCoreTeam.mock.calls[0]
+    const second = applyCoreTeam.mock.calls[1]
+    expect(second?.[1]).toEqual(first?.[1])
+    expect(second?.[2]).toBe(first?.[2])
+    expect(first?.[2]).toEqual(expect.any(String))
+  })
+
+  it('mints a new idempotency key once the intent itself changes', async () => {
+    const applyCoreTeam = vi.fn(async (_project: string, _request: unknown, _commandId: string) => {
+      throw new Error('the realm could not be reached')
+    })
+    const client = await open(operationalClient({ applyCoreTeam }))
+    const section = screen.getByRole('heading', { name: 'Project Core Team' }).closest('section') as HTMLElement
+    const apply = within(section).getByRole('button', { name: 'Apply confirmed preview' })
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Preview Core Team' }))
+    await waitFor(() => expect(client.previewCoreTeam).toHaveBeenCalledTimes(1))
+    fireEvent.click(apply)
+    await waitFor(() => expect(applyCoreTeam).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Remove' }))
+    fireEvent.click(within(section).getByRole('button', { name: 'Preview Core Team' }))
+    await waitFor(() => expect(client.previewCoreTeam).toHaveBeenCalledTimes(2))
+    fireEvent.click(apply)
+    await waitFor(() => expect(applyCoreTeam).toHaveBeenCalledTimes(2))
+
+    expect(applyCoreTeam.mock.calls[1]?.[2]).not.toBe(applyCoreTeam.mock.calls[0]?.[2])
+  })
+
+  it('keeps the Core Team roster when the role catalog read fails', async () => {
+    await open(operationalClient({
+      quickRoles: vi.fn(async () => { throw new Error('role catalog unavailable') }),
+    }))
+    const section = screen.getByRole('heading', { name: 'Project Core Team' }).closest('section') as HTMLElement
+    expect(within(section).getByRole('list', { name: 'current Core Team seats' }))
+      .toHaveTextContent('Lead Software Architect')
+    expect(within(section).getByText(/role catalog unavailable/)).toBeInTheDocument()
+    expect(within(section).getByRole('button', { name: 'Add to preview' })).toBeDisabled()
+  })
+
+  it('keeps epic completion when the profile catalog read fails', async () => {
+    await open(operationalClient({
+      completionProfiles: vi.fn(async () => { throw new Error('profile catalog unavailable') }),
+    }))
+    const section = screen.getByRole('heading', { name: 'Completion Profiles' }).closest('section') as HTMLElement
+    expect(within(section).getByText('profile catalog unavailable')).toBeInTheDocument()
+    expect(within(section).getByRole('button', { name: 'review' })).toBeInTheDocument()
+    expect(within(section).getByRole('button', { name: 'Advance completion' })).toBeEnabled()
+  })
+
+  it('keeps the profile catalog when the epic completion read fails', async () => {
+    await open(operationalClient({
+      completion: vi.fn(async () => { throw new Error('completion state unavailable') }),
+    }))
+    const section = screen.getByRole('heading', { name: 'Completion Profiles' }).closest('section') as HTMLElement
+    expect(within(section).getByRole('list', { name: 'Completion profiles' }))
+      .toHaveTextContent('Independent Review')
+    expect(within(section).getByText('completion state unavailable')).toBeInTheDocument()
+  })
+
   it('keeps independent projection refusals visible while rendering the rest', async () => {
     await open(operationalClient({ committeeTemplates: vi.fn(async () => { throw new Error('committee service unavailable') }) }))
     expect(screen.getByText('committee service unavailable')).toBeInTheDocument()
