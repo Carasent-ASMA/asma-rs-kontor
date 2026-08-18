@@ -52,7 +52,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router, extract::Request};
-use kontor_core::id::Timestamp;
+use kontor_core::id::{SeatBindingId, Timestamp};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -76,7 +76,7 @@ pub fn now() -> Timestamp {
 /// handler cannot be reached without one. Extracting it is infallible for that
 /// reason; the fallible part already happened, before any handler ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Caller(pub CallerCapability);
+pub struct Caller(pub CallerCapability, Option<SeatBindingId>);
 
 impl Caller {
     /// Refuse a caller whose tier does not reach `required`.
@@ -96,6 +96,13 @@ impl Caller {
             ApiErrorCode::Forbidden,
             "this route requires a higher realm authority than the presented credential",
         ))
+    }
+
+    /// The consultation SeatBinding authenticated by the bearer, when this is
+    /// a seat-scoped credential rather than a shared Realm credential.
+    #[must_use]
+    pub const fn consultation_seat(self) -> Option<SeatBindingId> {
+        self.1
     }
 }
 
@@ -155,13 +162,17 @@ async fn authenticate(
             "this realm requires an Authorization: Bearer credential",
         )
     })?;
-    let authority = state.credentials().authority(presented).ok_or_else(|| {
-        state.refuse(
+    let caller = if let Some(authority) = state.credentials().authority(presented) {
+        Caller(authority, None)
+    } else if let Some(seat_binding_id) = state.credentials().consultation_seat(presented) {
+        Caller(CallerCapability::Operator, Some(seat_binding_id))
+    } else {
+        return Err(state.refuse(
             ApiErrorCode::Unauthenticated,
             "the presented credential is not one of this realm's",
-        )
-    })?;
-    parts.extensions.insert(Caller(authority));
+        ));
+    };
+    parts.extensions.insert(caller);
     Ok(next.run(Request::from_parts(parts, body)).await)
 }
 
@@ -435,6 +446,10 @@ pub fn router(state: ApiState) -> Router {
             post(applications::settle_advisor_run),
         )
         .route(
+            "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}",
+            get(applications::advisor_run),
+        )
+        .route(
             "/v1/projects/{project_id}/committee-templates",
             get(applications::committee_templates),
         )
@@ -449,6 +464,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/projects/{project_id}/epics/{epic_id}/committee-runs:invoke",
             post(applications::invoke_committee_run),
+        )
+        .route(
+            "/v1/projects/{project_id}/committee-runs/{committee_run_id}",
+            get(applications::committee_run),
         )
         .route(
             "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record",

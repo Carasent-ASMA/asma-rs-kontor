@@ -27,6 +27,7 @@ use std::str::FromStr;
 use axum::http::header::{AUTHORIZATION, HOST, HeaderMap, ORIGIN};
 use axum::http::uri::Authority;
 use kontor_core::closed_enum;
+use kontor_core::id::{ContentHash, SeatBindingId};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
@@ -134,6 +135,44 @@ impl RealmCredentials {
             }
         }
         granted
+    }
+
+    /// Mint a bearer credential scoped to one consultation seat.
+    ///
+    /// The credential is derived from the Realm's operator secret and the
+    /// durable SeatBinding id. It therefore carries operator authority but
+    /// cannot be retargeted to another seat. The raw Realm secret never leaves
+    /// this type; only the scoped credential is handed to the native seat.
+    #[must_use]
+    pub fn consultation_seat_credential(&self, seat_binding_id: SeatBindingId) -> String {
+        let held = self
+            .secrets
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let binding = seat_binding_id.to_string();
+        let mut material =
+            Vec::with_capacity(held.operator.expose_secret().len() + binding.len() + 32);
+        material.extend_from_slice(held.operator.expose_secret().as_bytes());
+        material.extend_from_slice(b"\0kontor-consultation-seat-v1\0");
+        material.extend_from_slice(binding.as_bytes());
+        let signature = ContentHash::of(&material);
+        format!("kontor-seat-v1.{binding}.{}", signature.as_str())
+    }
+
+    /// Authenticate a seat-scoped bearer and return its server-derived binding.
+    ///
+    /// Ordinary Realm credentials deliberately do not match here. A findings
+    /// route can therefore require a consultation seat rather than accepting a
+    /// shared operator credential plus a caller-supplied identity.
+    #[must_use]
+    pub fn consultation_seat(&self, presented: &str) -> Option<SeatBindingId> {
+        let rest = presented.strip_prefix("kontor-seat-v1.")?;
+        let (binding, signature) = rest.split_once('.')?;
+        let seat_binding_id = SeatBindingId::parse(binding).ok()?;
+        let expected = self.consultation_seat_credential(seat_binding_id);
+        let expected_signature = expected.rsplit_once('.')?.1;
+        constant_time_eq(expected_signature.as_bytes(), signature.as_bytes())
+            .then_some(seat_binding_id)
     }
 
     /// Swap in a whole new generation of secrets.
@@ -460,6 +499,23 @@ mod tests {
         );
         assert_eq!(credentials.authority("observer-secre"), None);
         assert_eq!(credentials.authority(""), None);
+    }
+
+    #[test]
+    fn a_consultation_credential_authenticates_only_its_own_seat() {
+        let credentials = RealmCredentials::new(
+            SecretString::from("observer-secret"),
+            SecretString::from("operator-secret"),
+            SecretString::from("admin-secret"),
+        );
+        let seat = SeatBindingId::generate();
+        let other = SeatBindingId::generate();
+        let credential = credentials.consultation_seat_credential(seat);
+        assert_eq!(credentials.consultation_seat(&credential), Some(seat));
+        assert_eq!(credentials.authority(&credential), None);
+        let retargeted = credential.replace(&seat.to_string(), &other.to_string());
+        assert_eq!(credentials.consultation_seat(&retargeted), None);
+        assert_eq!(credentials.consultation_seat("operator-secret"), None);
     }
 
     #[test]

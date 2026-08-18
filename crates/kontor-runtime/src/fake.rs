@@ -28,8 +28,8 @@ use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact
 use serde::Deserialize;
 
 use crate::adapter::{
-    ConsultationLaunchOutcome, ConsultationLaunchRequest, LaunchOutcome, MessageAck, PermissionAck,
-    RuntimeAdapter, RuntimeError, RuntimeResult,
+    ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
+    LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -1788,6 +1788,22 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .consultations
             .insert(request.seat_binding_id, outcome.clone());
         Ok(outcome)
+    }
+
+    async fn message_consultation(
+        &self,
+        request: &ConsultationMessageRequest,
+    ) -> RuntimeResult<()> {
+        let state = self.lock();
+        let held = state.consultations.get(&request.seat_binding_id).ok_or(
+            RuntimeError::StaleBinding {
+                rule: "the consultation seat is absent",
+            },
+        )?;
+        if held.identity != request.identity {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(())
     }
 
     async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation> {

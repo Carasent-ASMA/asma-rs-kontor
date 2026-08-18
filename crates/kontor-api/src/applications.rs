@@ -58,7 +58,7 @@ use utoipa::ToSchema;
 use crate::Caller;
 use crate::auth::CallerCapability;
 use crate::control::{idempotency_key, parse_id};
-use crate::error::ApiError;
+use crate::error::{ApiError, ApiErrorCode};
 use crate::state::ApiState;
 
 // ---------------------------------------------------------------------------
@@ -901,8 +901,34 @@ pub struct AdvisorRunDto {
     pub seats: Vec<ConsultationSeatDto>,
     /// Its lifecycle, in the server's own vocabulary.
     pub state: String,
+    /// Immutable output and caller disposition once settled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
     /// The receipt it was committed under.
-    pub receipt: MutationReceiptDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<MutationReceiptDto>,
+}
+
+/// One durable Committee finding, including dissent and evidence references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CommitteeFindingDto {
+    /// Round this finding belongs to.
+    pub round: u32,
+    /// Frozen template slot.
+    pub role_slot_id: String,
+    /// Reviewer or Judge.
+    pub role: String,
+    /// Typed conclusion.
+    pub verdict: ConsultationVerdictDto,
+    /// Whether required evidence was complete.
+    pub evidence_complete: bool,
+    /// The submitted rationale.
+    pub rationale: String,
+    /// References to authoritative evidence.
+    pub evidence_refs: Vec<String>,
+    /// Hash of the immutable finding document.
+    #[schema(value_type = String)]
+    pub document_hash: ContentHash,
 }
 
 /// One Committee consultation.
@@ -933,8 +959,17 @@ pub struct CommitteeRunDto {
     /// Server-recomputed settled outcome, when terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<ConsultationVerdictDto>,
+    /// Durable findings for the current round, including dissent.
+    pub findings: Vec<CommitteeFindingDto>,
+    /// Immutable recommendation and tried path that authorized round two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<serde_json::Value>,
+    /// Immutable terminal result, including needs-human recommendation/tried path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
     /// The receipt it was committed under.
-    pub receipt: MutationReceiptDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<MutationReceiptDto>,
 }
 
 /// The closed Committee verdict vocabulary.
@@ -951,9 +986,6 @@ pub enum ConsultationVerdictDto {
 #[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecordFindingsRequest {
-    /// Exact consultation SeatBinding submitting its own slot's evidence.
-    #[schema(value_type = String)]
-    pub seat_binding_id: SeatBindingId,
     /// One-based round.
     pub round: u32,
     /// Typed reviewer/Judge conclusion.
@@ -994,6 +1026,14 @@ pub struct SettleConsultationRequest {
     /// Separately-authorized command receipts cited by the disposition.
     #[serde(default)]
     pub receipt_ids: Vec<String>,
+    /// LSA recommendation authorizing the single Committee re-review.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<BoundedText>,
+    /// The exact remediation path tried before round two, or before escalation.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tried_path: Option<BoundedText>,
     /// The run revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
@@ -3878,6 +3918,12 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &InvokeConsultationRequest,
     ) -> Result<AdvisorRunDto, ApiError>;
+    /// Read one durable Advisor run and its result.
+    fn advisor_run(
+        &self,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+    ) -> Result<AdvisorRunDto, ApiError>;
     /// Settle one Advisor consultation.
     async fn settle_advisor_run(
         &self,
@@ -3909,12 +3955,19 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &InvokeConsultationRequest,
     ) -> Result<CommitteeRunDto, ApiError>;
+    /// Read one durable Committee run, including every current-round finding.
+    fn committee_run(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+    ) -> Result<CommitteeRunDto, ApiError>;
     /// Record one round of Committee findings.
     async fn record_committee_findings(
         &self,
         key: &IdempotencyKey,
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
         request: &RecordFindingsRequest,
     ) -> Result<CommitteeRunDto, ApiError>;
     /// Settle one Committee consultation.
@@ -5546,6 +5599,33 @@ pub async fn invoke_advisor_run(
     ))
 }
 
+/// Read one Advisor consultation and its immutable result.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("advisor_run_id" = String, Path, description = "The consultation")
+    ),
+    responses(
+        (status = 200, body = AdvisorRunDto),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn advisor_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, advisor_run_id)): Path<(String, String)>,
+) -> Result<Json<AdvisorRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let advisor_run_id = parse_id(&state, AdvisorRunId::parse(&advisor_run_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .advisor_run(project_id, advisor_run_id)?,
+    ))
+}
+
 /// Settle one Advisor consultation.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle", tag = "applications",
@@ -5696,6 +5776,33 @@ pub async fn invoke_committee_run(
     ))
 }
 
+/// Read one Committee consultation, including all current-round findings.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("committee_run_id" = String, Path, description = "The consultation")
+    ),
+    responses(
+        (status = 200, body = CommitteeRunDto),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn committee_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id)): Path<(String, String)>,
+) -> Result<Json<CommitteeRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .committee_run(project_id, committee_run_id)?,
+    ))
+}
+
 /// Record one round of Committee findings.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record", tag = "applications",
@@ -5719,13 +5826,25 @@ pub async fn record_committee_findings(
     Json(request): Json<RecordFindingsRequest>,
 ) -> Result<Json<CommitteeRunDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
+    let seat_binding_id = caller.consultation_seat().ok_or_else(|| {
+        state.refuse(
+            ApiErrorCode::Forbidden,
+            "Committee findings require the submitting seat's scoped credential",
+        )
+    })?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
             .applications()
-            .record_committee_findings(&key, project_id, committee_run_id, &request)
+            .record_committee_findings(
+                &key,
+                project_id,
+                committee_run_id,
+                seat_binding_id,
+                &request,
+            )
             .await?,
     ))
 }

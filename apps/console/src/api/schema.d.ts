@@ -374,6 +374,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one Advisor consultation and its immutable result. */
+        get: operations["advisor_run"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle": {
         parameters: {
             query?: never;
@@ -547,6 +564,23 @@ export interface paths {
         put?: never;
         /** Run the configured native collectors. */
         post: operations["refresh_capacity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one Committee consultation, including all current-round findings. */
+        get: operations["committee_run"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2293,8 +2327,9 @@ export interface components {
             profile: components["schemas"]["ProfileRevisionDto"];
             /** @description The Realm it belongs to. */
             realm_id: string;
-            /** @description The receipt it was committed under. */
-            receipt: components["schemas"]["MutationReceiptDto"];
+            receipt?: null | components["schemas"]["MutationReceiptDto"];
+            /** @description Immutable output and caller disposition once settled. */
+            result?: unknown;
             /** @description The one Advisor seat. */
             seats: components["schemas"]["ConsultationSeatDto"][];
             /** @description Its lifecycle, in the server's own vocabulary. */
@@ -2877,12 +2912,36 @@ export interface components {
              */
             snapshot_cursor: number;
         };
+        /** @description One durable Committee finding, including dissent and evidence references. */
+        CommitteeFindingDto: {
+            /** @description Hash of the immutable finding document. */
+            document_hash: string;
+            /** @description Whether required evidence was complete. */
+            evidence_complete: boolean;
+            /** @description References to authoritative evidence. */
+            evidence_refs: string[];
+            /** @description The submitted rationale. */
+            rationale: string;
+            /** @description Reviewer or Judge. */
+            role: string;
+            /** @description Frozen template slot. */
+            role_slot_id: string;
+            /**
+             * Format: int32
+             * @description Round this finding belongs to.
+             */
+            round: number;
+            /** @description Typed conclusion. */
+            verdict: components["schemas"]["ConsultationVerdictDto"];
+        };
         /** @description One Committee consultation. */
         CommitteeRunDto: {
             /** @description The consultation. */
             committee_run_id: string;
             /** @description The epic it advises. */
             epic_id: string;
+            /** @description Durable findings for the current round, including dissent. */
+            findings: components["schemas"]["CommitteeFindingDto"][];
             /**
              * Format: int32
              * @description How many findings have been recorded so far.
@@ -2891,8 +2950,11 @@ export interface components {
             outcome?: null | components["schemas"]["ConsultationVerdictDto"];
             /** @description The Realm it belongs to. */
             realm_id: string;
-            /** @description The receipt it was committed under. */
-            receipt: components["schemas"]["MutationReceiptDto"];
+            receipt?: null | components["schemas"]["MutationReceiptDto"];
+            /** @description Immutable recommendation and tried path that authorized round two. */
+            remediation?: unknown;
+            /** @description Immutable terminal result, including needs-human recommendation/tried path. */
+            result?: unknown;
             /**
              * Format: int32
              * @description One-based immutable round.
@@ -4512,8 +4574,6 @@ export interface components {
              * @description One-based round.
              */
             round: number;
-            /** @description Exact consultation SeatBinding submitting its own slot's evidence. */
-            seat_binding_id: string;
             /** @description Typed reviewer/Judge conclusion. */
             verdict: components["schemas"]["ConsultationVerdictDto"];
         };
@@ -5158,11 +5218,15 @@ export interface components {
             rationale?: string | null;
             /** @description Separately-authorized command receipts cited by the disposition. */
             receipt_ids?: string[];
+            /** @description LSA recommendation authorizing the single Committee re-review. */
+            recommendation?: string | null;
             /**
              * @description Exact seat recording Advisor output/disposition. Absent for Committee
              *     settlement, whose evidence is already keyed by finding SeatBindings.
              */
             seat_binding_id?: string | null;
+            /** @description The exact remediation path tried before round two, or before escalation. */
+            tried_path?: string | null;
         };
         /**
          * @description What `turns:settle` is asked for.
@@ -6804,6 +6868,48 @@ export interface operations {
             };
         };
     };
+    advisor_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The consultation */
+                advisor_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdvisorRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     settle_advisor_run: {
         parameters: {
             query?: never;
@@ -7324,6 +7430,48 @@ export interface operations {
             };
             /** @description A configured collector could not be reached */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    committee_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The consultation */
+                committee_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitteeRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

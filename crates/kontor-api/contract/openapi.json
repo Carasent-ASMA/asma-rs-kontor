@@ -775,6 +775,56 @@
         }
       }
     },
+    "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Read one Advisor consultation and its immutable result.",
+        "operationId": "advisor_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "advisor_run_id",
+            "in": "path",
+            "description": "The consultation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle": {
       "post": {
         "tags": [
@@ -1374,6 +1424,56 @@
           },
           "503": {
             "description": "A configured collector could not be reached"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Read one Committee consultation, including all current-round findings.",
+        "operationId": "committee_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "description": "The consultation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitteeRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
           }
         }
       }
@@ -6959,8 +7059,7 @@
           "profile",
           "topology_node_id",
           "seats",
-          "state",
-          "receipt"
+          "state"
         ],
         "properties": {
           "advisor_run_id": {
@@ -6980,8 +7079,18 @@
             "description": "The Realm it belongs to."
           },
           "receipt": {
-            "$ref": "#/components/schemas/MutationReceiptDto",
-            "description": "The receipt it was committed under."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MutationReceiptDto",
+                "description": "The receipt it was committed under."
+              }
+            ]
+          },
+          "result": {
+            "description": "Immutable output and caller disposition once settled."
           },
           "seats": {
             "type": "array",
@@ -8075,6 +8184,59 @@
           }
         }
       },
+      "CommitteeFindingDto": {
+        "type": "object",
+        "description": "One durable Committee finding, including dissent and evidence references.",
+        "required": [
+          "round",
+          "role_slot_id",
+          "role",
+          "verdict",
+          "evidence_complete",
+          "rationale",
+          "evidence_refs",
+          "document_hash"
+        ],
+        "properties": {
+          "document_hash": {
+            "type": "string",
+            "description": "Hash of the immutable finding document."
+          },
+          "evidence_complete": {
+            "type": "boolean",
+            "description": "Whether required evidence was complete."
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "References to authoritative evidence."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "The submitted rationale."
+          },
+          "role": {
+            "type": "string",
+            "description": "Reviewer or Judge."
+          },
+          "role_slot_id": {
+            "type": "string",
+            "description": "Frozen template slot."
+          },
+          "round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Round this finding belongs to.",
+            "minimum": 0
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/ConsultationVerdictDto",
+            "description": "Typed conclusion."
+          }
+        }
+      },
       "CommitteeRunDto": {
         "type": "object",
         "description": "One Committee consultation.",
@@ -8088,7 +8250,7 @@
           "state",
           "findings_recorded",
           "round",
-          "receipt"
+          "findings"
         ],
         "properties": {
           "committee_run_id": {
@@ -8098,6 +8260,13 @@
           "epic_id": {
             "type": "string",
             "description": "The epic it advises."
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommitteeFindingDto"
+            },
+            "description": "Durable findings for the current round, including dissent."
           },
           "findings_recorded": {
             "type": "integer",
@@ -8121,8 +8290,21 @@
             "description": "The Realm it belongs to."
           },
           "receipt": {
-            "$ref": "#/components/schemas/MutationReceiptDto",
-            "description": "The receipt it was committed under."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MutationReceiptDto",
+                "description": "The receipt it was committed under."
+              }
+            ]
+          },
+          "remediation": {
+            "description": "Immutable recommendation and tried path that authorized round two."
+          },
+          "result": {
+            "description": "Immutable terminal result, including needs-human recommendation/tried path."
           },
           "round": {
             "type": "integer",
@@ -11508,7 +11690,6 @@
         "type": "object",
         "description": "Record one round of Committee findings.",
         "required": [
-          "seat_binding_id",
           "round",
           "verdict",
           "evidence_complete",
@@ -11542,10 +11723,6 @@
             "format": "int32",
             "description": "One-based round.",
             "minimum": 0
-          },
-          "seat_binding_id": {
-            "type": "string",
-            "description": "Exact consultation SeatBinding submitting its own slot's evidence."
           },
           "verdict": {
             "$ref": "#/components/schemas/ConsultationVerdictDto",
@@ -12901,12 +13078,26 @@
             },
             "description": "Separately-authorized command receipts cited by the disposition."
           },
+          "recommendation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "LSA recommendation authorizing the single Committee re-review."
+          },
           "seat_binding_id": {
             "type": [
               "string",
               "null"
             ],
             "description": "Exact seat recording Advisor output/disposition. Absent for Committee\nsettlement, whose evidence is already keyed by finding SeatBindings."
+          },
+          "tried_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact remediation path tried before round two, or before escalation."
           }
         },
         "additionalProperties": false
