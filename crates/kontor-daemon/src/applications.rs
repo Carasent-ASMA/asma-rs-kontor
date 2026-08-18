@@ -48,15 +48,16 @@ use kontor_api::applications::{
     ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest, TopologySeatDto,
 };
 use kontor_api::applications::{
-    AdvanceCompletionRequest, AdviceDispositionDto, AdvisorRunDto, AppliedProfileDto,
-    CommitteeRunDto, CompletionOutcomeDto, CompletionStateDto, ConsultationScopeDto,
-    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamOutcomeDto,
-    CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamSeatDto, CoreTeamSeatSelectionDto,
-    EnsureQuickSessionRequest, InvokeConsultationRequest, ProfileApplyRequest, ProfileCatalogDto,
-    ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto,
-    PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
-    RecordFindingsRequest, RemediateCompletionRequest, RosterUpgradePreviewDto,
-    RosterUpgradePreviewRequest, SettleAdvisorRunRequest, SettleConsultationRequest,
+    AdvanceCompletionRequest, AdviceDispositionDto, AdvisorRunDto, AdvisorSettlementDto,
+    AppliedProfileDto, CommitteeRunDto, CompletionOutcomeDto, CompletionStateDto,
+    ConsultationScopeDto, CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest,
+    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamSeatDto,
+    CoreTeamSeatSelectionDto, EnsureQuickSessionRequest, InvokeConsultationRequest,
+    ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
+    ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
+    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RemediateCompletionRequest,
+    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleAdvisorRunRequest,
+    SettleConsultationRequest,
 };
 use kontor_api::applications::{
     AppliedTopologyUpgradeDto, CodeHelpEntryDto, DesiredBindingDto, PinnedSpecDto,
@@ -89,8 +90,8 @@ use kontor_context::{ContextLayer, ContextSource, ResolvedContextPack};
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::consultation::{
-    AdvisorProfileSpec, AdvisorRunState, CommitteeTemplateSpec, ConsultationFamily,
-    ConsultationScope,
+    AdviceDisposition, AdvisorProfileSpec, AdvisorRunState, CommitteeTemplateSpec,
+    ConsultationFamily, ConsultationScope,
 };
 use kontor_core::id::RoleKey;
 use kontor_core::id::{
@@ -112,8 +113,9 @@ use kontor_core::repository::{
     NewMiniProject, NewNativeContainerBinding, NewSeatBinding, NewSessionTopologyNode,
     NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault, RealmRepository,
     RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
-    SpecRepository, StoredAdvisorRun, StoredConsultationProfileRevision, StoredCoreTeamRevision,
-    StoredEpicRoster, StoredPromotion, StoredQuickSession, TaskTransitionRequest, TicketRepository,
+    SpecRepository, StoredAdvice, StoredAdviceDisposition, StoredAdvisorAttention,
+    StoredAdvisorRun, StoredConsultationProfileRevision, StoredCoreTeamRevision, StoredEpicRoster,
+    StoredPromotion, StoredQuickSession, TaskTransitionRequest, TicketRepository,
     TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
@@ -7988,15 +7990,160 @@ impl ApplicationOperations for Services {
     }
     async fn settle_advisor_run(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _advisor_run_id: AdvisorRunId,
-        _request: &SettleAdvisorRunRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+        request: &SettleAdvisorRunRequest,
     ) -> Result<AdvisorRunDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Advisor service is not composed in this build",
-        ))
+        let state = self.state()?;
+        let run = state
+            .with_store(|store| store.get_advisor_run(project_id, advisor_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "no such Advisor consultation"))?;
+        let epic = self.epic_row(project_id, run.mini_project_id)?;
+
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "advisor_run_settle",
+            "project": project_id.to_string(),
+            "run": advisor_run_id.to_string(),
+            "action": serde_json::to_value(&request.action).unwrap_or(serde_json::Value::Null),
+        }))?;
+        let replayed = self
+            .replayed(
+                key,
+                &intent,
+                Some(&AggregateRef::MiniProject {
+                    mini_project_id: run.mini_project_id,
+                }),
+            )?
+            .is_some();
+
+        if !replayed {
+            // Compare-and-swap on the run, so two settlements of one consultation
+            // cannot both believe they were first.
+            if run.revision != request.expected_revision {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the consultation moved since the caller read it",
+                    )
+                    .with_revision(Some(run.revision)));
+            }
+            let now = kontor_api::now();
+            let next = match &request.action {
+                AdvisorSettlementDto::RecordAdvice { advice } => {
+                    // The Advisor's one submission. Refused once advice is
+                    // durable: a second artifact would make "the advice" mean
+                    // whichever was read last.
+                    if !run.state.accepts_advice() {
+                        return Err(self.deny(
+                            ApiErrorCode::RevisionConflict,
+                            "this consultation has already recorded its advice",
+                        ));
+                    }
+                    state
+                        .with_store(|store| {
+                            store.record_advice(&StoredAdvice {
+                                advisor_run_id: run.id,
+                                advice: advice.clone(),
+                                advice_hash: ContentHash::of(advice.as_str().as_bytes()),
+                                created_at: now,
+                            })
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                    AdvisorRunState::Advised
+                }
+                AdvisorSettlementDto::RecordDisposition {
+                    disposition,
+                    rationale,
+                    cited_receipts,
+                } => {
+                    // A decision needs a subject. Refused before advice is
+                    // durable, because `accepted` would otherwise claim the
+                    // requester adopted advice that was never given.
+                    if !run.state.accepts_disposition() {
+                        return Err(self.deny(
+                            ApiErrorCode::InvalidRequest,
+                            "this consultation has no recorded advice to decide about",
+                        ));
+                    }
+                    let decision = AdviceDisposition::parse(disposition)
+                        .map_err(|error| self.refuse_domain(&error))?;
+                    let sequence = u32::try_from(
+                        state
+                            .with_store(|store| store.list_advice_dispositions(run.id))
+                            .map_err(|error| self.refuse(&error))?
+                            .len(),
+                    )
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(1);
+                    state
+                        .with_store(|store| {
+                            store.append_advice_disposition(&StoredAdviceDisposition {
+                                advisor_run_id: run.id,
+                                sequence,
+                                disposition: decision,
+                                rationale: rationale.clone(),
+                                cited_receipts: cited_receipts.clone(),
+                                // Recorded under the same epic-owner authority the
+                                // consultation was requested under. It is a
+                                // citation of who owns the decision, not a claim
+                                // about who typed it.
+                                recorded_by: run.owner_authority_seat_binding_id,
+                                created_at: now,
+                            })
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                    AdvisorRunState::Disposed
+                }
+                AdvisorSettlementDto::NeedsHuman {
+                    recommendation,
+                    tried,
+                } => {
+                    // An explicit attention state, and it must carry something a
+                    // human can act on: the recommendation and what was already
+                    // tried are persisted beside the state, never implied by it.
+                    state
+                        .with_store(|store| {
+                            store.record_advisor_attention(&StoredAdvisorAttention {
+                                advisor_run_id: run.id,
+                                recommendation: recommendation.clone(),
+                                tried: tried.clone(),
+                                created_at: now,
+                            })
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                    AdvisorRunState::NeedsHuman
+                }
+            };
+            state
+                .with_store(|store| {
+                    store.advance_advisor_run(project_id, run.id, next, run.revision)
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
+        let settled = state
+            .with_store(|store| store.get_advisor_run(project_id, advisor_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the settled consultation could not be read back",
+                )
+            })?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::SettleAdvisorRun,
+            AggregateRef::MiniProject {
+                mini_project_id: run.mini_project_id,
+            },
+            epic.revision,
+            &intent,
+        )?;
+        self.advisor_run_dto(&settled, &receipt_id, replayed)
     }
     fn committee_templates(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
         self.consultation_catalog(project_id, ConsultationFamily::Committee)

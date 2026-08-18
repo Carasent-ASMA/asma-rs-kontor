@@ -323,6 +323,19 @@ pub struct StoredAdvice {
     pub created_at: Timestamp,
 }
 
+/// The recommendation and tried path behind one `needs_human` consultation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAdvisorAttention {
+    /// The consultation that could not answer.
+    pub advisor_run_id: AdvisorRunId,
+    /// What the next reader should do instead.
+    pub recommendation: BoundedText,
+    /// What was already tried, so nobody repeats it.
+    pub tried: BoundedText,
+    /// Recording instant.
+    pub created_at: Timestamp,
+}
+
 /// One append-only decision about recorded advice.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredAdviceDisposition {

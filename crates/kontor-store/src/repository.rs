@@ -50,7 +50,7 @@ use kontor_core::repository::{
     RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
     RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
     SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvice,
-    StoredAdviceDisposition, StoredAdvisorRun, StoredCapacityConfiguration,
+    StoredAdviceDisposition, StoredAdvisorAttention, StoredAdvisorRun, StoredCapacityConfiguration,
     StoredConsultationProfileRevision, StoredCoreTeamRevision, StoredEpicRoster, StoredPromotion,
     StoredQuickSession, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun,
     TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, TopologyRepository,
@@ -1455,6 +1455,77 @@ impl SqliteStore {
                     advisor_run_id,
                     advice: BoundedText::parse(&advice)?,
                     advice_hash: ContentHash::parse(&hash)?,
+                    created_at: read_timestamp(&created_at)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Record why one consultation could not answer.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when one is already recorded, or a
+    /// backend error.
+    pub fn record_advisor_attention(
+        &self,
+        attention: &StoredAdvisorAttention,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO advisor_attention
+                     (advisor_run_id, recommendation, tried, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    attention.advisor_run_id.to_string(),
+                    attention.recommendation.as_str(),
+                    attention.tried.as_str(),
+                    text(attention.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "advisor attention",
+                        rule: "a consultation records why it could not answer once",
+                    }
+                }
+                other => backend(other),
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Read why one consultation could not answer.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_advisor_attention(
+        &self,
+        advisor_run_id: AdvisorRunId,
+    ) -> RepositoryResult<Option<StoredAdvisorAttention>> {
+        self.connection
+            .query_row(
+                "SELECT recommendation, tried, created_at FROM advisor_attention
+                 WHERE advisor_run_id = ?1",
+                params![advisor_run_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|(recommendation, tried, created_at)| {
+                Ok(StoredAdvisorAttention {
+                    advisor_run_id,
+                    recommendation: BoundedText::parse(&recommendation)?,
+                    tried: BoundedText::parse(&tried)?,
                     created_at: read_timestamp(&created_at)?,
                 })
             })

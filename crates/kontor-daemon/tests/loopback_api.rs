@@ -11964,13 +11964,6 @@ async fn every_consultation_run_operation_refuses_rather_than_pretending() {
     let run = "01991c00-0000-7000-8000-0000000000f1";
     let writes = [
         (
-            format!("/v1/projects/{project}/advisor-runs/{run}/settle"),
-            serde_json::json!({
-                "action": {"action": "record_advice", "advice": "Do not ship it."},
-                "expected_revision": 1,
-            }),
-        ),
-        (
             format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
             serde_json::json!({
                 "profile": {"id": ADVISOR_PROFILE, "version": 1},
@@ -12058,6 +12051,33 @@ async fn invoking_against_an_unknown_epic_is_refused_before_any_effect() {
         Some(0),
         "a refused invocation materialized a node: {}",
         topology.body
+    );
+}
+
+/// Settling an unknown consultation is refused, and records nothing.
+#[tokio::test]
+async fn settling_an_unknown_consultation_is_refused() {
+    let world = World::open().await;
+    let answer = Call::post(
+        format!(
+            "/v1/projects/{}/advisor-runs/{}/settle",
+            world.project, "01991c00-0000-7000-8000-0000000000f1"
+        ),
+        &serde_json::json!({
+            "action": {"action": "record_advice", "advice": "Do not ship it."},
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("settle-unknown")
+    .send(&world)
+    .await;
+    assert_eq!(answer.status, 404, "{}", answer.body);
+    assert_eq!(answer.code(), "not_found");
+    assert!(
+        answer.json().get("advice_hash").is_none(),
+        "a refusal must not carry advice: {}",
+        answer.body
     );
 }
 
