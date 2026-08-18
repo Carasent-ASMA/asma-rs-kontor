@@ -77,36 +77,52 @@ const JSON_FLAG: &str = "--json";
 /// The environment variable Paseo reads the parent agent from.
 pub const PARENT_AGENT_ENV: &str = "PASEO_AGENT_ID";
 
-/// Paseo 0.3.1's spelling of one [`SeatAutonomy`].
+/// Paseo's provider-specific spelling of one [`SeatAutonomy`].
 ///
-/// `paseo agent run --mode` documents itself as "provider-specific mode (e.g.
-/// plan, default, bypass)", so this is the translation and the only place it
-/// happens. Kontor's three intents map onto those three spellings:
+/// `paseo agent run --mode` is explicitly provider-specific. The same policy
+/// therefore cannot be translated before the selected provider is known:
+/// Codex, for example, accepts `auto-review` and `full-access`, while Claude
+/// accepts `auto`, `bypassPermissions` and `plan`.
 ///
-/// * `supervised` -> `default`: the provider asks before each guarded action;
-/// * `bounded` -> `bypass`: the provider does not ask again for authority Kontor
-///   already granted and bounded;
-/// * `advisory` -> `plan`: the seat may read and propose and may not act.
-///
-/// Exhaustive on purpose. A fourth [`SeatAutonomy`] must be given a spelling
-/// here rather than falling through to whichever of these looked closest, since
-/// guessing wrong in either direction is a seat running under the wrong
-/// authority.
-const fn paseo_mode(autonomy: SeatAutonomy) -> &'static str {
+/// The mapping is exhaustive and fails closed when a provider cannot express
+/// an advisory seat. Falling back to a generic spelling is not harmless: Paseo
+/// 0.4.0 rejects `default` for Codex before creating the agent, which left every
+/// replacement verifier permanently queued.
+pub(crate) fn paseo_mode(
+    provider: &str,
+    autonomy: SeatAutonomy,
+) -> RuntimeResult<Option<&'static str>> {
     match autonomy {
-        SeatAutonomy::Supervised => "default",
-        SeatAutonomy::Bounded => "bypass",
-        SeatAutonomy::Advisory => "plan",
+        SeatAutonomy::Supervised => permission_mode(provider),
+        SeatAutonomy::Bounded => match provider {
+            "claude" => Ok(Some("bypassPermissions")),
+            "codex" => Ok(Some("full-access")),
+            "copilot" => Ok(Some("allow-all")),
+            "opencode" => Ok(Some("build")),
+            "pi" => Ok(None),
+            "omp" => Ok(Some("full")),
+            other => Err(RuntimeError::PermissionModeUnsupported {
+                provider: other.to_owned(),
+            }),
+        },
+        SeatAutonomy::Advisory => match provider {
+            "claude" | "opencode" => Ok(Some("plan")),
+            "copilot" => Ok(Some(
+                "https://agentclientprotocol.com/protocol/session-modes#plan",
+            )),
+            other => Err(RuntimeError::PermissionModeUnsupported {
+                provider: other.to_owned(),
+            }),
+        },
     }
 }
 
-/// The unattended, approval-aware mode Paseo 0.3.1 exposes for each provider.
+/// The explicit supervised mode Paseo exposes for each delivery provider.
 ///
 /// Kontor pins this explicitly because an omitted mode delegates authority to
 /// a mutable provider default (including Claude's `default` / Always Ask). The
-/// launch path spells the mode from the seat's [`SeatAutonomy`] via
-/// [`paseo_mode`]; this function remains the read path's expected-mode source,
-/// checked against a live agent's `current_mode_id`.
+/// [`paseo_mode`] selects this branch for supervised seats and the readback path
+/// uses the same function, so launch and verification cannot disagree.
 pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
     match provider {
         "claude" => Ok(Some("auto")),
@@ -256,6 +272,7 @@ impl PaseoCommand {
         parent_agent_id: &str,
         prompt: &str,
     ) -> RuntimeResult<Self> {
+        let mode = paseo_mode(model_rung.provider.0.as_str(), autonomy)?;
         Self::agent_run_with_mode(
             workspace_id,
             canonical_cwd,
@@ -264,7 +281,7 @@ impl PaseoCommand {
             labels,
             parent_agent_id,
             prompt,
-            Some(paseo_mode(autonomy)),
+            mode,
         )
     }
 
@@ -1579,7 +1596,33 @@ mod tests {
                 .any(|pair| pair == ["--model", "claude-opus-5"])
         );
         assert!(argv.windows(2).any(|pair| pair == ["--thinking", "xhigh"]));
-        assert!(argv.windows(2).any(|pair| pair == ["--mode", "default"]));
+        assert!(argv.windows(2).any(|pair| pair == ["--mode", "auto"]));
+    }
+
+    /// Paseo 0.4.0 rejects the provider-neutral `default` spelling for Codex.
+    /// A standard delivery seat must keep the explicit auto-review behavior the
+    /// provider default gave it before autonomy was frozen into launch requests.
+    #[test]
+    fn a_codex_delivery_launch_uses_a_supported_provider_mode() {
+        let command = PaseoCommand::agent_run(
+            "wks_1",
+            "/w/task-1",
+            &route("codex", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+            SeatAutonomy::Supervised,
+            "Verifier",
+            &labels(),
+            "agt_p",
+            "verify",
+        )
+        .expect("Codex supervised delivery has a pinned mode");
+
+        assert!(
+            command
+                .argv()
+                .windows(2)
+                .any(|pair| pair == ["--mode", "auto-review"])
+        );
+        assert!(!command.argv().iter().any(|argument| argument == "default"));
     }
 
     #[test]
@@ -1677,8 +1720,8 @@ mod tests {
             argv[index + 1].clone()
         };
 
-        assert_eq!(mode_of(SeatAutonomy::Supervised), "default");
-        assert_eq!(mode_of(SeatAutonomy::Bounded), "bypass");
+        assert_eq!(mode_of(SeatAutonomy::Supervised), "auto");
+        assert_eq!(mode_of(SeatAutonomy::Bounded), "bypassPermissions");
         assert_eq!(mode_of(SeatAutonomy::Advisory), "plan");
 
         // Three intents, three spellings: a mapping that collapsed two of them
