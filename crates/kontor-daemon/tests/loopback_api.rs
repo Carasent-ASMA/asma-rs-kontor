@@ -12081,6 +12081,355 @@ async fn settling_an_unknown_consultation_is_refused() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// OP-05 CP2c — the composed Advisor path, driven through the public API.
+// ---------------------------------------------------------------------------
+
+/// Publish one Advisor profile revision and return the catalog revision after it.
+async fn publish_advisor_profile(
+    world: &World,
+    project: &str,
+    version: u32,
+    expected_revision: u64,
+) -> u64 {
+    let definition = advisor_definition(ADVISOR_PROFILE, version);
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": definition}),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("advisor-preview-{version}"))
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    assert_eq!(
+        previewed.json()["violations"].as_array().map(Vec::len),
+        Some(0),
+        "{}",
+        previewed.body
+    );
+    let preview_hash = previewed.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let applied = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": definition,
+            "preview_hash": preview_hash,
+            "expected_revision": expected_revision,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("advisor-apply-{version}"))
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    applied.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("a catalog revision")
+}
+
+/// A promoted epic whose ECP is staffed, plus one published Advisor profile.
+///
+/// Promotion is what puts a live LSA on the epic's control plane, and that seat is
+/// the owner authority a consultation is requested under — so nothing below can be
+/// invoked without it.
+async fn consultable_epic(root: &str) -> (Composed, String) {
+    let composed = compose_realm(root).await;
+    {
+        let world = &composed.world;
+        let project = &composed.project;
+        adopt_session_base(world, project, composed.project_revision).await;
+        publish_core_team(
+            world,
+            project,
+            serde_json::json!([seat("SA", "default", true)]),
+        )
+        .await;
+        publish_advisor_profile(world, project, 1, 1).await;
+    }
+
+    let world = &composed.world;
+    let project = &composed.project;
+    let opened = Call::post(
+        format!("/v1/projects/{project}/quick-sessions:ensure"),
+        &serde_json::json!({
+            "role": {
+                "catalog_revision": {"id": SEEDED_CATALOG, "version": 1},
+                "role_code": "SA",
+            },
+            "purpose": "Investigate before consulting",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("quick-for-consultation")
+    .send(world)
+    .await;
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    let session = opened.json()["quick_session_id"]
+        .as_str()
+        .expect("a session")
+        .to_owned();
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:preview"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let preview_hash = previewed.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
+        &serde_json::json!({"preview_hash": preview_hash, "expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("promote-for-consultation")
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic")
+        .to_owned();
+    (composed, epic)
+}
+
+fn invoke_body() -> serde_json::Value {
+    serde_json::json!({
+        "profile": {"id": ADVISOR_PROFILE, "version": 1},
+        "scope": {"scope": "epic"},
+        "question": "Does the retry storm come from the scheduler or the runtime?",
+        "expected_revision": 1,
+    })
+}
+
+async fn invoke_consultation(
+    world: &World,
+    project: &str,
+    epic: &str,
+    key: &str,
+) -> crate::harness::Answer {
+    Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+        &invoke_body(),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// One invocation places one ASW and one Advisor seat, and freezes their ids.
+///
+/// The ids are the load-bearing part: they are what a resumed invocation
+/// reconciles against, and what proves a second call placed nothing new. Node-level
+/// topology assertions live in the store suite, which reads the rows directly.
+#[tokio::test]
+async fn invoking_places_one_epic_local_asw_with_one_seat() {
+    let (composed, epic) = consultable_epic("/tmp/kontor-op05-invoke").await;
+    let world = &composed.world;
+    let project = &composed.project;
+
+    let invoked = invoke_consultation(world, project, &epic, "invoke-once").await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    assert_eq!(invoked.json()["state"], "placed");
+    assert_eq!(invoked.json()["receipt"]["applied"], "created");
+    assert_eq!(invoked.json()["epic_id"], epic.as_str());
+    assert_eq!(invoked.json()["scope"]["scope"], "epic");
+    let node = invoked.json()["topology_node_id"]
+        .as_str()
+        .expect("an ASW node")
+        .to_owned();
+    let seat = invoked.json()["seat_binding_id"]
+        .as_str()
+        .expect("an Advisor seat")
+        .to_owned();
+    assert_ne!(node, seat);
+
+    // Nothing is advised yet, and no decision has been recorded about nothing.
+    assert!(invoked.json()["advice_hash"].is_null());
+    assert_eq!(
+        invoked.json()["dispositions"].as_array().map(Vec::len),
+        Some(0)
+    );
+
+    // Epic-local, and a sibling of the ECP under the epic's own ESW -- never
+    // inside the control plane and never inside another workspace.
+    let topology = Call::get(format!(
+        "/v1/projects/{project}/topology:inspect?epic_id={epic}"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    let nodes = topology.json()["nodes"].as_array().expect("nodes").clone();
+    let esw = nodes
+        .iter()
+        .find(|candidate| candidate["kind_key"].as_str() == Some("ESW"))
+        .expect("the epic has a workspace");
+    let ecp = nodes
+        .iter()
+        .find(|candidate| candidate["kind_key"].as_str() == Some("ECP"))
+        .expect("the epic has a control plane");
+    let asw = nodes
+        .iter()
+        .find(|candidate| candidate["topology_node_id"].as_str() == Some(node.as_str()))
+        .expect("the ASW is in the epic's subgraph");
+    assert_eq!(asw["kind_key"], "ASW");
+    assert_eq!(
+        asw["parent_topology_node_id"], esw["topology_node_id"],
+        "the ASW must hang off the epic's ESW: {}",
+        topology.body
+    );
+    assert_ne!(
+        asw["parent_topology_node_id"], ecp["topology_node_id"],
+        "a consultation must not be placed inside the control plane"
+    );
+    let seats = asw["seats"].as_array().expect("seats");
+    assert_eq!(seats.len(), 1, "an ASW owns exactly one Advisor seat");
+    assert_eq!(seats[0]["seat_binding_id"], seat.as_str());
+}
+
+/// A retry that lost its acknowledgement reconciles; it never places a second ASW.
+#[tokio::test]
+async fn a_lost_invocation_acknowledgement_reconciles_one_consultation() {
+    let (composed, epic) = consultable_epic("/tmp/kontor-op05-lost-ack").await;
+    let world = &composed.world;
+    let project = &composed.project;
+
+    let first = invoke_consultation(world, project, &epic, "lost-ack-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let run = first.json()["advisor_run_id"]
+        .as_str()
+        .expect("a run")
+        .to_owned();
+
+    // Same key: the receipt ledger replays it.
+    let replayed = invoke_consultation(world, project, &epic, "lost-ack-first").await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["advisor_run_id"], run.as_str());
+
+    // A *different* key naming the same request: the ledger has nothing, so the
+    // durable row keyed by canonical intent is what stops a second ASW.
+    let retried = invoke_consultation(world, project, &epic, "lost-ack-second").await;
+    assert_eq!(retried.status, 200, "{}", retried.body);
+    assert_eq!(
+        retried.json()["advisor_run_id"],
+        run.as_str(),
+        "a second consultation was opened: {}",
+        retried.body
+    );
+    assert_eq!(retried.json()["receipt"]["applied"], "unchanged");
+
+    let topology = Call::get(format!(
+        "/v1/projects/{project}/topology:inspect?epic_id={epic}"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(
+        topology.json()["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .filter(|candidate| candidate["kind_key"].as_str() == Some("ASW"))
+            .count(),
+        1,
+        "a retry placed a second workspace: {}",
+        topology.body
+    );
+}
+
+/// An epic with no live owner seat cannot have a consultation requested under it.
+#[tokio::test]
+async fn invoking_without_a_live_owner_authority_fails_closed() {
+    // `compose_realm`'s epic is declared, not promoted, so its control plane has
+    // never been staffed.
+    let composed = compose_realm("/tmp/kontor-op05-no-owner").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    publish_advisor_profile(world, project, 1, 1).await;
+
+    let refused = invoke_consultation(world, project, &composed.epic, "no-owner").await;
+    assert_eq!(
+        refused.status, 409,
+        "an unstaffed epic must refuse: {}",
+        refused.body
+    );
+    assert_eq!(refused.code(), "placement_blocked");
+    assert!(
+        refused.json().get("advisor_run_id").is_none(),
+        "a refusal must not carry a consultation: {}",
+        refused.body
+    );
+
+    let topology = Call::get(format!(
+        "/v1/projects/{project}/topology:inspect?epic_id={}",
+        composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert!(
+        !topology.json()["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .any(|candidate| candidate["kind_key"].as_str() == Some("ASW")),
+        "a refused invocation placed a workspace: {}",
+        topology.body
+    );
+}
+
+/// A consultation's frozen context does not move when its sources do.
+#[tokio::test]
+async fn a_frozen_context_survives_a_later_profile_revision() {
+    let (composed, epic) = consultable_epic("/tmp/kontor-op05-frozen").await;
+    let world = &composed.world;
+    let project = &composed.project;
+
+    let invoked = invoke_consultation(world, project, &epic, "frozen-first").await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let context_hash = invoked.json()["context_hash"]
+        .as_str()
+        .expect("a context digest")
+        .to_owned();
+    let pinned = invoked.json()["profile"]["definition_hash"]
+        .as_str()
+        .expect("a profile digest")
+        .to_owned();
+
+    // The project publishes a second profile revision. The already-invoked
+    // consultation must not notice.
+    publish_advisor_profile(world, project, 2, 2).await;
+
+    let reread = invoke_consultation(world, project, &epic, "frozen-reread").await;
+    assert_eq!(reread.status, 200, "{}", reread.body);
+    assert_eq!(
+        reread.json()["context_hash"],
+        context_hash.as_str(),
+        "the frozen context moved: {}",
+        reread.body
+    );
+    assert_eq!(
+        reread.json()["profile"]["definition_hash"],
+        pinned.as_str(),
+        "the pinned profile moved: {}",
+        reread.body
+    );
+}
+
 /// Publishing a profile seats nobody.
 ///
 /// A profile is what a consultation *would* be asked under. If publishing one
