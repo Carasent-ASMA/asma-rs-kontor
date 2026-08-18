@@ -303,3 +303,67 @@ The daemon's preview guard now checks the two along their own boundaries: caller
 codes against the role catalog, member logical roles against the delivery
 bindings. The resolved owner seat's catalog role is compared directly with the
 allowlist before a run row or any native effect exists.
+
+## Ratified dispositions (Igor, via TPM, 2026-08-18) — these supersede the options above
+
+The options and recommendations recorded earlier in this document are closed. What
+follows is the ruling CP2c is built against.
+
+### 1. `owner_authority_seat_binding_id` — ratified
+
+Renamed from `requester_seat_binding_id` (commit `6313b1c`), taken while
+`advisor_runs` still has no deployed rows. Semantic: *requested under the
+authority of the epic's owner*, never *this caller asked*. Nothing in an OP-05
+record may be read as identifying the operator, human or runtime session that
+submitted the call.
+
+### 2. Invoke authority is LSA-only
+
+Under always-LSA requester derivation, `SA` is a **dead letter for invoke
+authority**. `independent_review@1` keeps `["LSA", "SA"]` so SA remains listed for
+non-lead architecture eligibility, but enforcement for *invocation* is LSA-only:
+
+- resolve the epic's owner authority as the single live non-terminal ECP binding
+  whose standard role code is `MANDATORY_LEAD_ROLE` (`"LSA"`) — never through
+  `control_slot()`, which derives from `control_role_code` and resolves the TPM;
+- require exactly one such binding, failing closed before the run row and before
+  any native effect when it is absent, released or ambiguous;
+- require that resolved code to be `LSA` **and** to appear in the profile's
+  `allowed_caller_roles`. A profile that omits `LSA` cannot be invoked at all,
+  which is the honest consequence of the derivation rather than a check that
+  quietly passes.
+
+`SA` appearing in an allowlist therefore grants no invoke authority today. That is
+recorded here so a later reader does not mistake its presence for one.
+
+### 3. Role types
+
+`allowed_caller_roles` is `Vec<RoleCode>` — standard catalog roles, validated
+against the catalog. `CommitteeSlotSpec.logical_role` stays a `RoleKey`, resolved
+through `delivery.role_bindings`. `LSA` is deliberately not added to those
+bindings, so it can never be selected as an Advisor or Committee *member* role.
+
+### 4. Out of scope
+
+The inert-gate defect — `advance_phase` with no production call sites and
+`rejection_target` never consumed — is a realm-wide gate-routing concern and will
+be filed as its own ticket. OP-05 does not expand into it.
+
+The untracked `docs/evidence/KON-MVP-18/run-*` directories belong to another
+ticket's in-flight QA and are left alone. `bfc87f3` swept eight of them in via
+`git add -A docs/`; `4d76e00` removed them from the index without rewriting the
+pushed SHA, restoring them to untracked.
+
+### Schema-compatibility note
+
+The committee also asked for the `RoleKey`→`RoleCode` retype to be versioned. This
+is recorded rather than actioned, with a reason: `SchemaVersion::parse` refuses
+anything above `SCHEMA_VERSION`, which is `1`, so a "schema v2" consultation
+document is not expressible without changing the realm envelope constant — a
+platform change well outside OP-05. The additive alternative (a new
+`allowed_caller_role_codes` field with a v1 reader for the old one) is available,
+but it only earns its keep if a realm exists with published consultation
+revisions: `consultation_profile_revisions` arrived in migration `0032` on this
+same unmerged branch, so there are no deployed rows carrying lowercase logical
+role keys to read. Flagged for the architect to confirm that premise before
+CP2c's invoke composition assumes it.
