@@ -365,5 +365,14 @@ platform change well outside OP-05. The additive alternative (a new
 but it only earns its keep if a realm exists with published consultation
 revisions: `consultation_profile_revisions` arrived in migration `0032` on this
 same unmerged branch, so there are no deployed rows carrying lowercase logical
-role keys to read. Flagged for the architect to confirm that premise before
-CP2c's invoke composition assumes it.
+role keys to read. **Confirmed by the TPM (2026-08-18)** against the deployed realm: no published
+consultation revisions exist in any realm — a post-repair readback returns an
+empty truthful catalog at revision 1 — and `0032` has never been merged or
+deployed, so there are zero rows carrying lowercase logical keys. The retype is
+free and the additive field is deliberately **not** added.
+
+**Conditional, recorded so it is not lost:** if any realm publishes a
+consultation revision from this branch *before* it merges, those rows will carry
+`allowed_caller_roles` as logical `RoleKey`s and will not deserialize as
+uppercase `RoleCode`s. In that case the additive `allowed_caller_role_codes`
+field with a v1 reader becomes required before the retype can ship.
