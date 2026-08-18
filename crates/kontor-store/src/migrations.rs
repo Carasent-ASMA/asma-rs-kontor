@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 33;
+pub const SCHEMA_VERSION: i64 = 34;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -156,6 +156,11 @@ const MIGRATIONS: &[&str] = &[
     // table rebuilds have been dropping since v10. No rebuild here: rebuilding is
     // what lost them.
     include_str!("../migrations/0033_restore_command_receipt_triggers.sql"),
+    // Schema v34. Durable Advisor consultations: the run with its frozen profile,
+    // question, context and placement ids, one immutable advice artifact, the
+    // append-only dispositions about it, and the two Advisor run commands. The
+    // ninth receipt-table rebuild, and the first to re-create its own triggers.
+    include_str!("../migrations/0034_advisor_runs.sql"),
 ];
 
 const _: () = assert!(

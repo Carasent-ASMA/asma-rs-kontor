@@ -18,14 +18,14 @@ use kontor_core::calendar::{
     HolidayProviderKind, HolidaySourceRevision, IanaTimeZone, OverrideExpiry, OverrideRevocation,
     ScheduleOverride, WeeklyWindow, WorkCalendarAssignment, WorkScope,
 };
-use kontor_core::consultation::ConsultationFamily;
+use kontor_core::consultation::{AdviceDisposition, AdvisorRunState, ConsultationFamily};
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ContentHash,
-    CredentialAlias, CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey,
-    GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
-    ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, QuickSessionId, RealmId,
-    RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
+    CalendarExceptionId, CalendarProfileId, CanonicalDocument, CapacityObservationId,
+    CommandReceiptId, ContentHash, CredentialAlias, CurrencyCode, EventCursor, ExternalId,
+    ExternalName, GateKey, GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId,
+    MiniProjectId, ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, QuickSessionId,
+    RealmId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
     ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId, TaskId,
     TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
     TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
@@ -49,11 +49,12 @@ use kontor_core::repository::{
     PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, RealmEventPage,
     RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
     RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredCapacityConfiguration, StoredConsultationProfileRevision, StoredCoreTeamRevision,
-    StoredEpicRoster, StoredPromotion, StoredQuickSession, Task, TaskInspection,
-    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
+    SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvice,
+    StoredAdviceDisposition, StoredAdvisorRun, StoredCapacityConfiguration,
+    StoredConsultationProfileRevision, StoredCoreTeamRevision, StoredEpicRoster, StoredPromotion,
+    StoredQuickSession, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun,
+    TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, TopologyRepository,
+    WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
@@ -1230,6 +1231,383 @@ impl SqliteStore {
             .collect()
     }
 
+    /// Open one Advisor consultation.
+    ///
+    /// The row is written before any native effect and carries the ids those
+    /// effects will use. `UNIQUE (project_id, intent_hash)` is what makes a lost
+    /// acknowledgement safe: the retry loses the race, has written nothing else,
+    /// and reads the winner's consultation rather than placing a second ASW and
+    /// spending a second consultation against the profile's limit.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when another invocation of the same
+    /// request already opened one, or a backend error.
+    pub fn create_advisor_run(&self, run: &StoredAdvisorRun) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let role = serde_json::to_string(&run.role).map_err(|error| RepositoryError::Backend {
+            detail: format!("an advisor run role could not be encoded: {error}"),
+        })?;
+        transaction
+            .execute(
+                "INSERT INTO advisor_runs
+                     (id, project_id, mini_project_id, task_id, profile_id, profile_version,
+                      profile_hash, question, question_hash, requester_seat_binding_id,
+                      context, context_hash, provenance, topology_node_id, seat_binding_id,
+                      role_slot_id, role, esw_topology_node_id, esw_native_id, state,
+                      intent_hash, revision, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                         ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                params![
+                    run.id.to_string(),
+                    run.project_id.to_string(),
+                    run.mini_project_id.to_string(),
+                    run.task_id.map(|task| task.to_string()),
+                    run.profile_id.as_str(),
+                    version_column(run.profile_version),
+                    run.profile_hash.as_str(),
+                    run.question.as_str(),
+                    run.question_hash.as_str(),
+                    run.requester_seat_binding_id.to_string(),
+                    run.context.as_str(),
+                    run.context_hash.as_str(),
+                    run.provenance.to_string(),
+                    run.topology_node_id.to_string(),
+                    run.seat_binding_id.to_string(),
+                    run.role_slot_id.as_str(),
+                    role,
+                    run.esw_topology_node_id.to_string(),
+                    run.esw_native_id.as_ref().map(ExternalId::as_str),
+                    run.state.as_str(),
+                    run.intent_hash.as_str(),
+                    i64::try_from(run.revision.get()).unwrap_or(i64::MAX),
+                    text(run.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "advisor run",
+                        rule: "one invocation opens one consultation",
+                    }
+                }
+                other => backend(other),
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Read one consultation by identity.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_advisor_run(
+        &self,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+    ) -> RepositoryResult<Option<StoredAdvisorRun>> {
+        self.advisor_run_where("id = ?2", project_id, &advisor_run_id.to_string())
+    }
+
+    /// Read the consultation one command's canonical intent already opened.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_advisor_run_by_intent(
+        &self,
+        project_id: ProjectId,
+        intent_hash: &ContentHash,
+    ) -> RepositoryResult<Option<StoredAdvisorRun>> {
+        self.advisor_run_where("intent_hash = ?2", project_id, intent_hash.as_str())
+    }
+
+    /// Every consultation of one epic, oldest first.
+    ///
+    /// Used to hold a profile to its declared consultation limit, which is a
+    /// count of durable runs rather than of receipts.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_advisor_runs(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<StoredAdvisorRun>> {
+        let ids: Vec<String> = self
+            .connection
+            .prepare(
+                "SELECT id FROM advisor_runs
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                 ORDER BY created_at ASC, id ASC",
+            )
+            .map_err(backend)?
+            .query_map(
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(backend)?;
+        ids.into_iter()
+            .filter_map(|id| {
+                self.advisor_run_where("id = ?2", project_id, &id)
+                    .transpose()
+            })
+            .collect()
+    }
+
+    /// Move one consultation to its next state under compare-and-swap.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the revision has moved, and a
+    /// backend error otherwise.
+    pub fn advance_advisor_run(
+        &self,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+        state: AdvisorRunState,
+        expected: AggregateRevision,
+    ) -> RepositoryResult<AggregateRevision> {
+        let transaction = self.begin()?;
+        let next = AggregateRevision::parse(expected.get().saturating_add(1))?;
+        let changed = transaction
+            .execute(
+                "UPDATE advisor_runs SET state = ?1, revision = ?2
+                 WHERE project_id = ?3 AND id = ?4 AND revision = ?5",
+                params![
+                    state.as_str(),
+                    i64::try_from(next.get()).unwrap_or(i64::MAX),
+                    project_id.to_string(),
+                    advisor_run_id.to_string(),
+                    i64::try_from(expected.get()).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::Conflict {
+                subject: "advisor run",
+                rule: "the consultation moved since it was read",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(next)
+    }
+
+    /// Record one Advisor's immutable output.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when advice is already recorded, or
+    /// a backend error.
+    pub fn record_advice(&self, advice: &StoredAdvice) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO advisor_advice (advisor_run_id, advice, advice_hash, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    advice.advisor_run_id.to_string(),
+                    advice.advice.as_str(),
+                    advice.advice_hash.as_str(),
+                    text(advice.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "advice",
+                        rule: "an Advisor submits its output once",
+                    }
+                }
+                other => backend(other),
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Read one consultation's recorded advice.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_advice(
+        &self,
+        advisor_run_id: AdvisorRunId,
+    ) -> RepositoryResult<Option<StoredAdvice>> {
+        self.connection
+            .query_row(
+                "SELECT advice, advice_hash, created_at FROM advisor_advice
+                 WHERE advisor_run_id = ?1",
+                params![advisor_run_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|(advice, hash, created_at)| {
+                Ok(StoredAdvice {
+                    advisor_run_id,
+                    advice: BoundedText::parse(&advice)?,
+                    advice_hash: ContentHash::parse(&hash)?,
+                    created_at: read_timestamp(&created_at)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Append one disposition about recorded advice.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when that sequence position is
+    /// taken, or a backend error.
+    pub fn append_advice_disposition(
+        &self,
+        disposition: &StoredAdviceDisposition,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let cited = serde_json::to_string(&disposition.cited_receipts).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("cited receipts could not be encoded: {error}"),
+            }
+        })?;
+        transaction
+            .execute(
+                "INSERT INTO advisor_dispositions
+                     (advisor_run_id, sequence, disposition, rationale, cited_receipts,
+                      recorded_by, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    disposition.advisor_run_id.to_string(),
+                    i64::from(disposition.sequence),
+                    disposition.disposition.as_str(),
+                    disposition.rationale.as_str(),
+                    cited,
+                    disposition.recorded_by.to_string(),
+                    text(disposition.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "advice disposition",
+                        rule: "that position in the sequence is already recorded",
+                    }
+                }
+                other => backend(other),
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Every disposition recorded about one consultation, oldest first.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_advice_dispositions(
+        &self,
+        advisor_run_id: AdvisorRunId,
+    ) -> RepositoryResult<Vec<StoredAdviceDisposition>> {
+        let rows: Vec<(i64, String, String, String, String, String)> = self
+            .connection
+            .prepare(
+                "SELECT sequence, disposition, rationale, cited_receipts, recorded_by, created_at
+                 FROM advisor_dispositions WHERE advisor_run_id = ?1 ORDER BY sequence ASC",
+            )
+            .map_err(backend)?
+            .query_map(params![advisor_run_id.to_string()], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(
+                |(sequence, disposition, rationale, cited, recorded_by, created_at)| {
+                    Ok(StoredAdviceDisposition {
+                        advisor_run_id,
+                        sequence: u32::try_from(sequence).unwrap_or_default(),
+                        disposition: AdviceDisposition::parse(&disposition)?,
+                        rationale: BoundedText::parse(&rationale)?,
+                        cited_receipts: serde_json::from_str(&cited).map_err(|error| {
+                            RepositoryError::Backend {
+                                detail: format!("stored cited receipts are unreadable: {error}"),
+                            }
+                        })?,
+                        recorded_by: SeatBindingId::parse(&recorded_by)?,
+                        created_at: read_timestamp(&created_at)?,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    fn advisor_run_where(
+        &self,
+        predicate: &str,
+        project_id: ProjectId,
+        value: &str,
+    ) -> RepositoryResult<Option<StoredAdvisorRun>> {
+        let found = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT id, mini_project_id, task_id, profile_id, profile_version,
+                            profile_hash, question, question_hash, requester_seat_binding_id,
+                            context, context_hash, provenance, topology_node_id,
+                            seat_binding_id, role_slot_id, role, esw_topology_node_id,
+                            esw_native_id, state, intent_hash, revision, created_at
+                     FROM advisor_runs WHERE project_id = ?1 AND {predicate}"
+                ),
+                params![project_id.to_string(), value],
+                |row| {
+                    Ok(AdvisorRunColumns {
+                        id: row.get(0)?,
+                        mini_project_id: row.get(1)?,
+                        task_id: row.get(2)?,
+                        profile_id: row.get(3)?,
+                        profile_version: row.get(4)?,
+                        profile_hash: row.get(5)?,
+                        question: row.get(6)?,
+                        question_hash: row.get(7)?,
+                        requester_seat_binding_id: row.get(8)?,
+                        context: row.get(9)?,
+                        context_hash: row.get(10)?,
+                        provenance: row.get(11)?,
+                        topology_node_id: row.get(12)?,
+                        seat_binding_id: row.get(13)?,
+                        role_slot_id: row.get(14)?,
+                        role: row.get(15)?,
+                        esw_topology_node_id: row.get(16)?,
+                        esw_native_id: row.get(17)?,
+                        state: row.get(18)?,
+                        intent_hash: row.get(19)?,
+                        revision: row.get(20)?,
+                        created_at: row.get(21)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|columns| columns.into_run(project_id))
+            .transpose()
+    }
+
     /// Record one Quick session and the ids its placement used.
     ///
     /// # Errors
@@ -1688,6 +2066,77 @@ impl SqliteStore {
                 })
             })
             .transpose()
+    }
+}
+
+/// One `advisor_runs` row as SQLite hands it over.
+///
+/// A carrier rather than a 22-element tuple: every field here is still text or an
+/// integer, and the conversion into the typed row happens once, in
+/// [`AdvisorRunColumns::into_run`], where a domain parse failure can be reported
+/// as one.
+struct AdvisorRunColumns {
+    id: String,
+    mini_project_id: String,
+    task_id: Option<String>,
+    profile_id: String,
+    profile_version: i64,
+    profile_hash: String,
+    question: String,
+    question_hash: String,
+    requester_seat_binding_id: String,
+    context: String,
+    context_hash: String,
+    provenance: String,
+    topology_node_id: String,
+    seat_binding_id: String,
+    role_slot_id: String,
+    role: String,
+    esw_topology_node_id: String,
+    esw_native_id: Option<String>,
+    state: String,
+    intent_hash: String,
+    revision: i64,
+    created_at: String,
+}
+
+impl AdvisorRunColumns {
+    fn into_run(self, project_id: ProjectId) -> RepositoryResult<StoredAdvisorRun> {
+        Ok(StoredAdvisorRun {
+            id: AdvisorRunId::parse(&self.id)?,
+            project_id,
+            mini_project_id: MiniProjectId::parse(&self.mini_project_id)?,
+            task_id: self.task_id.as_deref().map(TaskId::parse).transpose()?,
+            profile_id: self.profile_id,
+            profile_version: read_version(self.profile_version)?,
+            profile_hash: ContentHash::parse(&self.profile_hash)?,
+            question: BoundedText::parse(&self.question)?,
+            question_hash: ContentHash::parse(&self.question_hash)?,
+            requester_seat_binding_id: SeatBindingId::parse(&self.requester_seat_binding_id)?,
+            context: self.context,
+            context_hash: ContentHash::parse(&self.context_hash)?,
+            provenance: serde_json::from_str(&self.provenance).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("stored consultation provenance is unreadable: {error}"),
+                }
+            })?,
+            topology_node_id: TopologyNodeId::parse(&self.topology_node_id)?,
+            seat_binding_id: SeatBindingId::parse(&self.seat_binding_id)?,
+            role_slot_id: RoleSlotId::parse(&self.role_slot_id)?,
+            role: serde_json::from_str(&self.role).map_err(|error| RepositoryError::Backend {
+                detail: format!("a stored advisor run role is unreadable: {error}"),
+            })?,
+            esw_topology_node_id: TopologyNodeId::parse(&self.esw_topology_node_id)?,
+            esw_native_id: self
+                .esw_native_id
+                .as_deref()
+                .map(ExternalId::parse)
+                .transpose()?,
+            state: AdvisorRunState::parse(&self.state)?,
+            intent_hash: ContentHash::parse(&self.intent_hash)?,
+            revision: AggregateRevision::parse(u64::try_from(self.revision).unwrap_or_default())?,
+            created_at: read_timestamp(&self.created_at)?,
+        })
     }
 }
 

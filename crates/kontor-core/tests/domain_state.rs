@@ -1558,6 +1558,10 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     // no ASW, no CSW and no seat, so no epic or run aggregate is legal for it.
     ("apply_advisor_profile", "project", "witness", None),
     ("apply_committee_template", "project", "witness", None),
+    // The epic a consultation advises: not a Task and not a TeamRun, because a
+    // consultation is not delivery work and consumes no mission slot.
+    ("invoke_advisor_run", "mini_project", "witness", None),
+    ("settle_advisor_run", "mini_project", "witness", None),
     ("ensure_quick_session", "project", "witness", None),
     // Promotion and the two roster commands are about one epic.
     ("promote_quick_session", "mini_project", "witness", None),

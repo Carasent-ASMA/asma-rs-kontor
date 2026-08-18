@@ -143,6 +143,42 @@ crate::closed_enum! {
     }
 }
 
+crate::closed_enum! {
+    /// Where one Advisor consultation has got to.
+    ///
+    /// There is no `running`: a consultation that cannot produce an answer
+    /// reaches [`AdvisorRunState::NeedsHuman`] with a recommendation, rather
+    /// than sitting in `placed` forever and reading as work in progress.
+    AdvisorRunState, "AdvisorRunState" {
+        /// The ASW and its one Advisor seat exist; no advice is durable yet.
+        Placed => "placed",
+        /// The immutable advice artifact is durable.
+        Advised => "advised",
+        /// A disposition has been recorded about that advice.
+        Disposed => "disposed",
+        /// The path could not produce an answer and says so.
+        NeedsHuman => "needs_human",
+    }
+}
+
+impl AdvisorRunState {
+    /// Whether advice may still be recorded.
+    #[must_use]
+    pub const fn accepts_advice(self) -> bool {
+        matches!(self, Self::Placed)
+    }
+
+    /// Whether a disposition may be recorded.
+    ///
+    /// Only against durable advice: a disposition about nothing would be a
+    /// decision with no subject, and `accepted` in particular would claim the
+    /// requester adopted advice that was never given.
+    #[must_use]
+    pub const fn accepts_disposition(self) -> bool {
+        matches!(self, Self::Advised | Self::Disposed)
+    }
+}
+
 /// What one consultation seat is allowed to read.
 ///
 /// Everything here is a *pin*, not a path: a revision of a skill, a key of an

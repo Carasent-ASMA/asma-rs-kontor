@@ -18,18 +18,18 @@ use crate::calendar::{
     HolidayImportBatch, HolidaySourceRevision, OverrideRevocation, ScheduleOverride,
     WorkCalendarAssignment, WorkScope,
 };
-use crate::consultation::ConsultationFamily;
+use crate::consultation::{AdviceDisposition, AdvisorRunState, ConsultationFamily};
 use crate::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ConnectorKey,
-    ContentHash, CredentialAlias, EventCursor, ExecutionAuthorizationId, ExternalId,
-    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, GuardrailEvaluationId,
-    IdempotencyKey, IntakeDecisionId, IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId,
-    PhaseKey, ProjectId, QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId,
-    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
-    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
-    WorkProfileKey,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
+    CalendarExceptionId, CalendarProfileId, CanonicalDocument, CapacityObservationId,
+    CommandReceiptId, ConnectorKey, ContentHash, CredentialAlias, EventCursor,
+    ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
+    GateKey, GuardrailEvaluationId, IdempotencyKey, IntakeDecisionId, IntakeReceiptId,
+    MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey, ProjectId, QuickSessionId, RealmId,
+    RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId,
+    SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
+    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
+    TriggerKey, WorkCalendarId, WorkProfileKey,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -233,6 +233,106 @@ pub struct StoredConsultationProfileRevision {
     pub definition_hash: ContentHash,
     /// Publication instant.
     pub published_at: Timestamp,
+}
+
+/// One durable Advisor consultation, as it is stored.
+///
+/// Everything the consultation was asked under is frozen in this row before the
+/// first native effect: the profile revision, the question, the resolved context
+/// and its provenance, and the exact ASW node and seat that will answer. A later
+/// edit to the profile, a file or the epic cannot reach it, because none of that
+/// is read again.
+///
+/// Written before its effects and carrying the ids they will use, so a resumed
+/// invocation completes whichever suffix is missing instead of placing a second
+/// workspace. The id columns carry no foreign keys precisely so the row can exist
+/// while the node and seat it names do not yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAdvisorRun {
+    /// Consultation identity.
+    pub id: AdvisorRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic it advises.
+    pub mini_project_id: MiniProjectId,
+    /// The ticket it was asked about, when it was asked about one.
+    pub task_id: Option<TaskId>,
+    /// The frozen profile revision: identity, version and canonical digest.
+    pub profile_id: String,
+    /// That revision's version.
+    pub profile_version: SpecVersion,
+    /// That revision's canonical digest.
+    pub profile_hash: ContentHash,
+    /// The bounded question, exactly as asked.
+    pub question: BoundedText,
+    /// Digest of the question bytes.
+    pub question_hash: ContentHash,
+    /// The caller's proven seat, resolved server-side.
+    pub requester_seat_binding_id: SeatBindingId,
+    /// The canonical resolved context document delivered to the seat.
+    pub context: String,
+    /// Digest of those exact bytes.
+    pub context_hash: ContentHash,
+    /// Where every resolved source came from, and what was redacted.
+    pub provenance: serde_json::Value,
+    /// The ASW node.
+    pub topology_node_id: TopologyNodeId,
+    /// The one Advisor seat inside it.
+    pub seat_binding_id: SeatBindingId,
+    /// The slot that seat fills.
+    pub role_slot_id: RoleSlotId,
+    /// The catalog role snapshot the seat is held under.
+    pub role: CatalogRoleRef,
+    /// The epic ESW this ASW was placed inside.
+    pub esw_topology_node_id: TopologyNodeId,
+    /// The native project observed for that ESW at placement, if one had been.
+    pub esw_native_id: Option<ExternalId>,
+    /// Lifecycle.
+    pub state: AdvisorRunState,
+    /// Canonical intent of the command that opened it — what a retry finds it by.
+    pub intent_hash: ContentHash,
+    /// Current revision.
+    pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// One Advisor's immutable output.
+///
+/// The whole of an Advisor's write authority: its own bounded advice, submitted
+/// once. A disposition recorded later cannot rewrite it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAdvice {
+    /// The consultation it answers.
+    pub advisor_run_id: AdvisorRunId,
+    /// The advice itself.
+    pub advice: BoundedText,
+    /// Digest of the advice bytes.
+    pub advice_hash: ContentHash,
+    /// Submission instant.
+    pub created_at: Timestamp,
+}
+
+/// One append-only decision about recorded advice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAdviceDisposition {
+    /// The consultation whose advice this decides about.
+    pub advisor_run_id: AdvisorRunId,
+    /// Position in the append-only sequence, from one.
+    pub sequence: u32,
+    /// What was decided.
+    pub disposition: AdviceDisposition,
+    /// Why, bounded.
+    pub rationale: BoundedText,
+    /// Receipt ids of separately authorized commands this decision refers to.
+    ///
+    /// A citation, never an assertion that one ran: the receipt is the record of
+    /// that, and it has its own.
+    pub cited_receipts: Vec<String>,
+    /// The seat that recorded it.
+    pub recorded_by: SeatBindingId,
+    /// Recording instant.
+    pub created_at: Timestamp,
 }
 
 /// One durable Quick session, as it is stored.

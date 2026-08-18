@@ -155,6 +155,18 @@ closed_enum! {
         /// The project is the aggregate, for the same reason: a template seats
         /// no CSW until it is convened.
         ApplyCommitteeTemplate => "apply_committee_template",
+        /// Invoke one Advisor consultation against an epic.
+        ///
+        /// The epic is the aggregate. The consultation's own id is minted by this
+        /// command, so a receipt could not name it before it existed — and the
+        /// epic is what the ASW is placed inside and what a later reader looks
+        /// the consultation up from.
+        InvokeAdvisorRun => "invoke_advisor_run",
+        /// Record one Advisor's output, or one disposition about it.
+        ///
+        /// The epic again: a consultation is not a Task or a TeamRun, and the
+        /// aggregate a reader can reach it from is the epic it advises.
+        SettleAdvisorRun => "settle_advisor_run",
         /// Open one ad-hoc Quick session under the project's session base.
         ///
         /// The project is the aggregate. A Quick session creates no MiniProject
@@ -436,6 +448,13 @@ impl CommandKind {
             Self::PromoteQuickSession
             | Self::MaterializeCoreTeam
             | Self::UpgradeEpicRoster => witness(matches!(target, A::MiniProject)),
+            // The epic a consultation advises. A consultation is not delivery
+            // work: it is not a Task and not a TeamRun, so neither of those is a
+            // legal target, and an epic is the one aggregate a reader can reach
+            // the advice from.
+            Self::InvokeAdvisorRun | Self::SettleAdvisorRun => {
+                witness(matches!(target, A::MiniProject))
+            }
         }
     }
 
