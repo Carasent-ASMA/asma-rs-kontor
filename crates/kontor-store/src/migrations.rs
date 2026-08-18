@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 38;
+pub const SCHEMA_VERSION: i64 = 39;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -179,6 +179,7 @@ const MIGRATIONS: &[&str] = &[
     // is declared at all. The final rebuild carries the union of both merged
     // lineages and restores the receipt immutability triggers.
     include_str!("../migrations/0038_publish_trigger_command.sql"),
+    include_str!("../migrations/0039_committee_remediation.sql"),
 ];
 
 const _: () = assert!(
@@ -334,7 +335,8 @@ fn apply_pending(
     // at v35, `publish_trigger`) but no consultation profiles. Recognize that
     // durable shape rather than interpreting its number as the canonical one.
     // Its escalation objects are already present, so the convergence installs
-    // the consultation generations and then the union receipt rebuild at v38.
+    // the consultation generations, the union receipt rebuild, and every later
+    // append-only migration.
     let operational_hardening_lineage = matches!(version, 34 | 35)
         && !table_exists(&transaction, "consultation_profile_revisions")?;
     if operational_hardening_lineage {
@@ -343,6 +345,7 @@ fn apply_pending(
             MIGRATIONS[34],
             MIGRATIONS[35],
             MIGRATIONS[37],
+            MIGRATIONS[38],
         ] {
             transaction.execute_batch(migration)?;
         }

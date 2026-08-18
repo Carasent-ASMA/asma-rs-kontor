@@ -16176,6 +16176,77 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .signed_as(world, "observer")
         .send(world)
         .await;
+
+    // Advisor is a composed service too: publish, invoke, settle, and read the
+    // immutable output back through the public API.
+    let mut advisor = advisor_definition(ADVISOR_PROFILE, 1);
+    advisor["allowed_caller_roles"] = serde_json::json!(["lsa"]);
+    let advisor_preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(advisor_preview.status, 200, "{}", advisor_preview.body);
+    let advisor_applied = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor,
+            "preview_hash": advisor_preview.json()["preview_hash"],
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("advisor-profile-apply")
+    .send(world)
+    .await;
+    assert_eq!(advisor_applied.status, 200, "{}", advisor_applied.body);
+    let advisor_invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+        &serde_json::json!({
+            "profile": {"id": ADVISOR_PROFILE, "version": 1},
+            "question": "What is the safest bounded operational decision?",
+            "caller_seat_binding_id": caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("advisor-invoke")
+    .send(world)
+    .await;
+    assert_eq!(advisor_invoked.status, 200, "{}", advisor_invoked.body);
+    assert_eq!(advisor_invoked.json()["state"], "running");
+    let advisor_run = advisor_invoked.json()["advisor_run_id"]
+        .as_str()
+        .expect("Advisor run")
+        .to_owned();
+    let advisor_seat = advisor_invoked.json()["seats"][0]["seat_binding_id"]
+        .as_str()
+        .expect("Advisor seat")
+        .to_owned();
+    let advisor_settled = Call::post(
+        format!("/v1/projects/{project}/advisor-runs/{advisor_run}/settle"),
+        &serde_json::json!({
+            "seat_binding_id": advisor_seat,
+            "output": "Use the bounded control-plane path and preserve identities.",
+            "disposition": "accepted",
+            "rationale": "It matches the operational policy.",
+            "expected_revision": advisor_invoked.json()["receipt"]["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("advisor-settle")
+    .send(world)
+    .await;
+    assert_eq!(advisor_settled.status, 200, "{}", advisor_settled.body);
+    assert_eq!(advisor_settled.json()["state"], "settled");
+    let advisor_read = Call::get(format!("/v1/projects/{project}/advisor-runs/{advisor_run}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(advisor_read.status, 200, "{}", advisor_read.body);
+    assert_eq!(advisor_read.json()["result"]["disposition"], "accepted");
     let invoke_body = serde_json::json!({
         "profile": {
             "id": "01991c00-0000-7000-8000-000000000001",
@@ -16224,6 +16295,10 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .iter()
         .find(|seat| seat["role_slot_id"] == "judge")
         .expect("a Judge seat");
+    let judge_id = judge["seat_binding_id"]
+        .as_str()
+        .expect("Judge id")
+        .to_owned();
     assert!(
         judge["observed_binding"].is_null(),
         "Judge launched before findings"
@@ -16232,20 +16307,120 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     let mut revision = invoked.json()["receipt"]["revision"]
         .as_u64()
         .expect("run revision");
+
+    // A shared operator bearer proves authority but not seat identity.
+    let unscoped = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+        &serde_json::json!({
+            "round": 1,
+            "verdict": "compliant",
+            "evidence_complete": true,
+            "rationale": "an operator cannot speak as a reviewer",
+            "evidence_refs": ["evidence:operator"],
+            "expected_revision": revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-unscoped-finding")
+    .send(world)
+    .await;
+    assert_eq!(unscoped.status, 403, "{}", unscoped.body);
+
+    // A correctly signed but foreign binding is still not a Committee seat.
+    let foreign_binding = SeatBindingId::generate();
+    let foreign = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+        &serde_json::json!({
+            "round": 1,
+            "verdict": "compliant",
+            "evidence_complete": true,
+            "rationale": "foreign seat",
+            "evidence_refs": ["evidence:foreign"],
+            "expected_revision": revision,
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(foreign_binding),
+    )
+    .with_key("committee-foreign-finding")
+    .send(world)
+    .await;
+    assert_eq!(foreign.status, 403, "{}", foreign.body);
+
+    // The Judge cannot aggregate before both independent findings are durable.
+    let premature_judge = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+        &serde_json::json!({
+            "round": 1,
+            "verdict": "compliant",
+            "evidence_complete": true,
+            "rationale": "too early",
+            "evidence_refs": ["evidence:premature"],
+            "expected_revision": revision,
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(&judge_id).expect("the Judge SeatBinding"),
+            ),
+    )
+    .with_key("committee-premature-judge")
+    .send(world)
+    .await;
+    assert_eq!(premature_judge.status, 409, "{}", premature_judge.body);
+
+    let incomplete = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+        &serde_json::json!({
+            "round": 1,
+            "verdict": "compliant",
+            "evidence_complete": true,
+            "rationale": "missing evidence reference",
+            "evidence_refs": [],
+            "expected_revision": revision,
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(&reviewer_ids[0]).expect("a reviewer SeatBinding"),
+            ),
+    )
+    .with_key("committee-incomplete-evidence")
+    .send(world)
+    .await;
+    assert_eq!(incomplete.status, 400, "{}", incomplete.body);
     for (index, reviewer) in reviewer_ids.iter().enumerate() {
+        let seat_token = world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(reviewer).expect("a reviewer SeatBinding"),
+            );
         let recorded = Call::post(
             format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
             &serde_json::json!({
-                "seat_binding_id": reviewer,
                 "round": 1,
-                "verdict": "compliant",
+                "verdict": if index == 0 { "compliant" } else { "non_compliant" },
                 "evidence_complete": true,
                 "rationale": format!("reviewer {} found the evidence complete", index + 1),
                 "evidence_refs": [format!("evidence:reviewer-{}", index + 1)],
                 "expected_revision": revision,
             }),
         )
-        .signed_as(world, "operator")
+        .with_token(seat_token)
         .with_key(format!("committee-reviewer-{}", index + 1))
         .send(world)
         .await;
@@ -16267,27 +16442,50 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             );
         }
     }
-    let judge_id = invoked.json()["seats"]
-        .as_array()
-        .expect("seats")
-        .iter()
-        .find(|seat| seat["role_slot_id"] == "judge")
-        .and_then(|seat| seat["seat_binding_id"].as_str())
-        .expect("Judge id")
-        .to_owned();
-    let judged = Call::post(
+    let contradictory = Call::post(
         format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
         &serde_json::json!({
-            "seat_binding_id": judge_id,
             "round": 1,
             "verdict": "compliant",
             "evidence_complete": true,
-            "rationale": "The conjunctive rule passes on both findings.",
+            "rationale": "contradicts the non-compliant conjunction",
             "evidence_refs": ["evidence:reviewer-1", "evidence:reviewer-2"],
             "expected_revision": revision,
         }),
     )
-    .signed_as(world, "operator")
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(&judge_id).expect("the Judge SeatBinding"),
+            ),
+    )
+    .with_key("committee-contradictory-judge")
+    .send(world)
+    .await;
+    assert_eq!(contradictory.status, 400, "{}", contradictory.body);
+    let judged = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+        &serde_json::json!({
+            "round": 1,
+            "verdict": "non_compliant",
+            "evidence_complete": true,
+            "rationale": "The conjunctive rule fails on one independent finding.",
+            "evidence_refs": ["evidence:reviewer-1", "evidence:reviewer-2"],
+            "expected_revision": revision,
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(&judge_id).expect("the Judge SeatBinding"),
+            ),
+    )
     .with_key("committee-judge")
     .send(world)
     .await;
@@ -16295,13 +16493,99 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     revision = judged.json()["receipt"]["revision"]
         .as_u64()
         .expect("run revision");
+    let first_round_read = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(first_round_read.status, 200, "{}", first_round_read.body);
+    assert_eq!(
+        first_round_read.json()["findings"].as_array().map(Vec::len),
+        Some(3)
+    );
+
+    let remediating = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/settle"),
+        &serde_json::json!({
+            "recommendation": "Re-run the gate after correcting the missing evidence.",
+            "tried_path": "Round one identified the missing operational receipt.",
+            "expected_revision": revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-remediate")
+    .send(world)
+    .await;
+    assert_eq!(remediating.status, 200, "{}", remediating.body);
+    assert_eq!(remediating.json()["state"], "running");
+    assert_eq!(remediating.json()["round"], 2);
+    assert_eq!(remediating.json()["remediation"]["from_round"], 1);
+    revision = remediating.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("round-two revision");
+
+    for (index, reviewer) in reviewer_ids.iter().enumerate() {
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+            &serde_json::json!({
+                "round": 2,
+                "verdict": "compliant",
+                "evidence_complete": true,
+                "rationale": format!("round-two reviewer {} found the remediation complete", index + 1),
+                "evidence_refs": [format!("evidence:round-two-reviewer-{}", index + 1)],
+                "expected_revision": revision,
+            }),
+        )
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .consultation_seat_credential(
+                    SeatBindingId::parse(reviewer).expect("a reviewer SeatBinding"),
+                ),
+        )
+        .with_key(format!("committee-round-two-reviewer-{}", index + 1))
+        .send(world)
+        .await;
+        assert_eq!(recorded.status, 200, "{}", recorded.body);
+        revision = recorded.json()["receipt"]["revision"]
+            .as_u64()
+            .expect("round-two revision");
+    }
+    let round_two_judged = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+        &serde_json::json!({
+            "round": 2,
+            "verdict": "compliant",
+            "evidence_complete": true,
+            "rationale": "The bounded re-review now passes conjunctively.",
+            "evidence_refs": ["evidence:round-two-reviewer-1", "evidence:round-two-reviewer-2"],
+            "expected_revision": revision,
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(&judge_id).expect("the Judge SeatBinding"),
+            ),
+    )
+    .with_key("committee-round-two-judge")
+    .send(world)
+    .await;
+    assert_eq!(round_two_judged.status, 200, "{}", round_two_judged.body);
+    revision = round_two_judged.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("round-two Judge revision");
 
     let settled = Call::post(
         format!("/v1/projects/{project}/committee-runs/{run}/settle"),
         &serde_json::json!({"expected_revision": revision}),
     )
     .signed_as(world, "operator")
-    .with_key("committee-settle")
+    .with_key("committee-settle-round-two")
     .send(world)
     .await;
     assert_eq!(settled.status, 200, "{}", settled.body);
@@ -16320,7 +16604,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         Vec::new(),
     )
     .expect("completion starts");
-    completion.phase = kontor_scheduler::CompletionPhase::Verdict(1);
+    completion.phase = kontor_scheduler::CompletionPhase::Verdict(2);
     let project_id = ProjectId::parse(project).expect("project id");
     let epic_id = MiniProjectId::parse(&epic).expect("epic id");
     world.daemon.state().with_store(|store| {
@@ -16367,7 +16651,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .iter()
             .filter(|call| matches!(call, AdapterCall::LaunchConsultation(_)))
             .count(),
-        3,
+        4,
         "a replay launched another native Committee seat"
     );
 }

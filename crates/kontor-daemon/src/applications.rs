@@ -50,17 +50,17 @@ use kontor_api::applications::{
 };
 use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CloseoutEvidenceDto,
-    CloseoutRequirementDto, CommitteeRunDto, CommitteeVerdictDto, CompletionBlockerDto,
-    CompletionOutcomeDto, CompletionPhaseDto, CompletionRoundDto, CompletionStateDto,
-    CompletionWakeDto, ConsultationSeatDto, ConsultationVerdictDto, CoreTeamApplyRequest,
-    CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamOutcomeDto, CoreTeamPreviewDto,
-    CoreTeamPreviewRequest, CoreTeamSeatDto, CoreTeamSeatSelectionDto, DeliberationStepDto,
-    EnsureQuickSessionRequest, IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto,
-    ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
-    ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
-    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RemediateCompletionRequest,
-    RemediationActionDto, RepositoryOutcomeDto, RosterUpgradePreviewDto,
-    RosterUpgradePreviewRequest, SettleConsultationRequest,
+    CloseoutRequirementDto, CommitteeFindingDto, CommitteeRunDto, CommitteeVerdictDto,
+    CompletionBlockerDto, CompletionOutcomeDto, CompletionPhaseDto, CompletionRoundDto,
+    CompletionStateDto, CompletionWakeDto, ConsultationSeatDto, ConsultationVerdictDto,
+    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamOutcomeDto,
+    CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamSeatDto, CoreTeamSeatSelectionDto,
+    DeliberationStepDto, EnsureQuickSessionRequest, IntegrationRecordDto,
+    InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest, ProfileCatalogDto,
+    ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto,
+    PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
+    RecordFindingsRequest, RemediateCompletionRequest, RemediationActionDto, RepositoryOutcomeDto,
+    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
     AppliedContainerRetitleDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
@@ -101,7 +101,7 @@ use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
     ExecutionAuthorizationId, ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId,
-    MiniProjectId, ModuleKey, Money, ProjectId, QuickSessionId, RoleCatalogId, RoleCode,
+    MiniProjectId, ModuleKey, Money, ProjectId, QuickSessionId, RoleCatalogId, RoleCode, RoleKey,
     RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId,
     SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId,
     TopologySpecId, TriggerKey,
@@ -143,14 +143,17 @@ use kontor_profiles::pack::{
     OperationalDomainPack, PackAvailability, PackCategoryKey, ProfilePackSpec,
     ResolvedProfileBundle, parse_pack, resolve_profile, validate_pack,
 };
-use kontor_runtime::adapter::{ConsultationLaunchRequest, RuntimeAdapter, RuntimeError};
+use kontor_runtime::adapter::{
+    ConsultationCredential, ConsultationLaunchRequest, ConsultationMessageRequest, RuntimeAdapter,
+    RuntimeError,
+};
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
     ContainerRequest, RetitleContainerRequest,
 };
-use kontor_runtime::request::{LaunchParts, LaunchPlacement};
+use kontor_runtime::request::{LaunchParts, LaunchPlacement, MessageId};
 use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
@@ -4231,6 +4234,114 @@ impl Services {
             })
     }
 
+    /// Resolve and revalidate the immutable Advisor profile a run pins.
+    fn advisor_profile(
+        &self,
+        run: &StoredConsultationRun,
+    ) -> Result<(StoredConsultationProfileRevision, AdvisorProfileSpec), ApiError> {
+        if run.id.family() != ConsultationFamily::Advisor {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "this operation requires an Advisor run",
+            ));
+        }
+        let stored = self
+            .stored_consultation_profiles(run.project_id, ConsultationFamily::Advisor)?
+            .into_iter()
+            .find(|revision| {
+                revision.profile_id == run.profile_id
+                    && revision.version == run.profile_version
+                    && revision.definition_hash == run.definition_hash
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the Advisor run's pinned profile revision is unavailable",
+                )
+            })?;
+        let profile: AdvisorProfileSpec =
+            serde_json::from_str(&stored.definition).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the stored Advisor profile cannot be read by this build",
+                )
+            })?;
+        profile
+            .validate()
+            .map_err(|error| self.refuse_domain(&error))?;
+        Ok((stored, profile))
+    }
+
+    /// Prove that the exact active epic seat may invoke this policy at scope.
+    fn authorize_consultation_caller(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &InvokeConsultationRequest,
+        allowed_scopes: &[ConsultationScope],
+        allowed_roles: &[RoleKey],
+    ) -> Result<kontor_core::state::SeatBinding, ApiError> {
+        let state = self.state()?;
+        if let Some(task_id) = request.task_id {
+            let task = self.task_row(project_id, task_id)?;
+            if task.mini_project_id != Some(epic_id) {
+                return Err(self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the requested ticket does not belong to this epic",
+                ));
+            }
+            if !allowed_scopes.contains(&ConsultationScope::Ticket) {
+                return Err(self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the pinned consultation policy does not permit ticket scope",
+                ));
+            }
+        } else if !allowed_scopes.contains(&ConsultationScope::Epic) {
+            return Err(self.deny(
+                ApiErrorCode::Forbidden,
+                "the pinned consultation policy does not permit epic scope",
+            ));
+        }
+        let seat = state
+            .with_store(|store| store.get_seat_binding(project_id, request.caller_seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|seat| seat.is_non_terminal() && !seat.closes_children())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the caller SeatBinding is not active",
+                )
+            })?;
+        let node = state
+            .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|node| node.mini_project_id == Some(epic_id))
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the caller SeatBinding does not belong to this epic",
+                )
+            })?;
+        if node.lifecycle != TopologyLifecycle::Active {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the caller SeatBinding's topology node is not active",
+            ));
+        }
+        let slot_role = seat.role_slot_id.as_role_key().as_str();
+        let catalog_role = seat.role.role_code.as_str();
+        if !allowed_roles.iter().any(|allowed| {
+            allowed.as_str().eq_ignore_ascii_case(slot_role)
+                || allowed.as_str().eq_ignore_ascii_case(catalog_role)
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::Forbidden,
+                "the caller SeatBinding's role may not invoke this consultation",
+            ));
+        }
+        Ok(seat)
+    }
+
     /// Resolve and revalidate the immutable Committee template a run pins.
     fn committee_template(
         &self,
@@ -4336,6 +4447,301 @@ impl Services {
             ));
         }
         Ok(seat)
+    }
+
+    /// Freeze one Advisor and its sole logical seat before the native effect.
+    #[allow(clippy::too_many_arguments)]
+    fn freeze_advisor_run(
+        &self,
+        key: &IdempotencyKey,
+        intent: &CanonicalDocument,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &InvokeConsultationRequest,
+        revision: &StoredConsultationProfileRevision,
+        profile: &AdvisorProfileSpec,
+        caller: &kontor_core::state::SeatBinding,
+    ) -> Result<StoredConsultationRun, ApiError> {
+        let state = self.state()?;
+        let topology = self.project_topology(project_id)?;
+        let epic_node = self.ensure_scope_chain(
+            project_id,
+            &TopologyScope {
+                node_id: None,
+                kind: Some(self.domain.delivery.epic_kind.clone()),
+                epic_id: Some(epic_id),
+                task_id: None,
+                key: format!("epic:{epic_id}"),
+            },
+        )?;
+        let now = kontor_api::now();
+        let run_id = AdvisorRunId::generate();
+        let node_id = TopologyNodeId::generate();
+        let question_hash = ContentHash::of(request.question.as_str().as_bytes());
+        let context = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "realm_id": state.realm_id().to_string(),
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "task_id": request.task_id.map(|id| id.to_string()),
+            "caller_seat_binding_id": caller.id.to_string(),
+            "profile_id": revision.profile_id,
+            "profile_version": revision.version.get(),
+            "profile_hash": revision.definition_hash.as_str(),
+            "question_hash": question_hash.as_str(),
+        }))?;
+        let run = StoredConsultationRun {
+            id: ConsultationRunId::Advisor(run_id),
+            project_id,
+            mini_project_id: epic_id,
+            profile_id: revision.profile_id.clone(),
+            profile_version: revision.version,
+            definition_hash: revision.definition_hash.clone(),
+            question: request.question.clone(),
+            question_hash,
+            context: serde_json::from_str(context.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the frozen Advisor context could not be decoded",
+                )
+            })?,
+            context_hash: context.hash().clone(),
+            caller_seat_binding_id: caller.id,
+            topology_node_id: node_id,
+            invoke_key: key.clone(),
+            invoke_intent_hash: intent.hash().clone(),
+            state: ConsultationRunState::Materializing,
+            round: 1,
+            result: None,
+            result_hash: None,
+            revision: AggregateRevision::INITIAL,
+            created_at: now,
+            updated_at: now,
+            settled_at: None,
+        };
+        let node = NewSessionTopologyNode {
+            id: node_id,
+            project_id,
+            mini_project_id: Some(epic_id),
+            topology,
+            kind: self.domain.delivery.advisor_kind.clone(),
+            parent_id: Some(epic_node.id),
+            task_id: request.task_id,
+            created_at: now,
+        };
+        let logical_role = RoleKey::parse("advisor").map_err(|error| self.refuse_domain(&error))?;
+        let role_slot_id =
+            RoleSlotId::parse("advisor").map_err(|error| self.refuse_domain(&error))?;
+        let role_code = self
+            .domain
+            .delivery
+            .role_code(&logical_role)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the delivery binding has no Advisor role",
+                )
+            })?;
+        let seat_binding_id = SeatBindingId::generate();
+        let deadline = now
+            .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
+            .unwrap_or(now);
+        let seat = StoredConsultationSeat {
+            run_id: run.id,
+            role_slot_id: role_slot_id.clone(),
+            committee_role: None,
+            logical_role,
+            seat_binding_id,
+            model_rung: profile.models.rungs.first().cloned().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Advisor profile has no model route",
+                )
+            })?,
+            native_identity: None,
+            provider_session_id: None,
+            observed_at: None,
+        };
+        let binding = NewSeatBinding {
+            id: seat_binding_id,
+            project_id,
+            topology_node_id: node_id,
+            role_slot_id,
+            role: self.catalog_role_for_code(role_code)?,
+            task_id: request.task_id,
+            team_run_id: None,
+            attach_deadline: deadline,
+            parent_seat_binding_id: Some(caller.id),
+            created_at: now,
+        };
+        state
+            .with_store(|store| store.create_consultation_run(&run, &node, &[(&seat, &binding)]))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(run)
+    }
+
+    /// Launch or exact-label recover the one Advisor seat.
+    async fn materialize_advisor_seat(
+        &self,
+        run: &StoredConsultationRun,
+        profile: &AdvisorProfileSpec,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let project = self.project_row(run.project_id)?;
+        let node = state
+            .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Advisor topology node is missing",
+                )
+            })?;
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime selected for Advisor placement is not configured",
+            )
+        })?;
+        let cwd = WorkspaceRoot::parse(project.root_path.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let container = self
+            .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
+            .await?;
+        let capabilities = adapter
+            .discover_capabilities()
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let context_policy = ContextPolicySnapshot::standard(
+            &capabilities.limits.context_window,
+            capabilities.supports(RuntimeCapability::ContextPolicy),
+            SCHEMA_VERSION,
+            kontor_api::now(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        let mut seats = state
+            .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        let seat = seats.first_mut().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the Advisor run has no frozen seat",
+            )
+        })?;
+        if seat.native_identity.is_some() {
+            return Ok(());
+        }
+        let seat_credential = state
+            .credentials()
+            .consultation_seat_credential(seat.seat_binding_id);
+        let prompt = BoundedText::parse(&format!(
+            "Read-only Advisor seat. You may inspect evidence but must not mutate code, Jira, topology, scheduling, or runtime state. Expertise: {} Behavior: {} Question: {} Output requirements: {} Submit only this seat's immutable output using the KONTOR_AUTH environment value. It is valid only for SeatBinding {} and must not be disclosed.",
+            profile.expertise.as_str(),
+            profile.behavior.as_str(),
+            run.question.as_str(),
+            profile.output_requirements.as_str(),
+            seat.seat_binding_id,
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        let display_name = ExternalName::parse(&format!("Advisor · {}", run.id.as_text()))
+            .map_err(|error| self.refuse_domain(&error))?;
+        let outcome = adapter
+            .launch_consultation(&ConsultationLaunchRequest {
+                run_id: run.id,
+                seat_binding_id: seat.seat_binding_id,
+                role_slot_id: seat.role_slot_id.clone(),
+                display_name,
+                container,
+                cwd,
+                prompt,
+                credential: ConsultationCredential::new(seat_credential),
+                model_rung: seat.model_rung.clone(),
+                context_policy,
+                requested_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        seat.native_identity = Some(outcome.identity);
+        seat.provider_session_id = outcome.provider_session_id;
+        seat.observed_at = Some(outcome.observed_at);
+        state
+            .with_store(|store| store.bind_consultation_seat(run.project_id, seat))
+            .map_err(|error| self.refuse(&error))?;
+        state
+            .with_store(|store| {
+                store.observe_seat_binding(
+                    run.project_id,
+                    seat.seat_binding_id,
+                    &SeatLivenessObservation {
+                        attached_at: Some(outcome.observed_at),
+                        runtime_reported: Some(kontor_core::state::ObservedRunState::Running),
+                        ..SeatLivenessObservation::default()
+                    },
+                    outcome.observed_at,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
+    /// Stable wire projection of one Advisor run.
+    fn advisor_run_dto(
+        &self,
+        run: &StoredConsultationRun,
+        receipt_id: Option<CommandReceiptId>,
+        applied: AppliedDto,
+    ) -> Result<AdvisorRunDto, ApiError> {
+        let state = self.state()?;
+        let (revision, _) = self.advisor_profile(run)?;
+        let seats = state
+            .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        let advisor_run_id = match run.id {
+            ConsultationRunId::Advisor(id) => id,
+            ConsultationRunId::Committee(_) => {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "this projection requires an Advisor run",
+                ));
+            }
+        };
+        let receipt = receipt_id
+            .map(|receipt_id| {
+                Ok(MutationReceiptDto {
+                    realm_id: state.realm_id(),
+                    receipt_id: receipt_id.to_string(),
+                    applied,
+                    revision: run.revision,
+                    snapshot_cursor: self.cursor()?,
+                })
+            })
+            .transpose()?;
+        Ok(AdvisorRunDto {
+            realm_id: state.realm_id(),
+            advisor_run_id,
+            epic_id: run.mini_project_id,
+            profile: consultation_revision_dto(&revision),
+            topology_node_id: run.topology_node_id,
+            seats: seats
+                .into_iter()
+                .map(|seat| ConsultationSeatDto {
+                    role_slot_id: seat.role_slot_id.as_str().to_owned(),
+                    logical_role: seat.logical_role.as_str().to_owned(),
+                    seat_binding_id: seat.seat_binding_id,
+                    observed_binding: seat.native_identity.map(|identity| ObservedBindingDto {
+                        runtime_kind: identity.runtime_kind,
+                        native_id: identity.native_id,
+                        native_name: None,
+                        cwd: None,
+                        observed_at: seat.observed_at.unwrap_or(run.updated_at),
+                    }),
+                })
+                .collect(),
+            state: run.state.as_str().to_owned(),
+            result: run.result.clone(),
+            receipt,
+        })
     }
 
     /// Freeze a new Committee and every logical seat before the first native effect.
@@ -4569,14 +4975,20 @@ impl Services {
             } else {
                 "[]".to_owned()
             };
+            let seat_credential = state
+                .credentials()
+                .consultation_seat_credential(seat.seat_binding_id);
             let prompt = BoundedText::parse(&format!(
                 "Read-only Committee seat. You may inspect evidence but must not mutate code, \
                  Jira, topology, scheduling, or runtime state. Charter: {} Role instructions: {} \
-                 Question: {} Durable reviewer findings available to this seat: {}",
+                 Question: {} Durable reviewer findings available to this seat: {} \
+                 Submit this seat's own finding using the KONTOR_AUTH environment value. \
+                 It is valid only for SeatBinding {} and must not be disclosed.",
                 template.charter.as_str(),
                 slot.behavior.as_str(),
                 run.question.as_str(),
                 evidence,
+                seat.seat_binding_id,
             ))
             .map_err(|error| self.refuse_domain(&error))?;
             let display_name =
@@ -4591,6 +5003,7 @@ impl Services {
                     container: container.clone(),
                     cwd: cwd.clone(),
                     prompt,
+                    credential: ConsultationCredential::new(seat_credential),
                     model_rung: seat.model_rung.clone(),
                     context_policy: context_policy.clone(),
                     requested_at: kontor_api::now(),
@@ -4621,11 +5034,115 @@ impl Services {
         Ok(())
     }
 
+    /// Re-engage the same native Committee seats for the bounded second round.
+    async fn dispatch_committee_round_two(
+        &self,
+        run: &StoredConsultationRun,
+        template: &CommitteeTemplateSpec,
+        judge_only: bool,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime selected for Committee re-review is not configured",
+            )
+        })?;
+        let remediation = state
+            .with_store(|store| {
+                store.get_committee_remediation(
+                    run.project_id,
+                    match run.id {
+                        ConsultationRunId::Committee(id) => id,
+                        ConsultationRunId::Advisor(_) => unreachable!(),
+                    },
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "round two has no durable remediation brief",
+                )
+            })?;
+        let findings = if judge_only {
+            state
+                .with_store(|store| {
+                    store.list_committee_findings(
+                        run.project_id,
+                        match run.id {
+                            ConsultationRunId::Committee(id) => id,
+                            ConsultationRunId::Advisor(_) => unreachable!(),
+                        },
+                        run.round,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+        } else {
+            Vec::new()
+        };
+        let seats = state
+            .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        for seat in seats {
+            let role = seat.committee_role.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "a Committee seat has no frozen role",
+                )
+            })?;
+            if (judge_only && role != CommitteeRole::Judge)
+                || (!judge_only && role != CommitteeRole::Reviewer)
+            {
+                continue;
+            }
+            let identity = seat.native_identity.clone().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "a Committee re-review seat has no attested native session",
+                )
+            })?;
+            let slot = template
+                .slots
+                .iter()
+                .find(|slot| slot.id == seat.role_slot_id)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "a Committee re-review seat is absent from its pinned template",
+                    )
+                })?;
+            let body = BoundedText::parse(&format!(
+                "Read-only Committee round {} re-review. Do not mutate code, Jira, topology, scheduling, or runtime state. Role instructions: {} Question: {} Durable remediation brief: {} Durable reviewer findings available to this seat: {} Submit this seat's finding using the existing KONTOR_AUTH environment value.",
+                run.round,
+                slot.behavior.as_str(),
+                run.question.as_str(),
+                remediation,
+                serde_json::to_string(&findings.iter().map(|finding| &finding.document).collect::<Vec<_>>())
+                    .map_err(|_| self.deny(ApiErrorCode::Unavailable, "round-two findings could not be encoded"))?,
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            adapter
+                .message_consultation(&ConsultationMessageRequest {
+                    run_id: run.id,
+                    seat_binding_id: seat.seat_binding_id,
+                    identity,
+                    message_id: MessageId::generate(),
+                    body,
+                    sent_at: kontor_api::now(),
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        }
+        Ok(())
+    }
+
     /// Stable wire projection of one Committee run and its durable evidence.
     fn committee_run_dto(
         &self,
         run: &StoredConsultationRun,
-        receipt_id: CommandReceiptId,
+        receipt_id: Option<CommandReceiptId>,
         applied: AppliedDto,
     ) -> Result<CommitteeRunDto, ApiError> {
         let state = self.state()?;
@@ -4647,6 +5164,9 @@ impl Services {
                 store.list_committee_findings(run.project_id, committee_run_id, run.round)
             })
             .map_err(|error| self.refuse(&error))?;
+        let remediation = state
+            .with_store(|store| store.get_committee_remediation(run.project_id, committee_run_id))
+            .map_err(|error| self.refuse(&error))?;
         let outcome = run
             .result
             .as_ref()
@@ -4656,6 +5176,17 @@ impl Services {
                 Ok(ConsultationVerdict::Compliant) => Ok(ConsultationVerdictDto::Compliant),
                 Ok(ConsultationVerdict::NonCompliant) => Ok(ConsultationVerdictDto::NonCompliant),
                 Err(error) => Err(self.refuse_domain(&error)),
+            })
+            .transpose()?;
+        let receipt = receipt_id
+            .map(|receipt_id| {
+                Ok(MutationReceiptDto {
+                    realm_id: state.realm_id(),
+                    receipt_id: receipt_id.to_string(),
+                    applied,
+                    revision: run.revision,
+                    snapshot_cursor: self.cursor()?,
+                })
             })
             .transpose()?;
         Ok(CommitteeRunDto {
@@ -4683,13 +5214,38 @@ impl Services {
             findings_recorded: u32::try_from(findings.len()).unwrap_or(u32::MAX),
             round: run.round,
             outcome,
-            receipt: MutationReceiptDto {
-                realm_id: state.realm_id(),
-                receipt_id: receipt_id.to_string(),
-                applied,
-                revision: run.revision,
-                snapshot_cursor: self.cursor()?,
-            },
+            findings: findings
+                .iter()
+                .map(|finding| CommitteeFindingDto {
+                    round: finding.round,
+                    role_slot_id: finding.role_slot_id.as_str().to_owned(),
+                    role: finding.role.as_str().to_owned(),
+                    verdict: match finding.verdict {
+                        ConsultationVerdict::Compliant => ConsultationVerdictDto::Compliant,
+                        ConsultationVerdict::NonCompliant => ConsultationVerdictDto::NonCompliant,
+                    },
+                    evidence_complete: finding.evidence_complete,
+                    rationale: finding
+                        .document
+                        .get("rationale")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    evidence_refs: finding
+                        .document
+                        .get("evidence_refs")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                    document_hash: finding.document_hash.clone(),
+                })
+                .collect(),
+            remediation,
+            result: run.result.clone(),
+            receipt,
         })
     }
 }
@@ -8861,27 +9417,279 @@ impl ApplicationOperations for Services {
     }
     async fn invoke_advisor_run(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _epic_id: MiniProjectId,
-        _request: &InvokeConsultationRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &InvokeConsultationRequest,
     ) -> Result<AdvisorRunDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Advisor service is not composed in this build",
-        ))
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "invoke_advisor_run",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "profile": [request.profile.id.as_str(), request.profile.version.get()],
+            "question": request.question.as_str(),
+            "caller_seat_binding_id": request.caller_seat_binding_id.to_string(),
+            "task_id": request.task_id.map(|id| id.to_string()),
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            let run = self
+                .state()?
+                .with_store(|store| store.get_consultation_run_by_key(project_id, key))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the invocation receipt has no durable Advisor run",
+                    )
+                })?;
+            return self.advisor_run_dto(&run, Some(receipt.id), AppliedDto::Unchanged);
+        }
+        let run = if let Some(existing) = self
+            .state()?
+            .with_store(|store| store.get_consultation_run_by_key(project_id, key))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if existing.id.family() != ConsultationFamily::Advisor
+                || existing.mini_project_id != epic_id
+                || existing.invoke_intent_hash != *intent.hash()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key was already used for a different consultation",
+                ));
+            }
+            existing
+        } else {
+            let epic = self.epic_row(project_id, epic_id)?;
+            if epic.revision != request.expected_revision {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the epic moved since the Advisor invocation was prepared",
+                    )
+                    .with_revision(Some(epic.revision)));
+            }
+            let revision = self
+                .stored_consultation_profiles(project_id, ConsultationFamily::Advisor)?
+                .into_iter()
+                .find(|revision| {
+                    revision.profile_id == request.profile.id
+                        && revision.version == request.profile.version
+                })
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "no such Advisor profile revision is published in this project",
+                    )
+                })?;
+            let profile: AdvisorProfileSpec =
+                serde_json::from_str(&revision.definition).map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the stored Advisor profile cannot be read by this build",
+                    )
+                })?;
+            profile
+                .validate()
+                .map_err(|error| self.refuse_domain(&error))?;
+            let spent = self
+                .state()?
+                .with_store(|store| {
+                    store.list_consultation_runs(project_id, epic_id, ConsultationFamily::Advisor)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .filter(|run| run.profile_id == revision.profile_id)
+                .count();
+            if spent >= usize::try_from(profile.max_consultations).unwrap_or(usize::MAX) {
+                return Err(self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the pinned Advisor profile's per-epic consultation budget is exhausted",
+                ));
+            }
+            let caller = self.authorize_consultation_caller(
+                project_id,
+                epic_id,
+                request,
+                &profile.allowed_scopes,
+                &profile.allowed_caller_roles,
+            )?;
+            self.freeze_advisor_run(
+                key, &intent, project_id, epic_id, request, &revision, &profile, &caller,
+            )?
+        };
+        let (_, profile) = self.advisor_profile(&run)?;
+        self.materialize_advisor_seat(&run, &profile).await?;
+        let run = if run.state == ConsultationRunState::Materializing {
+            self.state()?
+                .with_store(|store| {
+                    store.advance_consultation_run(
+                        project_id,
+                        run.id,
+                        run.revision,
+                        ConsultationRunState::Running,
+                        None,
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+        } else {
+            run
+        };
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::InvokeAdvisorRun,
+            target,
+            run.revision,
+            &intent,
+        )?;
+        self.advisor_run_dto(&run, Some(receipt_id), AppliedDto::Created)
     }
+
+    fn advisor_run(
+        &self,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+    ) -> Result<AdvisorRunDto, ApiError> {
+        let run = self.consultation_run(project_id, ConsultationRunId::Advisor(advisor_run_id))?;
+        self.advisor_run_dto(&run, None, AppliedDto::Unchanged)
+    }
+
     async fn settle_advisor_run(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _advisor_run_id: AdvisorRunId,
-        _request: &SettleConsultationRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+        request: &SettleConsultationRequest,
     ) -> Result<AdvisorRunDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Advisor service is not composed in this build",
-        ))
+        let run = self.consultation_run(project_id, ConsultationRunId::Advisor(advisor_run_id))?;
+        if request.recommendation.is_some() || request.tried_path.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "Committee remediation fields are not accepted on the Advisor route",
+            ));
+        }
+        let target = AggregateRef::MiniProject {
+            mini_project_id: run.mini_project_id,
+        };
+        let seat_binding_id = request.seat_binding_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "Advisor settlement requires its exact seat binding",
+            )
+        })?;
+        let output = request.output.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "Advisor settlement requires immutable output",
+            )
+        })?;
+        let disposition = request.disposition.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "Advisor settlement requires a disposition",
+            )
+        })?;
+        let rationale = request.rationale.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "Advisor settlement requires a disposition rationale",
+            )
+        })?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "settle_advisor_run",
+            "project": project_id.to_string(),
+            "advisor_run": advisor_run_id.to_string(),
+            "seat_binding_id": seat_binding_id.to_string(),
+            "output": output.as_str(),
+            "disposition": match disposition {
+                kontor_api::applications::AdviceDispositionDto::Accepted => "accepted",
+                kontor_api::applications::AdviceDispositionDto::PartiallyAccepted => "partially_accepted",
+                kontor_api::applications::AdviceDispositionDto::Rejected => "rejected",
+                kontor_api::applications::AdviceDispositionDto::Superseded => "superseded",
+            },
+            "rationale": rationale.as_str(),
+            "receipt_ids": request.receipt_ids,
+        }))?;
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            return self.advisor_run_dto(&run, Some(receipt.id), AppliedDto::Unchanged);
+        }
+        if run.state == ConsultationRunState::Settled {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "this Advisor was settled under another idempotency key",
+            ));
+        }
+        if run.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the Advisor run moved since the caller read it",
+                )
+                .with_revision(Some(run.revision)));
+        }
+        let seats = self
+            .state()?
+            .with_store(|store| store.list_consultation_seats(project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        let seat = seats
+            .iter()
+            .find(|seat| seat.seat_binding_id == seat_binding_id)
+            .filter(|seat| seat.native_identity.is_some())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the Advisor output does not come from its attested seat",
+                )
+            })?;
+        let result_document = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "seat_binding_id": seat.seat_binding_id.to_string(),
+            "output": output.as_str(),
+            "disposition": match disposition {
+                kontor_api::applications::AdviceDispositionDto::Accepted => "accepted",
+                kontor_api::applications::AdviceDispositionDto::PartiallyAccepted => "partially_accepted",
+                kontor_api::applications::AdviceDispositionDto::Rejected => "rejected",
+                kontor_api::applications::AdviceDispositionDto::Superseded => "superseded",
+            },
+            "rationale": rationale.as_str(),
+            "receipt_ids": request.receipt_ids,
+        }))?;
+        let result: serde_json::Value =
+            serde_json::from_str(result_document.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Advisor result could not be frozen",
+                )
+            })?;
+        let settled = self
+            .state()?
+            .with_store(|store| {
+                store.advance_consultation_run(
+                    project_id,
+                    run.id,
+                    run.revision,
+                    ConsultationRunState::Settled,
+                    Some((&result, result_document.hash())),
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::SettleAdvisorRun,
+            target,
+            settled.revision,
+            &intent,
+        )?;
+        self.advisor_run_dto(&settled, Some(receipt_id), AppliedDto::Created)
     }
     fn committee_templates(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
         self.consultation_catalog(project_id, ConsultationFamily::Committee)
@@ -8932,7 +9740,7 @@ impl ApplicationOperations for Services {
                         "the invocation receipt has no durable Committee run",
                     )
                 })?;
-            return self.committee_run_dto(&run, receipt.id, AppliedDto::Unchanged);
+            return self.committee_run_dto(&run, Some(receipt.id), AppliedDto::Unchanged);
         }
 
         let run = if let Some(existing) = self
@@ -9025,13 +9833,24 @@ impl ApplicationOperations for Services {
             run.revision,
             &intent,
         )?;
-        self.committee_run_dto(&run, receipt_id, AppliedDto::Created)
+        self.committee_run_dto(&run, Some(receipt_id), AppliedDto::Created)
+    }
+
+    fn committee_run(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+    ) -> Result<CommitteeRunDto, ApiError> {
+        let run =
+            self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+        self.committee_run_dto(&run, None, AppliedDto::Unchanged)
     }
     async fn record_committee_findings(
         &self,
         key: &IdempotencyKey,
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
         request: &RecordFindingsRequest,
     ) -> Result<CommitteeRunDto, ApiError> {
         let mut run =
@@ -9044,7 +9863,7 @@ impl ApplicationOperations for Services {
             "operation": "record_committee_findings",
             "project": project_id.to_string(),
             "committee_run": committee_run_id.to_string(),
-            "seat_binding_id": request.seat_binding_id.to_string(),
+            "seat_binding_id": seat_binding_id.to_string(),
             "round": request.round,
             "verdict": match request.verdict {
                 ConsultationVerdictDto::Compliant => "compliant",
@@ -9055,7 +9874,7 @@ impl ApplicationOperations for Services {
             "evidence_refs": request.evidence_refs,
         }))?;
         if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
-            return self.committee_run_dto(&run, receipt.id, AppliedDto::Unchanged);
+            return self.committee_run_dto(&run, Some(receipt.id), AppliedDto::Unchanged);
         }
         if run.state == ConsultationRunState::Settled
             || run.state == ConsultationRunState::NeedsHuman
@@ -9084,7 +9903,7 @@ impl ApplicationOperations for Services {
             .map_err(|error| self.refuse(&error))?;
         let seat = seats
             .iter()
-            .find(|seat| seat.seat_binding_id == request.seat_binding_id)
+            .find(|seat| seat.seat_binding_id == seat_binding_id)
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::Forbidden,
@@ -9214,6 +10033,10 @@ impl ApplicationOperations for Services {
         if reviewers_complete && template.judge_slot().is_some() {
             self.materialize_committee_seats(&run, &template, true)
                 .await?;
+            if run.round == 2 {
+                self.dispatch_committee_round_two(&run, &template, true)
+                    .await?;
+            }
         }
         let receipt_id = self.record(
             key,
@@ -9225,7 +10048,7 @@ impl ApplicationOperations for Services {
         )?;
         self.committee_run_dto(
             &run,
-            receipt_id,
+            Some(receipt_id),
             if inserted {
                 AppliedDto::Created
             } else {
@@ -9250,9 +10073,11 @@ impl ApplicationOperations for Services {
             "operation": "settle_committee_run",
             "project": project_id.to_string(),
             "committee_run": committee_run_id.to_string(),
+            "recommendation": request.recommendation.as_ref().map(BoundedText::as_str),
+            "tried_path": request.tried_path.as_ref().map(BoundedText::as_str),
         }))?;
         if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
-            return self.committee_run_dto(&run, receipt.id, AppliedDto::Unchanged);
+            return self.committee_run_dto(&run, Some(receipt.id), AppliedDto::Unchanged);
         }
         if request.seat_binding_id.is_some()
             || request.output.is_some()
@@ -9355,6 +10180,107 @@ impl ApplicationOperations for Services {
                     "the Committee result could not be frozen",
                 )
             })?;
+        if outcome == ConsultationVerdict::NonCompliant {
+            let recommendation = request.recommendation.as_ref().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "a non-compliant Committee requires the LSA recommendation",
+                )
+            })?;
+            let tried_path = request.tried_path.as_ref().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "a non-compliant Committee requires the exact tried path",
+                )
+            })?;
+            if run.round < template.round_limit {
+                let remediation_document = self.intent(&serde_json::json!({
+                    "schema_version": 1,
+                    "committee_run_id": committee_run_id.to_string(),
+                    "from_round": run.round,
+                    "recommendation": recommendation.as_str(),
+                    "tried_path": tried_path.as_str(),
+                    "failed_result_hash": result_document.hash().as_str(),
+                }))?;
+                let remediation: serde_json::Value =
+                    serde_json::from_str(remediation_document.json()).map_err(|_| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the Committee remediation could not be frozen",
+                        )
+                    })?;
+                let remediating = self
+                    .state()?
+                    .with_store(|store| {
+                        store.remediate_committee_run(
+                            project_id,
+                            committee_run_id,
+                            run.revision,
+                            recommendation,
+                            tried_path,
+                            &remediation,
+                            remediation_document.hash(),
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                self.dispatch_committee_round_two(&remediating, &template, false)
+                    .await?;
+                let receipt_id = self.record(
+                    key,
+                    project_id,
+                    CommandKind::SettleCommitteeRun,
+                    target,
+                    remediating.revision,
+                    &intent,
+                )?;
+                return self.committee_run_dto(&remediating, Some(receipt_id), AppliedDto::Created);
+            }
+            let needs_human_document = self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "verdict": outcome.as_str(),
+                "reason": "remediation_budget_exhausted",
+                "round": run.round,
+                "recommendation": recommendation.as_str(),
+                "tried_path": tried_path.as_str(),
+                "failed_result_hash": result_document.hash().as_str(),
+            }))?;
+            let needs_human: serde_json::Value = serde_json::from_str(needs_human_document.json())
+                .map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the needs-human result could not be frozen",
+                    )
+                })?;
+            let escalated = self
+                .state()?
+                .with_store(|store| {
+                    store.advance_consultation_run(
+                        project_id,
+                        run.id,
+                        run.revision,
+                        ConsultationRunState::NeedsHuman,
+                        Some((&needs_human, needs_human_document.hash())),
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            let receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::SettleCommitteeRun,
+                target,
+                escalated.revision,
+                &intent,
+            )?;
+            return self.committee_run_dto(&escalated, Some(receipt_id), AppliedDto::Created);
+        }
+        if request.recommendation.is_some() || request.tried_path.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a compliant Committee does not accept a remediation brief",
+            ));
+        }
         let settled = self
             .state()?
             .with_store(|store| {
@@ -9376,7 +10302,7 @@ impl ApplicationOperations for Services {
             settled.revision,
             &intent,
         )?;
-        self.committee_run_dto(&settled, receipt_id, AppliedDto::Created)
+        self.committee_run_dto(&settled, Some(receipt_id), AppliedDto::Created)
     }
     fn completion_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
         let state = self.state()?;

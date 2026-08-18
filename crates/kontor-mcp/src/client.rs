@@ -31,6 +31,9 @@ use serde::{Deserialize, Serialize};
 /// contract crate is what keeps the two spellings honest.
 pub const CREDENTIAL_FILE: &str = "credentials.json";
 
+/// Seat-scoped credential inherited by a native consultation process.
+pub const CONSULTATION_AUTH_ENV: &str = "KONTOR_AUTH";
+
 /// The file a Realm's loopback endpoint is recorded in, inside its state root.
 ///
 /// Optional: a Realm serving [`DEFAULT_PORT`] does not need one. It is read when
@@ -229,6 +232,15 @@ impl Credential {
     /// credential file, [`LocalError::Io`] when it cannot be read, and
     /// [`LocalError::Malformed`] when it is not a credential set this build wrote.
     pub fn read(state_root: &Path, tier: CallerTier) -> Result<Self, LocalError> {
+        if tier == CallerTier::Operator
+            && let Ok(secret) = std::env::var(CONSULTATION_AUTH_ENV)
+            && secret.starts_with("kontor-seat-v1.")
+        {
+            return Ok(Self {
+                tier,
+                secret: SecretString::from(secret),
+            });
+        }
         let path = state_root.join(CREDENTIAL_FILE);
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,

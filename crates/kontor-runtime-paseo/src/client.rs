@@ -123,6 +123,18 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
     }
 }
 
+/// The provider-native non-mutating mode used by consultation seats.
+pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
+    match provider {
+        "claude" | "cursor" => Ok(Some("plan")),
+        "codex" => Ok(Some("auto-review")),
+        // Providers without a proven read-only mode are not consultation-safe.
+        other => Err(RuntimeError::PermissionModeUnsupported {
+            provider: other.to_owned(),
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI commands
 // ---------------------------------------------------------------------------
@@ -132,7 +144,7 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
 /// `argv` never contains `--host`: the live transport appends it. The
 /// constructors below are the only way to build one, so no call site can invent
 /// an unversioned subcommand or forget `--json`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PaseoCommand {
     argv: Vec<String>,
     /// The final positional argument, when the subcommand takes one.
@@ -154,6 +166,23 @@ pub struct PaseoCommand {
     route: String,
     env: Vec<(String, String)>,
     mutates: bool,
+}
+
+impl std::fmt::Debug for PaseoCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PaseoCommand")
+            .field("argv", &self.argv)
+            .field("trailing", &self.trailing)
+            .field("values", &self.values)
+            .field("route", &self.route)
+            .field(
+                "env_names",
+                &self.env.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            )
+            .field("mutates", &self.mutates)
+            .finish()
+    }
 }
 
 impl PaseoCommand {
@@ -240,6 +269,7 @@ impl PaseoCommand {
     }
 
     /// Start a consultation in the provider's non-mutating review/plan mode.
+    #[allow(clippy::too_many_arguments)]
     pub fn consultation_run(
         workspace_id: &str,
         canonical_cwd: &str,
@@ -248,13 +278,10 @@ impl PaseoCommand {
         labels: &BTreeMap<String, String>,
         parent_agent_id: &str,
         prompt: &str,
+        credential: &str,
     ) -> RuntimeResult<Self> {
-        let mode = match model_rung.provider.0.as_str() {
-            "claude" | "cursor" => Some("plan"),
-            "codex" => Some("auto-review"),
-            provider => permission_mode(provider)?,
-        };
-        Self::agent_run_with_mode(
+        let mode = consultation_permission_mode(model_rung.provider.0.as_str())?;
+        let mut command = Self::agent_run_with_mode(
             workspace_id,
             canonical_cwd,
             model_rung,
@@ -263,7 +290,11 @@ impl PaseoCommand {
             parent_agent_id,
             prompt,
             mode,
-        )
+        )?;
+        command
+            .env
+            .push(("KONTOR_AUTH".to_owned(), credential.to_owned()));
+        Ok(command)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1572,6 +1603,43 @@ mod tests {
         }
         assert!(matches!(
             permission_mode("new-provider"),
+            Err(RuntimeError::PermissionModeUnsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn consultation_routes_are_read_only_and_the_scoped_secret_is_not_debugged() {
+        for (provider, model, expected_mode) in [
+            ("claude", "claude-opus-5", "plan"),
+            ("cursor", "composer-2", "plan"),
+            ("codex", "gpt-5.6-sol", "auto-review"),
+        ] {
+            let command = PaseoCommand::consultation_run(
+                "wks_1",
+                "/w/epic",
+                &route(provider, model, None),
+                "Reviewer",
+                &labels(),
+                "agt_orchestrator",
+                "read only",
+                "seat-secret-value",
+            )
+            .expect("a consultation-safe provider");
+            assert!(
+                command
+                    .argv()
+                    .windows(2)
+                    .any(|pair| pair == ["--mode", expected_mode])
+            );
+            assert!(
+                command
+                    .env()
+                    .contains(&("KONTOR_AUTH".to_owned(), "seat-secret-value".to_owned()))
+            );
+            assert!(!format!("{command:?}").contains("seat-secret-value"));
+        }
+        assert!(matches!(
+            consultation_permission_mode("opencode"),
             Err(RuntimeError::PermissionModeUnsupported { .. })
         ));
     }

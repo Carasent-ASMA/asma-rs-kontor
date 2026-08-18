@@ -3322,6 +3322,18 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::TextArray,
                 "Separately-authorized receipts cited by the disposition.",
             ),
+            opt(
+                "recommendation",
+                Place::Body,
+                ArgType::Text,
+                "Committee-only; Advisor settlement refuses it.",
+            ),
+            opt(
+                "tried_path",
+                Place::Body,
+                ArgType::Text,
+                "Committee-only; Advisor settlement refuses it.",
+            ),
             req(
                 "expected_revision",
                 Place::Body,
@@ -3330,6 +3342,28 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Settle one Advisor consultation.",
+    },
+    ToolSpec {
+        name: "kontor_advisor_run_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "advisor_run_id",
+                Place::Path,
+                ArgType::AdvisorRunId,
+                "The consultation.",
+            ),
+        ],
+        about: "Read one Advisor consultation and its immutable result.",
     },
     ToolSpec {
         name: "kontor_committee_templates_list",
@@ -3470,12 +3504,6 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The consultation.",
             ),
             IDEMPOTENCY,
-            req(
-                "seat_binding_id",
-                Place::Body,
-                ArgType::SeatBindingId,
-                "The exact Committee seat submitting its own finding.",
-            ),
             req("round", Place::Body, ArgType::U32, "The one-based round."),
             req(
                 "verdict",
@@ -3509,6 +3537,28 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Record one round of Committee findings.",
+    },
+    ToolSpec {
+        name: "kontor_committee_run_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "committee_run_id",
+                Place::Path,
+                ArgType::CommitteeRunId,
+                "The consultation.",
+            ),
+        ],
+        about: "Read one Committee run, its remediation, findings, and result.",
     },
     ToolSpec {
         name: "kontor_committee_run_settle",
@@ -3559,6 +3609,18 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::TextArray,
                 "Advisor-only; Committee settlement refuses it.",
+            ),
+            opt(
+                "recommendation",
+                Place::Body,
+                ArgType::Text,
+                "LSA recommendation required after a non-compliant verdict.",
+            ),
+            opt(
+                "tried_path",
+                Place::Body,
+                ArgType::Text,
+                "Exact remediation path tried before re-review or escalation.",
             ),
             req(
                 "expected_revision",

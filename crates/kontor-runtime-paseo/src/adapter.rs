@@ -55,8 +55,8 @@ use kontor_core::spec::ModelRung;
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
-    ConsultationLaunchOutcome, ConsultationLaunchRequest, LaunchOutcome, MessageAck, PermissionAck,
-    RuntimeAdapter, RuntimeError, RuntimeResult,
+    ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
+    LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, ClaimedSeat, OccupiedSeat, RoleSlotKey,
@@ -89,7 +89,8 @@ use kontor_runtime::workspace::{
 };
 
 use crate::client::{
-    PaseoCommand, PaseoRpc, PaseoTransport, ensure_frame_bounded, permission_mode,
+    PaseoCommand, PaseoRpc, PaseoTransport, consultation_permission_mode, ensure_frame_bounded,
+    permission_mode,
 };
 use crate::mcp::{PaseoMcp, RENAME_WORKSPACE_TOOL};
 use crate::wire::{
@@ -1603,7 +1604,11 @@ impl PaseoAdapter {
         Ok(())
     }
 
-    fn verify_agent_route(agent: &PaseoAgent, requested: &ModelRung) -> RuntimeResult<()> {
+    fn verify_agent_route_with_mode(
+        agent: &PaseoAgent,
+        requested: &ModelRung,
+        consultation: bool,
+    ) -> RuntimeResult<()> {
         if agent.provider != requested.provider.0 || agent.model != requested.model.0 {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -1612,7 +1617,11 @@ impl PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
-        let expected_mode = permission_mode(&requested.provider.0)?;
+        let expected_mode = if consultation {
+            consultation_permission_mode(&requested.provider.0)?
+        } else {
+            permission_mode(&requested.provider.0)?
+        };
         if agent.current_mode_id.as_deref() != expected_mode {
             return Err(RuntimeError::PermissionModeMismatch {
                 provider: requested.provider.0.clone(),
@@ -1621,6 +1630,10 @@ impl PaseoAdapter {
             });
         }
         Ok(())
+    }
+
+    fn verify_agent_route(agent: &PaseoAgent, requested: &ModelRung) -> RuntimeResult<()> {
+        Self::verify_agent_route_with_mode(agent, requested, false)
     }
 
     // -- Evidence -----------------------------------------------------------
@@ -3088,6 +3101,7 @@ impl PaseoAdapter {
                     &labels,
                     self.config.scope.orchestrator_agent_id.as_str(),
                     request.prompt.as_str(),
+                    request.credential.expose_secret(),
                 )?;
                 let native_id = match self.transport.run(&command).await {
                     Ok(output) => {
@@ -3104,7 +3118,7 @@ impl PaseoAdapter {
         };
         let agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        Self::verify_agent_route(&agent, &request.model_rung)?;
+        Self::verify_agent_route_with_mode(&agent, &request.model_rung, true)?;
         Ok(ConsultationLaunchOutcome {
             identity: self.identity(ExternalId::parse(&agent.id)?, generation),
             provider_session_id: agent
@@ -3250,6 +3264,46 @@ impl RuntimeAdapter for PaseoAdapter {
             .consultation_claims
             .remove(&request.seat_binding_id);
         outcome
+    }
+
+    async fn message_consultation(
+        &self,
+        request: &ConsultationMessageRequest,
+    ) -> RuntimeResult<()> {
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation != self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the consultation seat belongs to another runtime generation",
+            });
+        }
+        let native_id = request.identity.native_id.as_str();
+        let agent = self.fetch_agent(native_id).await?;
+        let expected_run = format!(
+            "{}/{}",
+            request.run_id.family().as_str(),
+            request.run_id.as_text()
+        );
+        let expected_seat = request.seat_binding_id.to_string();
+        if agent.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
+            || agent.label(label::CONSULTATION_RUN) != Some(expected_run.as_str())
+            || agent.is_archived()
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let rpc = PaseoRpc::send_message(
+            self.next_request_id(),
+            native_id,
+            &request.message_id.to_string(),
+            request.body.as_str(),
+        );
+        let frame = self.transport.request(&rpc).await?;
+        let accepted: PaseoSendAccepted = frame.resolve(&rpc, "PaseoSendAccepted")?;
+        if accepted.agent_id != native_id || !accepted.accepted {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(())
     }
 
     /// Admission is bookkeeping about seats: it starts nothing and reaches no

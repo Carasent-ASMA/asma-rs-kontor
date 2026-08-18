@@ -254,12 +254,38 @@ pub struct ConsultationLaunchRequest {
     pub cwd: WorkspaceRoot,
     /// Frozen prompt/context for this seat.
     pub prompt: BoundedText,
+    /// Opaque seat-scoped API credential delivered as process environment.
+    pub credential: ConsultationCredential,
     /// Exact provider/model/effort route.
     pub model_rung: ModelRung,
     /// Immutable context-window policy.
     pub context_policy: ContextPolicySnapshot,
     /// Invocation instant.
     pub requested_at: Timestamp,
+}
+
+/// A consultation seat credential whose debug form never exposes its value.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ConsultationCredential(String);
+
+impl ConsultationCredential {
+    /// Wrap an already-minted scoped credential.
+    #[must_use]
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    /// Expose only at the runtime process boundary.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for ConsultationCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ConsultationCredential([REDACTED])")
+    }
 }
 
 /// Native readback of one consultation seat launch or exact-label recovery.
@@ -274,6 +300,23 @@ pub struct ConsultationLaunchOutcome {
     /// Whether this call created the session or recovered the existing exact
     /// labelled one after a lost acknowledgement/restart.
     pub created: bool,
+}
+
+/// One idempotently addressed follow-up to an existing consultation seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationMessageRequest {
+    /// Owning consultation, for runtime label verification.
+    pub run_id: ConsultationRunId,
+    /// Exact persistent seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact native identity read back at launch.
+    pub identity: NativeRuntimeIdentity,
+    /// Kontor-owned stable message id.
+    pub message_id: MessageId,
+    /// Read-only follow-up instruction.
+    pub body: BoundedText,
+    /// Dispatch instant.
+    pub sent_at: Timestamp,
 }
 
 /// The runtime's answer to one delivered message.
@@ -376,6 +419,17 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
+    /// Deliver a bounded follow-up to the same consultation seat.
+    async fn message_consultation(
+        &self,
+        request: &ConsultationMessageRequest,
+    ) -> RuntimeResult<()> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::SendMessage,
         })
     }
 

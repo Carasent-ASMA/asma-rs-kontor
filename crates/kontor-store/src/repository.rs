@@ -2122,6 +2122,91 @@ impl SqliteStore {
             })
     }
 
+    /// Record the single bounded Committee remediation and open round two.
+    #[allow(clippy::too_many_arguments)]
+    pub fn remediate_committee_run(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        expected_revision: AggregateRevision,
+        recommendation: &BoundedText,
+        tried_path: &BoundedText,
+        document: &serde_json::Value,
+        document_hash: &ContentHash,
+        recorded_at: Timestamp,
+    ) -> RepositoryResult<StoredConsultationRun> {
+        let encoded = canonical_json(document, "Committee remediation")?;
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO committee_remediations
+                     (committee_run_id, project_id, from_round, recommendation,
+                      tried_path, document, document_hash, recorded_at)
+                 VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    committee_run_id.to_string(),
+                    project_id.to_string(),
+                    recommendation.as_str(),
+                    tried_path.as_str(),
+                    encoded,
+                    document_hash.as_str(),
+                    text(recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                 SET state = 'running', round = 2, revision = revision + 1,
+                     updated_at = ?4, settled_at = NULL
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = 'committee'
+                   AND round = 1 AND state = 'awaiting_judge' AND revision = ?3",
+                params![
+                    project_id.to_string(),
+                    committee_run_id.to_string(),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    text(recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "Committee remediation",
+                rule: "only a settled-evidence round one may open round two",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })
+    }
+
+    /// Read the immutable remediation document, when round two was opened.
+    pub fn get_committee_remediation(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+    ) -> RepositoryResult<Option<serde_json::Value>> {
+        let encoded = self
+            .connection
+            .query_row(
+                "SELECT document FROM committee_remediations
+                 WHERE project_id = ?1 AND committee_run_id = ?2",
+                params![project_id.to_string(), committee_run_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        encoded
+            .map(|document| {
+                serde_json::from_str(&document).map_err(|error| RepositoryError::Backend {
+                    detail: format!("a Committee remediation could not be decoded: {error}"),
+                })
+            })
+            .transpose()
+    }
+
     /// Record one Quick session and the ids its placement used.
     ///
     /// # Errors

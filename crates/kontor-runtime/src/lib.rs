@@ -47,7 +47,9 @@ pub mod timeline;
 pub mod workspace;
 
 pub use adapter::{
-    LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
+    ConsultationCredential, ConsultationLaunchOutcome, ConsultationLaunchRequest,
+    ConsultationMessageRequest, LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter,
+    RuntimeError, RuntimeResult,
 };
 pub use admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, AdmissionTicket, ClaimedSeat,
