@@ -958,6 +958,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/triggers:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Install one immutable trigger revision. */
+        post: operations["publish_trigger"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects:ensure": {
         parameters: {
             query?: never;
@@ -2313,6 +2330,20 @@ export interface components {
             revision: number;
             /** @description The source inside that layer. */
             source_id: string;
+        };
+        /**
+         * @description What `triggers:publish` is asked for.
+         *
+         *     The body carries the trigger document itself rather than a field-by-field
+         *     mirror of it. A `TriggerSpec` is already a validated, canonicalizable,
+         *     versioned document with its own rules, and restating its twenty-odd fields as
+         *     a second type would create exactly one thing: somewhere for the two to
+         *     disagree. The daemon deserializes it with the domain's own parser, so an
+         *     unknown or malformed field is refused rather than dropped.
+         */
+        PublishTriggerRequest: {
+            /** @description The complete trigger specification, as the domain spells it. */
+            spec: unknown;
         };
         /** @description One immutable published team-template revision. */
         PublishedTeamRevisionDto: {
@@ -5590,6 +5621,61 @@ export interface operations {
             };
         };
     };
+    publish_trigger: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishTriggerRequest"];
+            };
+        };
+        responses: {
+            /** @description Installed, or the identical revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriggerSpecDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description That revision is installed with different bytes */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     ensure_project: {
         parameters: {
             query?: never;
@@ -5761,7 +5847,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description An unsafe trigger, a missing handoff, or a runtime that cannot compact */
+            /** @description An unsafe trigger or a missing handoff */
             422: {
                 headers: {
                     [name: string]: unknown;
