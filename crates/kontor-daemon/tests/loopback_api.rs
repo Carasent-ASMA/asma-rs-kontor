@@ -43,8 +43,8 @@ use kontor_core::id::{
 };
 use kontor_core::repository::{
     NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunClosure,
-    RunRepository, SourceDisposition, StoredEpicRoster, StoredPromotion, StoredQuickSession,
-    TopologyRepository, WorkflowRepository,
+    RunRepository, SourceDisposition, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
+    StoredQuickSession, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::state::{
     Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
@@ -11741,70 +11741,185 @@ async fn an_invented_topology_scope_is_refused() {
     );
 }
 
-/// Every successor contract refuses; none of them pretends.
+/// Completion answers from its own rows, and refuses where its inputs are absent.
 ///
-/// OP-04, OP-05 and OP-06 own the behaviour behind these routes. The contract
-/// is fixed now so the authority rules and the closed argument lists are one
-/// decision rather than one per successor — which is only safe if the daemon
-/// is honest about having no service yet. The failure this pins is the tempting
-/// one: an empty catalog, an empty roster, a completion state with nothing
-/// outstanding. Each of those is indistinguishable from a real answer, and a
-/// caller would act on it.
+/// The two halves matter equally. A composed catalog must actually answer —
+/// including the built-in profile every project may pin — or the ticket that
+/// composed it delivered nothing. And a completion that has not started must be
+/// a `404`, never an invented empty state: a phase with nothing outstanding
+/// reads exactly like an epic that has finished.
 #[tokio::test]
-async fn every_successor_contract_refuses_rather_than_answering_emptily() {
+async fn completion_answers_from_its_own_repository_and_never_synthesizes() {
     let world = World::open().await;
     let project = world.project;
 
-    let reads = [
-        format!("/v1/projects/{project}/advisor-profiles"),
-        format!("/v1/projects/{project}/committee-templates"),
-        format!("/v1/projects/{project}/completion-profiles"),
-        format!(
-            "/v1/projects/{project}/epics/{}/completion",
-            MiniProjectId::generate()
-        ),
-    ];
-    for uri in reads {
-        let answer = Call::get(&uri)
-            .signed_as(&world, "observer")
-            .send(&world)
-            .await;
-        assert_eq!(
-            answer.status, 503,
-            "{uri} answered instead of refusing: {}",
-            answer.body
+    // The catalog answers, and the built-in profile is in it.
+    let catalog = Call::get(format!("/v1/projects/{project}/completion-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    assert_eq!(catalog.realm(), world.realm_id());
+    let revisions = catalog.json()["revisions"]
+        .as_array()
+        .expect("revisions")
+        .clone();
+    assert_eq!(
+        revisions.len(),
+        1,
+        "only the built-in profile is published yet: {}",
+        catalog.body
+    );
+    assert_eq!(revisions[0]["id"], "operational_default");
+    assert_eq!(revisions[0]["version"], 1);
+    // An append-only catalog stands at its publication count, so a first apply
+    // presents `1`.
+    assert_eq!(catalog.json()["revision"], 1);
+
+    // An epic with no completion run is absent, not empty.
+    let epic = MiniProjectId::generate();
+    let missing = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    for absent in ["phase", "blockers", "revision"] {
+        assert!(
+            missing.json().get(absent).is_none(),
+            "a refusal carried `{absent}`: {}",
+            missing.body
         );
-        assert_eq!(answer.code(), "unavailable");
-        // The refusal envelope carries no projection a caller could mistake for
-        // data: no seats, no revisions, no phase.
-        for absent in ["seats", "revisions", "roles", "phase", "outstanding"] {
-            assert!(
-                answer.json().get(absent).is_none(),
-                "{uri}'s refusal carried `{absent}`: {}",
-                answer.body
-            );
-        }
     }
 
-    // A write refuses before it can commit, and hands back no receipt.
-    let advanced = Call::post(
-        format!(
-            "/v1/projects/{project}/epics/{}/completion:advance",
-            MiniProjectId::generate()
-        ),
-        &serde_json::json!({"expected_revision": 1}),
+    // Publishing the built-in id back is refused: two definitions answering to
+    // one pinned name is what an epic's pin exists to prevent.
+    let shadow = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:preview"),
+        &serde_json::json!({"definition": {
+            "id": "operational_default",
+            "version": 1,
+            "name": "Shadow",
+            "integration_team": "team-c",
+            "verdict_committee": "independent_review",
+            "max_remediation_rounds": 1,
+            "polling_fallback": null
+        }}),
     )
-    .signed_as(&world, "operator")
-    .with_key("advance-before-the-service-exists")
+    .signed_as(&world, "admin")
     .send(&world)
     .await;
-    assert_eq!(advanced.status, 503, "{}", advanced.body);
-    assert_eq!(advanced.code(), "unavailable");
+    assert_eq!(shadow.status, 400, "{}", shadow.body);
+
+    // An unknown field is refused before anything is hashed, so a caller cannot
+    // get an unmodelled key counted into the preview hash its apply is compared
+    // against.
+    let smuggled = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:preview"),
+        &serde_json::json!({"definition": {
+            "id": "house-style",
+            "version": 1,
+            "name": "House style",
+            "integration_team": "team-c",
+            "verdict_committee": "independent_review",
+            "max_remediation_rounds": 1,
+            "polling_fallback": null,
+            "skip_closeout": true
+        }}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(smuggled.status, 400, "{}", smuggled.body);
+
+    // A well-formed definition previews, publishes once, and the catalog moves.
+    let definition = serde_json::json!({
+        "id": "house-style",
+        "version": 1,
+        "name": "House style",
+        "integration_team": "team-c",
+        "verdict_committee": "independent_review",
+        "max_remediation_rounds": 1,
+        "polling_fallback": {"max_attempts": 3}
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:preview"),
+        &serde_json::json!({"definition": definition}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
     assert!(
-        advanced.json().get("receipt_id").is_none(),
-        "a refusal must not carry a receipt: {}",
-        advanced.body
+        preview.json()["violations"]
+            .as_array()
+            .expect("violations")
+            .is_empty(),
+        "a valid definition has no violations: {}",
+        preview.body
     );
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+
+    let apply = serde_json::json!({
+        "definition": definition,
+        "preview_hash": hash,
+        "expected_revision": 1
+    });
+    let published = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:apply"),
+        &apply,
+    )
+    .signed_as(&world, "admin")
+    .with_key("publish-house-style")
+    .send(&world)
+    .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    assert_eq!(published.json()["published"]["id"], "house-style");
+    assert_eq!(published.json()["receipt"]["applied"], "created");
+    assert_eq!(published.json()["receipt"]["revision"], 2);
+
+    // The same key replays to the same receipt and publishes nothing further.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:apply"),
+        &apply,
+    )
+    .signed_as(&world, "admin")
+    .with_key("publish-house-style")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["receipt"]["revision"],
+        2,
+        "a replay publishes no second revision: {}",
+        replayed.body
+    );
+
+    // And the stale expected revision the first apply consumed now conflicts.
+    let stale = Call::post(
+        format!("/v1/projects/{project}/completion-profiles:apply"),
+        &serde_json::json!({
+            "definition": {
+                "id": "house-style",
+                "version": 2,
+                "name": "House style",
+                "integration_team": "team-c",
+                "verdict_committee": "independent_review",
+                "max_remediation_rounds": 1,
+                "polling_fallback": {"max_attempts": 3}
+            },
+            "preview_hash": hash,
+            "expected_revision": 1
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("publish-house-style-v2")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
 }
 
 /// A composed Core Team route is held to the same rule the uncomposed ones are.
@@ -11868,6 +11983,426 @@ async fn a_successor_contract_refuses_an_under_authorized_caller_first() {
     .await;
     assert_eq!(refused.status, 403, "{}", refused.body);
     assert_eq!(refused.code(), "forbidden");
+}
+
+// ---------------------------------------------------------------------------
+// OP-05 CP1 — published consultation policy, driven through the public API.
+// ---------------------------------------------------------------------------
+
+/// One complete, publishable Advisor profile.
+fn advisor_definition(profile_id: &str, version: u32) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "profile_id": profile_id,
+        "version": version,
+        "name": "Data platform advisor",
+        "short_name": "Data",
+        "expertise": "Postgres, CDC and inter-service data flow.",
+        "behavior": "Answer the question asked, and cite the evidence you were given.",
+        "output_requirements": "A recommendation and the evidence it rests on.",
+        "models": {
+            "rungs": [{"provider": "claude", "model": "claude-opus-5", "effort": "high"}]
+        },
+        "context": {"skills": [], "files": [], "memory": "none"},
+        "allowed_caller_roles": ["architect"],
+        "allowed_scopes": ["epic"],
+        "budget": {
+            "max_tokens": 200000,
+            "max_commands": 20,
+            "max_duration_seconds": 1800,
+            "max_cost": {"minor_units": 5000, "currency": "NOK"}
+        },
+        "max_consultations": 2
+    })
+}
+
+const ADVISOR_PROFILE: &str = "01991c00-0000-7000-8000-0000000000a1";
+
+/// The composed catalog routes answer instead of falling through to the stubs.
+///
+/// Unlike an unconfigured Core Team, an empty consultation catalog is not a lie:
+/// a project that has published no consultation definition genuinely has none, and the
+/// aggregate revision it reports says the catalog is untouched rather than
+/// missing. What would have been a lie is answering emptily while no service
+/// existed, which is what that guard was for.
+#[tokio::test]
+async fn unpublished_consultation_catalogs_answer_empty_and_say_so() {
+    let world = World::open().await;
+    for family in ["advisor-profiles", "committee-templates"] {
+        let answer = Call::get(format!("/v1/projects/{}/{family}", world.project))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        assert_eq!(answer.status, 200, "{family}: {}", answer.body);
+        assert_eq!(answer.json()["revisions"].as_array().map(Vec::len), Some(0));
+        assert_eq!(answer.json()["revision"].as_u64(), Some(1));
+    }
+}
+
+/// Preview, publish, read back — and the version after it.
+#[tokio::test]
+async fn a_previewed_advisor_profile_publishes_and_reads_back() {
+    let world = World::open().await;
+    let project = world.project;
+
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, 1)}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("preview-v1")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(
+        preview.json()["violations"].as_array().map(Vec::len),
+        Some(0),
+        "a complete definition has nothing to fix: {}",
+        preview.body
+    );
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+
+    // A preview commits nothing: the catalog is still empty.
+    let untouched = Call::get(format!("/v1/projects/{project}/advisor-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        untouched.json()["revisions"].as_array().map(Vec::len),
+        Some(0),
+        "a preview published something: {}",
+        untouched.body
+    );
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor_definition(ADVISOR_PROFILE, 1),
+            "preview_hash": hash,
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("apply-v1")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["published"]["version"].as_u64(), Some(1));
+    assert_eq!(
+        applied.json()["published"]["id"].as_str(),
+        Some(ADVISOR_PROFILE)
+    );
+    assert_eq!(
+        applied.json()["receipt"]["applied"].as_str(),
+        Some("created")
+    );
+
+    let catalog = Call::get(format!("/v1/projects/{project}/advisor-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        catalog.json()["revisions"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        catalog.json()["revision"].as_u64(),
+        Some(2),
+        "publishing moved the catalog: {}",
+        catalog.body
+    );
+
+    // The next version publishes against the revision that read reported.
+    let next_preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, 2)}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("preview-v2")
+    .send(&world)
+    .await;
+    let next_hash = next_preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let next = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor_definition(ADVISOR_PROFILE, 2),
+            "preview_hash": next_hash,
+            "expected_revision": 2,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("apply-v2")
+    .send(&world)
+    .await;
+    assert_eq!(next.status, 200, "{}", next.body);
+    assert_eq!(next.json()["published"]["version"].as_u64(), Some(2));
+}
+
+/// A retry after a lost acknowledgement replays; it does not publish twice.
+#[tokio::test]
+async fn replaying_a_profile_apply_publishes_once() {
+    let world = World::open().await;
+    let project = world.project;
+    let definition = advisor_definition(ADVISOR_PROFILE, 1);
+
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": definition}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replay-preview")
+    .send(&world)
+    .await;
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let body = serde_json::json!({
+        "definition": definition,
+        "preview_hash": hash,
+        "expected_revision": 1,
+    });
+
+    let first = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("apply-once")
+    .send(&world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+
+    // The same key and the same intent, presenting the revision it read before
+    // the first attempt. Refusing this for the sole reason that the original
+    // succeeded is the bug the replay-first ordering exists to avoid.
+    let again = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("apply-once")
+    .send(&world)
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(
+        again.json()["receipt"]["applied"].as_str(),
+        Some("unchanged")
+    );
+    assert_eq!(again.json()["published"]["version"].as_u64(), Some(1));
+
+    let catalog = Call::get(format!("/v1/projects/{project}/advisor-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        catalog.json()["revisions"].as_array().map(Vec::len),
+        Some(1),
+        "the replay published a second revision: {}",
+        catalog.body
+    );
+}
+
+/// A definition the preview never judged cannot be published under its hash.
+#[tokio::test]
+async fn a_profile_apply_must_match_the_named_preview() {
+    let world = World::open().await;
+    let project = world.project;
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, 1)}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("swap-preview")
+    .send(&world)
+    .await;
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+
+    // Same shape, different content: what the Admin authorized was the document
+    // they were shown.
+    let mut swapped = advisor_definition(ADVISOR_PROFILE, 1);
+    swapped["max_consultations"] = serde_json::json!(99);
+    let refused = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": swapped,
+            "preview_hash": hash,
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("swap-apply")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "invalid_request");
+    assert!(refused.json().get("published").is_none());
+}
+
+/// Publishing against a revision the catalog has moved past writes nothing.
+#[tokio::test]
+async fn a_profile_apply_under_a_stale_revision_writes_nothing() {
+    let world = World::open().await;
+    let project = world.project;
+    for (version, key) in [(1_u32, "stale-first"), (2, "stale-second")] {
+        let preview = Call::post(
+            format!("/v1/projects/{project}/advisor-profiles:preview"),
+            &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, version)}),
+        )
+        .signed_as(&world, "admin")
+        .with_key(format!("{key}-preview"))
+        .send(&world)
+        .await;
+        let hash = preview.json()["preview_hash"]
+            .as_str()
+            .expect("a preview hash")
+            .to_owned();
+        let applied = Call::post(
+            format!("/v1/projects/{project}/advisor-profiles:apply"),
+            &serde_json::json!({
+                "definition": advisor_definition(ADVISOR_PROFILE, version),
+                "preview_hash": hash,
+                // Both attempts claim the catalog is untouched. The second one
+                // is wrong, because the first moved it.
+                "expected_revision": 1,
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key(format!("{key}-apply"))
+        .send(&world)
+        .await;
+        if version == 1 {
+            assert_eq!(applied.status, 200, "{}", applied.body);
+        } else {
+            assert_eq!(applied.status, 409, "{}", applied.body);
+            assert_eq!(applied.code(), "revision_conflict");
+        }
+    }
+    let catalog = Call::get(format!("/v1/projects/{project}/advisor-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        catalog.json()["revisions"].as_array().map(Vec::len),
+        Some(1)
+    );
+}
+
+/// A typo in a policy document is a violation, not a silently dropped field.
+#[tokio::test]
+async fn an_unknown_field_in_a_profile_is_reported_not_ignored() {
+    let world = World::open().await;
+    let mut definition = advisor_definition(ADVISOR_PROFILE, 1);
+    definition["allowed_caller_role"] = serde_json::json!(["architect"]);
+    let preview = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:preview", world.project),
+        &serde_json::json!({"definition": definition}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("typo-preview")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert!(
+        !preview.json()["violations"]
+            .as_array()
+            .expect("violations")
+            .is_empty(),
+        "a misspelled field must not be dropped and published: {}",
+        preview.body
+    );
+}
+
+/// The family comes from the route, never from the document.
+#[tokio::test]
+async fn an_advisor_profile_cannot_be_published_as_a_committee_template() {
+    let world = World::open().await;
+    let preview = Call::post(
+        format!("/v1/projects/{}/committee-templates:preview", world.project),
+        &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, 1)}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("wrong-family")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert!(
+        !preview.json()["violations"]
+            .as_array()
+            .expect("violations")
+            .is_empty(),
+        "an Advisor profile is not a Committee template: {}",
+        preview.body
+    );
+}
+
+/// Publishing a profile seats nobody.
+///
+/// A profile is what a consultation *would* be asked under. If publishing one
+/// created an ASW or a seat, an Admin editing policy would be spending provider
+/// capacity, and the read-only boundary would already have been crossed before
+/// anybody asked a question.
+#[tokio::test]
+async fn publishing_a_profile_creates_no_workspace_and_no_seat() {
+    let world = World::open().await;
+    let project = world.project;
+    let before = Call::get(format!("/v1/projects/{project}/topology:inspect"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor_definition(ADVISOR_PROFILE, 1)}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("no-seat-preview")
+    .send(&world)
+    .await;
+    let hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let applied = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor_definition(ADVISOR_PROFILE, 1),
+            "preview_hash": hash,
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("no-seat-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let after = Call::get(format!("/v1/projects/{project}/topology:inspect"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    // The realm cursor moves, because a receipt was written. What must not move
+    // is the topology: no ASW, no CSW, no seat.
+    assert_eq!(
+        before.json()["nodes"],
+        after.json()["nodes"],
+        "publishing a profile changed the topology"
+    );
+    assert_eq!(
+        after.json()["nodes"].as_array().map(Vec::len),
+        Some(0),
+        "publishing a profile materialized a node: {}",
+        after.body
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -14791,5 +15326,498 @@ async fn a_misnamed_container_is_repaired_from_the_pinned_topology_and_never_fro
         dictated.status, 422,
         "the request type has nowhere to put a title, so the body is rejected: {}",
         dictated.body
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Completion: the two operations that carry the state machine (KON-OP-06)
+// ---------------------------------------------------------------------------
+
+/// A refused first advance leaves the epic exactly as it found it.
+///
+/// `:advance` is the one completion write that can bring durable state into
+/// existence, so it is the one where guarding after the write would be invisible:
+/// the caller gets a refusal, the row is there anyway, and no receipt names the
+/// write that happened. The read route answers `404` until the first advance, so
+/// a caller has no revision to have read — which is why the refusal must say that
+/// rather than claim the run moved underneath it.
+#[tokio::test]
+async fn a_refused_first_advance_creates_no_completion_run_and_no_receipt() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "op06-advance", "Kontor", "/tmp/kontor-op06-adv").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Advance epic",
+            &category,
+            serde_json::json!([{"title": "Only task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("op06-advance-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic")
+        .to_owned();
+
+    // Any revision but the initial one is refused, and the refusal names what to
+    // present instead of describing a race that could not have happened.
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 7}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("op06-first-advance")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "revision_conflict");
+    assert_eq!(
+        refused.json()["current_revision"],
+        1,
+        "the refusal must hand back the revision a first advance has to present: {}",
+        refused.body
+    );
+    assert!(
+        refused.json()["rule"]
+            .as_str()
+            .expect("a rule")
+            .contains("no completion run yet"),
+        "the reason must be the honest one, not `moved since the caller read it`: {}",
+        refused.body
+    );
+
+    // Nothing durable was created: the read is still an absence, not an empty
+    // state a caller could mistake for a finished epic.
+    let read = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(read.status, 404, "{}", read.body);
+
+    // And no receipt was recorded for it. Reusing the *same* key with a corrected
+    // revision is therefore a fresh command, not an idempotency conflict — which
+    // is only true if the refused call wrote nothing to the ledger.
+    let corrected = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("op06-first-advance")
+    .send(&world)
+    .await;
+    assert_ne!(
+        corrected.code(),
+        "idempotency_conflict",
+        "the refused call must have recorded no receipt: {}",
+        corrected.body
+    );
+    // `placement_blocked` is also a 409, so the code is what distinguishes
+    // "your revision was wrong" from "the guard passed and the start failed".
+    assert_ne!(
+        corrected.code(),
+        "revision_conflict",
+        "the initial revision must pass the guard: {}",
+        corrected.body
+    );
+    // It gets past the guard and then refuses for the real missing dependency:
+    // this epic has no control plane, so there is no TPM seat for completion to
+    // wake. That refusal is also before any insert.
+    assert!(
+        corrected.status.is_client_error() || corrected.status.is_server_error(),
+        "an epic with no control plane cannot start completion: {}",
+        corrected.body
+    );
+    let still_absent = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        still_absent.status, 404,
+        "a start that could not resolve its seat must leave no run: {}",
+        still_absent.body
+    );
+}
+
+/// Both completion writes judge the idempotency key before the revision.
+///
+/// Driven over a real run on a promoted epic, so the seats the two authorities
+/// are checked against are the ones promotion actually materialized. The run is
+/// seeded with no declared tickets: what is under test here is the handler
+/// composition — replay, revision, authority, phase — and a vacuously satisfied
+/// ticket gate keeps OP-01 evidence plumbing out of the assertions.
+#[tokio::test]
+async fn advance_and_remediate_judge_the_key_before_the_revision() {
+    let composed = compose_realm("/tmp/kontor-op06-machine").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let (session, hash) =
+        quick_session_ready_to_promote(world, project, "Drive completion", "op06-quick").await;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
+        &serde_json::json!({"preview_hash": hash, "expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-promote")
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic")
+        .to_owned();
+
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("op06-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let seats = materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("seats")
+        .clone();
+    let seat_of = |code: &str| -> SeatBindingId {
+        SeatBindingId::parse(
+            seats
+                .iter()
+                .find(|entry| entry["role"]["role_code"] == code)
+                .unwrap_or_else(|| panic!("a {code} seat"))["seat_binding_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a bound {code} seat")),
+        )
+        .expect("a seat binding id")
+    };
+    let tpm = seat_of("TPM");
+
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("it compiles");
+    let seed = |state: &kontor_scheduler::CompletionState| StoredEpicCompletion {
+        project_id,
+        mini_project_id: epic_id,
+        profile_id: compiled.profile.id.clone(),
+        profile_version: compiled.profile.version,
+        definition_hash: compiled.definition_hash.clone(),
+        state: serde_json::to_value(state).expect("the state serializes"),
+        revision: state.revision,
+        updated_at: at("2026-08-18T09:00:00Z"),
+    };
+    let signal = |id: &str,
+                  revision: &kontor_scheduler::CompletionState,
+                  observation: kontor_scheduler::CompletionObservation| {
+        kontor_scheduler::CompletionSignal {
+            id: ContentHash::of(id.as_bytes()),
+            expected_revision: revision.revision,
+            delivery: kontor_scheduler::SignalDelivery::Callback,
+            observation,
+        }
+    };
+
+    // ---- `:advance` over a run standing at the ticket gate ----
+    let ticket_phase = kontor_scheduler::start(&compiled, tpm, Vec::new()).expect("a run starts");
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.create_epic_completion(&seed(&ticket_phase)))
+        .expect("the run seeds");
+
+    let advanced = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-advance-once")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+    assert_eq!(advanced.json()["state"]["phase"]["phase"], "integration");
+    assert_eq!(advanced.json()["receipt"]["applied"], "created");
+    assert_eq!(advanced.json()["receipt"]["revision"], 2);
+    // The transition woke the epic's existing TPM seat exactly once, and named it.
+    let wakes = advanced.json()["state"]["wakes"]
+        .as_array()
+        .expect("wakes")
+        .clone();
+    assert_eq!(
+        wakes.len(),
+        1,
+        "one observation, one wake: {}",
+        advanced.body
+    );
+    assert_eq!(wakes[0]["seat_binding_id"], tpm.to_string());
+    assert_eq!(wakes[0]["completion_revision"], 2);
+
+    // The same key and the same expected revision replay to the same receipt and
+    // move nothing, even though the run is no longer at that revision.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-advance-once")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["receipt"]["revision"],
+        2,
+        "a replay commits no second transition: {}",
+        replayed.body
+    );
+    assert_eq!(replayed.json()["state"]["phase"]["phase"], "integration");
+
+    // A *different* key presenting that now-stale revision is a genuine conflict.
+    let stale = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-advance-stale")
+    .send(world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(stale.code(), "revision_conflict");
+    assert_eq!(stale.json()["current_revision"], 2);
+
+    // ---- `:remediate` over a run whose first round failed ----
+    let integration = kontor_scheduler::IntegrationRecord {
+        receipt: ContentHash::of(b"integration-1"),
+        repositories: vec![kontor_scheduler::RepositoryOutcome {
+            repository: name("asma-rs-kontor"),
+            pull_request: name("PR-1"),
+            module_revision: name("abc1234"),
+            root_pointer_revision: Some(name("def5678")),
+        }],
+    };
+    let findings = ContentHash::of(b"round-1-findings");
+    let after_tickets = kontor_scheduler::advance(
+        &compiled,
+        &ticket_phase,
+        &signal(
+            "tickets",
+            &ticket_phase,
+            kontor_scheduler::CompletionObservation::TicketsClosed(Vec::new()),
+        ),
+    )
+    .expect("the gate opens")
+    .state;
+    let after_integration = kontor_scheduler::advance(
+        &compiled,
+        &after_tickets,
+        &signal(
+            "integration",
+            &after_tickets,
+            kontor_scheduler::CompletionObservation::IntegrationCompleted(integration),
+        ),
+    )
+    .expect("integration lands")
+    .state;
+    let awaiting = kontor_scheduler::advance(
+        &compiled,
+        &after_integration,
+        &signal(
+            "verdict-1",
+            &after_integration,
+            kontor_scheduler::CompletionObservation::VerdictRecorded {
+                round: 1,
+                verdict: kontor_scheduler::CommitteeVerdict::Fail,
+                evidence: findings.clone(),
+                deliberation: vec![kontor_policy::DeliberationStep {
+                    role: name("Committee"),
+                    consultation: name("independent_review"),
+                    round: 1,
+                    outcome: name("fail"),
+                }],
+            },
+        ),
+    )
+    .expect("a failed round is appended")
+    .state;
+    let awaiting_revision = awaiting.revision.get();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.update_epic_completion(
+                &seed(&awaiting),
+                AggregateRevision::parse(2).expect("a revision"),
+            )
+        })
+        .expect("the failed round seeds");
+
+    let remediate = |body: serde_json::Value, key: &'static str| {
+        Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
+            &body,
+        )
+        .signed_as(world, "operator")
+        .with_key(key)
+    };
+
+    // Routing before anything was proposed launches nothing: both receipts have
+    // to be durable, and only one authority has acted.
+    let unproposed = remediate(
+        serde_json::json!({
+            "expected_revision": awaiting_revision,
+            "action": {"action": "tpm_route", "round": 1, "route": ContentHash::of(b"route-1").as_str()}
+        }),
+        "op06-route-unproposed",
+    )
+    .send(world)
+    .await;
+    assert_eq!(unproposed.status, 400, "{}", unproposed.body);
+    assert!(
+        unproposed.json()["rule"]
+            .as_str()
+            .expect("a rule")
+            .contains("no LSA proposal"),
+        "{}",
+        unproposed.body
+    );
+
+    // A proposal must answer the failed round's own immutable evidence.
+    let wrong_evidence = remediate(
+        serde_json::json!({
+            "expected_revision": awaiting_revision,
+            "action": {
+                "action": "lsa_proposal", "round": 1,
+                "failed_round_evidence": ContentHash::of(b"some-other-round").as_str(),
+                "proposal": ContentHash::of(b"narrow-the-change").as_str()
+            }
+        }),
+        "op06-propose-wrong",
+    )
+    .send(world)
+    .await;
+    assert_eq!(wrong_evidence.status, 400, "{}", wrong_evidence.body);
+
+    let proposal_body = serde_json::json!({
+        "expected_revision": awaiting_revision,
+        "action": {
+            "action": "lsa_proposal", "round": 1,
+            "failed_round_evidence": findings.as_str(),
+            "proposal": ContentHash::of(b"narrow-the-change").as_str()
+        }
+    });
+    let proposed = remediate(proposal_body.clone(), "op06-propose")
+        .send(world)
+        .await;
+    assert_eq!(proposed.status, 200, "{}", proposed.body);
+    assert_eq!(proposed.json()["receipt"]["applied"], "created");
+    assert_eq!(
+        proposed.json()["state"]["phase"]["phase"],
+        "awaiting_lsa",
+        "a proposal alone launches nothing: {}",
+        proposed.body
+    );
+    assert_eq!(
+        proposed.json()["receipt"]["revision"],
+        awaiting_revision,
+        "the run must not move on a proposal: {}",
+        proposed.body
+    );
+
+    // Replay is the same receipt, and still no second proposal.
+    let proposed_again = remediate(proposal_body, "op06-propose").send(world).await;
+    assert_eq!(proposed_again.status, 200, "{}", proposed_again.body);
+    assert_eq!(proposed_again.json()["receipt"]["applied"], "unchanged");
+
+    // The route completes the authority and moves the run.
+    let route_body = serde_json::json!({
+        "expected_revision": awaiting_revision,
+        "action": {"action": "tpm_route", "round": 1, "route": ContentHash::of(b"route-1").as_str()}
+    });
+    let routed = remediate(route_body.clone(), "op06-route")
+        .send(world)
+        .await;
+    assert_eq!(routed.status, 200, "{}", routed.body);
+    assert_eq!(routed.json()["state"]["phase"]["phase"], "remediation");
+    assert_eq!(routed.json()["state"]["phase"]["round"], 1);
+    assert_eq!(routed.json()["receipt"]["applied"], "created");
+    assert_eq!(
+        routed.json()["receipt"]["revision"],
+        awaiting_revision + 1,
+        "{}",
+        routed.body
+    );
+
+    // Replay after the move: same key, same body, same receipt, no second round.
+    let routed_again = remediate(route_body, "op06-route").send(world).await;
+    assert_eq!(routed_again.status, 200, "{}", routed_again.body);
+    assert_eq!(routed_again.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        routed_again.json()["state"]["phase"]["phase"],
+        "remediation"
+    );
+
+    // And a different key presenting the pre-route revision now conflicts.
+    let stale_route = remediate(
+        serde_json::json!({
+            "expected_revision": awaiting_revision,
+            "action": {"action": "tpm_route", "round": 1, "route": ContentHash::of(b"route-2").as_str()}
+        }),
+        "op06-route-stale",
+    )
+    .send(world)
+    .await;
+    assert_eq!(stale_route.status, 409, "{}", stale_route.body);
+    assert_eq!(stale_route.code(), "revision_conflict");
+    assert_eq!(
+        stale_route.json()["current_revision"],
+        awaiting_revision + 1
+    );
+}
+
+/// `:remediate` on an epic that never started completion is an absence.
+#[tokio::test]
+async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {
+    let world = World::open().await;
+    let project = world.project;
+    let epic = MiniProjectId::generate();
+
+    let answer = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "action": {"action": "tpm_route", "round": 1,
+                       "route": ContentHash::of(b"route").as_str()}
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("op06-remediate-nothing")
+    .send(&world)
+    .await;
+    assert_eq!(answer.status, 404, "{}", answer.body);
+    assert!(
+        answer.json().get("receipt_id").is_none(),
+        "a refusal must not carry a receipt: {}",
+        answer.body
     );
 }

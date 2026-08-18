@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "committee_templates": [
+    {
+      "schema_version": 1,
+      "template_id": "01991c00-0000-7000-8000-000000000001",
+      "version": 1,
+      "name": "Independent review",
+      "short_name": "Review",
+      "charter": "Does the work under review actually satisfy the plan and the architecture it claims to implement, on the evidence provided?",
+      "slots": [
+        {
+          "id": "reviewer-a",
+          "role": "reviewer",
+          "logical_role": "reviewer",
+          "specialty": "Correctness and completeness against the stated plan.",
+          "behavior": "Review only the frozen evidence you were given. Record one finding: compliant or non-compliant, the reasons, and a reference for each claim you make. Do not speculate about work you cannot see, and do not soften a finding because it is inconvenient. You cannot see the other reviewer's finding and must not wait for it.",
+          "models": {
+            "rungs": [{ "provider": "claude", "model": "claude-opus-5", "effort": "xhigh" }]
+          },
+          "context": { "skills": [], "files": [], "memory": "none" }
+        },
+        {
+          "id": "reviewer-b",
+          "role": "reviewer",
+          "logical_role": "reviewer",
+          "specialty": "Architecture conformance and the failure modes the plan did not name.",
+          "behavior": "Review only the frozen evidence you were given. Record one finding: compliant or non-compliant, the reasons, and a reference for each claim you make. Look for the boundary the change crosses quietly and the case the plan did not consider. You cannot see the other reviewer's finding and must not wait for it.",
+          "models": {
+            "rungs": [{ "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh" }]
+          },
+          "context": { "skills": [], "files": [], "memory": "none" }
+        },
+        {
+          "id": "judge",
+          "role": "judge",
+          "logical_role": "judge",
+          "specialty": "Explains the outcome the conjunctive rule produced.",
+          "behavior": "Read both durable findings and explain the outcome the rule already produced, including every dissent and the evidence each reviewer cited. You do not decide the verdict and you cannot turn a failing conjunction into a passing one. If the findings cannot be reconciled into a typed aggregate, say so and recommend a resolution rather than guessing.",
+          "models": {
+            "rungs": [{ "provider": "claude", "model": "claude-opus-5", "effort": "high" }]
+          },
+          "context": { "skills": [], "files": [], "memory": "none" }
+        }
+      ],
+      "aggregation": "conjunctive",
+      "diversity": "distinct_provider_per_slot",
+      "allowed_caller_roles": ["architect"],
+      "allowed_scopes": ["epic", "ticket"],
+      "budget": {
+        "max_tokens": 400000,
+        "max_commands": 40,
+        "max_duration_seconds": 3600,
+        "max_cost": { "minor_units": 20000, "currency": "NOK" }
+      },
+      "round_limit": 2
+    }
+  ]
+}

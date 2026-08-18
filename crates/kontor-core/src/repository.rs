@@ -18,6 +18,7 @@ use crate::calendar::{
     HolidayImportBatch, HolidaySourceRevision, OverrideRevocation, ScheduleOverride,
     WorkCalendarAssignment, WorkScope,
 };
+use crate::consultation::ConsultationFamily;
 use crate::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ConnectorKey,
@@ -201,6 +202,39 @@ pub struct StoredCoreTeamRevision {
     pub published_at: Timestamp,
 }
 
+/// One published Advisor profile or Committee template revision, as it is
+/// stored.
+///
+/// The definition is held as the canonical document the domain produced, for
+/// the same reason `StoredCoreTeamRevision` holds its seats that way: the
+/// store's obligation is that what it returns is byte-identical to what was
+/// published, and `definition_hash` already pins the typed value it was
+/// canonicalized from. Re-deriving whether the document is publishable is the
+/// specification's job, and it has already been done once, before the write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredConsultationProfileRevision {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Which family this revision belongs to.
+    pub family: ConsultationFamily,
+    /// The profile or template identity shared by every revision of it.
+    pub profile_id: String,
+    /// Monotonic version within `profile_id`.
+    pub version: SpecVersion,
+    /// The label frozen at publish.
+    pub name: ExternalName,
+    /// The canonical definition, byte-for-byte as published.
+    ///
+    /// Held as the canonical text rather than as a re-serialized value: a
+    /// `serde_json::Value` round-trip is only incidentally byte-stable, and the
+    /// digest below is over these exact bytes.
+    pub definition: String,
+    /// Digest of that canonical definition.
+    pub definition_hash: ContentHash,
+    /// Publication instant.
+    pub published_at: Timestamp,
+}
+
 /// One durable Quick session, as it is stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredQuickSession {
@@ -318,6 +352,109 @@ pub struct StoredEpicRoster {
     pub revision: AggregateRevision,
     /// Freezing instant.
     pub pinned_at: Timestamp,
+}
+
+/// One published, immutable epic Completion Profile revision.
+///
+/// The definition is the canonical document rather than a decoded profile: this
+/// crate holds the persistence vocabulary and `kontor-scheduler` holds the
+/// completion types, so decoding here would invert that dependency. The digest
+/// travels beside the bytes so a reader can prove the two agree without
+/// re-serializing — which is what a re-serialize would silently paper over if a
+/// stored row had drifted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCompletionProfile {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Stable logical profile id.
+    pub id: ExternalName,
+    /// Immutable revision.
+    pub version: SpecVersion,
+    /// Frozen human label.
+    pub name: ExternalName,
+    /// The canonical published definition.
+    pub definition: serde_json::Value,
+    /// Digest of the canonical definition.
+    pub definition_hash: ContentHash,
+    /// Publication instant.
+    pub published_at: Timestamp,
+}
+
+/// One epic's durable completion run.
+///
+/// The pinned profile identity is stored as columns beside the state document,
+/// so a read can prove which revision this run froze without decoding the
+/// state. That matters on restore: a state whose pin disagreed with the profile
+/// it is being compiled against has to refuse, and it cannot refuse on a field
+/// it needed the profile to read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredEpicCompletion {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic.
+    pub mini_project_id: MiniProjectId,
+    /// The profile this run froze.
+    pub profile_id: ExternalName,
+    /// The exact pinned revision.
+    pub profile_version: SpecVersion,
+    /// The pinned definition's digest.
+    pub definition_hash: ContentHash,
+    /// The canonical completion state document.
+    pub state: serde_json::Value,
+    /// Optimistic-concurrency revision, mirroring the state's own.
+    pub revision: AggregateRevision,
+    /// Last transition instant.
+    pub updated_at: Timestamp,
+}
+
+/// One epic LSA remediation proposal awaiting its TPM route.
+///
+/// The first half of a two-authority approval. It is a row of its own rather
+/// than a field on the completion state because the state records an
+/// authorization only when it is complete — a half-filled one stored there would
+/// read as approved to everything that consumes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredRemediationProposal {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic.
+    pub mini_project_id: MiniProjectId,
+    /// The failed round this answers.
+    pub round: u8,
+    /// That round's evidence digest, as the proposer read it.
+    pub failed_round_evidence: ContentHash,
+    /// The proposed bounded correction.
+    pub proposal: ContentHash,
+    /// The exact seat that proposed.
+    pub lsa_seat_binding_id: SeatBindingId,
+    /// Proposal instant.
+    pub proposed_at: Timestamp,
+}
+
+/// One recorded intent to wake an epic's existing TPM seat.
+///
+/// The primary key is `(epic, completion revision, reason, seat)` because that
+/// is exactly what "one wake per observation" means. A duplicate observation or
+/// a replayed callback collides with the row already there and reuses its
+/// receipt, so it cannot open a second turn for one completion revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCompletionWake {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic whose completion moved.
+    pub mini_project_id: MiniProjectId,
+    /// The completion revision this wake reports.
+    pub completion_revision: AggregateRevision,
+    /// Why the seat is being woken.
+    pub reason: ExternalName,
+    /// The existing seat to wake. Never a seat this wake created.
+    pub seat_binding_id: SeatBindingId,
+    /// The receipt the wake was recorded under.
+    pub receipt: ContentHash,
+    /// When the intent was appended.
+    pub appended_at: Timestamp,
+    /// When the runtime acknowledged the turn, once it has.
+    pub acknowledged_at: Option<Timestamp>,
 }
 
 /// One immutable topology snapshot pinned to a MiniProject/epic.

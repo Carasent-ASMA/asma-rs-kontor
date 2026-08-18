@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use kontor_core::consultation::CommitteeTemplateSpec;
 use kontor_core::id::TeamRunId;
 use kontor_core::id::{
     ArtifactKey, CanonicalDocument, ContentHash, ExternalName, GateKey, PhaseKey, RoleCode,
@@ -361,6 +362,62 @@ pub fn parse_operational_domain_pack(json: &str) -> DomainResult<OperationalDoma
         DomainError::invalid(
             "OperationalDomainPack",
             "is not a valid Operational domain document",
+        )
+    })?;
+    pack.validate()?;
+    Ok(pack)
+}
+
+/// The consultation presets a build ships, as data.
+///
+/// Only presets that are production policy belong here. A Committee protocol
+/// this build does not implement must not appear as a template that would
+/// silently receive a conjunction instead, and speculative presets would
+/// publish authority nobody asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsultationPresetPack {
+    /// Schema generation of this document.
+    pub schema_version: SchemaVersion,
+    /// Committee templates, in file order.
+    pub committee_templates: Vec<CommitteeTemplateSpec>,
+}
+
+impl ConsultationPresetPack {
+    /// Validate every preset the pack declares.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when a template is unpublishable or two of them
+    /// share a template id.
+    pub fn validate(&self) -> DomainResult<()> {
+        for template in &self.committee_templates {
+            template.validate()?;
+        }
+        let ids: BTreeSet<_> = self
+            .committee_templates
+            .iter()
+            .map(|template| (&template.template_id, template.version))
+            .collect();
+        if ids.len() != self.committee_templates.len() {
+            return Err(DomainError::invalid(
+                "ConsultationPresetPack",
+                "declares one template revision twice",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Parse and validate a consultation preset pack.
+///
+/// # Errors
+/// Returns [`DomainError`] when the document does not parse or does not
+/// validate.
+pub fn parse_consultation_presets(json: &str) -> DomainResult<ConsultationPresetPack> {
+    let pack: ConsultationPresetPack = serde_json::from_str(json).map_err(|_| {
+        DomainError::invalid(
+            "ConsultationPresetPack",
+            "is not a valid consultation preset document",
         )
     })?;
     pack.validate()?;
