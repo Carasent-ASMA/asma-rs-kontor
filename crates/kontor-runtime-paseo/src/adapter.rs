@@ -2734,7 +2734,7 @@ impl PaseoAdapter {
     async fn declared(&self) -> RuntimeResult<RuntimeCapabilities> {
         let mut capabilities = match self.fetch_server_info().await {
             Ok(info) => {
-                let degraded = !info.missing_required().is_empty() || !info.is_pinned_baseline();
+                let degraded = !info.missing_required().is_empty() || !info.is_supported_baseline();
                 self.lock().server = Some(info);
                 if degraded {
                     self.config.degraded_capabilities()

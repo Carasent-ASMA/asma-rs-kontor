@@ -1599,7 +1599,7 @@ mod tests {
         assert_eq!(hello["clientId"], "kontor-plane-1");
         assert_eq!(hello["clientType"], "cli");
         assert_eq!(hello["protocolVersion"], 1);
-        assert_eq!(hello["appVersion"], "0.3.1");
+        assert_eq!(hello["appVersion"], PASEO_APP_VERSION);
         // The daemon's capability table spells this one snake_case; the
         // camelCase spelling is silently ignored, which is worse than an error.
         assert_eq!(hello["capabilities"]["selective_agent_timeline"], true);
