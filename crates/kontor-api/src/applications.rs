@@ -850,10 +850,82 @@ pub struct RosterUpgradePreviewDto {
 pub struct InvokeConsultationRequest {
     /// The profile or template revision to run under.
     pub profile: RevisionRefDto,
+    /// What the consultation is about, inside the epic named by the route.
+    pub scope: ConsultationScopeDto,
     /// What is being asked.
     #[schema(value_type = String)]
     pub question: BoundedText,
     /// The epic revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What one consultation is about.
+///
+/// A closed pair, both inside the epic the route names. There is deliberately no
+/// native placement here and no parent, kind or workspace: the scope changes the
+/// consultation's scope *key*, never its node kind or where it is placed, and a
+/// caller that could name a native parent could put a consultation somewhere the
+/// topology never declared.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(tag = "scope", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ConsultationScopeDto {
+    /// Asked about the epic as a whole.
+    Epic,
+    /// Asked about one ticket belonging to that epic.
+    Ticket {
+        /// The ticket. It must belong to the epic the route names.
+        #[schema(value_type = String)]
+        task_id: TaskId,
+    },
+}
+
+/// Record one Advisor's output, or one decision about it.
+///
+/// Two different authorities, so two different actions rather than one bodyless
+/// settle that would have to guess which was meant. The Advisor may submit its
+/// own advice and nothing else; the requester or owning LSA records what was
+/// decided about it. A path that cannot answer says so with a recommendation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AdvisorSettlementDto {
+    /// The Advisor submits its bounded advice. Once, immutably.
+    RecordAdvice {
+        /// The advice itself.
+        #[schema(value_type = String)]
+        advice: BoundedText,
+    },
+    /// The requester or owning LSA records what was decided about that advice.
+    RecordDisposition {
+        /// What was decided.
+        #[schema(value_type = String)]
+        disposition: String,
+        /// Why, bounded.
+        #[schema(value_type = String)]
+        rationale: BoundedText,
+        /// Receipt ids of separately authorized commands this decision refers
+        /// to. A citation, never a claim that one ran.
+        #[serde(default)]
+        cited_receipts: Vec<String>,
+    },
+    /// The consultation cannot produce an answer and says so.
+    NeedsHuman {
+        /// What the caller should do instead.
+        #[schema(value_type = String)]
+        recommendation: BoundedText,
+        /// What was already tried, so the next reader does not repeat it.
+        #[schema(value_type = String)]
+        tried: BoundedText,
+    },
+}
+
+/// Settle one Advisor consultation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SettleAdvisorRunRequest {
+    /// Which authority is being exercised.
+    pub action: AdvisorSettlementDto,
+    /// The run revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
 }
@@ -870,12 +942,49 @@ pub struct AdvisorRunDto {
     /// The epic it advises.
     #[schema(value_type = String)]
     pub epic_id: MiniProjectId,
+    /// What it is about, as the server resolved it.
+    pub scope: ConsultationScopeDto,
     /// The pinned profile it runs under.
     pub profile: ProfileRevisionDto,
-    /// Its lifecycle, in the server's own vocabulary.
+    /// Its lifecycle: `placed`, `advised`, `disposed` or `needs_human`.
     pub state: String,
+    /// The ASW node it was placed in.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The one Advisor seat inside that node.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Digest of the question exactly as asked.
+    #[schema(value_type = String)]
+    pub question_hash: ContentHash,
+    /// Digest of the frozen context the seat was given. Stable for the life of
+    /// the consultation, whatever the sources do afterwards.
+    #[schema(value_type = String)]
+    pub context_hash: ContentHash,
+    /// Digest of the recorded advice, once it is durable.
+    #[schema(value_type = String)]
+    pub advice_hash: Option<ContentHash>,
+    /// Every decision recorded about that advice, oldest first.
+    pub dispositions: Vec<AdviceDispositionDto>,
+    /// The run revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
     /// The receipt it was committed under.
     pub receipt: MutationReceiptDto,
+}
+
+/// One recorded decision about one Advisor's advice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AdviceDispositionDto {
+    /// Position in the append-only sequence, from one.
+    pub sequence: u32,
+    /// What was decided.
+    pub disposition: String,
+    /// Why.
+    #[schema(value_type = String)]
+    pub rationale: BoundedText,
+    /// Receipts of separately authorized commands it cites.
+    pub cited_receipts: Vec<String>,
 }
 
 /// One Committee consultation.
@@ -3417,7 +3526,7 @@ pub trait ApplicationOperations: Send + Sync {
         key: &IdempotencyKey,
         project_id: ProjectId,
         advisor_run_id: AdvisorRunId,
-        request: &SettleConsultationRequest,
+        request: &SettleAdvisorRunRequest,
     ) -> Result<AdvisorRunDto, ApiError>;
     /// Every published Committee template revision.
     fn committee_templates(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
@@ -5018,7 +5127,7 @@ pub async fn invoke_advisor_run(
         ("advisor_run_id" = String, Path, description = "The consultation"),
         ("Idempotency-Key" = String, Header, description = "The caller's stable key")
     ),
-    request_body = SettleConsultationRequest,
+    request_body = SettleAdvisorRunRequest,
     responses(
         (status = 200, body = AdvisorRunDto),
         (status = 401), (status = 403), (status = 404), (status = 409),
@@ -5030,7 +5139,7 @@ pub async fn settle_advisor_run(
     caller: Caller,
     Path((project_id, advisor_run_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(request): Json<SettleConsultationRequest>,
+    Json(request): Json<SettleAdvisorRunRequest>,
 ) -> Result<Json<AdvisorRunDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;

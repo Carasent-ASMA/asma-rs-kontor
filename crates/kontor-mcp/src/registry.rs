@@ -3054,6 +3054,13 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "An `{id, version}` profile revision.",
             ),
             req(
+                "scope",
+                Place::Body,
+                ArgType::Json,
+                "`{\"scope\":\"epic\"}`, or `{\"scope\":\"ticket\",\"task_id\":\"…\"}` for a \
+                 ticket of that epic. No native placement.",
+            ),
+            req(
                 "question",
                 Place::Body,
                 ArgType::Text,
@@ -3089,13 +3096,22 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
             IDEMPOTENCY,
             req(
+                "action",
+                Place::Body,
+                ArgType::Json,
+                "`record_advice` (the Advisor's own bounded output, once), \
+                 `record_disposition` (what was decided about it, with a rationale and \
+                 any cited receipts), or `needs_human` (a recommendation and what was \
+                 already tried).",
+            ),
+            req(
                 "expected_revision",
                 Place::Body,
                 ArgType::Revision,
                 "The revision the caller read.",
             ),
         ],
-        about: "Settle one Advisor consultation.",
+        about: "Record one Advisor's output, or one decision about it.",
     },
     ToolSpec {
         name: "kontor_committee_templates_list",
@@ -3188,6 +3204,13 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Json,
                 "An `{id, version}` template revision.",
+            ),
+            req(
+                "scope",
+                Place::Body,
+                ArgType::Json,
+                "`{\"scope\":\"epic\"}`, or `{\"scope\":\"ticket\",\"task_id\":\"…\"}` for a \
+                 ticket of that epic. Scope changes the scope key, never the node kind.",
             ),
             req(
                 "question",

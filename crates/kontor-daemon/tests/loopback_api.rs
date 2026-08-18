@@ -11962,18 +11962,23 @@ async fn every_consultation_run_operation_refuses_rather_than_pretending() {
             format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
             serde_json::json!({
                 "profile": {"id": ADVISOR_PROFILE, "version": 1},
+                "scope": {"scope": "epic"},
                 "question": "Is this safe?",
                 "expected_revision": 1,
             }),
         ),
         (
             format!("/v1/projects/{project}/advisor-runs/{run}/settle"),
-            serde_json::json!({"expected_revision": 1}),
+            serde_json::json!({
+                "action": {"action": "record_advice", "advice": "Do not ship it."},
+                "expected_revision": 1,
+            }),
         ),
         (
             format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
             serde_json::json!({
                 "profile": {"id": ADVISOR_PROFILE, "version": 1},
+                "scope": {"scope": "epic"},
                 "question": "Is this compliant?",
                 "expected_revision": 1,
             }),

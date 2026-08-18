@@ -56,7 +56,7 @@ use kontor_api::applications::{
     ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest,
     PromotionPreviewDto, QuickRolesDto, QuickSessionDto, RecordFindingsRequest,
     RemediateCompletionRequest, RosterUpgradePreviewDto, RosterUpgradePreviewRequest,
-    SettleConsultationRequest,
+    SettleAdvisorRunRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
     AppliedTopologyUpgradeDto, CodeHelpEntryDto, DesiredBindingDto, PinnedSpecDto,
@@ -7441,7 +7441,7 @@ impl ApplicationOperations for Services {
         _key: &IdempotencyKey,
         _project_id: ProjectId,
         _advisor_run_id: AdvisorRunId,
-        _request: &SettleConsultationRequest,
+        _request: &SettleAdvisorRunRequest,
     ) -> Result<AdvisorRunDto, ApiError> {
         Err(self.deny(
             ApiErrorCode::Unavailable,
