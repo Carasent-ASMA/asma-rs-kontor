@@ -1166,6 +1166,16 @@ async fn a_lost_acknowledgement_is_replayed_without_a_second_native_effect() {
         .filter(|call| matches!(call, AdapterCall::Send(binding, _) if *binding == snapshot.binding_id()))
         .count();
     assert_eq!(delivered, 2, "the caller retried once");
+    let resumed = world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::Resume(binding) if *binding == snapshot.binding_id()))
+        .count();
+    assert_eq!(
+        resumed, 2,
+        "each direct message attempt resumes the persistent seat before delivery"
+    );
     let timeline = Call::get(format!("/v1/sessions/{run}/timeline?limit=64"))
         .signed_as(&world, "observer")
         .send(&world)
@@ -7931,6 +7941,108 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
     );
 }
 
+#[tokio::test]
+async fn an_admin_replacement_retires_a_bound_nonterminal_predecessor_first() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "replace-dead-seat").await;
+    let seat = seats.as_array().expect("the seated roster")[1].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("a canonical run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    assert!(
+        before.terminal.is_none(),
+        "this is the dead-but-still-bound state from the incident"
+    );
+    let old_binding = before.binding.as_ref().expect("the predecessor was bound");
+    world.fake.push_step_for(
+        ScriptStep::InspectProcessMissing,
+        RequestKey::Binding(old_binding.id),
+    );
+    world.fake.push_step_for(
+        ScriptStep::TransportFailure {
+            operation: RuntimeCapability::Resume,
+        },
+        RequestKey::Binding(old_binding.id),
+    );
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": old_binding.identity.generation,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-dead-seat-successor")
+    .send(&world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+
+    let retired = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor remains as evidence")
+    });
+    assert_eq!(
+        retired
+            .terminal
+            .expect("runtime retirement is durable")
+            .outcome,
+        TerminalOutcome::Cancelled
+    );
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Retire(binding) if *binding == old_binding.id))
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(old_binding.id)
+            .is_none(),
+        "the archived predecessor no longer occupies the in-process seat"
+    );
+    let successor = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("a successor id"),
+    )
+    .expect("a canonical successor id");
+    let successor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor)
+            .expect("the successor reads")
+            .expect("the successor exists")
+    });
+    assert_eq!(successor.parent_agent_run_id, Some(predecessor_id));
+    assert!(
+        successor.binding.is_some(),
+        "the linked successor is usable"
+    );
+}
+
 /// BLK-009. A bounded Kontor role turn settles on Kontor's own authority, and
 /// the seat it was taken in stays live: settling a turn is not a claim that the
 /// runtime ended anything, and the persistent Paseo session is expected to still
@@ -8304,6 +8416,16 @@ async fn a_settled_turn_derives_its_follow_up_at_most_once() {
     assert_eq!(
         sends_after_first, 1,
         "the follow-up drove the successor's seat exactly once"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::Resume(_)))
+            .count(),
+        1,
+        "the deferred turn resumes its persistent seat before delivery"
     );
 
     // Replaying the settlement derives nothing further.

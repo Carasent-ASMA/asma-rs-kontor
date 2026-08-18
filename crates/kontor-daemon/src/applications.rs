@@ -116,8 +116,8 @@ use kontor_core::spec::{
     TeamRunSnapshot, TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
-    GateVerdict, ObservedContainerKind, SessionTopologyNode, TaskState, TaskTeamClosure,
-    TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    GateVerdict, ObservedContainerKind, RuntimeContact, SessionTopologyNode, TaskState,
+    TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
 };
 use kontor_core::ticket::OwnershipAction;
 use kontor_integrations_asma::jira::SpecCatalog;
@@ -1353,6 +1353,20 @@ impl Services {
             body,
             sent_at: now,
         };
+        // Delivery is a new turn in the same persistent seat. A closed native
+        // process is reloadable without changing that identity, but `send`
+        // alone cannot revive it. Resume first; any refusal leaves the durable
+        // dispatch row untouched for reconciliation or explicit replacement.
+        if adapter
+            .resume(&kontor_runtime::request::ResumeRequest {
+                binding: request.binding.clone(),
+                requested_at: now,
+            })
+            .await
+            .is_err()
+        {
+            return Ok(false);
+        }
         match adapter.send(&request).await {
             Ok(_) => {
                 state
@@ -9220,7 +9234,7 @@ impl ApplicationOperations for Services {
     ) -> Result<ReplacedSeatDto, ApiError> {
         let state = self.state()?;
         let now = kontor_api::now();
-        let predecessor = state
+        let mut predecessor = state
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| {
@@ -9229,7 +9243,7 @@ impl ApplicationOperations for Services {
                     "no such predecessor run exists in this project",
                 )
             })?;
-        let binding = predecessor.binding.as_ref().ok_or_else(|| {
+        let binding = predecessor.binding.clone().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::StaleBinding,
                 "the predecessor has no immutable native binding to replace",
@@ -9241,30 +9255,6 @@ impl ApplicationOperations for Services {
                 "the immutable binding generation differs from the replacement request",
             ));
         }
-        let terminal = predecessor.terminal.as_ref().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::UnsupportedCapability,
-                "the predecessor is not terminal, so its seat cannot be replaced",
-            )
-        })?;
-        if terminal.outcome != TerminalOutcome::Cancelled
-            || !matches!(
-                terminal.source,
-                TerminalEvidenceSource::RuntimeObservation { .. }
-            )
-        {
-            return Err(self.deny(
-                ApiErrorCode::UnsupportedCapability,
-                "seat replacement requires runtime-observed cancellation",
-            ));
-        }
-        if state.sessions().get(binding.id).is_some() {
-            return Err(self.deny(
-                ApiErrorCode::RevisionConflict,
-                "the predecessor seat is still live and must be reused",
-            ));
-        }
-
         let role_slot =
             RoleSlotId::parse(&request.role_slot).map_err(|error| self.refuse_domain(&error))?;
         if predecessor.role != role_slot.clone().into_role_key() {
@@ -9314,6 +9304,35 @@ impl ApplicationOperations for Services {
                 team.revision,
                 &intent,
             )?;
+        }
+
+        if predecessor.terminal.is_none() {
+            predecessor = self
+                .retire_predecessor_for_replacement(project_id, &predecessor, &binding, now)
+                .await?;
+        }
+        let terminal = predecessor.terminal.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the predecessor retirement produced no terminal evidence",
+            )
+        })?;
+        if terminal.outcome != TerminalOutcome::Cancelled
+            || !matches!(
+                terminal.source,
+                TerminalEvidenceSource::RuntimeObservation { .. }
+            )
+        {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "seat replacement requires runtime-observed cancellation",
+            ));
+        }
+        // A crash may persist the terminal observation just before releasing
+        // the in-process snapshot. Replaying the same Admin command completes
+        // that release rather than wedging an already-retired predecessor.
+        if state.sessions().get(binding.id).is_some() {
+            self.release(binding.id)?;
         }
 
         let members = self.team_members(project_id, predecessor.team_run_id)?;
@@ -10614,6 +10633,184 @@ impl ApplicationOperations for Services {
 }
 
 impl Services {
+    /// Retire one still-bound predecessor under the Admin replacement command
+    /// and persist the runtime's fresh archive readback as its cancellation.
+    ///
+    /// A missing process is not itself terminal evidence: it may be reloadable.
+    /// The explicit replacement decision authorizes retirement, and only the
+    /// runtime's readback of that exact archived native identity closes the run.
+    async fn retire_predecessor_for_replacement(
+        &self,
+        project_id: ProjectId,
+        predecessor: &kontor_core::repository::AgentRun,
+        binding: &RuntimeBinding,
+        now: Timestamp,
+    ) -> Result<kontor_core::repository::AgentRun, ApiError> {
+        let state = self.state()?;
+        let held = state.sessions().get(binding.id).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "this process holds no frozen capability snapshot for the predecessor",
+            )
+        })?;
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this daemon is not configured with the predecessor's runtime",
+                )
+            })?;
+        let issued = adapter
+            .issued_binding(&held)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let liveness = adapter
+            .inspect(&kontor_runtime::request::InspectRequest {
+                binding: issued.snapshot().clone(),
+                requested_at: now,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let observation =
+            if liveness.terminal_evidence(&issued, now, state.evidence_window_seconds())
+                == Some(TerminalOutcome::Cancelled)
+            {
+                // A previous attempt may have archived the native seat and crashed
+                // before persisting that readback. The fresh archive evidence is
+                // sufficient; repeating the native effect is unnecessary.
+                liveness
+            } else {
+                if liveness.contact != RuntimeContact::ProcessMissing {
+                    return Err(self.deny(
+                        ApiErrorCode::UnsupportedCapability,
+                        "the predecessor is still reachable and must be reused",
+                    ));
+                }
+                // A closed process is normally only between turns. Give the runtime
+                // one chance to prove same-seat continuity before retirement; only
+                // a process it both reports missing and cannot resume is unusable.
+                if adapter
+                    .resume(&kontor_runtime::request::ResumeRequest {
+                        binding: issued.snapshot().clone(),
+                        requested_at: now,
+                    })
+                    .await
+                    .is_ok()
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::UnsupportedCapability,
+                        "the predecessor resumed in place and must be reused",
+                    ));
+                }
+                adapter
+                    .retire(issued.snapshot(), now)
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+            };
+        let Some(outcome) =
+            observation.terminal_evidence(&issued, now, state.evidence_window_seconds())
+        else {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the runtime did not evidence the retired predecessor as terminal",
+            ));
+        };
+        if outcome != TerminalOutcome::Cancelled {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "seat replacement requires runtime-observed cancellation",
+            ));
+        }
+
+        let payload = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "observed_state": observation.state.as_str(),
+            "contact": observation.contact.as_str(),
+            "native_sequence": observation.native_sequence,
+            "observed_at": observation.observed_at.to_string(),
+        }))?;
+        let projection = state
+            .with_store(|store| {
+                store.record_observation(&kontor_core::repository::NewObservation {
+                    event: kontor_core::repository::NewRuntimeEvent {
+                        project_id,
+                        agent_run_id: predecessor.id,
+                        identity: observation.identity.clone(),
+                        native_event_id: observation.native_event_id.clone(),
+                        native_sequence: observation.native_sequence,
+                        payload: payload.clone(),
+                        observed_at: observation.observed_at,
+                    },
+                    observed: observation.state,
+                    contact: observation.contact,
+                    freshness: kontor_core::state::Freshness::evaluate(
+                        Some(observation.observed_at),
+                        now,
+                        jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                    ),
+                    expected_revision: predecessor.revision,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let cursor = projection.last_cursor.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the retirement observation was not reduced into the predecessor",
+            )
+        })?;
+        self.observe_seat(
+            project_id,
+            self.task_for_team_run(project_id, predecessor.team_run_id)?,
+            predecessor.team_run_id,
+            &RoleSlotId::new(predecessor.role.clone()),
+            &SeatLivenessObservation {
+                attached_at: Some(observation.observed_at),
+                runtime_reported: Some(observation.state),
+                ..SeatLivenessObservation::default()
+            },
+            now,
+        )?;
+
+        let reduced = state
+            .with_store(|store| store.get_agent_run(project_id, predecessor.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the predecessor vanished while its retirement was recorded",
+                )
+            })?;
+        state
+            .with_store(|store| {
+                store.close_agent_run(&kontor_core::repository::RunClosure {
+                    project_id,
+                    agent_run_id: predecessor.id,
+                    expected_revision: reduced.revision,
+                    evidence: kontor_core::state::TerminalEvidence {
+                        outcome,
+                        source: kontor_runtime::observation::ControlPlaneObservation::
+                            terminal_evidence_source(cursor),
+                        evidence_hash: payload.hash().clone(),
+                        closed_at: now,
+                    },
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        self.release(binding.id)?;
+        state.signals().appended();
+        state
+            .with_store(|store| store.get_agent_run(project_id, predecessor.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the predecessor vanished after its retirement was recorded",
+                )
+            })
+    }
+
     fn mark_started_tasks_in_progress(
         &self,
         project_id: ProjectId,

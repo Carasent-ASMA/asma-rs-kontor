@@ -541,6 +541,30 @@ pub trait RuntimeAdapter: Send + Sync {
     /// the request; it does not evidence that the run closed.
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation>;
 
+    /// Permanently retire one native session under an explicit replacement
+    /// decision, preserving its content and returning fresh terminal evidence.
+    ///
+    /// This is deliberately distinct from [`RuntimeAdapter::cancel`]. A stopped
+    /// process may still be resumed in place; retirement ends the seat's tenure
+    /// so a linked successor may be admitted without creating two live owners.
+    /// Runtimes that cannot prove such a retirement refuse before changing the
+    /// session.
+    ///
+    /// # Errors
+    /// Refuses a stale binding, a runtime that cannot retire the session, and a
+    /// retirement whose fresh readback does not evidence the same session as
+    /// terminal.
+    async fn retire(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        let _ = (binding, at);
+        Err(RuntimeError::ReplacementNotEvidenced {
+            rule: "this runtime cannot retire a predecessor for replacement",
+        })
+    }
+
     /// Read the current authoritative state of one native session.
     ///
     /// # Errors

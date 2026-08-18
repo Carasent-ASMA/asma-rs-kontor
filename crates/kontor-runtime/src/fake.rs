@@ -77,6 +77,9 @@ pub enum ScriptStep {
     /// The next cancel returns an authoritatively observed cancellation instead
     /// of a bare acknowledgement.
     CancelObservedTerminal,
+    /// The next inspect finds the bound session's native process missing while
+    /// making no claim that the run itself finished.
+    InspectProcessMissing,
     /// The next live subscription ends without the session reaching a terminal
     /// state.
     CloseStreamWithoutTerminal,
@@ -114,6 +117,7 @@ impl ScriptStep {
             Self::EchoCorrelation { .. } => RuntimeCapability::Launch,
             Self::LoseSendAck => RuntimeCapability::SendMessage,
             Self::CancelObservedTerminal => RuntimeCapability::Cancel,
+            Self::InspectProcessMissing => RuntimeCapability::Inspect,
             Self::CloseStreamWithoutTerminal => RuntimeCapability::LiveEvents,
             Self::CompactPending
             | Self::CompactFailed
@@ -280,6 +284,8 @@ pub enum AdapterCall {
     Send(RuntimeBindingId, MessageId),
     /// A cancellation was requested.
     Cancel(RuntimeBindingId),
+    /// A session was permanently retired for replacement.
+    Retire(RuntimeBindingId),
     /// A session was inspected.
     Inspect(RuntimeBindingId),
     /// A native session was adopted.
@@ -1641,10 +1647,21 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 context_policy: None,
             },
         )?;
-        state.take_step(
-            RuntimeCapability::Resume,
-            RequestKey::Binding(request.binding.binding_id()),
-        )?;
+        // Resume is now the normal prelude to delivering a later turn. Existing
+        // scripts describe the operation whose behavior they vary (usually the
+        // following send), so an ordinary resume must not consume or contradict
+        // that queued deviation. A script explicitly targeting resume remains
+        // strict and is consumed here.
+        if state
+            .steps
+            .front()
+            .is_some_and(|queued| queued.step.operation() == RuntimeCapability::Resume)
+        {
+            state.take_step(
+                RuntimeCapability::Resume,
+                RequestKey::Binding(request.binding.binding_id()),
+            )?;
+        }
         state
             .calls
             .push(AdapterCall::Resume(request.binding.binding_id()));
@@ -1774,6 +1791,24 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         )
     }
 
+    async fn retire(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        let mut state = self.lock();
+        state.session(binding)?.state = ObservedRunState::Cancelled;
+        state.calls.push(AdapterCall::Retire(binding.binding_id()));
+        Self::observation(
+            binding,
+            RuntimeContact::Reachable,
+            ObservedRunState::Cancelled,
+            ObservationSource::Inspect,
+            0,
+            at,
+        )
+    }
+
     async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation> {
         let mut state = self.lock();
         let declared = state.capabilities.clone();
@@ -1791,7 +1826,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 context_policy: None,
             },
         )?;
-        state.take_step(
+        let step = state.take_step(
             RuntimeCapability::Inspect,
             RequestKey::Binding(request.binding.binding_id()),
         )?;
@@ -1799,10 +1834,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .calls
             .push(AdapterCall::Inspect(request.binding.binding_id()));
         let observed = state.session(&request.binding)?.state;
+        let process_missing = matches!(step, Some(ScriptStep::InspectProcessMissing));
         Self::observation(
             &request.binding,
-            RuntimeContact::Reachable,
-            observed,
+            if process_missing {
+                RuntimeContact::ProcessMissing
+            } else {
+                RuntimeContact::Reachable
+            },
+            if process_missing {
+                ObservedRunState::Unknown
+            } else {
+                observed
+            },
             ObservationSource::Inspect,
             0,
             request.requested_at,

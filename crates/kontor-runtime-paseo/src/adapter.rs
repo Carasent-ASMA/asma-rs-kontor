@@ -2266,7 +2266,7 @@ impl PaseoAdapter {
     /// * [`RuntimeError::Transport`] — Paseo refused, or acknowledged another id.
     /// * [`RuntimeError::CorrelationFailed`] — the fresh readback does not report
     ///   the agent archived, so nothing may cite it as finished.
-    pub async fn retire(
+    async fn retire_session(
         &self,
         binding: &RuntimeBindingSnapshot,
         at: Timestamp,
@@ -2288,13 +2288,17 @@ impl PaseoAdapter {
         if !agent.is_archived() {
             return Err(RuntimeError::CorrelationFailed);
         }
-        self.observation(
+        let observation = self.observation(
             binding.agent_run_id(),
             binding.identity().clone(),
             &agent,
             at,
             ObservationSource::Inspect,
-        )
+        )?;
+        self.lock()
+            .admissions
+            .retire(binding.binding_id(), &binding.identity().native_id);
+        Ok(observation)
     }
 
     /// Link a successor seat to the predecessor it replaced.
@@ -3504,6 +3508,14 @@ impl RuntimeAdapter for PaseoAdapter {
             request.requested_at,
             ObservationSource::CommandAck,
         )
+    }
+
+    async fn retire(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        self.retire_session(binding, at).await
     }
 
     async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation> {
