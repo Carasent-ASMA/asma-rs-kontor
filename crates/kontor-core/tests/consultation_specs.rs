@@ -12,8 +12,8 @@ use kontor_core::consultation::{
     MAX_COMMITTEE_ROUNDS, MemoryAccess, RecordedFinding, conjunctive_outcome,
 };
 use kontor_core::id::{
-    AdvisorProfileId, BoundedText, CommitteeTemplateId, CurrencyCode, ExternalName, Money, RoleKey,
-    RoleSlotId, SCHEMA_VERSION, SpecVersion,
+    AdvisorProfileId, BoundedText, CommitteeTemplateId, CurrencyCode, ExternalName, Money,
+    RoleCode, RoleKey, RoleSlotId, SCHEMA_VERSION, SpecVersion,
 };
 use kontor_core::spec::{BudgetBounds, ModelChainPolicy, ModelRef, ModelRung, ProviderRef};
 
@@ -27,6 +27,10 @@ fn name(value: &str) -> ExternalName {
 
 fn role(value: &str) -> RoleKey {
     RoleKey::parse(value).expect("role key")
+}
+
+fn code(value: &str) -> RoleCode {
+    RoleCode::parse(value).expect("role code")
 }
 
 fn slot(value: &str) -> RoleSlotId {
@@ -78,7 +82,7 @@ fn advisor() -> AdvisorProfileSpec {
         output_requirements: text("A recommendation and the evidence it rests on."),
         models: chain(&["anthropic"]),
         context: grant(),
-        allowed_caller_roles: vec![role("lead")],
+        allowed_caller_roles: vec![code("LSA"), code("SA")],
         allowed_scopes: vec![ConsultationScope::Epic],
         budget: budget(),
         max_consultations: 2,
@@ -124,7 +128,7 @@ fn independent_review() -> CommitteeTemplateSpec {
             judge("judge"),
         ],
         aggregation: AggregationProtocol::Conjunctive,
-        allowed_caller_roles: vec![role("lead")],
+        allowed_caller_roles: vec![code("LSA"), code("SA")],
         allowed_scopes: vec![ConsultationScope::Epic, ConsultationScope::Ticket],
         budget: budget(),
         round_limit: MAX_COMMITTEE_ROUNDS,

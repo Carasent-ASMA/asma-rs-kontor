@@ -11455,7 +11455,7 @@ fn advisor_definition(profile_id: &str, version: u32) -> serde_json::Value {
             "rungs": [{"provider": "claude", "model": "claude-opus-5", "effort": "high"}]
         },
         "context": {"skills": [], "files": [], "memory": "none"},
-        "allowed_caller_roles": ["architect"],
+        "allowed_caller_roles": ["LSA", "SA"],
         "allowed_scopes": ["epic"],
         "budget": {
             "max_tokens": 200000,
@@ -11751,7 +11751,7 @@ async fn a_profile_apply_under_a_stale_revision_writes_nothing() {
 async fn an_unknown_field_in_a_profile_is_reported_not_ignored() {
     let world = World::open().await;
     let mut definition = advisor_definition(ADVISOR_PROFILE, 1);
-    definition["allowed_caller_role"] = serde_json::json!(["architect"]);
+    definition["allowed_caller_role"] = serde_json::json!(["LSA"]);
     let preview = Call::post(
         format!("/v1/projects/{}/advisor-profiles:preview", world.project),
         &serde_json::json!({"definition": definition}),
@@ -11891,13 +11891,17 @@ async fn an_apply_whose_receipt_was_lost_reconciles_on_retry() {
     );
 }
 
-/// A definition naming a role no delivery binding covers is refused before it
-/// becomes immutable.
+/// A caller allowlist naming a role the catalog does not declare is refused
+/// before the revision becomes immutable.
+///
+/// Caller roles are catalog `RoleCode`s and are checked against the catalog;
+/// Committee *member* roles are logical `RoleKey`s and are checked against
+/// `delivery.role_bindings`. Two different boundaries, deliberately.
 #[tokio::test]
-async fn a_profile_naming_an_unbound_role_is_refused() {
+async fn a_profile_admitting_an_undeclared_caller_role_is_refused() {
     let world = World::open().await;
     let mut definition = advisor_definition(ADVISOR_PROFILE, 1);
-    definition["allowed_caller_roles"] = serde_json::json!(["no-such-role"]);
+    definition["allowed_caller_roles"] = serde_json::json!(["ZZZ"]);
     let preview = Call::post(
         format!("/v1/projects/{}/advisor-profiles:preview", world.project),
         &serde_json::json!({"definition": definition}),

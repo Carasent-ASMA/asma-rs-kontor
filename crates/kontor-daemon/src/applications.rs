@@ -2904,21 +2904,33 @@ impl Services {
         definition: &serde_json::Value,
     ) -> Result<ConsultationDefinition, Vec<String>> {
         let parsed = consultation_definition(family, definition)?;
-        let unbound: Vec<String> = parsed
-            .declared_roles()
-            .into_iter()
-            .filter(|role| self.domain.delivery.role_code(role).is_none())
-            .map(|role| {
+        let mut unresolvable: Vec<String> = parsed
+            .declared_caller_codes()
+            .iter()
+            .filter(|code| self.catalog_role_for_code(code).is_err())
+            .map(|code| {
                 format!(
-                    "declares role `{}`, which no delivery binding covers, so no seat could ever hold it",
-                    role.as_str()
+                    "admits caller role `{}`, which this realm's role catalog does not declare",
+                    code.as_str()
                 )
             })
             .collect();
-        if unbound.is_empty() {
+        unresolvable.extend(
+            parsed
+                .declared_member_roles()
+                .into_iter()
+                .filter(|role| self.domain.delivery.role_code(role).is_none())
+                .map(|role| {
+                    format!(
+                        "seats role `{}`, which no delivery binding covers, so no seat could ever hold it",
+                        role.as_str()
+                    )
+                }),
+        );
+        if unresolvable.is_empty() {
             Ok(parsed)
         } else {
-            Err(unbound)
+            Err(unresolvable)
         }
     }
 
@@ -4613,18 +4625,28 @@ impl ConsultationDefinition {
         }
     }
 
-    /// Every role the document declares, caller side and slot side.
+    /// The standard catalog roles this document admits as callers.
     ///
-    /// The slot side matters most: each slot has to become a seat binding, and a
-    /// slot whose role resolves to no catalog code could never be seated.
-    fn declared_roles(&self) -> Vec<&RoleKey> {
+    /// Catalog codes, checked against the catalog itself. They are deliberately
+    /// not routed through `delivery.role_bindings`: the authority a consultation
+    /// is requested under is a seat's standard role, and the epic-owner role is
+    /// not a bindable logical role.
+    fn declared_caller_codes(&self) -> &[RoleCode] {
         match self {
-            Self::Advisor(spec) => spec.allowed_caller_roles.iter().collect(),
-            Self::Committee(spec) => spec
-                .allowed_caller_roles
-                .iter()
-                .chain(spec.slots.iter().map(|slot| &slot.logical_role))
-                .collect(),
+            Self::Advisor(spec) => &spec.allowed_caller_roles,
+            Self::Committee(spec) => &spec.allowed_caller_roles,
+        }
+    }
+
+    /// The Foundation logical roles this document seats members under.
+    ///
+    /// These *are* routed through `delivery.role_bindings`, because each one has
+    /// to become a seat binding and a slot whose role resolves to no catalog code
+    /// could never be seated.
+    fn declared_member_roles(&self) -> Vec<&RoleKey> {
+        match self {
+            Self::Advisor(_) => Vec::new(),
+            Self::Committee(spec) => spec.slots.iter().map(|slot| &slot.logical_role).collect(),
         }
     }
 

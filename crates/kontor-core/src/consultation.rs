@@ -22,7 +22,7 @@
 
 use crate::id::{
     AdvisorProfileId, ArtifactKey, BoundedText, CanonicalDocument, CommitteeTemplateId,
-    ExternalName, RoleKey, RoleSlotId, SchemaVersion, SpecVersion,
+    ExternalName, RoleCode, RoleKey, RoleSlotId, SchemaVersion, SpecVersion,
 };
 use crate::spec::{BudgetBounds, ModelChainPolicy, ProviderRef, SkillRef};
 use crate::{DomainError, DomainResult};
@@ -250,8 +250,15 @@ pub struct AdvisorProfileSpec {
     pub models: ModelChainPolicy,
     /// What the seat may read.
     pub context: ConsultationContextPolicy,
-    /// Roles allowed to consult it. Never empty.
-    pub allowed_caller_roles: Vec<RoleKey>,
+    /// Standard catalog roles allowed to consult it. Never empty.
+    ///
+    /// Catalog [`RoleCode`]s, deliberately not Foundation logical [`RoleKey`]s.
+    /// The authority a consultation is requested under is a *seat's* standard
+    /// role, and seats carry catalog codes; routing a permission check through
+    /// `delivery.role_bindings` would have made the epic-owner role
+    /// unexpressible, because no logical role is bound to `LSA` and binding one
+    /// would make it selectable as a consultation member role.
+    pub allowed_caller_roles: Vec<RoleCode>,
     /// Scopes it may be invoked at. Never empty.
     pub allowed_scopes: Vec<ConsultationScope>,
     /// Resource ceiling for one consultation.
@@ -296,7 +303,10 @@ impl AdvisorProfileSpec {
             ));
         }
         if has_duplicate(&self.allowed_caller_roles) {
-            found.push(DomainError::invalid(SUBJECT, "names one caller role twice"));
+            found.push(DomainError::invalid(
+                SUBJECT,
+                "names one caller role code twice",
+            ));
         }
         if self.allowed_scopes.is_empty() {
             found.push(DomainError::invalid(
@@ -345,7 +355,12 @@ pub struct CommitteeSlotSpec {
     pub id: RoleSlotId,
     /// What this seat is for.
     pub role: CommitteeRole,
-    /// The logical role the seat is held under.
+    /// The Foundation logical role the seat is held under.
+    ///
+    /// A [`RoleKey`] rather than a catalog code: a consultation *member* is
+    /// resolved through `delivery.role_bindings`, which is the boundary that
+    /// decides which logical roles may ever be seated. Only the caller allowlist
+    /// above speaks in catalog codes.
     pub logical_role: RoleKey,
     /// What this seat brings that the others do not.
     pub specialty: BoundedText,
@@ -407,8 +422,11 @@ pub struct CommitteeTemplateSpec {
     pub slots: Vec<CommitteeSlotSpec>,
     /// How findings become one outcome.
     pub aggregation: AggregationProtocol,
-    /// Roles allowed to convene it. Never empty.
-    pub allowed_caller_roles: Vec<RoleKey>,
+    /// Standard catalog roles allowed to convene it. Never empty.
+    ///
+    /// Catalog [`RoleCode`]s, for the same reason as
+    /// [`AdvisorProfileSpec::allowed_caller_roles`].
+    pub allowed_caller_roles: Vec<RoleCode>,
     /// Scopes it may be invoked at. Never empty.
     pub allowed_scopes: Vec<ConsultationScope>,
     /// Resource ceiling for one round.
@@ -506,7 +524,10 @@ impl CommitteeTemplateSpec {
             ));
         }
         if has_duplicate(&self.allowed_caller_roles) {
-            found.push(DomainError::invalid(SUBJECT, "names one caller role twice"));
+            found.push(DomainError::invalid(
+                SUBJECT,
+                "names one caller role code twice",
+            ));
         }
         if self.allowed_scopes.is_empty() {
             found.push(DomainError::invalid(

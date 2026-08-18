@@ -44,7 +44,7 @@
         }
       ],
       "aggregation": "conjunctive",
-      "allowed_caller_roles": ["architect"],
+      "allowed_caller_roles": ["LSA", "SA"],
       "allowed_scopes": ["epic", "ticket"],
       "budget": {
         "max_tokens": 400000,

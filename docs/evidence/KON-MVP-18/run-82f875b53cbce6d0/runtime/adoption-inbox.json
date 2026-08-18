@@ -1,0 +1,28 @@
+{
+  "binding": {
+    "adapter_adopt_calls_after": 1,
+    "adapter_adopt_calls_before": 0,
+    "explicit_adoption_accepted": true,
+    "sessions_for_the_run_after": 1,
+    "sessions_for_the_run_before": 0
+  },
+  "discovered": [
+    {
+      "carries_a_kontor_label": false,
+      "generation": 1,
+      "native_id": "native-foreign-1",
+      "state": "running"
+    }
+  ],
+  "durable_inbox_gap": "session adoption remains staged until one public command can atomically record the run, binding, and frozen capability snapshot",
+  "labelled_for_an_unbound_run": {
+    "action": "ProposeAdoption",
+    "finding": "Adoptable { agent_run_id: AgentRunId(0192f0c0-0000-7000-8000-00000000006b), identity: NativeRuntimeIdentity { runtime_kind: RuntimeKindKey(\"fake.runtime\"), host: ExternalName(\"fake-host\"), generation: 1, native_id: ExternalId(\"native-foreign-1\") } }",
+    "proposed_state": null
+  },
+  "unlabelled": {
+    "action": "ProposeInboxEntry",
+    "finding": "Orphan { identity: NativeRuntimeIdentity { runtime_kind: RuntimeKindKey(\"fake.runtime\"), host: ExternalName(\"fake-host\"), generation: 1, native_id: ExternalId(\"native-foreign-1\") } }",
+    "proposed_state": null
+  }
+}
