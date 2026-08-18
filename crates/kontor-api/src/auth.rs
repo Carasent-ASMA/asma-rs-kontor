@@ -140,9 +140,12 @@ impl RealmCredentials {
     /// Mint a bearer credential scoped to one consultation seat.
     ///
     /// The credential is derived from the Realm's operator secret and the
-    /// durable SeatBinding id. It therefore carries operator authority but
-    /// cannot be retargeted to another seat. The raw Realm secret never leaves
-    /// this type; only the scoped credential is handed to the native seat.
+    /// durable SeatBinding id, but it does not inherit that secret's Realm-wide
+    /// authority. Authentication projects it as a read-only caller plus the
+    /// exact seat subject; only routes that explicitly require that subject may
+    /// accept its bounded write. It cannot be retargeted to another seat. The
+    /// raw Realm secret never leaves this type; only the scoped credential is
+    /// handed to the native seat.
     #[must_use]
     pub fn consultation_seat_credential(&self, seat_binding_id: SeatBindingId) -> String {
         let held = self

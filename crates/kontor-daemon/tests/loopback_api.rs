@@ -16225,17 +16225,57 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .as_str()
         .expect("Advisor seat")
         .to_owned();
-    let advisor_settled = Call::post(
+
+    let advisor_token = world
+        .daemon
+        .state()
+        .credentials()
+        .consultation_seat_credential(
+            SeatBindingId::parse(&advisor_seat).expect("the Advisor SeatBinding"),
+        );
+    let unrelated_operator_route = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .with_token(advisor_token.clone())
+    .send(world)
+    .await;
+    assert_eq!(
+        unrelated_operator_route.status, 403,
+        "a consultation seat reached an unrelated Realm operator route: {}",
+        unrelated_operator_route.body
+    );
+
+    let unscoped_advisor_settlement = Call::post(
         format!("/v1/projects/{project}/advisor-runs/{advisor_run}/settle"),
         &serde_json::json!({
             "seat_binding_id": advisor_seat,
+            "output": "a shared operator cannot speak as the Advisor seat",
+            "disposition": "accepted",
+            "rationale": "the body is not an identity proof",
+            "expected_revision": advisor_invoked.json()["receipt"]["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("advisor-unscoped-settle")
+    .send(world)
+    .await;
+    assert_eq!(
+        unscoped_advisor_settlement.status, 403,
+        "{}",
+        unscoped_advisor_settlement.body
+    );
+
+    let advisor_settled = Call::post(
+        format!("/v1/projects/{project}/advisor-runs/{advisor_run}/settle"),
+        &serde_json::json!({
             "output": "Use the bounded control-plane path and preserve identities.",
             "disposition": "accepted",
             "rationale": "It matches the operational policy.",
             "expected_revision": advisor_invoked.json()["receipt"]["revision"],
         }),
     )
-    .signed_as(world, "operator")
+    .with_token(advisor_token)
     .with_key("advisor-settle")
     .send(world)
     .await;

@@ -5646,9 +5646,19 @@ pub async fn settle_advisor_run(
     caller: Caller,
     Path((project_id, advisor_run_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(request): Json<SettleConsultationRequest>,
+    Json(mut request): Json<SettleConsultationRequest>,
 ) -> Result<Json<AdvisorRunDto>, ApiError> {
-    caller.require(&state, CallerCapability::Operator)?;
+    let seat_binding_id = caller.require_consultation_seat(&state)?;
+    if request
+        .seat_binding_id
+        .is_some_and(|asserted| asserted != seat_binding_id)
+    {
+        return Err(state.refuse(
+            ApiErrorCode::Forbidden,
+            "the Advisor settlement cannot assert a different seat binding",
+        ));
+    }
+    request.seat_binding_id = Some(seat_binding_id);
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let advisor_run_id = parse_id(&state, AdvisorRunId::parse(&advisor_run_id))?;
     let key = idempotency_key(&state, &headers)?;
@@ -5825,13 +5835,7 @@ pub async fn record_committee_findings(
     headers: HeaderMap,
     Json(request): Json<RecordFindingsRequest>,
 ) -> Result<Json<CommitteeRunDto>, ApiError> {
-    caller.require(&state, CallerCapability::Operator)?;
-    let seat_binding_id = caller.consultation_seat().ok_or_else(|| {
-        state.refuse(
-            ApiErrorCode::Forbidden,
-            "Committee findings require the submitting seat's scoped credential",
-        )
-    })?;
+    let seat_binding_id = caller.require_consultation_seat(&state)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
     let key = idempotency_key(&state, &headers)?;

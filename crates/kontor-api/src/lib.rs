@@ -104,6 +104,25 @@ impl Caller {
     pub const fn consultation_seat(self) -> Option<SeatBindingId> {
         self.1
     }
+
+    /// Require the exact consultation-seat subject carried by a scoped bearer.
+    ///
+    /// This is deliberately separate from [`Self::require`]: a consultation
+    /// seat is read-only everywhere except the submission routes that call this
+    /// method explicitly. It never inherits the Realm operator secret's broad
+    /// authority merely because that secret signs the scoped credential.
+    ///
+    /// # Errors
+    /// Returns [`ApiErrorCode::Forbidden`] for a shared Realm credential or any
+    /// caller that did not authenticate as one consultation seat.
+    pub fn require_consultation_seat(self, state: &ApiState) -> Result<SeatBindingId, ApiError> {
+        self.consultation_seat().ok_or_else(|| {
+            state.refuse(
+                ApiErrorCode::Forbidden,
+                "this route requires the submitting consultation seat's scoped credential",
+            )
+        })
+    }
 }
 
 impl FromRequestParts<ApiState> for Caller {
@@ -165,7 +184,10 @@ async fn authenticate(
     let caller = if let Some(authority) = state.credentials().authority(presented) {
         Caller(authority, None)
     } else if let Some(seat_binding_id) = state.credentials().consultation_seat(presented) {
-        Caller(CallerCapability::Operator, Some(seat_binding_id))
+        // A seat token may inspect evidence and submit only on routes that
+        // explicitly require its seat subject. Signing with the operator secret
+        // does not promote the native consultation process to Realm operator.
+        Caller(CallerCapability::Observer, Some(seat_binding_id))
     } else {
         return Err(state.refuse(
             ApiErrorCode::Unauthenticated,
