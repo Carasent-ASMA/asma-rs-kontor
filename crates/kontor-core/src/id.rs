@@ -216,6 +216,32 @@ entity_ids! {
     ScheduleOverrideId,
     /// Identifies a persona scenario (its revisions share this id).
     PersonaScenarioId,
+    /// Identifies one project session-topology specification across revisions.
+    TopologySpecId,
+    /// Identifies one durable node in a project session topology.
+    TopologyNodeId,
+    /// Identifies one persistent seat binding.
+    SeatBindingId,
+    /// Identifies one server-owned role catalog across revisions.
+    RoleCatalogId,
+    /// Identifies one Quick session: work that is being done before anyone has
+    /// decided it deserves an epic.
+    ///
+    /// It is a first-class identity rather than a scratch label because a Quick
+    /// session can be *promoted*, and a promotion has to name exactly what it is
+    /// promoting. A label would make that a search.
+    QuickSessionId,
+    /// Identifies one consultation of an Advisor.
+    AdvisorRunId,
+    /// Identifies one consultation of a Committee.
+    CommitteeRunId,
+    /// Identifies one raw provider/account observation.
+    ///
+    /// Raw evidence is addressable in its own right because an operator's
+    /// override must never rewrite what a provider reported: the two are
+    /// separate records, and this is what lets the derived answer cite the
+    /// observation it came from.
+    CapacityObservationId,
 }
 
 fn parse_entity_uuid(subject: &'static str, text: &str) -> DomainResult<Uuid> {
@@ -429,6 +455,99 @@ impl RoleSlotId {
 impl fmt::Display for RoleSlotId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Operational catalog codes
+// ---------------------------------------------------------------------------
+
+fn validate_catalog_code(subject: &'static str, text: &str) -> DomainResult<()> {
+    if !(2..=32).contains(&text.len()) {
+        return Err(DomainError::invalid(
+            subject,
+            "must contain between 2 and 32 ASCII characters",
+        ));
+    }
+    let mut characters = text.chars();
+    if !characters
+        .next()
+        .is_some_and(|character| character.is_ascii_uppercase())
+        || !characters.all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+    {
+        return Err(DomainError::invalid(
+            subject,
+            "must use uppercase ASCII letters, digits and underscores",
+        ));
+    }
+    Ok(())
+}
+
+macro_rules! catalog_codes {
+    ($( $(#[$meta:meta])* $name:ident ),+ $(,)?) => {
+        $(
+            $(#[$meta])*
+            #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+            pub struct $name(String);
+
+            impl $name {
+                /// Parse the canonical code used in APIs, receipts and storage.
+                ///
+                /// # Errors
+                /// Rejects non-canonical or sensitive text without echoing it.
+                pub fn parse(text: &str) -> DomainResult<Self> {
+                    validate_catalog_code(stringify!($name), text)?;
+                    reject_sensitive_text(stringify!($name), text)?;
+                    Ok(Self(text.to_owned()))
+                }
+
+                /// Borrow the canonical code.
+                #[must_use]
+                pub fn as_str(&self) -> &str {
+                    &self.0
+                }
+            }
+
+            impl fmt::Display for $name {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    f.write_str(&self.0)
+                }
+            }
+
+            impl Serialize for $name {
+                fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                    serializer.serialize_str(&self.0)
+                }
+            }
+
+            impl<'de> Deserialize<'de> for $name {
+                fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                    let text = String::deserialize(deserializer)?;
+                    Self::parse(&text).map_err(D::Error::custom)
+                }
+            }
+        )+
+    };
+}
+
+catalog_codes! {
+    /// A stable standard-role code such as `LSA`, `SA` or `TPM`.
+    RoleCode,
+    /// A specification-declared topology kind such as `PSW`, `ESW` or `CSW`.
+    TopologyKindKey,
+}
+
+impl TopologyKindKey {
+    /// Parse a historical import value and normalize the sole supported alias.
+    ///
+    /// New state must call [`Self::parse`] and therefore never emits `TSC`.
+    ///
+    /// # Errors
+    /// As [`Self::parse`].
+    pub fn parse_import(text: &str) -> DomainResult<Self> {
+        Self::parse(if text == "TSC" { "CSW" } else { text })
     }
 }
 
@@ -1365,10 +1484,29 @@ const SECRET_ASSIGNMENTS: &[&str] = &[
     "authorization:",
 ];
 
+/// Whether `lowered` carries `marker` as a credential *prefix* with enough tail
+/// to be one.
+///
+/// The match must begin at a token boundary. A credential prefix is the start
+/// of a token — it follows nothing, whitespace, punctuation or a separator —
+/// and it is *never* in the middle of a word. Without that rule `sk-` matches
+/// inside `ta`sk-`scoped`, `ri`sk-`free` and `de`sk-`side`, and any ordinary
+/// hyphenated English phrase long enough to clear `min_tail` is refused as a
+/// credential. That is not a hypothetical: it rejected a plain-prose brief.
+///
+/// The boundary is "the preceding character is not alphanumeric" rather than a
+/// whitelist of separators, so `=`, `:`, `"`, `/`, `-`, `_` and whitespace all
+/// still open a token — which is where credentials actually appear. Real
+/// credential-shaped material is unaffected: `sk-...`, `Bearer ghp_...`,
+/// `AWS_KEY=AKIA...` and `"glpat-..."` all begin at a boundary.
 fn has_marker(lowered: &str, marker: &str, min_tail: usize) -> bool {
-    lowered
-        .match_indices(marker)
-        .any(|(index, _)| lowered.len() - index - marker.len() >= min_tail)
+    lowered.match_indices(marker).any(|(index, _)| {
+        let at_boundary = lowered[..index]
+            .chars()
+            .next_back()
+            .is_none_or(|preceding| !preceding.is_alphanumeric());
+        at_boundary && lowered.len() - index - marker.len() >= min_tail
+    })
 }
 
 /// Whether the text embeds a password in a URL's userinfo (`scheme://u:p@host`).

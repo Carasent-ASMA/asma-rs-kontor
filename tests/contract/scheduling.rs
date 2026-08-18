@@ -51,6 +51,7 @@ use kontor_runtime::capability::{
     RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade,
 };
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep, ScriptedFakeRuntime};
+use kontor_runtime::request::LaunchPlacement;
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -577,7 +578,7 @@ async fn a_lost_launch_and_a_restart_still_leave_exactly_one_durable_admission()
     let launch = SlotLaunch {
         task_id: world.task,
         binding_id: RuntimeBindingId::generate(),
-        workspace: Some(world.workspace.clone()),
+        placement: Some(LaunchPlacement::Workspace(world.workspace.clone())),
         cwd: world.workspace.root().clone(),
         account_profile_id: Some(world.account),
         prompt: BoundedText::parse("do the work").expect("bounded text"),

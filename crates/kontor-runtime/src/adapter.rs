@@ -85,6 +85,24 @@ pub enum RuntimeError {
     /// The runtime did not prove that the native session belongs to the run.
     #[error("native session is not correlated with the requested run")]
     CorrelationFailed,
+    /// The selected provider has no permission mode Kontor knows how to pin.
+    #[error("provider {provider} has no pinned runtime permission mode")]
+    PermissionModeUnsupported {
+        /// Provider whose mutable default was refused.
+        provider: String,
+    },
+    /// The runtime did not apply the permission mode Kontor selected.
+    #[error(
+        "runtime permission mode mismatch for {provider}: expected {expected:?}, found {found:?}"
+    )]
+    PermissionModeMismatch {
+        /// Provider whose mode was checked.
+        provider: String,
+        /// Mode Kontor pinned; `None` means this provider exposes no modes.
+        expected: Option<String>,
+        /// Mode the runtime read back.
+        found: Option<String>,
+    },
     /// The seat is already spoken for: it holds a live native session, or a
     /// reservation issued to someone else.
     ///
@@ -354,6 +372,115 @@ pub trait RuntimeAdapter: Send + Sync {
         request: &WorkspacePrepareRequest,
     ) -> RuntimeResult<WorkspaceOutcome>;
 
+    /// Make one topology node's native container exist and be usable.
+    ///
+    /// This is the placement path every accepted production seat travels.
+    /// [`RuntimeAdapter::prepare_workspace`] above is the TeamRun-shaped
+    /// predecessor, kept only so the older contract fixtures still describe the
+    /// runtime they were written against.
+    ///
+    /// It is **idempotent per topology node**: preparing the same node again
+    /// returns the original binding and creates nothing. That is a stronger
+    /// promise than the workspace path's, and deliberately so — a node outlives
+    /// every TeamRun inside it, so a retry after a lost answer must find the
+    /// same container a week later, not a second one.
+    ///
+    /// An implementation dispatches on
+    /// [`crate::container::ContainerProjection`], never on the node's kind key:
+    /// the kind vocabulary belongs to the pinned specification revision, and an
+    /// adapter holding its own copy of it is an adapter no specification change
+    /// can correct.
+    ///
+    /// The default refuses. A runtime that cannot place a container must say so
+    /// rather than let a caller believe an unbound node was bound.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::UnsupportedCapability`] by default, and in an
+    /// implementation: [`RuntimeError::WorkspaceMismatch`] for a request whose
+    /// shape it cannot build or whose parent it cannot confirm, and
+    /// [`RuntimeError::CorrelationFailed`] when the container it read back does
+    /// not carry this node's label.
+    async fn prepare_container(
+        &self,
+        request: &crate::container::ContainerRequest,
+    ) -> RuntimeResult<crate::container::ContainerOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareProject,
+        })
+    }
+
+    /// Change one already-bound container's visible title, and nothing else.
+    ///
+    /// The container is addressed by its exact native id inside its exact
+    /// generation. Never by title — that is the value being corrected, so it
+    /// cannot be the handle — and never by working directory, which several
+    /// containers can share. An implementation that searched by either could
+    /// rename the wrong container, and there is usually no way to tell
+    /// afterwards.
+    ///
+    /// Parent, working directory, projection and native identity are all
+    /// preserved. A runtime that can only achieve a new title by destroying and
+    /// recreating the container has *not* got this capability: every binding
+    /// Kontor holds resolves by the id that would be destroyed.
+    ///
+    /// Idempotent, and it says which happened. A container already carrying the
+    /// desired title is the goal rather than an error, so a replay reports
+    /// `changed: false` instead of refusing.
+    ///
+    /// The title is read back from the runtime after the change rather than
+    /// assumed. An adapter that returned the requested title would make a
+    /// silently-ignored rename indistinguishable from a successful one, which
+    /// is the failure this whole operation exists to correct.
+    ///
+    /// The default refuses. Most runtimes fix a container's title at creation,
+    /// and a caller must be able to tell "this runtime will not" from "this
+    /// runtime did".
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::UnsupportedCapability`] by default, and in an
+    /// implementation: [`RuntimeError::StaleBinding`] when the addressed
+    /// container is absent from the named generation, and
+    /// [`RuntimeError::CorrelationFailed`] when the container read back does not
+    /// carry this node's label.
+    async fn retitle_container(
+        &self,
+        request: &crate::container::RetitleContainerRequest,
+    ) -> RuntimeResult<crate::container::RetitleContainerOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::RetitleContainer,
+        })
+    }
+
+    /// What [`RuntimeAdapter::retitle_container`] would do, changing nothing.
+    ///
+    /// Same request, same derivation, same lookup by durable native id — the
+    /// difference is that nothing is written. The desired title comes back
+    /// because only the plane can render it, and the observed one because only
+    /// the runtime knows it; a caller comparing them is what makes an operator's
+    /// preview worth reading.
+    ///
+    /// It refuses for the same reasons the apply does, including
+    /// [`RuntimeError::UnsupportedCapability`]. A preview that succeeded against
+    /// a runtime that cannot rename would promise an apply that cannot happen.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::UnsupportedCapability`] by default, and in an
+    /// implementation: [`RuntimeError::StaleBinding`] when the addressed
+    /// container is absent from the named generation, and
+    /// [`RuntimeError::CorrelationFailed`] when the container read back does not
+    /// carry this node's label.
+    async fn preview_retitle_container(
+        &self,
+        request: &crate::container::RetitleContainerRequest,
+    ) -> RuntimeResult<crate::container::RetitleContainerOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::RetitleContainer,
+        })
+    }
+
     /// Decide, atomically, whether one seat may be filled — and say so once.
     ///
     /// **This is where AC-4 is enforced.** An implementation keeps a table keyed
@@ -441,6 +568,30 @@ pub trait RuntimeAdapter: Send + Sync {
     /// Refuses every preflight failure. The returned observation acknowledges
     /// the request; it does not evidence that the run closed.
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation>;
+
+    /// Permanently retire one native session under an explicit replacement
+    /// decision, preserving its content and returning fresh terminal evidence.
+    ///
+    /// This is deliberately distinct from [`RuntimeAdapter::cancel`]. A stopped
+    /// process may still be resumed in place; retirement ends the seat's tenure
+    /// so a linked successor may be admitted without creating two live owners.
+    /// Runtimes that cannot prove such a retirement refuse before changing the
+    /// session.
+    ///
+    /// # Errors
+    /// Refuses a stale binding, a runtime that cannot retire the session, and a
+    /// retirement whose fresh readback does not evidence the same session as
+    /// terminal.
+    async fn retire(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        let _ = (binding, at);
+        Err(RuntimeError::ReplacementNotEvidenced {
+            rule: "this runtime cannot retire a predecessor for replacement",
+        })
+    }
 
     /// Read the current authoritative state of one native session.
     ///

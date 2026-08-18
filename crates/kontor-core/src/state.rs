@@ -25,8 +25,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::{
     AgentRunId, AggregateRevision, CommandReceiptId, ContentHash, EventCursor, ExternalId,
-    ExternalName, RuntimeKindKey, TeamRunId, Timestamp,
+    ExternalName, MiniProjectId, ProjectId, RoleSlotId, RuntimeKindKey, SeatBindingId, TaskId,
+    TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId,
 };
+use crate::spec::{CatalogRoleRef, TopologySnapshot};
 use crate::{DomainError, DomainResult};
 
 closed_enum! {
@@ -68,10 +70,39 @@ impl TaskState {
         matches!(self, Self::Blocked | Self::Parked | Self::NeedsHuman)
     }
 
+    /// Whether a terminal task in this state may be explicitly reopened.
+    ///
+    /// Only [`TaskState::Done`], and the asymmetry is the point. A completed task
+    /// carries a *claim* — that its declared work is finished — and new evidence
+    /// can falsify that claim without contradicting anything else it recorded:
+    /// the gates that passed still passed, and reopening says the completion no
+    /// longer covers the work, not that the history was wrong.
+    ///
+    /// A `failed` or `cancelled` task carries an *outcome* instead. Reopening one
+    /// would mean deciding that a run which closed failed did not, or that work
+    /// somebody withdrew is live again — neither of which is a claim later
+    /// evidence can settle, and both of which have a successor task as the honest
+    /// answer. So they stay refused, and the refusal names the transition rather
+    /// than the terminality.
+    #[must_use]
+    pub const fn is_reopenable(self) -> bool {
+        matches!(self, Self::Done)
+    }
+
     /// Whether `next` is structurally reachable from `self`.
     ///
     /// Structural legality is necessary but not sufficient: see
     /// [`apply_task_transition`] for the evidence and authority rules.
+    ///
+    /// `Ready -> Done` is legal because closure is proved by evidence, not by
+    /// the state a task happens to be sitting in. A task can reach `ready` with
+    /// all of its work already finished — a reconcile that resumes a task whose
+    /// seats have gone, or a run that closes before the row is moved on — and
+    /// under the old table those tasks were unfinishable: every gate passed,
+    /// every slot settled, and no legal transition left. Structural legality is
+    /// not the safeguard here and never was. [`apply_task_transition`] demands a
+    /// [`TaskClosureCertificate`] for `Done` whatever the previous state, so a
+    /// `ready` task completes on exactly the evidence an `in_progress` one does.
     #[must_use]
     pub const fn can_transition_to(self, next: Self) -> bool {
         use TaskState::{
@@ -83,13 +114,20 @@ impl TaskState {
                 | (Todo, Ready | Blocked | Parked | NeedsHuman | Cancelled)
                 | (
                     Ready,
-                    InProgress | Blocked | Parked | NeedsHuman | Todo | Cancelled
+                    InProgress | Blocked | Parked | NeedsHuman | Todo | Done | Cancelled
                 )
                 | (
                     InProgress,
                     Blocked | Parked | NeedsHuman | Done | Failed | Cancelled | Ready
                 )
                 | (Blocked | Parked | NeedsHuman, Ready | Cancelled)
+                // `Done -> Ready` is legal *structurally* and reachable only with
+                // an explicit reopen authority — see
+                // [`apply_task_transition`], which refuses every terminal source
+                // that does not present one. The pair is in the table because a
+                // reopen is a real transition of this aggregate rather than a
+                // special case bolted beside it.
+                | (Done, Ready)
         )
     }
 }
@@ -330,6 +368,32 @@ pub enum TaskTeamClosure {
     },
 }
 
+/// Authority to reopen one terminal task.
+///
+/// Carries the receipt it was granted by, so the intent to reopen cannot be
+/// expressed without the durable command that authorizes it: there is no way to
+/// build one from nothing, and the receipt inside it is what an audit reads.
+///
+/// It is deliberately *not* the same thing as a resume receipt. A resume lets a
+/// held task continue; this reopens something the Realm already concluded, which
+/// is a different decision and is recorded as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskReopenAuthority(CommandReceiptId);
+
+impl TaskReopenAuthority {
+    /// Grant the authority the receipt `receipt` recorded.
+    #[must_use]
+    pub const fn granted_by(receipt: CommandReceiptId) -> Self {
+        Self(receipt)
+    }
+
+    /// The receipt this authority was granted by.
+    #[must_use]
+    pub const fn receipt(self) -> CommandReceiptId {
+        self.0
+    }
+}
+
 /// A requested task transition together with the evidence it requires.
 #[derive(Debug, Clone, Copy)]
 pub struct TaskTransition<'a> {
@@ -337,6 +401,11 @@ pub struct TaskTransition<'a> {
     pub to: TaskState,
     /// Receipt of the command that resumes a blocked, parked or human-held task.
     pub resume_receipt: Option<CommandReceiptId>,
+    /// Authority to reopen a terminal task, when that is what this is.
+    ///
+    /// Absent on every ordinary transition, which is why a terminal task stays
+    /// immutable unless something explicitly reopens it.
+    pub reopen: Option<TaskReopenAuthority>,
     /// How the task's current run closed, if it closed.
     pub run_outcome: Option<TerminalOutcome>,
     /// Proof of profile closure, required for [`TaskState::Done`].
@@ -352,6 +421,7 @@ impl TaskTransition<'_> {
         Self {
             to: state,
             resume_receipt: None,
+            reopen: None,
             run_outcome: None,
             closure: None,
             progress: None,
@@ -362,9 +432,23 @@ impl TaskTransition<'_> {
 /// Apply a task transition, enforcing terminality, resume receipts, run closure
 /// and profile closure.
 ///
+/// A terminal task is immutable, with exactly one bounded exception: a `done`
+/// task presenting a [`TaskReopenAuthority`] may return to
+/// [`TaskState::Ready`]. Everything about that exception is narrow on purpose —
+/// one source state, one target state, and a durable receipt — because the
+/// alternative to a bounded reopen is an unbounded one, and the alternative to
+/// *any* reopen is an advertised operation that cannot work.
+///
+/// Reopening changes the task's state and nothing else. It closes no run, opens
+/// none, and touches no gate: the history a completion was granted on stays
+/// exactly as it was recorded, which is what makes the reopen auditable rather
+/// than a rewrite.
+///
 /// # Errors
-/// * [`DomainError::Terminal`] when `from` is already terminal.
-/// * [`DomainError::IllegalTransition`] when the pair is not in the table.
+/// * [`DomainError::Terminal`] when `from` is terminal and nothing reopens it.
+/// * [`DomainError::IllegalTransition`] when the pair is not in the table, and
+///   when a reopen names a terminal state that may not be reopened or a target
+///   other than [`TaskState::Ready`].
 /// * [`DomainError::MissingAuthority`] when a resume has no command receipt.
 /// * [`DomainError::MissingEvidence`] when closure or run-failure evidence is
 ///   absent.
@@ -373,7 +457,36 @@ pub fn apply_task_transition(
     transition: &TaskTransition<'_>,
 ) -> DomainResult<TaskState> {
     if from.is_terminal() {
-        return Err(DomainError::Terminal { subject: "task" });
+        // The authority is consulted *before* terminality is enforced, which is
+        // the whole correction: the previous order refused every terminal source
+        // without ever looking at what was being asked for, so an operation the
+        // surface advertises could not reach the domain rule written for it.
+        let Some(_authority) = transition.reopen else {
+            return Err(DomainError::Terminal { subject: "task" });
+        };
+        if !from.is_reopenable() {
+            return Err(DomainError::IllegalTransition {
+                subject: "task reopen",
+                from: from.as_str(),
+                to: transition.to.as_str(),
+            });
+        }
+        if transition.to != TaskState::Ready {
+            return Err(DomainError::IllegalTransition {
+                subject: "task reopen",
+                from: from.as_str(),
+                to: transition.to.as_str(),
+            });
+        }
+    } else if transition.reopen.is_some() {
+        // Nothing to reopen. Answering "done" for a task that is still open would
+        // let a reopen stand in for a resume and skip the receipt rule that
+        // governs one.
+        return Err(DomainError::IllegalTransition {
+            subject: "task reopen",
+            from: from.as_str(),
+            to: transition.to.as_str(),
+        });
     }
     if !from.can_transition_to(transition.to) {
         return Err(DomainError::IllegalTransition {
@@ -1545,6 +1658,283 @@ impl RunProjection {
     pub fn ensure_open(&self, subject: &'static str) -> DomainResult<()> {
         if self.is_closed() {
             return Err(DomainError::Terminal { subject });
+        }
+        Ok(())
+    }
+}
+
+closed_enum! {
+    /// Durable lifecycle shared by topology nodes and their seat bindings.
+    TopologyLifecycle, "TopologyLifecycle" {
+        /// Available for materialization and reconciliation.
+        Active => "active",
+        /// Preserved but no longer eligible for new work.
+        Retired => "retired",
+        /// Historical and immutable.
+        Archived => "archived",
+    }
+}
+
+impl TopologyLifecycle {
+    /// Whether the lifecycle may still be mutated.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Archived)
+    }
+}
+
+closed_enum! {
+    /// Derived placement condition of one logical topology node.
+    PlacementState, "PlacementState" {
+        /// No native container is bound yet.
+        Unbound => "unbound",
+        /// Exact native identity has been read back.
+        Bound => "bound",
+        /// Desired and observed native state differ.
+        Drifted => "drifted",
+        /// Placement refused and requires explicit reconciliation.
+        PlacementBlocked => "placement_blocked",
+    }
+}
+
+/// One durable logical element in a project session-topology instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTopologyNode {
+    /// Durable node identity.
+    pub id: TopologyNodeId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic/goal scope when this node belongs to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mini_project_id: Option<MiniProjectId>,
+    /// Exact immutable topology specification revision/hash.
+    pub topology: TopologySnapshot,
+    /// Data-defined kind declared by that specification.
+    pub kind: TopologyKindKey,
+    /// Logical parent; absent only for the root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<TopologyNodeId>,
+    /// The delivery task this node serves, for the task-scoped kinds.
+    ///
+    /// How admission locates the node before any seat binding exists. Absent
+    /// for every node that is not a delivery: a project root, an epic and a
+    /// control plane serve no task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    /// Logical lifecycle.
+    pub lifecycle: TopologyLifecycle,
+    /// Derived native-placement state.
+    pub placement: PlacementState,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+/// One persistent role session owned by a topology node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatBinding {
+    /// Binding identity.
+    pub id: SeatBindingId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Hosting topology node.
+    pub topology_node_id: TopologyNodeId,
+    /// Stable role-slot address within that node.
+    pub role_slot_id: RoleSlotId,
+    /// Typed standard role snapshot.
+    pub role: CatalogRoleRef,
+    /// Optional delivery task reference for TSW seats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    /// Optional delivery TeamRun reference for TSW seats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_run_id: Option<TeamRunId>,
+    /// Binding lifecycle.
+    pub lifecycle: TopologyLifecycle,
+    /// The instant this seat must have been observed attached by, fixed when
+    /// the seat was created (OP-REQ-039a).
+    ///
+    /// Persisted rather than derived. A deadline recomputed at read time moves
+    /// whenever the grace constant does, which retroactively forgives every
+    /// seat that already failed to attach — the thirteen-hour phantom is
+    /// exactly that forgiveness applied once too often.
+    pub attach_deadline: Timestamp,
+    /// When this seat was last observed attached to its runtime session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attached_at: Option<Timestamp>,
+    /// When this seat last produced *observed activity* (OP-REQ-039c).
+    ///
+    /// Written only from an observed runtime event or turn position. A
+    /// successful readback may confirm attachment and must never land here: a
+    /// generic confirmation is Kontor asking, not the seat working, and reading
+    /// one as activity makes a wedged seat look busy for as long as anything
+    /// keeps polling it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<Timestamp>,
+    /// The exact owning epic seat, when this seat has one.
+    ///
+    /// Orphanhood is derived from *this* seat's Kontor lifecycle, never from a
+    /// runtime's own parent field: a runtime that has lost its parent is the
+    /// least reliable witness to whether the parent is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_seat_binding_id: Option<SeatBindingId>,
+    /// When the seat was deliberately released or reaped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<Timestamp>,
+    /// The seat that replaced this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<SeatBindingId>,
+    /// What the runtime last said about itself.
+    ///
+    /// Carried so an escalation can quote it, and deliberately not consulted
+    /// when concluding attachment: `running` is a claim about a process, not
+    /// evidence that a seat is doing anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_reported: Option<ObservedRunState>,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+impl SeatBinding {
+    /// Whether this binding occupies the unique `(node, role slot)` key.
+    #[must_use]
+    pub const fn is_non_terminal(&self) -> bool {
+        matches!(self.lifecycle, TopologyLifecycle::Active)
+    }
+
+    /// Whether this seat's closure orphans the seats it owns.
+    ///
+    /// A replaced seat counts as closed even while its row is still active: the
+    /// work moved to the successor, so anything still steering by this seat is
+    /// steering by nothing.
+    #[must_use]
+    pub const fn closes_children(&self) -> bool {
+        self.replaced_by.is_some()
+            || self.released_at.is_some()
+            || !matches!(self.lifecycle, TopologyLifecycle::Active)
+    }
+
+    /// Assemble the OP-REQ-039 observation from persisted evidence alone.
+    ///
+    /// `parent_closed` is the caller's join, because it is a fact about
+    /// *another* row: whoever holds the store looks up
+    /// [`Self::parent_seat_binding_id`] and asks that seat
+    /// [`Self::closes_children`]. A seat with no parent is not an orphan — it
+    /// is a root, and roots answer to Kontor lifecycle instead.
+    #[must_use]
+    pub const fn attachment_observation(&self, parent_closed: bool) -> SeatAttachmentObservation {
+        SeatAttachmentObservation {
+            attach_deadline: self.attach_deadline,
+            last_attached_at: self.last_attached_at,
+            last_activity_at: self.last_activity_at,
+            parent_closed,
+            released: self.released_at.is_some(),
+            runtime_reported: match self.runtime_reported {
+                Some(state) => state,
+                // Nothing heard is not a healthy report, and it is not an
+                // unhealthy one either. It is carried through as unknown so the
+                // conclusion rests on the recorded observations above.
+                None => ObservedRunState::Unknown,
+            },
+        }
+    }
+}
+
+crate::closed_enum! {
+    /// What a runtime read back a container as.
+    ///
+    /// Stored beside the shape that was desired, because "we asked for a
+    /// project and got a workspace" is only detectable if both are recorded.
+    ObservedContainerKind, "ObservedContainerKind" {
+        /// A native root/project.
+        Project => "project",
+        /// A container below a native root.
+        Workspace => "workspace",
+    }
+}
+
+/// The one current native container bound to a topology node.
+///
+/// There is no history here on purpose. A node that is rebound has exactly one
+/// binding, and the native id it used to hold is evidence in the event stream —
+/// a second row would be indistinguishable from a live second placement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeContainerBinding {
+    /// The node that owns the container.
+    pub topology_node_id: TopologyNodeId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The runtime-issued binding id this placement was made under.
+    pub container_binding_id: ExternalId,
+    /// The exact native identity, in the four parts that make it one.
+    ///
+    /// A native id means nothing on its own: it is only that container inside
+    /// one generation, on one host, of one runtime family. Reconciling on any
+    /// subset of these matches a container a restart has already replaced.
+    pub identity: NativeRuntimeIdentity,
+    /// What the runtime said the container is, read back rather than assumed.
+    pub observed_kind: ObservedContainerKind,
+    /// The container's canonical working directory, where it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_cwd: Option<ExternalName>,
+    /// When the binding was established.
+    pub bound_at: Timestamp,
+    /// When it was last confirmed against the runtime.
+    ///
+    /// Distinct from `bound_at` so a stale binding reads as stale instead of
+    /// looking as fresh as the day it was made.
+    pub last_readback_at: Timestamp,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+}
+
+/// Persisted adaptive-admission state for one MiniProject.
+///
+/// The scheduler still owns the decision. This record only makes its current
+/// window and replay cursor survive restart/export/restore.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdaptiveAdmissionState {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// MiniProject whose active TeamRun envelope budget this controls.
+    pub mini_project_id: MiniProjectId,
+    /// Current maximum new admissions for one scheduling pass.
+    pub current_window: u32,
+    /// Distinct clean observations accumulated at this width.
+    pub clean_observation_streak: u32,
+    /// Last observation already applied; replay must not advance state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observation_id: Option<ExternalId>,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+impl AdaptiveAdmissionState {
+    /// Validate persisted bounds without re-implementing scheduler policy.
+    ///
+    /// # Errors
+    /// Rejects a zero/out-of-range window or a streak larger than the two
+    /// observations Operational requires before growth.
+    pub fn validate(&self, floor: u32, ceiling: u32) -> DomainResult<()> {
+        if floor == 0
+            || floor > ceiling
+            || self.current_window < floor
+            || self.current_window > ceiling
+            || self.clean_observation_streak > 1
+        {
+            return Err(DomainError::invalid(
+                "AdaptiveAdmissionState",
+                "is outside the configured window or streak bounds",
+            ));
         }
         Ok(())
     }

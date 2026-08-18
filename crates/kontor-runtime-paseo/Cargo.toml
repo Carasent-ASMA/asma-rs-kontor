@@ -33,6 +33,10 @@ secrecy = { workspace = true }
 # (`webpki-roots`) enters this adapter's graph. Hand-rolled framing to avoid the
 # dependency gate is rejected outright (ALT-006).
 tokio-tungstenite = { workspace = true }
+# The daemon's MCP facade is the one Paseo surface that can rename a workspace,
+# and it is plain HTTP on the same loopback port as the session socket. Already a
+# workspace dependency; no new package enters the graph for it.
+reqwest = { workspace = true }
 # `SinkExt`/`StreamExt` and the split halves the reader task owns. Already a
 # workspace dependency; no new package enters the graph for it.
 futures = { workspace = true }

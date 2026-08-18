@@ -42,7 +42,8 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::request::CompactRequest;
 use kontor_runtime::request::{
-    HistoryRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, SendMessageRequest,
+    HistoryRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest,
+    SendMessageRequest,
 };
 use kontor_runtime::timeline::{EventSubject, HistoryCursor, HistoryReader, SessionEventKind};
 use serde::Deserialize;
@@ -393,6 +394,18 @@ pub async fn send_message(
     let demand = LimitDemand::MessageBytes(body.as_str().len() as u64);
     session.preflight(realm_id, RuntimeCapability::SendMessage, Some(demand))?;
 
+    // A persistent seat may be between native processes. Resume is a no-op for
+    // an already-live session and reloads a closed, resumable one in place. A
+    // direct send cannot do that job: Paseo quite correctly refuses to address a
+    // process that is no longer running.
+    session
+        .adapter
+        .resume(&ResumeRequest {
+            binding: session.snapshot.clone(),
+            requested_at: now(),
+        })
+        .await
+        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
     let acknowledged = session
         .adapter
         .send(&SendMessageRequest {

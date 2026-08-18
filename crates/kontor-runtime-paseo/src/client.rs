@@ -100,6 +100,29 @@ const fn paseo_mode(autonomy: SeatAutonomy) -> &'static str {
     }
 }
 
+/// The unattended, approval-aware mode Paseo 0.3.1 exposes for each provider.
+///
+/// Kontor pins this explicitly because an omitted mode delegates authority to
+/// a mutable provider default (including Claude's `default` / Always Ask). The
+/// launch path spells the mode from the seat's [`SeatAutonomy`] via
+/// [`paseo_mode`]; this function remains the read path's expected-mode source,
+/// checked against a live agent's `current_mode_id`.
+pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
+    match provider {
+        "claude" => Ok(Some("auto")),
+        "codex" => Ok(Some("auto-review")),
+        "copilot" => Ok(Some(
+            "https://agentclientprotocol.com/protocol/session-modes#agent",
+        )),
+        "opencode" => Ok(Some("build")),
+        "pi" => Ok(None),
+        "omp" => Ok(Some("full")),
+        _ => Err(RuntimeError::PermissionModeUnsupported {
+            provider: provider.to_owned(),
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI commands
 // ---------------------------------------------------------------------------
@@ -149,9 +172,8 @@ impl PaseoCommand {
     /// than asking Paseo to provision one of its own, which would put the role
     /// in a tree Kontor never prepared.
     ///
-    /// There is no `--label`: 0.3.1's `workspace create` does not have one and
-    /// its workspaces carry no labels at all, so the correlation label rides in
-    /// the title. See [`crate::wire::workspace_label_suffix`].
+    /// There is no `--label`: Kontor therefore stores the native workspace id
+    /// in its own durable binding rather than exposing machine identity here.
     #[must_use]
     pub fn workspace_create(canonical_cwd: &str, project_id: &str, title: &str) -> Self {
         Self::mutate(
@@ -195,7 +217,6 @@ impl PaseoCommand {
     // takes, in the order it takes them. Bundling them into a struct would hide
     // exactly the mapping this function exists to make checkable.
     #[allow(clippy::too_many_arguments)]
-    #[must_use]
     pub fn agent_run(
         workspace_id: &str,
         canonical_cwd: &str,
@@ -205,7 +226,7 @@ impl PaseoCommand {
         labels: &BTreeMap<String, String>,
         parent_agent_id: &str,
         prompt: &str,
-    ) -> Self {
+    ) -> RuntimeResult<Self> {
         let mut argv = Argv::new(&["agent", "run", "--background"])
             .option("--workspace", workspace_id)
             .option("--cwd", canonical_cwd)
@@ -226,7 +247,7 @@ impl PaseoCommand {
         command
             .env
             .push((PARENT_AGENT_ENV.to_owned(), parent_agent_id.to_owned()));
-        command
+        Ok(command)
     }
 
     /// `paseo agent update {id} --label …` — the adoption write, and nothing else.
@@ -323,6 +344,24 @@ impl PaseoCommand {
     #[must_use]
     pub const fn mutates(&self) -> bool {
         self.mutates
+    }
+
+    /// The `--title` this command sets, if it sets one.
+    ///
+    /// Narrow on purpose, and deliberately not part of [`PaseoCommand::route`].
+    /// The route omits every foreign value so a ledger assertion can never
+    /// quote an operator's prompt; a container's *title* is a different thing.
+    /// It is the name humans read in the runtime, it is Kontor's to decide from
+    /// its own scope, and a contract that could not assert it would let the one
+    /// visible half of a placement drift unnoticed — which is exactly how a
+    /// workspace ends up named after a node id.
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        self.argv
+            .iter()
+            .position(|argument| argument == "--title")
+            .and_then(|flag| self.argv.get(flag + 1))
+            .map(String::as_str)
     }
 
     /// Refuse a foreign value that would be read as a flag.
@@ -1386,7 +1425,8 @@ mod tests {
                 &labels(),
                 "agt_orchestrator",
                 "do the work",
-            ),
+            )
+            .expect("Codex has a pinned permission mode"),
             PaseoCommand::agent_update_labels("agt_1", &labels()),
             PaseoCommand::agent_reload("agt_1"),
             PaseoCommand::agent_stop("agt_1"),
@@ -1420,7 +1460,8 @@ mod tests {
             &labels(),
             "agt_p",
             "--not-a-flag",
-        );
+        )
+        .expect("Codex has a pinned permission mode");
         // The option half never carries it, because the transport writes its
         // own `--host` after these and everything past `--` is a positional.
         assert_eq!(command.trailing(), Some("--not-a-flag"));
@@ -1446,7 +1487,8 @@ mod tests {
             &labels(),
             "agt_p",
             "p",
-        );
+        )
+        .expect("Claude has a pinned permission mode");
         let argv = command.argv();
         assert!(argv.windows(2).any(|pair| pair == ["--provider", "claude"]));
         assert!(
@@ -1454,6 +1496,32 @@ mod tests {
                 .any(|pair| pair == ["--model", "claude-opus-5"])
         );
         assert!(argv.windows(2).any(|pair| pair == ["--thinking", "xhigh"]));
+        assert!(argv.windows(2).any(|pair| pair == ["--mode", "default"]));
+    }
+
+    #[test]
+    fn every_supported_provider_gets_an_explicit_unattended_mode() {
+        let expected = [
+            ("claude", Some("auto")),
+            ("codex", Some("auto-review")),
+            (
+                "copilot",
+                Some("https://agentclientprotocol.com/protocol/session-modes#agent"),
+            ),
+            ("opencode", Some("build")),
+            ("pi", None),
+            ("omp", Some("full")),
+        ];
+        for (provider, mode) in expected {
+            assert_eq!(
+                permission_mode(provider).expect("a supported provider"),
+                mode
+            );
+        }
+        assert!(matches!(
+            permission_mode("new-provider"),
+            Err(RuntimeError::PermissionModeUnsupported { .. })
+        ));
     }
 
     /// Every launch states the authority it runs under, and the three intents
@@ -1479,7 +1547,8 @@ mod tests {
                 &labels(),
                 "agt_p",
                 "p",
-            );
+            )
+            .expect("the autonomy maps to a Paseo mode");
             let argv = command.argv().to_vec();
             let index = argv
                 .iter()
@@ -1516,7 +1585,8 @@ mod tests {
             &labels(),
             "agt_orchestrator",
             "the actual prompt",
-        );
+        )
+        .expect("Codex has a pinned permission mode");
         assert_eq!(command.route(), "agent run");
         assert!(!command.route().contains("the actual prompt"));
         assert!(!command.route().contains("secret-project"));
@@ -1541,7 +1611,8 @@ mod tests {
             &labels(),
             "agt_orchestrator",
             "p",
-        );
+        )
+        .expect("Codex has a pinned permission mode");
         assert_eq!(
             command.env(),
             [(PARENT_AGENT_ENV.to_owned(), "agt_orchestrator".to_owned())]
@@ -1574,6 +1645,7 @@ mod tests {
             "agt_p",
             "p",
         )
+        .expect("Codex has a pinned permission mode")
         .ensure_dispatchable()
         .expect("`--background --workspace wks_1` is an ordinary command");
         PaseoCommand::agent_stop("agt_1")
@@ -1595,6 +1667,7 @@ mod tests {
                 "agt_p",
                 "p",
             )
+            .expect("Codex has a pinned permission mode")
             .mutates()
         );
         assert!(PaseoCommand::workspace_create("/w/t", "p", "t").mutates());
@@ -1624,7 +1697,7 @@ mod tests {
         assert_eq!(hello["clientId"], "kontor-plane-1");
         assert_eq!(hello["clientType"], "cli");
         assert_eq!(hello["protocolVersion"], 1);
-        assert_eq!(hello["appVersion"], "0.3.1");
+        assert_eq!(hello["appVersion"], PASEO_APP_VERSION);
         // The daemon's capability table spells this one snake_case; the
         // camelCase spelling is silently ignored, which is worse than an error.
         assert_eq!(hello["capabilities"]["selective_agent_timeline"], true);

@@ -1,0 +1,22 @@
+{
+  "bundle_hash": "8bf7e3d9778541de14146002b8a9d8432a2ba81450a4de18e8f892ed9b3b86f5",
+  "category": "code",
+  "definition_hash": "5fd8daad547e2dc01e57431925e7bc8d6b6b309244b294b20dbf78b4e3ea0dc1",
+  "gates": [
+    "code-review-gate",
+    "qa-gate",
+    "release-gate"
+  ],
+  "pack_id": "kontor-mvp",
+  "pack_version": 1,
+  "phases": [
+    "implementation",
+    "code-review",
+    "qa",
+    "release"
+  ],
+  "profile": "code",
+  "profile_version": 1,
+  "task": "pilot-code",
+  "team_template": "01936f5a-0000-7000-8000-000000000001"
+}

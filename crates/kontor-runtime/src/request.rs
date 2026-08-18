@@ -25,6 +25,7 @@ use uuid::Uuid;
 use crate::adapter::{RuntimeError, RuntimeResult};
 use crate::admission::{LaunchAuthority, RoleSlotKey};
 use crate::capability::{RuntimeBindingSnapshot, RuntimeCapabilities};
+use crate::container::{ContainerBindingSnapshot, ContainerClaim};
 use crate::timeline::{HistoryCursor, SessionEventKind, TimelinePosition};
 use crate::workspace::{WorkspaceBindingSnapshot, WorkspaceClaim, WorkspaceRoot};
 
@@ -133,6 +134,91 @@ impl fmt::Display for MessageId {
     }
 }
 
+/// The verified native place a launch presents, and how it was keyed.
+///
+/// Exactly one of these travels with a launch, which is the point of making it
+/// an enum rather than two optional fields: a launch cannot present both, and
+/// "which key was this place found by" is answered by reading the value rather
+/// than by inspecting which field happened to be filled in.
+///
+/// [`Self::Container`] is what an Operational placement uses. The place is
+/// keyed by [`kontor_core::id::TopologyNodeId`], so a second delivery attempt at
+/// the same ticket resolves to the same container and a container no ticket owns
+/// is still addressable. [`Self::Workspace`] is the older TeamRun-keyed task
+/// workspace. No Kontor application service presents one any more — admission
+/// places every accepted seat through the topology — so it is reached only by
+/// direct adapter callers: contract fixtures, and the runtimes that prepare
+/// workspaces but not projects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchPlacement {
+    /// A TeamRun-keyed task workspace.
+    Workspace(WorkspaceBindingSnapshot),
+    /// A topology-node-keyed native container.
+    Container(ContainerBindingSnapshot),
+}
+
+impl LaunchPlacement {
+    /// The container binding, when this placement is one.
+    #[must_use]
+    pub const fn container(&self) -> Option<&ContainerBindingSnapshot> {
+        match self {
+            Self::Container(snapshot) => Some(snapshot),
+            Self::Workspace(_) => None,
+        }
+    }
+
+    /// The task workspace binding, when this placement is one.
+    #[must_use]
+    pub const fn workspace(&self) -> Option<&WorkspaceBindingSnapshot> {
+        match self {
+            Self::Workspace(snapshot) => Some(snapshot),
+            Self::Container(_) => None,
+        }
+    }
+}
+
+/// What a launch claims about the verified place it will work in.
+///
+/// One claim covers both keyings so a caller cannot present a coherent value of
+/// the wrong kind and have it go unchecked: an absent placement is refused here
+/// rather than treated as "nothing to verify".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacementClaim<'a> {
+    /// The verified placement, when the caller has one.
+    pub placement: Option<&'a LaunchPlacement>,
+    /// The team run the role belongs to.
+    pub team_run_id: TeamRunId,
+    /// The task the role serves.
+    pub task_id: TaskId,
+    /// Where the role says it will work.
+    pub cwd: &'a WorkspaceRoot,
+}
+
+impl PlacementClaim<'_> {
+    /// Verify the claim before anything can be edited.
+    ///
+    /// # Errors
+    /// [`RuntimeError::WorkspaceBindingRequired`] when nothing was presented,
+    /// otherwise whatever the presented placement's own claim refuses.
+    pub fn verify(&self, current_generation: Option<u64>) -> RuntimeResult<()> {
+        match self.placement {
+            None => Err(RuntimeError::WorkspaceBindingRequired),
+            Some(LaunchPlacement::Workspace(snapshot)) => WorkspaceClaim {
+                binding: Some(snapshot),
+                team_run_id: self.team_run_id,
+                task_id: self.task_id,
+                cwd: self.cwd,
+            }
+            .verify(current_generation),
+            Some(LaunchPlacement::Container(snapshot)) => ContainerClaim {
+                binding: Some(snapshot),
+                cwd: self.cwd,
+            }
+            .verify(current_generation),
+        }
+    }
+}
+
 /// Everything a launch names, before anything has authorized it.
 ///
 /// This is a plain value and building one is deliberately harmless: it names a
@@ -152,11 +238,10 @@ pub struct LaunchParts {
     pub task_id: TaskId,
     /// The binding id Kontor has already minted for the session to come.
     pub binding_id: RuntimeBindingId,
-    /// The verified task workspace every role of this team run shares. `None`
-    /// is a launch that skipped preparation, and a runtime that prepares
-    /// workspaces refuses it.
-    pub workspace: Option<WorkspaceBindingSnapshot>,
-    /// Where this role says it will work. It must be the bound workspace root.
+    /// The verified place this launch will work in. `None` is a launch that
+    /// skipped preparation, and a runtime that prepares places refuses it.
+    pub placement: Option<LaunchPlacement>,
+    /// Where this role says it will work. It must be the bound placement root.
     pub cwd: WorkspaceRoot,
     /// The coding account this run is pinned to, if any.
     pub account_profile_id: Option<AccountProfileId>,
@@ -267,10 +352,29 @@ impl LaunchRequest {
         self.parts.binding_id
     }
 
-    /// The verified task workspace this launch presents, if any.
+    /// The verified place this launch presents, if any.
     #[must_use]
-    pub const fn workspace(&self) -> Option<&WorkspaceBindingSnapshot> {
-        self.parts.workspace.as_ref()
+    pub const fn placement(&self) -> Option<&LaunchPlacement> {
+        self.parts.placement.as_ref()
+    }
+
+    /// The verified task workspace this launch presents, if it presents one.
+    #[must_use]
+    pub fn workspace(&self) -> Option<&WorkspaceBindingSnapshot> {
+        self.parts
+            .placement
+            .as_ref()
+            .and_then(LaunchPlacement::workspace)
+    }
+
+    /// The verified node-keyed container this launch presents, if it presents
+    /// one.
+    #[must_use]
+    pub fn container(&self) -> Option<&ContainerBindingSnapshot> {
+        self.parts
+            .placement
+            .as_ref()
+            .and_then(LaunchPlacement::container)
     }
 
     /// Where this role says it will work.
@@ -323,9 +427,9 @@ impl LaunchRequest {
 
     /// What this role claims about where it will work.
     #[must_use]
-    pub fn workspace_claim(&self) -> WorkspaceClaim<'_> {
-        WorkspaceClaim {
-            binding: self.parts.workspace.as_ref(),
+    pub const fn placement_claim(&self) -> PlacementClaim<'_> {
+        PlacementClaim {
+            placement: self.parts.placement.as_ref(),
             team_run_id: self.parts.team_run_id,
             task_id: self.parts.task_id,
             cwd: &self.parts.cwd,

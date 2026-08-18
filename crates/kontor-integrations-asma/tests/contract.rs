@@ -48,7 +48,7 @@ use kontor_integrations_asma::jira::{
 };
 use kontor_integrations_asma::{
     AsmaError, AsmaExecutable, SelectionConflict, UnavailableReason, WIRE_SCHEMA_VERSION,
-    WireTimestamp, fleet,
+    WireTimestamp,
 };
 
 const ALTERNATE_WORKFLOW: &str = include_str!("fixtures/external-workflow-alternate.json");
@@ -1317,20 +1317,17 @@ async fn an_observation_crosses_the_boundary_as_argv_and_one_json_document() {
 #[cfg(unix)]
 async fn argv_never_carries_a_url_a_state_path_or_an_interpreted_metacharacter() {
     // The one-writer rule, asserted on what actually crossed: no endpoint, no
-    // fleet directory, and a metacharacter-bearing model name arriving as one
-    // literal argument rather than a second command.
-    let hostile = "gpt-5.6-sol; touch /tmp/kontor-should-not-exist";
-    let fake = FakeAsma::answering(&fleet_status_document());
+    // fleet directory, and nothing a shell could reinterpret. The vehicle is
+    // the jira delegation because it is the only boundary this crate has left
+    // — capacity no longer crosses one at all.
+    let (workflow, _) = projects().remove(0);
+    let spec = workflow.spec();
+    let current = first_inbound(spec);
+    let fake = FakeAsma::answering(&observe_response(&current, Vec::new()));
     let asma = fake.resolved();
-    fleet::status(&asma, &[hostile])
-        .await
-        .expect("the status document parses");
+    probe_boundary(&asma).await.expect("the observation parses");
 
     let argv = fake.argv();
-    assert!(
-        argv.contains(&hostile.to_owned()),
-        "the hostile name must arrive as exactly one argument: {argv:?}"
-    );
     assert!(
         !Path::new("/tmp/kontor-should-not-exist").exists(),
         "argv must never be interpreted by a shell"
@@ -1350,96 +1347,6 @@ async fn argv_never_carries_a_url_a_state_path_or_an_interpreted_metacharacter()
             );
         }
     }
-}
-
-#[cfg(unix)]
-fn fleet_status_document() -> serde_json::Value {
-    serde_json::json!({
-        "schema_version": 1,
-        "operation": "fleet.status",
-        "observed_at": "2026-08-11T10:00:00Z",
-        "records": [{
-            "model": "gpt-5.6-sol",
-            "status": "available",
-            "blocked_until": null,
-            "last_error": null,
-            "recorded_at": "2026-08-11T09:00:00Z"
-        }],
-        "errors": []
-    })
-}
-
-#[tokio::test]
-#[cfg(unix)]
-async fn a_dry_run_block_never_sends_apply_authority() {
-    let document = serde_json::json!({
-        "schema_version": 1,
-        "operation": "fleet.block",
-        "observed_at": "2026-08-11T10:00:00Z",
-        "model": "gpt-5.6-sol",
-        "applied": false,
-        "would_change": true,
-        "current": null,
-        "target": {"status": "blocked", "blocked_until": "2026-08-11T12:00:00Z",
-                   "last_error": "rate limited", "recorded_at": "2026-08-11T10:00:00Z"},
-        "converged": null,
-        "errors": []
-    });
-    let fake = FakeAsma::answering(&document);
-    let asma = fake.resolved();
-    let answer = fleet::block(
-        &asma,
-        &fleet::BlockRequest {
-            model: "gpt-5.6-sol".to_owned(),
-            resets_at: Some(1_788_121_720),
-            error_text: Some("rate limited".to_owned()),
-            apply: false,
-        },
-    )
-    .await
-    .expect("the block document parses");
-
-    assert!(!answer.applied);
-    assert!(answer.would_change);
-    let argv = fake.argv();
-    assert!(argv.contains(&"--dry-run".to_owned()));
-    assert!(
-        !argv.contains(&"--no-dry-run".to_owned()),
-        "an unauthorized block must never send apply authority: {argv:?}"
-    );
-}
-
-#[tokio::test]
-#[cfg(unix)]
-async fn a_boundary_that_reports_an_unauthorized_write_is_refused() {
-    let document = serde_json::json!({
-        "schema_version": 1,
-        "operation": "fleet.block",
-        "observed_at": "2026-08-11T10:00:00Z",
-        "model": "gpt-5.6-sol",
-        // The lie: a dry run claiming it wrote.
-        "applied": true,
-        "would_change": true,
-        "current": null,
-        "target": {"status": "blocked", "blocked_until": null,
-                   "last_error": null, "recorded_at": "2026-08-11T10:00:00Z"},
-        "converged": true,
-        "errors": []
-    });
-    let fake = FakeAsma::answering(&document);
-    let asma = fake.resolved();
-    assert!(matches!(
-        fleet::block(
-            &asma,
-            &fleet::BlockRequest {
-                model: "gpt-5.6-sol".to_owned(),
-                apply: false,
-                ..fleet::BlockRequest::default()
-            },
-        )
-        .await,
-        Err(AsmaError::Refused { .. })
-    ));
 }
 
 #[tokio::test]
@@ -1474,9 +1381,7 @@ async fn every_boundary_failure_becomes_a_typed_unavailable_result() {
     for (body, expected, timeout, max_stdout_bytes) in cases {
         let fake = FakeAsma::scripted(body);
         let asma = fake.resolved_with(timeout, max_stdout_bytes);
-        let error = fleet::status(&asma, &[])
-            .await
-            .expect_err("the case must fail");
+        let error = probe_boundary(&asma).await.expect_err("the case must fail");
         match error {
             AsmaError::Unavailable { reason, .. } => assert_eq!(reason, expected, "for {body:?}"),
             other => panic!("expected an unavailable result for {body:?}, got {other:?}"),
@@ -1491,12 +1396,12 @@ async fn a_schema_this_build_does_not_speak_is_refused() {
     // which is the earliest possible refusal: no field of an unknown generation
     // is ever interpreted.
     let fake = FakeAsma::scripted(&heredoc(
-        "{\"schema_version\": 99, \"operation\": \"fleet.status\", \
+        "{\"schema_version\": 99, \"operation\": \"jira.observe\", \
          \"observed_at\": \"2026-08-11T10:00:00Z\", \"records\": [], \"errors\": []}",
     ));
     let asma = fake.resolved();
     assert!(matches!(
-        fleet::status(&asma, &[]).await,
+        probe_boundary(&asma).await,
         Err(AsmaError::Unavailable {
             reason: UnavailableReason::MalformedResponse | UnavailableReason::SchemaMismatch,
             ..
@@ -1510,7 +1415,7 @@ async fn a_credential_in_a_child_diagnostic_never_reaches_the_error() {
     const SENTINEL: &str = "ghp_0123456789abcdefghijklmnopqrstuvwx";
     let fake = FakeAsma::scripted(&format!("printf '%s' '{SENTINEL}' >&2\nexit 1"));
     let asma = fake.resolved();
-    let error = fleet::status(&asma, &[])
+    let error = probe_boundary(&asma)
         .await
         .expect_err("a non-zero exit fails");
     let rendered = format!("{error:?} {error}");
@@ -1969,45 +1874,22 @@ fn the_bundled_specifications_are_the_seed_this_build_ships() {
     assert!(!json.contains("transition"), "the seed declares no route");
 }
 
-#[tokio::test]
+/// Drive the process boundary through the one delegation this crate still has.
+///
+/// The properties below — timeout, oversized output, exit status, malformed
+/// response, credential redaction, schema mismatch — belong to
+/// [`AsmaExecutable`] and not to any one command. They used to be driven
+/// through `fleet::status` because it was the cheapest call to set up; that
+/// module is gone, so they are driven through the jira observe instead. The
+/// vehicle changed, the properties did not.
 #[cfg(unix)]
-async fn a_preflight_report_is_evidence_not_a_command_receipt() {
-    let document = serde_json::json!({
-        "schema_version": 1,
-        "operation": "fleet.preflight",
-        "observed_at": "2026-08-11T10:00:00Z",
-        "readings": [{
-            "pool": "deepseek", "enforcement_class": "PROVIDER-CHECKED",
-            "verdict": "observed", "value": "USD 99.99", "age_seconds": 720,
-            "detail": "balance from the provider", "breached": false
-        }],
-        "decisions": [{
-            "model": "gpt-5.6-sol", "allowed": false,
-            "blocked_until": "2026-08-11T12:00:00Z", "last_error": "rate limited"
-        }],
-        "errors": []
-    });
-    let fake = FakeAsma::answering(&document);
-    let asma = fake.resolved();
-    let answer = fleet::preflight(&asma, &["gpt-5.6-sol"])
+async fn probe_boundary(asma: &AsmaExecutable) -> Result<Observed, AsmaError> {
+    let (workflow, field) = projects().remove(0);
+    let projection = projection(&field, Vec::new());
+    let facts = implementing();
+    let key = idempotency();
+    let link_id = TicketLinkId::generate();
+    delegate(asma, &workflow, &field, &projection, &facts, link_id, &key)
+        .observe()
         .await
-        .expect("the preflight document parses");
-
-    assert!(!answer.has_errors());
-    assert_eq!(answer.decisions.len(), 1);
-    assert!(
-        !answer.decisions[0].allowed,
-        "a blocked model is not allowed"
-    );
-    let evidence = answer
-        .canonical_evidence()
-        .expect("the report canonicalizes");
-    assert_eq!(evidence.schema_version(), WIRE_SCHEMA_VERSION);
-    // Reloading identical evidence must reproduce the digest a receipt cites.
-    let again = answer.canonical_evidence().expect("canonicalizes");
-    assert_eq!(evidence.hash(), again.hash());
-
-    let argv = fake.argv();
-    assert_eq!(argv[0], "fleet");
-    assert!(argv.contains(&"--json".to_owned()));
 }

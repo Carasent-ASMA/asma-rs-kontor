@@ -44,7 +44,7 @@ use kontor_runtime::observation::{
     ObservationSource, ReconciliationAction, ReconciliationFinding, reconcile,
 };
 use kontor_runtime::request::{
-    AdoptRequest, CorrelationLabel, LaunchParts, LiveSubscribeRequest, MessageId,
+    AdoptRequest, CorrelationLabel, LaunchParts, LaunchPlacement, LiveSubscribeRequest, MessageId,
     SendMessageRequest,
 };
 use kontor_runtime::timeline::{HistoryCursor, TimelineBreak, TimelinePosition};
@@ -1760,7 +1760,7 @@ impl Engine {
             role_slot_id: slot(role_slot),
             task_id: self.task_id,
             binding_id: RuntimeBindingId::generate(),
-            workspace: Some(self.workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(self.workspace.clone())),
             cwd: self.workspace.root().clone(),
             account_profile_id,
             prompt: text("carry out the pilot step"),

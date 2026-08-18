@@ -39,12 +39,19 @@ use std::sync::Arc;
 
 use crate::body::Json;
 use async_trait::async_trait;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ExternalId, ExternalName, IdempotencyKey,
-    MiniProjectId, ProjectId, RuntimeKindKey, SpecVersion, TaskId, Timestamp,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
+    ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId,
+    QuickSessionId, RoleCatalogId, RoleCode, RuntimeKindKey, SeatBindingId, SpecVersion, TaskId,
+    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
+use kontor_core::spec::{
+    CodeCategory, CodeLifecycle, EpicPresence, RoleSegment, ShareabilityClass,
+    ShareabilityClassifier, ShareabilityProvenance,
+};
+use kontor_core::state::{PlacementState, TopologyLifecycle};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -80,6 +87,1343 @@ pub struct RevisionRefDto {
     /// The pinned revision.
     #[schema(value_type = u32)]
     pub version: SpecVersion,
+}
+
+/// What a caller supplies when a new seat selects a standard role.
+///
+/// It carries the catalog revision and the code, and deliberately nothing else.
+/// A request that could also state the standard title would be a second source
+/// for a fact the catalog already owns, and the two would disagree the first
+/// time a title was corrected — so the title is resolved, never accepted.
+///
+/// The field list is closed. Without that, a caller sending `standard_title`
+/// would have it quietly dropped by serde and would believe it had been
+/// honoured — which is worse than a refusal, because it looks like agreement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RoleSelectionDto {
+    /// The exact catalog revision the code is read from.
+    pub catalog_revision: RevisionRefDto,
+    /// The stable role code.
+    #[schema(value_type = String)]
+    pub role_code: RoleCode,
+    /// A presentation-only label, when this seat is shown as something more
+    /// specific than its standard title.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub custom_display_name: Option<ExternalName>,
+}
+
+/// One role as the server resolved it, on every projection and every receipt.
+///
+/// The extra fields over [`RoleSelectionDto`] are exactly the ones the daemon
+/// looked up. A client renders these; it never derives them, and it never keeps
+/// its own table of what a code means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ResolvedRoleRefDto {
+    /// The catalog revision this was resolved against.
+    pub catalog_revision: RevisionRefDto,
+    /// The stable role code.
+    #[schema(value_type = String)]
+    pub role_code: RoleCode,
+    /// The catalog's standard title for that code.
+    #[schema(value_type = String)]
+    pub standard_title: ExternalName,
+    /// The segment the catalog files it under.
+    #[schema(value_type = String)]
+    pub segment: RoleSegment,
+    /// The presentation-only label, when one was selected.
+    #[schema(value_type = Option<String>)]
+    pub custom_display_name: Option<ExternalName>,
+}
+
+/// Server-owned help for one controlled code.
+///
+/// Keyed by `(category, code)`. Compatibility and retired codes stay present as
+/// explicit entries: a client reading old state has to render them honestly, and
+/// a projection that dropped them would force every client to keep the private
+/// dictionary this projection exists to replace. A code with no entry is
+/// rendered as unknown, because the server returned no definition for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CodeHelpEntryDto {
+    /// The code itself.
+    pub code: String,
+    /// Its expanded name.
+    #[schema(value_type = String)]
+    pub full_name: ExternalName,
+    /// One concise sentence saying what it means.
+    #[schema(value_type = String)]
+    pub meaning: BoundedText,
+    /// The family it belongs to.
+    #[schema(value_type = String)]
+    pub category: CodeCategory,
+    /// Whether new state may still use it.
+    #[schema(value_type = String)]
+    pub lifecycle: CodeLifecycle,
+    /// The revision this definition was read from.
+    pub source: RevisionRefDto,
+}
+
+/// The exact immutable topology specification a projection is pinned to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PinnedSpecDto {
+    /// Specification identity.
+    #[schema(value_type = String)]
+    pub id: TopologySpecId,
+    /// The published revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// Canonical hash of that exact document.
+    #[schema(value_type = String)]
+    pub canonical_hash: ContentHash,
+}
+
+/// The native shape the server derived for one node.
+///
+/// Derived, never supplied. It is what the daemon intends to materialize from
+/// the pinned specification's declared capabilities — which is why a caller can
+/// read it and cannot write it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct DesiredBindingDto {
+    /// The runtime family this node's container must come from.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// The projection capabilities the adapter must support, in declared order.
+    pub projection_capabilities: Vec<String>,
+}
+
+/// What a runtime actually reported for one node, at one instant.
+///
+/// Present only after an exact-id readback. Its absence is a fact — nothing has
+/// been observed — and is never filled in from the desired shape, because a
+/// desired value presented as an observation is how drift stops being visible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ObservedBindingDto {
+    /// The runtime family that answered.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// The native container identity it reported.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// The native display name it reported.
+    #[schema(value_type = Option<String>)]
+    pub native_name: Option<ExternalId>,
+    /// The working directory it reported.
+    #[schema(value_type = Option<String>)]
+    pub cwd: Option<ExternalId>,
+    /// When the readback happened.
+    #[schema(value_type = String, format = DateTime)]
+    pub observed_at: Timestamp,
+}
+
+/// One seat a topology node hosts, as a projection reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologySeatDto {
+    /// The exact binding identity, which is what an attention or retirement
+    /// addresses. Naming a seat any other way would be a scan.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// The stable role-slot address within the node.
+    pub role_slot_id: String,
+    /// The role, as the server resolved it.
+    pub role: ResolvedRoleRefDto,
+    /// Its lifecycle.
+    #[schema(value_type = String)]
+    pub lifecycle: TopologyLifecycle,
+}
+
+/// One node of a topology projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologyNodeDto {
+    /// Durable node identity. The only topology handle a caller may address
+    /// back, and only for the operations that take one.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// Logical parent; absent only for the root.
+    #[schema(value_type = Option<String>)]
+    pub parent_topology_node_id: Option<TopologyNodeId>,
+    /// The data-defined kind the pinned specification declares.
+    #[schema(value_type = String)]
+    pub kind_key: TopologyKindKey,
+    /// Logical lifecycle.
+    #[schema(value_type = String)]
+    pub lifecycle: TopologyLifecycle,
+    /// Derived native-placement condition.
+    #[schema(value_type = String)]
+    pub placement: PlacementState,
+    /// The native shape the server derived.
+    pub desired_binding: DesiredBindingDto,
+    /// The native identity last read back, when anything has been.
+    pub observed_binding: Option<ObservedBindingDto>,
+    /// The seats this node hosts, in stable slot order.
+    pub seats: Vec<TopologySeatDto>,
+}
+
+/// The scope a semantic topology operation acts on.
+///
+/// A closed tagged union of the semantic ids Kontor already owns. This is the
+/// whole of what a model may say about *where* it wants topology: it names a
+/// meaning, and the server derives the kind, the parent and the native shape
+/// from the pinned specification. Adding a published kind to a specification
+/// therefore needs no change here, and inventing a kind per call stays
+/// impossible — which is the same rule stated as a type rather than as a
+/// validation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum SemanticTopologyTargetDto {
+    /// The project's own root.
+    ProjectRoot,
+    /// One Quick session.
+    QuickSession {
+        /// The session.
+        #[schema(value_type = String)]
+        quick_session_id: QuickSessionId,
+    },
+    /// One epic.
+    Epic {
+        /// The epic.
+        #[schema(value_type = String)]
+        epic_id: MiniProjectId,
+    },
+    /// One epic's control plane.
+    EpicControl {
+        /// The epic whose control plane this is.
+        #[schema(value_type = String)]
+        epic_id: MiniProjectId,
+    },
+    /// One ticket.
+    Ticket {
+        /// The task the ticket is linked to.
+        #[schema(value_type = String)]
+        task_id: TaskId,
+    },
+    /// One Advisor consultation.
+    AdvisorConsultation {
+        /// The consultation.
+        #[schema(value_type = String)]
+        advisor_run_id: AdvisorRunId,
+    },
+    /// One Committee consultation.
+    CommitteeConsultation {
+        /// The consultation.
+        #[schema(value_type = String)]
+        committee_run_id: CommitteeRunId,
+    },
+}
+
+/// What every new mutation answers with, whatever else it adds.
+///
+/// A caller gets the receipt, whether this call was the one that wrote,
+/// the revision to present next, and the position the answer is consistent
+/// with. `applied` is what makes a replay legible: the same key returns the
+/// original receipt with `Unchanged`, so a retry is distinguishable from a
+/// second effect without diffing anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct MutationReceiptDto {
+    /// The Realm the effect happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The receipt this command was committed under.
+    pub receipt_id: String,
+    /// Whether this call wrote, or replayed one that already had.
+    pub applied: AppliedDto,
+    /// The affected aggregate's revision after the effect.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The control-plane position the answer is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// How one durable record was classified for leaving Kontor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ShareabilityDto {
+    /// Whether it may ever leave.
+    #[schema(value_type = String)]
+    pub class: ShareabilityClass,
+    /// Who classified it.
+    #[schema(value_type = String)]
+    pub classifier: ShareabilityClassifier,
+    /// Default rule versus a human's write-time override.
+    #[schema(value_type = String)]
+    pub provenance: ShareabilityProvenance,
+}
+
+// ---------------------------------------------------------------------------
+// Topology specification, catalog and reference
+// ---------------------------------------------------------------------------
+
+/// What `topology-specs:draft` is asked for.
+///
+/// The vocabulary is data, so it arrives as the declared node kinds rather than
+/// as a choice between server-known shapes. `base` names a revision to start
+/// from; without one the draft is built from nothing.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+pub struct DraftTopologySpecRequest {
+    /// The revision to start from, when this is an edit rather than a first draft.
+    pub base: Option<RevisionRefDto>,
+    /// Human name for the specification.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// The unique logical root kind.
+    #[schema(value_type = String)]
+    pub root_kind: TopologyKindKey,
+    /// The data-defined node-kind vocabulary, in declaration order.
+    #[schema(value_type = Vec<Object>)]
+    pub node_kinds: Vec<serde_json::Value>,
+    /// Codes this vocabulary explains but never declares as usable.
+    #[serde(default)]
+    #[schema(value_type = Vec<Object>)]
+    pub historical_codes: Vec<serde_json::Value>,
+}
+
+/// One complete candidate document, built by the server and stored nowhere.
+///
+/// Draft is deliberately pure. There is no durable draft aggregate to put this
+/// in, publication already revalidates the exact candidate it is given, and a
+/// store added solely to remember editor scratch state would widen the authority
+/// boundary without making anything safer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologySpecCandidateDto {
+    /// The Realm that built it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The complete candidate document.
+    #[schema(value_type = Object)]
+    pub candidate: serde_json::Value,
+    /// The canonical hash of that exact candidate.
+    #[schema(value_type = String)]
+    pub candidate_hash: ContentHash,
+}
+
+/// What `topology-specs:validate` is asked for.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+pub struct ValidateTopologySpecRequest {
+    /// One complete candidate document.
+    #[schema(value_type = Object)]
+    pub candidate: serde_json::Value,
+}
+
+/// The ordered verdict on one candidate.
+///
+/// Violations are ordered so two runs over the same candidate produce the same
+/// list, which is what lets a client diff them. An empty list is the only thing
+/// that makes the candidate publishable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologySpecValidationDto {
+    /// The Realm that validated it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Every violation, in a stable order. Empty means publishable.
+    pub violations: Vec<String>,
+    /// The canonical hash of the exact candidate that was validated.
+    #[schema(value_type = String)]
+    pub validation_hash: ContentHash,
+}
+
+/// What `topology-specs:publish` is asked for.
+///
+/// It names the hash validation returned, so the server can prove it is
+/// publishing the document that was judged rather than one edited after the
+/// verdict — and it revalidates anyway, because a hash proves identity and not
+/// currency.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+pub struct PublishTopologySpecRequest {
+    /// The complete candidate to publish.
+    #[schema(value_type = Object)]
+    pub candidate: serde_json::Value,
+    /// The hash the validation answered with.
+    #[schema(value_type = String)]
+    pub validation_hash: ContentHash,
+    /// The project revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One published, immutable specification revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PublishedTopologySpecDto {
+    /// Its identity, revision and canonical hash.
+    pub spec: PinnedSpecDto,
+    /// How it was classified for leaving Kontor.
+    pub shareability: ShareabilityDto,
+    /// The receipt this publication was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// One exact immutable specification document, as a caller reads it back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologySpecDocumentDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Its identity, revision and canonical hash.
+    pub spec: PinnedSpecDto,
+    /// The exact published document.
+    #[schema(value_type = Object)]
+    pub document: serde_json::Value,
+    /// How it was classified.
+    pub shareability: ShareabilityDto,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// One resolved role from a catalog revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RoleCatalogEntryDto {
+    /// The stable code.
+    #[schema(value_type = String)]
+    pub role_code: RoleCode,
+    /// The standard human title.
+    #[schema(value_type = String)]
+    pub standard_title: ExternalName,
+    /// Where the role may be selected.
+    #[schema(value_type = String)]
+    pub segment: RoleSegment,
+    /// Its bounded responsibility summary.
+    #[schema(value_type = String)]
+    pub responsibility_summary: BoundedText,
+    /// Whether new seats may still select it.
+    #[schema(value_type = String)]
+    pub lifecycle: CodeLifecycle,
+    /// Default capabilities a deployment may narrow later.
+    pub capability_defaults: Vec<String>,
+}
+
+/// One whole catalog revision, in its declared order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RoleCatalogDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The catalog identity and revision.
+    #[schema(value_type = String)]
+    pub catalog_id: RoleCatalogId,
+    /// The revision read.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// Human name.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// Every role, sorted in the catalog's declared order rather than in any
+    /// order this projection chose.
+    pub roles: Vec<RoleCatalogEntryDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+// ---------------------------------------------------------------------------
+// Successor-ticket contracts
+// ---------------------------------------------------------------------------
+//
+// OP-04, OP-05 and OP-06 own the behaviour below. They do not own a competing
+// wire vocabulary: the DTO, the route, the OpenAPI operation, the `ToolSpec`
+// and the generated clients are fixed here, once, so the authority rules and
+// the closed argument lists are one decision rather than one per successor.
+// Until each owning service is composed the daemon refuses with a typed
+// `unavailable` before any effect — never a successful placeholder, and never
+// a persisted placeholder aggregate.
+
+/// One immutable profile or template revision.
+///
+/// Advisor profiles, Committee templates and Completion profiles are three
+/// aggregates with one wire shape: an identity, a monotonic version, a label
+/// and the digest of the definition frozen at publish. They share these types
+/// rather than carrying three identical copies that would drift apart the first
+/// time one of them gained a field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfileRevisionDto {
+    /// Stable logical id shared by every revision.
+    pub id: String,
+    /// Monotonic version within `id`.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// Human label frozen at publish.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// The digest of the canonical definition.
+    #[schema(value_type = String)]
+    pub definition_hash: ContentHash,
+}
+
+/// Every published revision of one profile family in a project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfileCatalogDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project that owns them.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Every revision, oldest first.
+    pub revisions: Vec<ProfileRevisionDto>,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// One candidate definition, judged and committed nowhere.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfilePreviewRequest {
+    /// The complete candidate definition.
+    #[schema(value_type = Object)]
+    pub definition: serde_json::Value,
+}
+
+/// The verdict on one candidate definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProfilePreviewDto {
+    /// The Realm that judged it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Every violation, in a stable order. Empty means publishable.
+    pub violations: Vec<String>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Publish one revalidated definition as an immutable revision.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileApplyRequest {
+    /// The complete definition to publish.
+    #[schema(value_type = Object)]
+    pub definition: serde_json::Value,
+    /// The hash the preview answered with.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The aggregate revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One published profile revision and the receipt that froze it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedProfileDto {
+    /// The revision now standing.
+    pub published: ProfileRevisionDto,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// One Core Team seat: the standard role, the policy it is held under, and the
+/// seat filling it if any.
+///
+/// Presence and ad-hoc eligibility are reported, not just accepted. A Core Team
+/// edit states the whole roster, so a caller that could not read the policy of
+/// the seats it is not changing would have to invent one for each of them — and
+/// the first such edit would silently rewrite every other seat's presence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamSeatDto {
+    /// The role, as the server resolved it.
+    pub role: ResolvedRoleRefDto,
+    /// When a concrete epic materializes it.
+    #[schema(value_type = String)]
+    pub presence: EpicPresence,
+    /// Whether the role may open a Quick session.
+    pub ad_hoc_allowed: bool,
+    /// The binding filling it, once one has been materialized.
+    #[schema(value_type = Option<String>)]
+    pub seat_binding_id: Option<SeatBindingId>,
+}
+
+/// One project's Core Team.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project it serves.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Its seats, in declared order.
+    pub seats: Vec<CoreTeamSeatDto>,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// One Core Team seat as a caller states it: the role, and the policy the
+/// project holds that role under.
+///
+/// [`RoleSelectionDto`] carries the catalog revision, the code and an optional
+/// label — every fact about *which* role. It deliberately carries no policy,
+/// because the same role is selected in places that have no epic presence to
+/// state. A Core Team entry does have one, and it cannot be derived: presence
+/// is not a function of the role code or of display order, and
+/// `GET /quick-roles` answers from `ad_hoc_allowed` specifically. Inferring
+/// either would hard-code project policy into the server and make that
+/// projection dishonest, so both are stated once, here.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamSeatSelectionDto {
+    /// The role this seat fills.
+    pub role: RoleSelectionDto,
+    /// When a concrete epic materializes it.
+    #[schema(value_type = String)]
+    pub presence: EpicPresence,
+    /// Whether the role may open a Quick session.
+    pub ad_hoc_allowed: bool,
+}
+
+/// A proposed Core Team composition.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamPreviewRequest {
+    /// The roles the Core Team should seat, in order.
+    pub seats: Vec<CoreTeamSeatSelectionDto>,
+}
+
+/// What a Core Team change would do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamPreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Every effect, in a stable order.
+    pub effects: Vec<TopologyUpgradeEffectDto>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Apply a named Core Team preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamApplyRequest {
+    /// The roles the Core Team should seat, in order.
+    pub seats: Vec<CoreTeamSeatSelectionDto>,
+    /// The hash the preview answered with.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The project revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Materialize the Core Team's seats for one epic.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamMaterializeRequest {
+    /// The epic revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What a Core Team write produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamOutcomeDto {
+    /// The Core Team as it now stands.
+    pub core_team: CoreTeamDto,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// The roles a Quick session may be opened against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QuickRolesDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Every selectable role, in the catalog's declared order.
+    pub roles: Vec<RoleCatalogEntryDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Open a Quick session, or return the one this key already opened.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnsureQuickSessionRequest {
+    /// The standard role the session's seat fills.
+    pub role: RoleSelectionDto,
+    /// What the session is for. Recorded, never interpreted.
+    #[schema(value_type = String)]
+    pub purpose: ExternalName,
+}
+
+/// One Quick session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QuickSessionDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The session.
+    #[schema(value_type = String)]
+    pub quick_session_id: QuickSessionId,
+    /// The role its seat fills, as the server resolved it.
+    pub role: ResolvedRoleRefDto,
+    /// The topology node hosting it.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// What promoting one Quick session would produce.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PromotionPreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The session that would be promoted.
+    #[schema(value_type = String)]
+    pub quick_session_id: QuickSessionId,
+    /// Every effect, in a stable order.
+    pub effects: Vec<TopologyUpgradeEffectDto>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Apply a named promotion preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromotionApplyRequest {
+    /// The hash the preview answered with.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The session revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One promoted Quick session, now an epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PromotedSessionDto {
+    /// The epic the session became.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// The session it was promoted from.
+    #[schema(value_type = String)]
+    pub quick_session_id: QuickSessionId,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Diff one epic's pinned roster against a published target.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RosterUpgradePreviewRequest {
+    /// The published revision to diff the epic's current pin against.
+    pub target: RevisionRefDto,
+}
+
+/// What a roster upgrade would do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RosterUpgradePreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The epic whose roster would move.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Every effect, in a stable order.
+    pub effects: Vec<TopologyUpgradeEffectDto>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Invoke one consultation against an epic.
+///
+/// A consultation names the pinned profile it runs under and the question it is
+/// asked. It does not name a model, a provider or a runtime: which seat answers
+/// is the realm's routing decision, not the caller's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InvokeConsultationRequest {
+    /// The profile or template revision to run under.
+    pub profile: RevisionRefDto,
+    /// What is being asked.
+    #[schema(value_type = String)]
+    pub question: BoundedText,
+    /// The epic revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One Advisor consultation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AdvisorRunDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The consultation.
+    #[schema(value_type = String)]
+    pub advisor_run_id: AdvisorRunId,
+    /// The epic it advises.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// The pinned profile it runs under.
+    pub profile: ProfileRevisionDto,
+    /// Its lifecycle, in the server's own vocabulary.
+    pub state: String,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// One Committee consultation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CommitteeRunDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The consultation.
+    #[schema(value_type = String)]
+    pub committee_run_id: CommitteeRunId,
+    /// The epic it advises.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// The pinned template it runs under.
+    pub template: ProfileRevisionDto,
+    /// Its lifecycle, in the server's own vocabulary.
+    pub state: String,
+    /// How many findings have been recorded so far.
+    pub findings_recorded: u32,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Record one round of Committee findings.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordFindingsRequest {
+    /// The findings document.
+    #[schema(value_type = Object)]
+    pub findings: serde_json::Value,
+    /// The run revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Settle one consultation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SettleConsultationRequest {
+    /// The run revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One epic's completion state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CompletionStateDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The epic.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// The pinned completion profile it is judged against.
+    pub profile: ProfileRevisionDto,
+    /// Which phase it currently stands in.
+    pub phase: String,
+    /// What is still outstanding, in a stable order.
+    pub outstanding: Vec<String>,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Advance one epic's completion.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdvanceCompletionRequest {
+    /// The completion revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Send one epic's completion back for remediation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemediateCompletionRequest {
+    /// The completion revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Why. Recorded, never interpreted.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// What a completion write produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CompletionOutcomeDto {
+    /// The completion state as it now stands.
+    pub state: CompletionStateDto,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+// ---------------------------------------------------------------------------
+// Native capacity and exact-seat operations
+// ---------------------------------------------------------------------------
+
+/// The adaptive admission window's configured shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdaptiveWindowDto {
+    /// Where a fresh window starts.
+    pub initial: u32,
+    /// The narrowest it may become under pressure.
+    pub floor: u32,
+    /// The widest it may grow.
+    pub ceiling: u32,
+    /// How much one clean pair of observations widens it.
+    pub growth_step: u32,
+}
+
+/// Every configured concurrency ceiling, as one replaceable document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CapacityCeilingsDto {
+    /// Across the whole realm.
+    pub global_max_in_flight: u32,
+    /// Within one project.
+    pub project_max_in_flight: u32,
+    /// Active admitted non-terminal TeamRun envelopes, counted once each.
+    pub mission_max_in_flight: u32,
+    /// Per provider account.
+    pub account_max_in_flight: u32,
+    /// Per provider.
+    pub provider_max_in_flight: u32,
+    /// Per runtime family.
+    pub runtime_max_in_flight: u32,
+    /// The adaptive window's shape.
+    pub adaptive: AdaptiveWindowDto,
+}
+
+/// The current immutable capacity configuration revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CapacityConfigurationDto {
+    /// The Realm it governs.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The effective values.
+    pub ceilings: CapacityCeilingsDto,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// A full replacement of the capacity configuration.
+///
+/// Whole-document rather than per-field: ceilings constrain one another, and a
+/// partial update would let a caller move one past another without ever seeing
+/// the pair.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CapacityConfigurationRequest {
+    /// The complete set of ceilings to stand up.
+    pub ceilings: CapacityCeilingsDto,
+    /// The configuration revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What a configuration change would do to the windows now open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CapacityConfigurationPreviewDto {
+    /// The Realm it was computed for.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The values as they would stand.
+    pub ceilings: CapacityCeilingsDto,
+    /// Where a currently open window would be clamped, in a stable order.
+    pub clamped: Vec<String>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// One provider account's availability, as the realm currently reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AccountAvailabilityDto {
+    /// The account profile.
+    #[schema(value_type = String)]
+    pub account_profile_id: AccountProfileId,
+    /// The raw observation this was derived from, when one exists.
+    #[schema(value_type = Option<String>)]
+    pub observation_id: Option<kontor_core::id::CapacityObservationId>,
+    /// Whether the realm currently considers it usable.
+    pub available: bool,
+    /// Whether an operator override is standing, and why.
+    #[schema(value_type = Option<String>)]
+    pub override_reason: Option<ExternalName>,
+    /// When any standing override lapses.
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub override_expires_at: Option<Timestamp>,
+}
+
+/// One project's admission picture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProjectCapacityDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Per-account availability, each citing the raw evidence it came from.
+    pub accounts: Vec<AccountAvailabilityDto>,
+    /// Active admitted non-terminal TeamRun envelopes. Counted once each —
+    /// never their seats, and never a persistent idle SeatBinding.
+    pub active_team_runs: u32,
+    /// The mission ceiling those are counted against.
+    pub mission_ceiling: u32,
+    /// The adaptive window's current width.
+    pub adaptive_width: u32,
+    /// Consecutive distinct clean observations since the last widening.
+    pub adaptive_streak: u32,
+    /// The last observation folded into the window.
+    #[schema(value_type = Option<String>)]
+    pub last_observation_id: Option<kontor_core::id::CapacityObservationId>,
+    /// Why the last admission was refused, when one was.
+    #[schema(value_type = Option<String>)]
+    pub last_refusal: Option<BoundedText>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Which configured accounts a refresh should collect from.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CapacityRefreshRequest {
+    /// Configured account profiles to collect. Empty means every one.
+    ///
+    /// Only ids this realm already has a profile for. A refresh cannot name a
+    /// provider, an endpoint or a credential — those are configuration, and a
+    /// request that could carry them would be choosing what to talk to.
+    #[serde(default)]
+    #[schema(value_type = Vec<String>)]
+    pub account_profile_ids: Vec<AccountProfileId>,
+}
+
+/// One raw observation and what was derived from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CapacityObservationDto {
+    /// The Realm it was recorded in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The observation.
+    #[schema(value_type = String)]
+    pub observation_id: kontor_core::id::CapacityObservationId,
+    /// The account it concerns.
+    #[schema(value_type = String)]
+    pub account_profile_id: AccountProfileId,
+    /// When the collector read it.
+    #[schema(value_type = String, format = DateTime)]
+    pub observed_at: Timestamp,
+    /// The collector's redacted wire reading. Never a credential or an endpoint.
+    #[schema(value_type = Object)]
+    pub reading: serde_json::Value,
+    /// What the realm derived from it.
+    pub available: bool,
+    /// Whether the reading indicated pressure.
+    pub pressure: bool,
+}
+
+/// An operator's standing judgement about one account's availability.
+///
+/// It never rewrites the raw observation. Evidence and override are separate
+/// records so a later reader can still see what the provider actually said.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AvailabilityOverrideRequest {
+    /// The account's revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// What the operator asserts.
+    pub available: bool,
+    /// Why. Recorded, never interpreted.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+    /// When the override lapses on its own.
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<Timestamp>,
+}
+
+/// What an override produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AvailabilityOverrideDto {
+    /// The account as it now reads.
+    pub account: AccountAvailabilityDto,
+    /// The receipt the override was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// What addressing one exact seat is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SeatBindingRequest {
+    /// The binding's revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Why the seat is being looked at or released.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// What observing or releasing one exact seat produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SeatBindingOutcomeDto {
+    /// The seat, as it now reads.
+    pub seat: TopologySeatDto,
+    /// What the runtime reported about it, when it answered.
+    pub observed_binding: Option<ObservedBindingDto>,
+    /// The receipt this was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+// ---------------------------------------------------------------------------
+// Semantic topology
+// ---------------------------------------------------------------------------
+
+/// How far an inspection reaches.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TopologyScopeQuery {
+    /// Narrow to one epic's pinned subgraph. Absent means the whole project.
+    pub epic_id: Option<String>,
+}
+
+/// One project's authoritative topology, as stored.
+///
+/// The nodes carry the derived native shape and, where anything has been read
+/// back, the exact native identity observed. Both are evidence: their presence
+/// in an answer does not make them legal in a request, which is what keeps the
+/// model-facing boundary semantic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologyProjectionDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project whose topology this is.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The exact immutable specification these nodes are pinned to.
+    pub pinned_spec: PinnedSpecDto,
+    /// Every node in the addressed scope, parents before children.
+    pub nodes: Vec<TopologyNodeDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// What a semantic topology write is asked for.
+///
+/// A scope and the revision the caller read it at, and nothing else. There is
+/// no field for a node kind, a parent, a native name, a native id or a working
+/// directory — not because they are validated away, but because the type has
+/// nowhere to put them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticTopologyRequest {
+    /// The semantic scope to act on.
+    pub target: SemanticTopologyTargetDto,
+    /// The project revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What addressing one already-returned node is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TopologyNodeRequest {
+    /// The node's revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Why the node is being retired or archived. Recorded, never interpreted.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// What one semantic topology write produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologyMutationDto {
+    /// The topology as it stands after the effect.
+    pub projection: TopologyProjectionDto,
+    /// The receipt the effect was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// What a pinned-specification upgrade is previewed against.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TopologyUpgradePreviewRequest {
+    /// The published revision to diff the epic's current pin against.
+    pub target_spec: RevisionRefDto,
+}
+
+/// One node-, seat- or native-level effect an upgrade would have.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologyUpgradeEffectDto {
+    /// What the effect is about: a node, a seat or a native container.
+    pub subject: String,
+    /// The node it concerns, when it concerns one.
+    #[schema(value_type = Option<String>)]
+    pub topology_node_id: Option<TopologyNodeId>,
+    /// What would happen, in the server's own vocabulary.
+    pub effect: String,
+    /// One line a human can read.
+    #[schema(value_type = String)]
+    pub detail: BoundedText,
+}
+
+/// What an upgrade would do, computed and committed nowhere.
+///
+/// A preview is a read: it takes no idempotency key, and it hands back a hash
+/// the apply must name. The apply revalidates anyway — a hash proves the caller
+/// is applying the diff it was shown, not that the world still looks that way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TopologyUpgradePreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The epic whose pin would move.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// The pin as it stands.
+    pub current_spec: PinnedSpecDto,
+    /// The pin it would move to.
+    pub target_spec: PinnedSpecDto,
+    /// Every effect, in a stable order.
+    pub effects: Vec<TopologyUpgradeEffectDto>,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The position this preview was computed at.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// What repairing one bound container's title is asked for.
+///
+/// The revision the caller read the project at, and nothing else. There is no
+/// field for a title, a native id, a parent or a directory — not because they are
+/// validated away, but because the type has nowhere to put them. The title is
+/// derived from the node's pinned topology and the plane's typed scope, and the
+/// container is addressed by the binding Kontor already holds.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRetitleRequest {
+    /// The project revision the caller believes is current.
+    ///
+    /// The project, not the node: a repair is authority over the project's own
+    /// rendering, and the project's revision is the one a caller can read before
+    /// presenting it.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What one bound container's title is, and what it should be.
+///
+/// A preview is a read: it takes no idempotency key, reaches nothing that writes,
+/// and answers the two titles a human needs to compare. The runtime is asked, so
+/// `observed_title` is what the container actually carries rather than what Kontor
+/// once recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ContainerRetitlePreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The node whose container it is.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The native container that would be renamed.
+    #[schema(value_type = String)]
+    pub bound_native_id: ExternalId,
+    /// The title the server derived, which an apply would set.
+    #[schema(value_type = String)]
+    pub desired_title: ExternalName,
+    /// The title the runtime reports it carries now.
+    pub observed_title: String,
+    /// Whether an apply would change anything.
+    pub would_change: bool,
+    /// The position this preview was computed at.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// What a container retitle produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedContainerRetitleDto {
+    /// The node whose container it is.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The native container, read back after the change. The same one.
+    #[schema(value_type = String)]
+    pub bound_native_id: ExternalId,
+    /// The title the runtime reported afterwards, read back rather than assumed.
+    pub observed_title: String,
+    /// Whether this call changed anything, or found it already correct.
+    pub changed: bool,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// What applying a named upgrade preview is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TopologyUpgradeApplyRequest {
+    /// The hash the preview answered with.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The epic revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One applied upgrade: the new immutable pin and what the topology now is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedTopologyUpgradeDto {
+    /// The pin the epic now holds.
+    pub pinned_spec: PinnedSpecDto,
+    /// The topology as it stands after the upgrade.
+    pub projection: TopologyProjectionDto,
+    /// The receipt the upgrade was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Every controlled code one epic's pinned revisions define.
+///
+/// One combined projection rather than three, because a client rendering a
+/// transcript has one code in hand and does not know which family it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CodeHelpProjectionDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The epic whose pins were read.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Every definition, sorted by `(category, code)`.
+    pub entries: Vec<CodeHelpEntryDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
 }
 
 // ---------------------------------------------------------------------------
@@ -180,16 +1524,57 @@ pub struct ModelCatalogDto {
     pub models: Vec<serde_json::Value>,
 }
 
+/// One declared seat in a Delivery Team template.
+///
+/// The role is a [`RoleSelectionDto`] rather than free-form JSON. Before this,
+/// a slot's meaning lived in an opaque `id` the server never interpreted, which
+/// made "which standard role is this seat?" a string every client answered for
+/// itself. A selection names a catalog revision and a code, and the server owns
+/// the rest.
+///
+/// `capabilities` stays a nested document on purpose: it is a chain, a context
+/// class and a skill set, none of which is a role fact, and the daemon and the
+/// domain validate it once rather than the wire schema validating it twice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDraftSlotRequest {
+    /// The slot key within this template.
+    pub id: String,
+    /// The standard role this seat fills.
+    pub role: RoleSelectionDto,
+    /// What the seat in it may be.
+    #[schema(value_type = Object)]
+    pub capabilities: serde_json::Value,
+}
+
+/// One declared seat, as a projection reports it back.
+///
+/// The role is echoed as the selection that was stored. It becomes a fully
+/// resolved [`ResolvedRoleRefDto`] when the role-catalog service is composed and
+/// the daemon can look a code up; until then the honest answer is what was
+/// selected, because a standard title invented here would be exactly the second
+/// source of truth the selection type exists to remove.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TeamDraftSlotDto {
+    /// The slot key within this template.
+    pub id: String,
+    /// The standard role this seat fills, as selected.
+    pub role: RoleSelectionDto,
+    /// What the seat in it may be.
+    #[schema(value_type = Object)]
+    pub capabilities: serde_json::Value,
+}
+
 /// One mutable draft document accepted by the realm.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TeamDraftRequest {
     /// Stable logical template id.
     pub id: String,
     /// Human label.
     pub name: String,
-    /// Slot declarations in editor wire form.
-    #[schema(value_type = Vec<Object>)]
-    pub slots: Vec<serde_json::Value>,
+    /// The seats this template declares.
+    pub slots: Vec<TeamDraftSlotRequest>,
 }
 
 /// One server-held draft.
@@ -199,9 +1584,8 @@ pub struct TeamDraftDto {
     pub id: String,
     /// Human label.
     pub name: String,
-    /// Slot declarations in editor wire form.
-    #[schema(value_type = Vec<Object>)]
-    pub slots: Vec<serde_json::Value>,
+    /// The seats this template declares.
+    pub slots: Vec<TeamDraftSlotDto>,
     /// Server-resolved context policy preview for every slot.
     #[schema(value_type = Vec<Object>)]
     pub resolved_policy: Vec<serde_json::Value>,
@@ -216,9 +1600,8 @@ pub struct PublishedTeamRevisionDto {
     pub version: u32,
     /// Human label frozen at publish.
     pub name: String,
-    /// Slot declarations frozen at publish.
-    #[schema(value_type = Vec<Object>)]
-    pub slots: Vec<serde_json::Value>,
+    /// The seats frozen at publish.
+    pub slots: Vec<TeamDraftSlotDto>,
     /// Server-resolved context policy preview frozen from this revision.
     #[schema(value_type = Vec<Object>)]
     pub resolved_policy: Vec<serde_json::Value>,
@@ -1115,6 +2498,49 @@ pub struct RuntimeSettlementDto {
     pub receipt_id: String,
 }
 
+/// What an operator says when abandoning a run no runtime ever took.
+///
+/// The revision is the operator's, not a convenience: an abandon decision is
+/// made against a specific revision of a specific run, and closing a revision
+/// nobody looked at would let a stale decision close work that has moved on.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct AbandonRunRequest {
+    /// The revision the caller read the run at.
+    pub expected_revision: u64,
+    /// Why the run is being abandoned. Recorded on the receipt.
+    pub reason: String,
+}
+
+/// What abandoning one unbound run produced.
+///
+/// There is no field on the way in for an outcome, and none on the way out that
+/// the caller chose. An operator may abandon a run; an operator may not declare
+/// it cancelled, failed or succeeded — those are claims about a runtime, and
+/// this operation exists precisely because no runtime ever answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AbandonedRunDto {
+    /// The Realm it happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The run that was abandoned.
+    pub agent_run_id: String,
+    /// How the run closed. Always `abandoned`.
+    pub outcome: String,
+    /// Whether this call closed the run, or found it already closed.
+    pub applied: AppliedDto,
+    /// The run's revision after the closure.
+    #[schema(value_type = u64)]
+    pub revision: kontor_core::id::AggregateRevision,
+    /// The team run, once every one of its runs is terminal and the team's
+    /// closure has been certified.
+    pub team_run_closed: Option<String>,
+    /// Why the team is not closed yet, when it is not. A static rule, never a
+    /// stored value.
+    pub team_pending: Option<String>,
+    /// The command receipt that authorizes the abandon.
+    pub receipt_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // Work-profile detail and validation
 // ---------------------------------------------------------------------------
@@ -1259,6 +2685,34 @@ pub struct SettleTurnRequest {
     pub artifacts: Vec<String>,
 }
 
+/// What the Admin-only late-handoff reconciliation is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct AttestLateHandoffRequest {
+    /// The role slot whose completed handoff is being reconciled.
+    pub role_slot: String,
+    /// The task revision the handoff was produced against.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// The immutable native binding generation recorded by the run.
+    pub binding_generation: u64,
+    /// The handoff digest carried by the run's durable compaction receipt.
+    pub handoff_hash: String,
+    /// Valid artifact keys proving the bounded handoff.
+    pub artifacts: Vec<String>,
+}
+
+/// What the Admin-only unusable-seat replacement is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct ReplaceSeatRequest {
+    /// The role slot whose terminal attempt is being replaced.
+    pub role_slot: String,
+    /// The task revision the replacement is reconciled against.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// The immutable binding generation of the terminal predecessor.
+    pub binding_generation: u64,
+}
+
 /// One follow-up a settled turn derived.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TurnFollowUpDto {
@@ -1371,6 +2825,68 @@ pub struct SettledTurnDto {
     pub team_run_closed: Option<String>,
     /// The follow-ups this settlement derived, in slot order.
     pub follow_ups: Vec<TurnFollowUpDto>,
+}
+
+/// One immutable late-handoff disposition recorded after runtime cancellation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct LateHandoffAttestationDto {
+    /// The Realm it was recorded in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The immutable turn evidence row.
+    pub turn_id: String,
+    /// The task it served.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The terminal run whose handoff was reconciled.
+    pub agent_run_id: String,
+    /// The reconciled role slot.
+    pub role_slot: String,
+    /// The immutable binding generation.
+    pub binding_generation: u64,
+    /// The durable compaction receipt that carried the handoff.
+    pub compaction_receipt_id: String,
+    /// The attested handoff digest.
+    pub handoff_hash: String,
+    /// The artifacts recorded on the disposition.
+    pub artifacts: Vec<String>,
+    /// Always `cancelled`; the attestation cannot change the runtime verdict.
+    pub terminal_outcome: String,
+    /// Always false; the operation never reopens or restores the native seat.
+    pub seat_live: bool,
+    /// Whether this call created or replayed the evidence row.
+    pub applied: AppliedDto,
+    /// The Admin tier proven by the caller credential.
+    pub attested_by: String,
+    /// The team run if this disposition completed its closure proof.
+    pub team_run_closed: Option<String>,
+    /// Normal follow-ups derived from the recorded handoff.
+    pub follow_ups: Vec<TurnFollowUpDto>,
+}
+
+/// One linked successor created for an unusable persistent seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ReplacedSeatDto {
+    /// The Realm it was created in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task whose team owns the seat.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The preserved team run.
+    pub team_run_id: String,
+    /// The terminal predecessor; it remains immutable.
+    pub predecessor_agent_run_id: String,
+    /// The linked successor run.
+    pub successor_agent_run_id: String,
+    /// The role slot retained by the successor.
+    pub role_slot: String,
+    /// The successor's runtime family.
+    pub runtime_kind: String,
+    /// The successor's new native identity.
+    pub native_id: String,
+    /// Whether this call created the successor or replayed it.
+    pub applied: AppliedDto,
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,6 +3226,371 @@ pub trait ApplicationOperations: Send + Sync {
     /// What every configured runtime family can currently prove.
     async fn runtime_capabilities(&self) -> Result<Vec<RuntimeCapabilityDto>, ApiError>;
 
+    /// Build one complete topology-specification candidate. Persists nothing.
+    fn draft_topology_spec(
+        &self,
+        project_id: ProjectId,
+        request: &DraftTopologySpecRequest,
+    ) -> Result<TopologySpecCandidateDto, ApiError>;
+
+    /// Judge one complete candidate. Persists nothing.
+    fn validate_topology_spec(
+        &self,
+        project_id: ProjectId,
+        request: &ValidateTopologySpecRequest,
+    ) -> Result<TopologySpecValidationDto, ApiError>;
+
+    /// Publish one revalidated candidate as an immutable revision.
+    async fn publish_topology_spec(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublishTopologySpecRequest,
+    ) -> Result<PublishedTopologySpecDto, ApiError>;
+
+    /// One exact immutable specification document.
+    fn topology_spec(
+        &self,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
+    ) -> Result<TopologySpecDocumentDto, ApiError>;
+
+    /// One whole role-catalog revision, in its declared order.
+    fn role_catalog(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> Result<RoleCatalogDto, ApiError>;
+
+    /// One resolved catalog entry. An unknown revision or code is never guessed.
+    fn role(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+        role_code: &str,
+    ) -> Result<RoleCatalogEntryDto, ApiError>;
+
+    /// Every controlled code one epic's pinned revisions define.
+    fn code_help(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<CodeHelpProjectionDto, ApiError>;
+
+    /// The stored authoritative topology, optionally narrowed to one epic.
+    fn inspect_topology(
+        &self,
+        project_id: ProjectId,
+        epic_id: Option<MiniProjectId>,
+    ) -> Result<TopologyProjectionDto, ApiError>;
+
+    /// Read the exact native identities back and record what was observed.
+    async fn drift_topology(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &SemanticTopologyRequest,
+    ) -> Result<TopologyMutationDto, ApiError>;
+
+    /// Ensure the logical nodes one semantic scope needs. No native effect.
+    async fn ensure_topology(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &SemanticTopologyRequest,
+    ) -> Result<TopologyMutationDto, ApiError>;
+
+    /// Materialize or reconcile an ensured scope through the admission path.
+    async fn materialize_topology(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &SemanticTopologyRequest,
+    ) -> Result<TopologyMutationDto, ApiError>;
+
+    /// Retire one already-returned node after child and seat policy checks.
+    async fn retire_topology_node(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &TopologyNodeRequest,
+    ) -> Result<TopologyMutationDto, ApiError>;
+
+    /// Archive one already-retired node after exact readback.
+    async fn archive_topology_node(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &TopologyNodeRequest,
+    ) -> Result<TopologyMutationDto, ApiError>;
+
+    /// What moving one epic's pinned specification would do. Commits nothing.
+    fn preview_topology_upgrade(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TopologyUpgradePreviewRequest,
+    ) -> Result<TopologyUpgradePreviewDto, ApiError>;
+
+    /// What repairing one bound container's title would do. Commits nothing.
+    async fn preview_container_retitle(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRetitleRequest,
+    ) -> Result<ContainerRetitlePreviewDto, ApiError>;
+
+    /// Repair one bound container's title, idempotently, and read it back.
+    async fn apply_container_retitle(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRetitleRequest,
+    ) -> Result<AppliedContainerRetitleDto, ApiError>;
+
+    /// Apply the named preview and return the new immutable pin.
+    async fn apply_topology_upgrade(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TopologyUpgradeApplyRequest,
+    ) -> Result<AppliedTopologyUpgradeDto, ApiError>;
+
+    /// The current immutable capacity configuration revision.
+    fn capacity_configuration(&self) -> Result<CapacityConfigurationDto, ApiError>;
+
+    /// What a full replacement would do to the windows now open.
+    fn preview_capacity_configuration(
+        &self,
+        request: &CapacityConfigurationRequest,
+    ) -> Result<CapacityConfigurationPreviewDto, ApiError>;
+
+    /// Apply a full replacement under the expected revision.
+    async fn apply_capacity_configuration(
+        &self,
+        key: &IdempotencyKey,
+        request: &CapacityConfigurationRequest,
+    ) -> Result<CapacityConfigurationDto, ApiError>;
+
+    /// One project's admission picture.
+    fn project_capacity(&self, project_id: ProjectId) -> Result<ProjectCapacityDto, ApiError>;
+
+    /// Run the configured native collectors and fold what they report.
+    async fn refresh_capacity(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &CapacityRefreshRequest,
+    ) -> Result<ProjectCapacityDto, ApiError>;
+
+    /// One redacted raw observation and its derived outcome.
+    fn capacity_observation(
+        &self,
+        project_id: ProjectId,
+        observation_id: kontor_core::id::CapacityObservationId,
+    ) -> Result<CapacityObservationDto, ApiError>;
+
+    /// Stand an operator judgement beside the raw evidence, never over it.
+    async fn override_availability(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        account_profile_id: AccountProfileId,
+        request: &AvailabilityOverrideRequest,
+    ) -> Result<AvailabilityOverrideDto, ApiError>;
+
+    /// Observe one exact bound seat and record typed attention evidence.
+    async fn seat_attention(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        request: &SeatBindingRequest,
+    ) -> Result<SeatBindingOutcomeDto, ApiError>;
+
+    /// Retire and release one exact binding after supported readback.
+    async fn retire_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        request: &SeatBindingRequest,
+    ) -> Result<SeatBindingOutcomeDto, ApiError>;
+
+    /// One project's Core Team.
+    fn core_team(&self, project_id: ProjectId) -> Result<CoreTeamDto, ApiError>;
+    /// What a Core Team change would do. Commits nothing.
+    fn preview_core_team(
+        &self,
+        project_id: ProjectId,
+        request: &CoreTeamPreviewRequest,
+    ) -> Result<CoreTeamPreviewDto, ApiError>;
+    /// Apply a named Core Team preview.
+    async fn apply_core_team(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &CoreTeamApplyRequest,
+    ) -> Result<CoreTeamOutcomeDto, ApiError>;
+    /// Materialize the Core Team's seats for one epic.
+    async fn materialize_core_team(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamMaterializeRequest,
+    ) -> Result<CoreTeamOutcomeDto, ApiError>;
+    /// The roles a Quick session may be opened against.
+    fn quick_roles(&self, project_id: ProjectId) -> Result<QuickRolesDto, ApiError>;
+    /// Open a Quick session, or return the one this key opened.
+    async fn ensure_quick_session(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &EnsureQuickSessionRequest,
+    ) -> Result<QuickSessionDto, ApiError>;
+    /// What promoting one Quick session would produce.
+    fn preview_promotion(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+    ) -> Result<PromotionPreviewDto, ApiError>;
+    /// Apply a named promotion preview.
+    async fn apply_promotion(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+        request: &PromotionApplyRequest,
+    ) -> Result<PromotedSessionDto, ApiError>;
+    /// What moving one epic's pinned roster would do.
+    fn preview_roster_upgrade(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &RosterUpgradePreviewRequest,
+    ) -> Result<RosterUpgradePreviewDto, ApiError>;
+    /// Apply a named roster upgrade preview.
+    async fn apply_roster_upgrade(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TopologyUpgradeApplyRequest,
+    ) -> Result<CoreTeamOutcomeDto, ApiError>;
+    /// Every published Advisor profile revision.
+    fn advisor_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
+    /// Judge one Advisor profile definition. Commits nothing.
+    fn preview_advisor_profile(
+        &self,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError>;
+    /// Publish one Advisor profile revision.
+    async fn apply_advisor_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError>;
+    /// Invoke one Advisor consultation against an epic.
+    async fn invoke_advisor_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &InvokeConsultationRequest,
+    ) -> Result<AdvisorRunDto, ApiError>;
+    /// Settle one Advisor consultation.
+    async fn settle_advisor_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+        request: &SettleConsultationRequest,
+    ) -> Result<AdvisorRunDto, ApiError>;
+    /// Every published Committee template revision.
+    fn committee_templates(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
+    /// Judge one Committee template definition. Commits nothing.
+    fn preview_committee_template(
+        &self,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError>;
+    /// Publish one Committee template revision.
+    async fn apply_committee_template(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError>;
+    /// Invoke one Committee consultation against an epic.
+    async fn invoke_committee_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &InvokeConsultationRequest,
+    ) -> Result<CommitteeRunDto, ApiError>;
+    /// Record one round of Committee findings.
+    async fn record_committee_findings(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &RecordFindingsRequest,
+    ) -> Result<CommitteeRunDto, ApiError>;
+    /// Settle one Committee consultation.
+    async fn settle_committee_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &SettleConsultationRequest,
+    ) -> Result<CommitteeRunDto, ApiError>;
+    /// Every published Completion profile revision.
+    fn completion_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
+    /// Judge one Completion profile definition. Commits nothing.
+    fn preview_completion_profile(
+        &self,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError>;
+    /// Publish one Completion profile revision.
+    async fn apply_completion_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError>;
+    /// One epic's completion state.
+    fn completion(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<CompletionStateDto, ApiError>;
+    /// Advance one epic's completion.
+    async fn advance_completion(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &AdvanceCompletionRequest,
+    ) -> Result<CompletionOutcomeDto, ApiError>;
+    /// Send one epic's completion back for remediation.
+    async fn remediate_completion(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &RemediateCompletionRequest,
+    ) -> Result<CompletionOutcomeDto, ApiError>;
+
     /// Apply one whole epic — graph, links, selections — atomically.
     async fn apply_epic(
         &self,
@@ -1862,6 +3743,25 @@ pub trait ApplicationOperations: Send + Sync {
         request: &SettleTurnRequest,
     ) -> Result<SettledTurnDto, ApiError>;
 
+    /// Record a bounded handoff after runtime cancellation without reopening.
+    async fn attest_late_handoff(
+        &self,
+        key: &IdempotencyKey,
+        authority: CallerCapability,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &AttestLateHandoffRequest,
+    ) -> Result<LateHandoffAttestationDto, ApiError>;
+
+    /// Replace one runtime-terminal unusable seat with a linked successor.
+    async fn replace_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &ReplaceSeatRequest,
+    ) -> Result<ReplacedSeatDto, ApiError>;
+
     /// Settle one run against a fresh reading of its runtime.
     async fn settle_runtime(
         &self,
@@ -1869,6 +3769,22 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         agent_run_id: AgentRunId,
     ) -> Result<RuntimeSettlementDto, ApiError>;
+
+    /// Abandon one run that was admitted but never bound to a session.
+    ///
+    /// The recovery path for a launch that was refused. Admission commits the
+    /// run before the runtime is asked for a session, so a refused launch leaves
+    /// a non-terminal run behind with nothing to settle and nothing to cancel —
+    /// and a non-terminal run keeps its task in flight, so the task can never be
+    /// scheduled again. Every other exit demands evidence from a runtime that,
+    /// in this case, never answered.
+    async fn abandon_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &AbandonRunRequest,
+    ) -> Result<AbandonedRunDto, ApiError>;
 
     /// Register one profile pack, additively, alongside the compiled seeds.
     async fn register_pack(
@@ -2156,6 +4072,1500 @@ pub async fn runtime_capabilities(
     Ok(Json(state.applications().runtime_capabilities().await?))
 }
 
+/// Build one complete topology-specification candidate.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology-specs:draft", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    request_body = DraftTopologySpecRequest,
+    responses(
+        (status = 200, body = TopologySpecCandidateDto, description = "A candidate, persisted nowhere"),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn draft_topology_spec(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<DraftTopologySpecRequest>,
+) -> Result<Json<TopologySpecCandidateDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .draft_topology_spec(project_id, &request)?,
+    ))
+}
+
+/// Judge one complete topology-specification candidate.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology-specs:validate", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    request_body = ValidateTopologySpecRequest,
+    responses(
+        (status = 200, body = TopologySpecValidationDto, description = "Ordered violations, empty when publishable"),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn validate_topology_spec(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ValidateTopologySpecRequest>,
+) -> Result<Json<TopologySpecValidationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .validate_topology_spec(project_id, &request)?,
+    ))
+}
+
+/// Publish one revalidated candidate as an immutable revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology-specs:publish", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = PublishTopologySpecRequest,
+    responses(
+        (status = 200, body = PublishedTopologySpecDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "A stale project revision, or the key was reused for different bytes")
+    )
+)]
+pub async fn publish_topology_spec(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<PublishTopologySpecRequest>,
+) -> Result<Json<PublishedTopologySpecDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .publish_topology_spec(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// One exact immutable topology-specification document.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("spec_id" = String, Path, description = "The specification identity"),
+        ("version" = u32, Path, description = "The published revision")
+    ),
+    responses((status = 200, body = TopologySpecDocumentDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn topology_spec(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, spec_id, version)): Path<(String, String, u32)>,
+) -> Result<Json<TopologySpecDocumentDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let spec_id = parse_id(&state, TopologySpecId::parse(&spec_id))?;
+    let version = parse_id(&state, SpecVersion::parse(version))?;
+    Ok(Json(
+        state
+            .applications()
+            .topology_spec(project_id, spec_id, version)?,
+    ))
+}
+
+/// One whole role-catalog revision.
+#[utoipa::path(
+    get, path = "/v1/catalog/role-catalogs/{catalog_id}/{version}", tag = "applications",
+    params(
+        ("catalog_id" = String, Path, description = "The catalog identity"),
+        ("version" = u32, Path, description = "The revision")
+    ),
+    responses((status = 200, body = RoleCatalogDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn role_catalog(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((catalog_id, version)): Path<(String, u32)>,
+) -> Result<Json<RoleCatalogDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let catalog_id = parse_id(&state, RoleCatalogId::parse(&catalog_id))?;
+    let version = parse_id(&state, SpecVersion::parse(version))?;
+    Ok(Json(
+        state.applications().role_catalog(catalog_id, version)?,
+    ))
+}
+
+/// One resolved role from one catalog revision.
+#[utoipa::path(
+    get, path = "/v1/catalog/role-catalogs/{catalog_id}/{version}/roles/{role_code}", tag = "applications",
+    params(
+        ("catalog_id" = String, Path, description = "The catalog identity"),
+        ("version" = u32, Path, description = "The revision"),
+        ("role_code" = String, Path, description = "The stable role code")
+    ),
+    responses(
+        (status = 200, body = RoleCatalogEntryDto),
+        (status = 401), (status = 403),
+        (status = 404, description = "An unknown revision or code, never a guess")
+    )
+)]
+pub async fn role(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((catalog_id, version, role_code)): Path<(String, u32, String)>,
+) -> Result<Json<RoleCatalogEntryDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let catalog_id = parse_id(&state, RoleCatalogId::parse(&catalog_id))?;
+    let version = parse_id(&state, SpecVersion::parse(version))?;
+    Ok(Json(
+        state.applications().role(catalog_id, version, &role_code)?,
+    ))
+}
+
+/// Every controlled code one epic's pinned revisions define.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/epics/{epic_id}/code-help", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose pins are read")
+    ),
+    responses((status = 200, body = CodeHelpProjectionDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn code_help(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+) -> Result<Json<CodeHelpProjectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(state.applications().code_help(project_id, epic_id)?))
+}
+
+/// The stored authoritative topology.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/topology:inspect", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = Option<String>, Query, description = "Narrow to one epic's pinned subgraph")
+    ),
+    responses((status = 200, body = TopologyProjectionDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn inspect_topology(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Query(query): Query<TopologyScopeQuery>,
+) -> Result<Json<TopologyProjectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = query
+        .epic_id
+        .map(|epic| parse_id(&state, MiniProjectId::parse(&epic)))
+        .transpose()?;
+    Ok(Json(
+        state.applications().inspect_topology(project_id, epic_id)?,
+    ))
+}
+
+/// Read the exact native identities back and record what was observed.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology:drift", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SemanticTopologyRequest,
+    responses((status = 200, body = TopologyMutationDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn drift_topology(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<SemanticTopologyRequest>,
+) -> Result<Json<TopologyMutationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .drift_topology(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Ensure the logical nodes one semantic scope needs.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology:ensure", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SemanticTopologyRequest,
+    responses((status = 200, body = TopologyMutationDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn ensure_topology(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<SemanticTopologyRequest>,
+) -> Result<Json<TopologyMutationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .ensure_topology(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Materialize or reconcile an ensured scope.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology:materialize", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SemanticTopologyRequest,
+    responses(
+        (status = 200, body = TopologyMutationDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "A runtime could not be reached")
+    )
+)]
+pub async fn materialize_topology(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<SemanticTopologyRequest>,
+) -> Result<Json<TopologyMutationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .materialize_topology(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Retire one already-returned node.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node a projection returned"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TopologyNodeRequest,
+    responses((status = 200, body = TopologyMutationDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn retire_topology_node(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TopologyNodeRequest>,
+) -> Result<Json<TopologyMutationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .retire_topology_node(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Archive one already-retired node.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node a projection returned"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TopologyNodeRequest,
+    responses((status = 200, body = TopologyMutationDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn archive_topology_node(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TopologyNodeRequest>,
+) -> Result<Json<TopologyMutationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .archive_topology_node(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// What moving one epic's pinned specification would do.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose pin would move")
+    ),
+    request_body = TopologyUpgradePreviewRequest,
+    responses((status = 200, body = TopologyUpgradePreviewDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn preview_topology_upgrade(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<TopologyUpgradePreviewRequest>,
+) -> Result<Json<TopologyUpgradePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_topology_upgrade(project_id, epic_id, &request)?,
+    ))
+}
+
+/// Apply the named upgrade preview.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose pin moves"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TopologyUpgradeApplyRequest,
+    responses((status = 200, body = AppliedTopologyUpgradeDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn apply_topology_upgrade(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TopologyUpgradeApplyRequest>,
+) -> Result<Json<AppliedTopologyUpgradeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_topology_upgrade(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// What repairing one bound container's title would do.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose container it is")
+    ),
+    request_body = ContainerRetitleRequest,
+    responses((status = 200, body = ContainerRetitlePreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 501))
+)]
+pub async fn preview_container_retitle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    Json(request): Json<ContainerRetitleRequest>,
+) -> Result<Json<ContainerRetitlePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_container_retitle(project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Repair one bound container's title.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose container it is"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ContainerRetitleRequest,
+    responses((status = 200, body = AppliedContainerRetitleDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 501))
+)]
+pub async fn apply_container_retitle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ContainerRetitleRequest>,
+) -> Result<Json<AppliedContainerRetitleDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_container_retitle(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// The current immutable capacity configuration.
+#[utoipa::path(
+    get, path = "/v1/capacity/configuration", tag = "applications",
+    responses((status = 200, body = CapacityConfigurationDto), (status = 401), (status = 403))
+)]
+pub async fn capacity_configuration(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<CapacityConfigurationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().capacity_configuration()?))
+}
+
+/// What a full replacement would do to the windows now open.
+#[utoipa::path(
+    post, path = "/v1/capacity/configuration:preview", tag = "applications",
+    request_body = CapacityConfigurationRequest,
+    responses((status = 200, body = CapacityConfigurationPreviewDto), (status = 401), (status = 403))
+)]
+pub async fn preview_capacity_configuration(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Json(request): Json<CapacityConfigurationRequest>,
+) -> Result<Json<CapacityConfigurationPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_capacity_configuration(&request)?,
+    ))
+}
+
+/// Apply a full capacity replacement.
+#[utoipa::path(
+    post, path = "/v1/capacity/configuration:apply", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = CapacityConfigurationRequest,
+    responses((status = 200, body = CapacityConfigurationDto), (status = 401), (status = 403), (status = 409))
+)]
+pub async fn apply_capacity_configuration(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<CapacityConfigurationRequest>,
+) -> Result<Json<CapacityConfigurationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_capacity_configuration(&key, &request)
+            .await?,
+    ))
+}
+
+/// One project's admission picture.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/capacity", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    responses((status = 200, body = ProjectCapacityDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn project_capacity(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProjectCapacityDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().project_capacity(project_id)?))
+}
+
+/// Run the configured native collectors.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/capacity:refresh", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = CapacityRefreshRequest,
+    responses(
+        (status = 200, body = ProjectCapacityDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "A configured collector could not be reached")
+    )
+)]
+pub async fn refresh_capacity(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<CapacityRefreshRequest>,
+) -> Result<Json<ProjectCapacityDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .refresh_capacity(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// One redacted raw observation and its derived outcome.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/capacity/observations/{observation_id}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("observation_id" = String, Path, description = "The raw observation")
+    ),
+    responses((status = 200, body = CapacityObservationDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn capacity_observation(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, observation_id)): Path<(String, String)>,
+) -> Result<Json<CapacityObservationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let observation_id = parse_id(
+        &state,
+        kontor_core::id::CapacityObservationId::parse(&observation_id),
+    )?;
+    Ok(Json(
+        state
+            .applications()
+            .capacity_observation(project_id, observation_id)?,
+    ))
+}
+
+/// Stand an operator judgement beside one account's raw evidence.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/availability:override",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("account_profile_id" = String, Path, description = "The account profile"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = AvailabilityOverrideRequest,
+    responses((status = 200, body = AvailabilityOverrideDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn override_availability(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, account_profile_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AvailabilityOverrideRequest>,
+) -> Result<Json<AvailabilityOverrideDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let account_profile_id = parse_id(&state, AccountProfileId::parse(&account_profile_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .override_availability(&key, project_id, account_profile_id, &request)
+            .await?,
+    ))
+}
+
+/// Observe one exact bound seat.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/attention", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("seat_binding_id" = String, Path, description = "The exact binding"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SeatBindingRequest,
+    responses((status = 200, body = SeatBindingOutcomeDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn seat_attention(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, seat_binding_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SeatBindingRequest>,
+) -> Result<Json<SeatBindingOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .seat_attention(&key, project_id, seat_binding_id, &request)
+            .await?,
+    ))
+}
+
+/// Retire and release one exact binding.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("seat_binding_id" = String, Path, description = "The exact binding"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SeatBindingRequest,
+    responses((status = 200, body = SeatBindingOutcomeDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn retire_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, seat_binding_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SeatBindingRequest>,
+) -> Result<Json<SeatBindingOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .retire_seat(&key, project_id, seat_binding_id, &request)
+            .await?,
+    ))
+}
+
+/// One project's Core Team.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/core-team", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    responses(
+        (status = 200, body = CoreTeamDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<CoreTeamDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().core_team(project_id)?))
+}
+
+/// What a Core Team change would do. Commits nothing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/core-team:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    request_body = CoreTeamPreviewRequest,
+    responses(
+        (status = 200, body = CoreTeamPreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<CoreTeamPreviewRequest>,
+) -> Result<Json<CoreTeamPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_core_team(project_id, &request)?,
+    ))
+}
+
+/// Apply a named Core Team preview.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/core-team:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = CoreTeamApplyRequest,
+    responses(
+        (status = 200, body = CoreTeamOutcomeDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<CoreTeamApplyRequest>,
+) -> Result<Json<CoreTeamOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_core_team(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Materialize the Core Team's seats for one epic.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = CoreTeamMaterializeRequest,
+    responses(
+        (status = 200, body = CoreTeamOutcomeDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn materialize_core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<CoreTeamMaterializeRequest>,
+) -> Result<Json<CoreTeamOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .materialize_core_team(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// The roles a Quick session may be opened against.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/quick-roles", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    responses(
+        (status = 200, body = QuickRolesDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn quick_roles(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<QuickRolesDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().quick_roles(project_id)?))
+}
+
+/// Open a Quick session, or return the one this key opened.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/quick-sessions:ensure", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = EnsureQuickSessionRequest,
+    responses(
+        (status = 200, body = QuickSessionDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn ensure_quick_session(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<EnsureQuickSessionRequest>,
+) -> Result<Json<QuickSessionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .ensure_quick_session(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// What promoting one Quick session would produce.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("quick_session_id" = String, Path, description = "The Quick session")
+    ),
+    responses(
+        (status = 200, body = PromotionPreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_promotion(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, quick_session_id)): Path<(String, String)>,
+) -> Result<Json<PromotionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let quick_session_id = parse_id(&state, QuickSessionId::parse(&quick_session_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_promotion(project_id, quick_session_id)?,
+    ))
+}
+
+/// Apply a named promotion preview.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("quick_session_id" = String, Path, description = "The Quick session"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = PromotionApplyRequest,
+    responses(
+        (status = 200, body = PromotedSessionDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_promotion(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, quick_session_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<PromotionApplyRequest>,
+) -> Result<Json<PromotedSessionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let quick_session_id = parse_id(&state, QuickSessionId::parse(&quick_session_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_promotion(&key, project_id, quick_session_id, &request)
+            .await?,
+    ))
+}
+
+/// What moving one epic's pinned roster would do.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic")
+    ),
+    request_body = RosterUpgradePreviewRequest,
+    responses(
+        (status = 200, body = RosterUpgradePreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_roster_upgrade(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<RosterUpgradePreviewRequest>,
+) -> Result<Json<RosterUpgradePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_roster_upgrade(project_id, epic_id, &request)?,
+    ))
+}
+
+/// Apply a named roster upgrade preview.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TopologyUpgradeApplyRequest,
+    responses(
+        (status = 200, body = CoreTeamOutcomeDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_roster_upgrade(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TopologyUpgradeApplyRequest>,
+) -> Result<Json<CoreTeamOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_roster_upgrade(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Every published Advisor profile revision.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/advisor-profiles", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    responses(
+        (status = 200, body = ProfileCatalogDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn advisor_profiles(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProfileCatalogDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().advisor_profiles(project_id)?))
+}
+
+/// Judge one Advisor profile definition. Commits nothing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/advisor-profiles:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    request_body = ProfilePreviewRequest,
+    responses(
+        (status = 200, body = ProfilePreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_advisor_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ProfilePreviewRequest>,
+) -> Result<Json<ProfilePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_advisor_profile(project_id, &request)?,
+    ))
+}
+
+/// Publish one Advisor profile revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/advisor-profiles:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ProfileApplyRequest,
+    responses(
+        (status = 200, body = AppliedProfileDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_advisor_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ProfileApplyRequest>,
+) -> Result<Json<AppliedProfileDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_advisor_profile(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Invoke one Advisor consultation against an epic.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/advisor-runs:invoke", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = InvokeConsultationRequest,
+    responses(
+        (status = 200, body = AdvisorRunDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn invoke_advisor_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<InvokeConsultationRequest>,
+) -> Result<Json<AdvisorRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .invoke_advisor_run(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Settle one Advisor consultation.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("advisor_run_id" = String, Path, description = "The consultation"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SettleConsultationRequest,
+    responses(
+        (status = 200, body = AdvisorRunDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn settle_advisor_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, advisor_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SettleConsultationRequest>,
+) -> Result<Json<AdvisorRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let advisor_run_id = parse_id(&state, AdvisorRunId::parse(&advisor_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .settle_advisor_run(&key, project_id, advisor_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Every published Committee template revision.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/committee-templates", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    responses(
+        (status = 200, body = ProfileCatalogDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn committee_templates(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProfileCatalogDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().committee_templates(project_id)?))
+}
+
+/// Judge one Committee template definition. Commits nothing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-templates:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    request_body = ProfilePreviewRequest,
+    responses(
+        (status = 200, body = ProfilePreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_committee_template(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ProfilePreviewRequest>,
+) -> Result<Json<ProfilePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_committee_template(project_id, &request)?,
+    ))
+}
+
+/// Publish one Committee template revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-templates:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ProfileApplyRequest,
+    responses(
+        (status = 200, body = AppliedProfileDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_committee_template(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ProfileApplyRequest>,
+) -> Result<Json<AppliedProfileDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_committee_template(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Invoke one Committee consultation against an epic.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/committee-runs:invoke", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = InvokeConsultationRequest,
+    responses(
+        (status = 200, body = CommitteeRunDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn invoke_committee_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<InvokeConsultationRequest>,
+) -> Result<Json<CommitteeRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .invoke_committee_run(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Record one round of Committee findings.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("committee_run_id" = String, Path, description = "The consultation"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = RecordFindingsRequest,
+    responses(
+        (status = 200, body = CommitteeRunDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn record_committee_findings(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<RecordFindingsRequest>,
+) -> Result<Json<CommitteeRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .record_committee_findings(&key, project_id, committee_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Settle one Committee consultation.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("committee_run_id" = String, Path, description = "The consultation"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SettleConsultationRequest,
+    responses(
+        (status = 200, body = CommitteeRunDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn settle_committee_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SettleConsultationRequest>,
+) -> Result<Json<CommitteeRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .settle_committee_run(&key, project_id, committee_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Every published Completion profile revision.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/completion-profiles", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    responses(
+        (status = 200, body = ProfileCatalogDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn completion_profiles(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProfileCatalogDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().completion_profiles(project_id)?))
+}
+
+/// Judge one Completion profile definition. Commits nothing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/completion-profiles:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project")
+    ),
+    request_body = ProfilePreviewRequest,
+    responses(
+        (status = 200, body = ProfilePreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn preview_completion_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ProfilePreviewRequest>,
+) -> Result<Json<ProfilePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_completion_profile(project_id, &request)?,
+    ))
+}
+
+/// Publish one Completion profile revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/completion-profiles:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ProfileApplyRequest,
+    responses(
+        (status = 200, body = AppliedProfileDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn apply_completion_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ProfileApplyRequest>,
+) -> Result<Json<AppliedProfileDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_completion_profile(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// One epic's completion state.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/epics/{epic_id}/completion", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic")
+    ),
+    responses(
+        (status = 200, body = CompletionStateDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn completion(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+) -> Result<Json<CompletionStateDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(state.applications().completion(project_id, epic_id)?))
+}
+
+/// Advance one epic's completion.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/completion:advance", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = AdvanceCompletionRequest,
+    responses(
+        (status = 200, body = CompletionOutcomeDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn advance_completion(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AdvanceCompletionRequest>,
+) -> Result<Json<CompletionOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .advance_completion(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Send one epic's completion back for remediation.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/completion:remediate", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = RemediateCompletionRequest,
+    responses(
+        (status = 200, body = CompletionOutcomeDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn remediate_completion(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<RemediateCompletionRequest>,
+) -> Result<Json<CompletionOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .remediate_completion(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
 /// Apply one whole epic atomically.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/epics:apply", tag = "applications",
@@ -2227,9 +5637,10 @@ pub async fn arm(
     caller: Caller,
     Path((project_id, epic_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(request): Json<ArmRequest>,
+    request: Json<ArmRequest>,
 ) -> Result<Json<AuthorizationProjectionDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
+    let Json(request) = request;
     let (project_id, epic_id, key) = scope(&state, &project_id, &epic_id, &headers)?;
     Ok(Json(
         state
@@ -2400,6 +5811,49 @@ pub async fn settle_runtime(
         state
             .applications()
             .settle_runtime(&key, project_id, agent_run_id)
+            .await?,
+    ))
+}
+
+/// Abandon a run that was admitted but never bound, so its task can be
+/// scheduled again.
+///
+/// Refused for a run that *is* bound: that run has a native session, and closing
+/// Kontor's row without cancelling it would leave an agent running that nothing
+/// is steering. `runtime:settle` is the path for those.
+///
+/// Idempotent: a run that is already closed reports its stored closure.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The run to abandon"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = AbandonRunRequest,
+    responses(
+        (status = 200, body = AbandonedRunDto, description = "Abandoned, or already closed"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The run moved, or it holds a session that must be settled"),
+        (status = 422, description = "The run is bound, so it cannot be abandoned")
+    )
+)]
+pub async fn abandon_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AbandonRunRequest>,
+) -> Result<Json<AbandonedRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .abandon_run(&key, project_id, agent_run_id, &request)
             .await?,
     ))
 }
@@ -2703,6 +6157,81 @@ pub async fn settle_turn(
         state
             .applications()
             .settle_turn(&key, caller.0, project_id, agent_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Reconcile one durable handoff after its run was cancelled by runtime observation.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The terminal agent run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = AttestLateHandoffRequest,
+    responses(
+        (status = 200, body = LateHandoffAttestationDto, description = "Attested, or replayed"),
+        (status = 400, description = "Invalid artifact key or handoff digest"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The task, binding, terminal state, or disposition moved")
+    )
+)]
+pub async fn attest_late_handoff(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AttestLateHandoffRequest>,
+) -> Result<Json<LateHandoffAttestationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .attest_late_handoff(&key, caller.0, project_id, agent_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Replace one runtime-terminal unusable seat with a linked successor.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The terminal predecessor run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ReplaceSeatRequest,
+    responses(
+        (status = 200, body = ReplacedSeatDto, description = "Created, or replayed"),
+        (status = 400, description = "Invalid role slot"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The task, binding, run, team, or successor lineage moved"),
+        (status = 422, description = "The predecessor is not runtime-terminal and unusable")
+    )
+)]
+pub async fn replace_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ReplaceSeatRequest>,
+) -> Result<Json<ReplacedSeatDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .replace_seat(&key, project_id, agent_run_id, &request)
             .await?,
     ))
 }

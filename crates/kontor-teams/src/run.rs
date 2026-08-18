@@ -73,9 +73,9 @@ use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::admission::{AdmissionRequest, LaunchAuthority, ReplacedBinding, RoleSlotKey};
 use kontor_runtime::capability::RuntimeBindingSnapshot;
 use kontor_runtime::request::{
-    LaunchParts, LaunchRequest, MessageId, ResumeRequest, SendMessageRequest,
+    LaunchParts, LaunchPlacement, LaunchRequest, MessageId, ResumeRequest, SendMessageRequest,
 };
-use kontor_runtime::workspace::{WorkspaceBindingSnapshot, WorkspaceRoot};
+use kontor_runtime::workspace::WorkspaceRoot;
 use serde::Serialize;
 
 use crate::spec::{RoleSlotId, TeamTemplateSpec};
@@ -363,7 +363,7 @@ impl LaunchPermit {
             role_slot_id: self.slot.clone(),
             task_id: launch.task_id,
             binding_id: launch.binding_id,
-            workspace: launch.workspace,
+            placement: launch.placement,
             cwd: launch.cwd,
             account_profile_id: launch.account_profile_id,
             prompt: launch.prompt,
@@ -443,8 +443,8 @@ pub struct SlotLaunch {
     pub task_id: TaskId,
     /// The binding id Kontor has minted for the session to come.
     pub binding_id: RuntimeBindingId,
-    /// The verified task workspace every role of this team run shares.
-    pub workspace: Option<WorkspaceBindingSnapshot>,
+    /// The verified place every role of this team run works in.
+    pub placement: Option<LaunchPlacement>,
     /// Where this role says it will work.
     pub cwd: WorkspaceRoot,
     /// The coding account this attempt is pinned to, if any.
@@ -1136,6 +1136,36 @@ impl TeamRunSlots {
     pub fn attempt_count(&self, slot: &RoleSlotId) -> usize {
         self.slots.get(slot).map_or(0, |state| {
             state.lineage.len() + usize::from(state.head.live_run().is_some())
+        })
+    }
+
+    /// Recover the token for a slot whose latest durable attempt is closed.
+    ///
+    /// Hydration has already proved the lineage is a single evidenced chain.
+    /// Reconstructing this token is therefore the restart-safe equivalent of
+    /// [`TeamRunSlots::close_completed`], and is the only supported way an
+    /// operator reconciliation may reserve a successor after process loss.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the slot is undeclared, still live, or has
+    /// never recorded a closed attempt.
+    pub fn latest_closed(&self, slot: &RoleSlotId) -> DomainResult<ClosedSlot> {
+        let state = self.state(slot)?;
+        if state.head.live_run().is_some() {
+            return Err(DomainError::invalid(
+                "TeamRunSlots",
+                "the role slot still has a live attempt",
+            ));
+        }
+        let latest = state.lineage.last().ok_or(DomainError::Invalid {
+            subject: "TeamRunSlots",
+            rule: "the role slot has no closed attempt to succeed",
+        })?;
+        Ok(ClosedSlot {
+            team_run_id: self.team_run_id(),
+            slot: slot.clone(),
+            agent_run_id: latest.agent_run_id,
+            retired_binding: latest.binding_id,
         })
     }
 

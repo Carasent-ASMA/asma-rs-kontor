@@ -2,7 +2,7 @@
   "status": "server_info",
   "serverId": "srv_kontor_fixture",
   "hostname": "kontor-fixture-host",
-  "version": "0.9.9",
+  "version": "0.2.0",
   "desktopManaged": true,
   "capabilities": {
     "voice": {

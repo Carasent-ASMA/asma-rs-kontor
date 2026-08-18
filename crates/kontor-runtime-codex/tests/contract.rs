@@ -56,8 +56,9 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::observation::{ObservationSource, ReconciliationAction, ReconciliationFinding};
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, InspectRequest, LaunchParts, LaunchRequest, LiveSubscribeRequest,
-    MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest, SendMessageRequest,
+    AdoptRequest, CancelRequest, InspectRequest, LaunchParts, LaunchPlacement, LaunchRequest,
+    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
+    SendMessageRequest,
 };
 use kontor_runtime::timeline::{SessionEventKind, TimelineBreak, TimelinePosition};
 use kontor_runtime::workspace::{
@@ -470,7 +471,7 @@ async fn admitted(adapter: &CodexAdapter<'_>, seat: &Seat, parts: &Parts) -> Lau
             role_slot_id: seat.slot.role_slot_id.clone(),
             task_id: seat.task_id,
             binding_id: parts.binding_id,
-            workspace: parts.workspace.clone(),
+            placement: parts.workspace.clone().map(LaunchPlacement::Workspace),
             cwd: parts.cwd.clone(),
             account_profile_id: parts.account,
             prompt: BoundedText::parse(&parts.prompt).expect("bounded text"),

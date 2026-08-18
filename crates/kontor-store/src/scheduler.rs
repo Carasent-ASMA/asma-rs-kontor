@@ -81,7 +81,8 @@ use std::collections::BTreeSet;
 use kontor_core::DomainError;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, CommandReceiptId,
-    ExternalId, ExternalName, MiniProjectId, ProjectId, ResourceLeaseId, TaskId, Timestamp,
+    ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId, ResourceLeaseId, TaskId,
+    Timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceipt};
 use kontor_core::repository::{
@@ -98,7 +99,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
 use crate::commands::intent::insert_intent;
-use crate::repository::{backend, conflict, read_timestamp, revision_of, text};
+use crate::repository::{backend, conflict, from_json, read_timestamp, revision_of, text};
 
 /// The lifecycle values an agent run is no longer occupying capacity in.
 ///
@@ -392,6 +393,43 @@ struct RejectionDocument {
 // ---------------------------------------------------------------------------
 
 impl SqliteStore {
+    /// Read the immutable scheduler decision behind one launch command.
+    ///
+    /// This is the recovery half of admission: the scheduler start may have
+    /// committed the run before the runtime accepted its workspace. Retrying the
+    /// same command must use the original decision rather than re-plan a task
+    /// that is now correctly reported as already in flight.
+    pub fn admitted_candidate_by_launch_key(
+        &self,
+        project_id: ProjectId,
+        launch_key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<AdmittedCandidate>> {
+        #[derive(serde::Deserialize)]
+        struct StoredAdmission {
+            admitted: AdmittedCandidate,
+        }
+
+        let evidence: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT event.evidence
+                 FROM scheduler_admission_events AS event
+                 JOIN command_receipts AS receipt
+                   ON receipt.project_id = event.project_id
+                  AND receipt.id = event.launch_receipt_id
+                 WHERE event.project_id = ?1
+                   AND event.decision = 'admitted'
+                   AND receipt.idempotency_key = ?2",
+                params![project_id.to_string(), launch_key.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        evidence
+            .map(|value| from_json::<StoredAdmission>(&value).map(|stored| stored.admitted))
+            .transpose()
+    }
+
     /// Every module currently claimed by an unlapsed lease, across the Realm.
     ///
     /// Deliberately not project-scoped. Every other read on this store is, because
@@ -402,6 +440,8 @@ impl SqliteStore {
     ///
     /// A lease whose expiry has passed is *not* reported as held: the place is
     /// reclaimable, and the admission that reclaims it is what records the expiry.
+    /// Pre-worktree-retention leases recover the same task's declared tree; new
+    /// leases retain that value directly and therefore never need the fallback.
     ///
     /// # Errors
     /// Backend failures only.
@@ -409,12 +449,17 @@ impl SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT lease.resource_key, lease.worktree_key, team.task_id
+                "SELECT lease.resource_key,
+                        COALESCE(lease.worktree_key, task_tree.worktree),
+                        team.task_id
                  FROM resource_leases AS lease
                  JOIN agent_runs AS run
                    ON run.project_id = lease.project_id AND run.id = lease.agent_run_id
                  JOIN team_runs AS team
                    ON team.project_id = run.project_id AND team.id = run.team_run_id
+                 LEFT JOIN task_worktrees AS task_tree
+                   ON task_tree.project_id = team.project_id
+                  AND task_tree.task_id = team.task_id
                  WHERE lease.lease_kind = 'module'
                    AND lease.released_at IS NULL
                    AND lease.expired_at IS NULL
@@ -507,6 +552,47 @@ impl SqliteStore {
     ) -> RepositoryResult<Option<ResourceLease>> {
         let transaction = self.begin()?;
         read_lease(&transaction, project_id, id)
+    }
+
+    /// Every lease one run still holds: neither released, expired nor lapsed.
+    ///
+    /// A run that ends still holds what it claimed, because a lease is given up
+    /// deliberately and not by the row it belonged to changing state. Whoever
+    /// ends the run has to hand them back, or the next admission of the same
+    /// task waits out the expiry for no reason.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn live_leases_of_run(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        now: Timestamp,
+    ) -> RepositoryResult<Vec<ResourceLease>> {
+        let transaction = self.begin()?;
+        let mut statement = transaction
+            .prepare(
+                "SELECT id, project_id, lease_kind, resource_key, worktree_key, agent_run_id,
+                        holder_instance, fencing_token, acquired_at, expires_at, released_at,
+                        expired_at, renewed_from_lease_id, admission_event_id
+                 FROM resource_leases
+                 WHERE project_id = ?1 AND agent_run_id = ?2
+                   AND released_at IS NULL AND expired_at IS NULL AND expires_at > ?3
+                 ORDER BY acquired_at",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![
+                project_id.to_string(),
+                agent_run_id.to_string(),
+                text(now)
+            ])
+            .map_err(backend)?;
+        let mut leases = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            leases.push(read_lease_row(row)?);
+        }
+        Ok(leases)
     }
 
     /// Read one lease's append-only history, in order.
@@ -708,7 +794,6 @@ impl SqliteStore {
                 lease_id,
                 LeaseKind::Module,
                 module,
-                admitted.worktree.as_ref(),
                 &module_reclaimed,
             )?;
         }
@@ -721,7 +806,6 @@ impl SqliteStore {
                 lease_id,
                 LeaseKind::Worktree,
                 worktree,
-                None,
                 &worktree_reclaimed,
             )?;
         }
@@ -1148,9 +1232,10 @@ fn ensure_no_open_run(
 /// Recount the ceilings that can be recounted from rows.
 ///
 /// Global, project, mission and account concurrency are all countable from
-/// `agent_runs` and the graph above it, so they are proved again here rather than
+/// non-terminal TeamRun envelopes, so they are proved again here rather than
 /// trusted from the snapshot — which is what stops two instances from each
-/// admitting the last unit of headroom.
+/// admitting the last unit of headroom. Seats never spend these ceilings: one
+/// admitted TeamRun counts once however many declared roles it contains.
 ///
 /// The runtime and provider ceilings deliberately are not. A queued run has no
 /// runtime binding and no provider row yet — the binding is created when the
@@ -1194,60 +1279,45 @@ fn ensure_capacity(
     Ok(())
 }
 
-/// Which population of open runs a count covers.
+/// Which population of non-terminal TeamRun envelopes a count covers.
 enum InFlightScope {
-    /// Every open run in the Realm.
+    /// Every non-terminal TeamRun in the Realm.
     Global,
-    /// Every open run in one project.
+    /// Every non-terminal TeamRun in one project.
     Project(ProjectId),
-    /// Every open run under one goal.
+    /// Every non-terminal TeamRun under one goal.
     Mission(ProjectId, MiniProjectId),
-    /// Every open run pinned to one account.
+    /// Every non-terminal TeamRun using one account.
     Account(ProjectId, AccountProfileId),
 }
 
 fn count_in_flight(transaction: &Transaction<'_>, scope: InFlightScope) -> RepositoryResult<i64> {
-    // A run is in flight when its own lifecycle is open *and* the team it serves
-    // has not closed on settled turns.
-    //
-    // The second half exists because a seat is persistent: a team whose declared
-    // slots have all finished their bounded turns is done, and its native
-    // sessions are deliberately still live. Counting those runs would let a
-    // finished task hold capacity for as long as its seat sits there — and the
-    // seat is meant to sit there. The run's own lifecycle stays open, because
-    // nothing observed the session end; it simply stops being *work in flight*.
-    let open = format!(
-        "run.lifecycle NOT IN ({TERMINAL_LIFECYCLES})
-         AND NOT EXISTS (
-             SELECT 1 FROM team_runs AS settled
-             WHERE settled.project_id = run.project_id
-               AND settled.id = run.team_run_id
-               AND settled.terminal_source_kind = 'settled_turns')"
-    );
+    let open = format!("team.lifecycle NOT IN ({TERMINAL_LIFECYCLES})");
     let (sql, bindings): (String, Vec<String>) = match scope {
         InFlightScope::Global => (
-            format!("SELECT count(*) FROM agent_runs AS run WHERE {open}"),
+            format!("SELECT count(*) FROM team_runs AS team WHERE {open}"),
             Vec::new(),
         ),
         InFlightScope::Project(project) => (
-            format!("SELECT count(*) FROM agent_runs AS run WHERE run.project_id = ?1 AND {open}"),
+            format!("SELECT count(*) FROM team_runs AS team WHERE team.project_id = ?1 AND {open}"),
             vec![project.to_string()],
         ),
         InFlightScope::Mission(project, mission) => (
             format!(
-                "SELECT count(*) FROM agent_runs AS run
-                 JOIN team_runs AS team
-                   ON team.project_id = run.project_id AND team.id = run.team_run_id
+                "SELECT count(*) FROM team_runs AS team
                  JOIN tasks AS task
                    ON task.project_id = team.project_id AND task.id = team.task_id
-                 WHERE run.project_id = ?1 AND task.mini_project_id = ?2 AND {open}"
+                 WHERE team.project_id = ?1 AND task.mini_project_id = ?2 AND {open}"
             ),
             vec![project.to_string(), mission.to_string()],
         ),
         InFlightScope::Account(project, account) => (
             format!(
-                "SELECT count(*) FROM agent_runs AS run
-                 WHERE run.project_id = ?1 AND run.account_profile_id = ?2 AND {open}"
+                "SELECT count(DISTINCT team.id) FROM team_runs AS team
+                 JOIN agent_runs AS run
+                   ON run.project_id = team.project_id AND run.team_run_id = team.id
+                 WHERE team.project_id = ?1 AND run.account_profile_id = ?2
+                   AND run.lifecycle NOT IN ({TERMINAL_LIFECYCLES}) AND {open}"
             ),
             vec![project.to_string(), account.to_string()],
         ),
@@ -1517,13 +1587,16 @@ fn insert_lease(
     lease_id: ResourceLeaseId,
     kind: LeaseKind,
     place: &ExternalName,
-    worktree: Option<&ExternalName>,
     reclaimed: &[ResourceLeaseId],
 ) -> RepositoryResult<()> {
     // Reclaim lineage: the lease this one took the place over from, when this
     // admission is the one that found the previous holder lapsed. At most one
     // lapsed lease per place can have been active, so the first is the only one.
     let reclaimed_from = reclaimed.first().map(ToString::to_string);
+    let worktree = match kind {
+        LeaseKind::Module => request.admitted.worktree.as_ref(),
+        LeaseKind::Worktree => None,
+    };
     transaction
         .execute(
             "INSERT INTO resource_leases

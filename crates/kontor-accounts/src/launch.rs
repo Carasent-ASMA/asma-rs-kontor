@@ -52,7 +52,7 @@ use crate::resolver::{AccountResolver, ResolutionError, ResolvedAccountEnvironme
 
 /// How old an availability observation may be and still be acted on.
 ///
-/// Fleet cooldown state changes on the order of minutes, so a minute-old
+/// Provider throttling changes on the order of minutes, so a minute-old
 /// observation is evidence and a ten-minute-old one is a memory. Anything older
 /// fails closed rather than being treated as "probably still fine".
 pub const MAX_OBSERVATION_AGE_SECONDS: i64 = 60;
@@ -81,10 +81,12 @@ pub enum AccountAvailability {
     Unknown,
 }
 
-/// One typed availability fact, supplied by the fleet integration.
+/// One typed availability fact, as this crate's own collector derived it.
 ///
-/// Kontor never reads `~/.asma/fleet/` to obtain one: `asma fleet` owns cooldown
-/// mechanics, and this is the value it hands over.
+/// The conclusion of a [`crate::CapacityReading`], carried in the shape the
+/// admission path judges a pin against. Nothing outside Kontor produces one:
+/// cooldown is this crate's mechanic now, so there is no other program whose
+/// answer this could be waiting on and no state directory to read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailabilityObservation {
     /// The account it concerns.

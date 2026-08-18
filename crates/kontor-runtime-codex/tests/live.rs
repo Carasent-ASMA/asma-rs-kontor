@@ -50,7 +50,7 @@ use kontor_core::state::ObservedRunState;
 use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{OperationContext, RuntimeCapability, preflight};
-use kontor_runtime::request::{CancelRequest, InspectRequest, LaunchParts};
+use kontor_runtime::request::{CancelRequest, InspectRequest, LaunchParts, LaunchPlacement};
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_runtime_codex::adapter::{
     CodexAccountAdmission, CodexAccountAuthority, CodexAccountRequest, CodexAdapter,
@@ -290,7 +290,7 @@ async fn run_one(
             role_slot_id,
             task_id,
             binding_id,
-            workspace: Some(workspace),
+            placement: Some(LaunchPlacement::Workspace(workspace)),
             cwd: adapter.config().task_worktree.clone(),
             account_profile_id: Some(profile.id),
             prompt: BoundedText::parse(PROMPT).expect("bounded text"),

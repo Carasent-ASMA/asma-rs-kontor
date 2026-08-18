@@ -19,14 +19,16 @@ use crate::calendar::{
     WorkCalendarAssignment, WorkScope,
 };
 use crate::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash,
-    CredentialAlias, EventCursor, ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey,
-    ExternalName, ExternalProjectKey, GateKey, GuardrailEvaluationId, IdempotencyKey,
-    IntakeDecisionId, IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey,
-    ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId,
-    SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
-    TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId, WorkProfileKey,
+    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
+    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ConnectorKey,
+    ContentHash, CredentialAlias, EventCursor, ExecutionAuthorizationId, ExternalId,
+    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, GuardrailEvaluationId,
+    IdempotencyKey, IntakeDecisionId, IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId,
+    PhaseKey, ProjectId, QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId,
+    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId,
+    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
+    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
+    WorkProfileKey,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -34,13 +36,16 @@ use crate::receipt::{
     NoEffectEvidence,
 };
 use crate::spec::{
-    CanonicalSourceEvent, ExecutionCapability, IntakeReceipt, PersonaScenarioSnapshot,
-    PersonaScenarioSpec, ResolvedWorkProfileSnapshot, SourceIdentity, TeamRunSnapshot,
-    TeamTemplateRevision, TriggerSpec, WorkProfileSpec,
+    CanonicalSourceEvent, CatalogRoleRef, ExecutionCapability, IntakeReceipt,
+    PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
+    ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability, SourceIdentity,
+    TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use crate::state::{
-    DesiredRunState, GateState, GateVerdict, NativeRuntimeIdentity, RunLifecycle, RunProjection,
-    TaskState, TaskTeamClosure, TeamTerminalEvidence, TerminalEvidence, TerminalOutcome,
+    AdaptiveAdmissionState, DesiredRunState, GateState, GateVerdict, NativeContainerBinding,
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RunLifecycle, RunProjection,
+    SeatAttachment, SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure,
+    TeamTerminalEvidence, TerminalEvidence, TerminalOutcome, TopologyLifecycle,
 };
 use crate::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -162,6 +167,299 @@ pub struct NewMiniProject {
     pub name: ExternalName,
     /// Creation instant.
     pub created_at: Timestamp,
+}
+
+/// The selected topology revision for future project scopes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectTopologyDefault {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Exact published revision and hash.
+    pub topology: TopologySnapshot,
+    /// Selection instant.
+    pub selected_at: Timestamp,
+}
+
+/// One immutable published Project Core Team revision, as it is stored.
+///
+/// The seats are held as the canonical document the application layer resolved,
+/// rather than as columns this layer would have to re-validate. The store's
+/// obligation is that the revision it returns is byte-identical to the one that
+/// was published — not that it can independently re-derive a role's standard
+/// title, which is the catalog's job and is already pinned by `catalog_hash`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCoreTeamRevision {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Monotonic revision within the project.
+    pub version: SpecVersion,
+    /// Canonical hash of the exact role catalog the seats resolved against.
+    pub catalog_hash: ContentHash,
+    /// The resolved seats, in their published order.
+    pub seats: serde_json::Value,
+    /// Publication instant.
+    pub published_at: Timestamp,
+}
+
+/// One durable Quick session, as it is stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredQuickSession {
+    /// Session identity.
+    pub id: QuickSessionId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The exact catalog role its seat fills.
+    pub role: CatalogRoleRef,
+    /// The stable slot the role occupies.
+    pub role_slot_id: RoleSlotId,
+    /// The QSW hosting it.
+    pub topology_node_id: TopologyNodeId,
+    /// Its one seat.
+    pub seat_binding_id: SeatBindingId,
+    /// The session base it was placed under.
+    pub psw_topology_node_id: TopologyNodeId,
+    /// The native project observed for that base at placement, when one had
+    /// been observed by then.
+    pub psw_native_id: Option<ExternalId>,
+    /// What the session is for. Recorded, never interpreted.
+    pub purpose: BoundedText,
+    /// The canonical intent of the command that opened it, which is how a
+    /// retry that lost its answer finds this row instead of opening a second.
+    pub intent_hash: ContentHash,
+    /// What has become of the source.
+    pub disposition: SourceDisposition,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// What promotion does with the Quick session it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceDisposition {
+    /// Keep the source durable and idle. The default, and the only one a
+    /// promotion that was not asked to archive may produce.
+    Idle,
+    /// Archive the source, after the handoff has been delivered.
+    Archive,
+}
+
+impl SourceDisposition {
+    /// The stable spelling used in JSON and SQLite.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Archive => "archive",
+        }
+    }
+
+    /// Parse the stable spelling.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::Invalid`] for any other text.
+    pub fn parse(text: &str) -> DomainResult<Self> {
+        match text {
+            "idle" => Ok(Self::Idle),
+            "archive" => Ok(Self::Archive),
+            _ => Err(DomainError::invalid(
+                "SourceDisposition",
+                "is not a known value",
+            )),
+        }
+    }
+}
+
+/// One promotion of one Quick session into an epic.
+///
+/// Written before the first effect, carrying the ids those effects use, so a
+/// resumed apply reconciles the same MiniProject rather than building a second.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredPromotion {
+    /// The source session.
+    pub quick_session_id: QuickSessionId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic this promotion creates, frozen at authorization.
+    pub mini_project_id: MiniProjectId,
+    /// The digest of the plan this apply was authorized against.
+    pub preview_hash: ContentHash,
+    /// What the source becomes once delivery succeeds.
+    pub source_disposition: SourceDisposition,
+    /// The exact delivered handoff, once it has been delivered.
+    pub handoff: Option<serde_json::Value>,
+    /// That handoff's digest.
+    pub handoff_hash: Option<ContentHash>,
+    /// The seat it was delivered to.
+    pub lsa_seat_binding_id: Option<SeatBindingId>,
+    /// When delivery completed. Absent while the promotion is still in flight.
+    pub completed_at: Option<Timestamp>,
+    /// Authorization instant.
+    pub created_at: Timestamp,
+}
+
+/// The roster one epic is staffed from, frozen at promotion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredEpicRoster {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic.
+    pub mini_project_id: MiniProjectId,
+    /// The Core Team revision this epic pinned.
+    pub core_team_version: SpecVersion,
+    /// The catalog that revision resolved against.
+    pub catalog_hash: ContentHash,
+    /// The frozen seats, in their published order.
+    pub seats: serde_json::Value,
+    /// The session this epic was promoted from, when it was.
+    pub quick_session_id: Option<QuickSessionId>,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Freezing instant.
+    pub pinned_at: Timestamp,
+}
+
+/// One immutable topology snapshot pinned to a MiniProject/epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MiniProjectTopologySnapshot {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Target MiniProject.
+    pub mini_project_id: MiniProjectId,
+    /// Exact published revision and hash.
+    pub topology: TopologySnapshot,
+    /// Pinning instant.
+    pub pinned_at: Timestamp,
+}
+
+/// A new logical topology node. Native placement is owned by the runtime ticket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSessionTopologyNode {
+    /// Node identity.
+    pub id: TopologyNodeId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Optional epic/MiniProject scope.
+    pub mini_project_id: Option<MiniProjectId>,
+    /// Exact published topology revision/hash.
+    pub topology: TopologySnapshot,
+    /// Data-defined kind.
+    pub kind: TopologyKindKey,
+    /// Logical parent.
+    pub parent_id: Option<TopologyNodeId>,
+    /// The delivery task this node serves, for the task-scoped kinds.
+    pub task_id: Option<TaskId>,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// A new logical seat binding. Native identities are added by the placement
+/// boundary, not by this repository request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSeatBinding {
+    /// Binding identity.
+    pub id: SeatBindingId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Hosting logical node.
+    pub topology_node_id: TopologyNodeId,
+    /// Stable role-slot address.
+    pub role_slot_id: RoleSlotId,
+    /// Typed catalog role snapshot.
+    pub role: CatalogRoleRef,
+    /// Optional delivery task reference.
+    pub task_id: Option<TaskId>,
+    /// Optional delivery TeamRun reference.
+    pub team_run_id: Option<TeamRunId>,
+    /// The instant this seat must be observed attached by (OP-REQ-039a).
+    ///
+    /// Supplied by the caller rather than computed here, and then never
+    /// recomputed: fixing it at creation is the whole point of the column.
+    pub attach_deadline: Timestamp,
+    /// The exact owning epic seat, when this seat has one.
+    pub parent_seat_binding_id: Option<SeatBindingId>,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// One observed change to a seat's OP-REQ-039 evidence.
+///
+/// Every field is `None` for "nothing observed about this", so one call records
+/// exactly what was seen and silently overwrites nothing else. The separation
+/// between `attached_at` and `activity_at` is the requirement, not a
+/// convenience: a readback may prove attachment, and only an observed runtime
+/// event or turn position may prove activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SeatLivenessObservation {
+    /// The seat was observed attached at this instant.
+    pub attached_at: Option<Timestamp>,
+    /// The seat was observed *doing something* at this instant.
+    ///
+    /// Only an observed runtime event or turn position may fill this in. A
+    /// successful inspect belongs in `attached_at`.
+    pub activity_at: Option<Timestamp>,
+    /// The runtime's self-report, recorded so an escalation can quote it.
+    pub runtime_reported: Option<ObservedRunState>,
+    /// The seat was deliberately released or reaped at this instant.
+    pub released_at: Option<Timestamp>,
+    /// The seat was replaced by this one.
+    pub replaced_by: Option<SeatBindingId>,
+}
+
+/// A native container to bind to one topology node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewNativeContainerBinding {
+    /// The node that owns the container.
+    pub topology_node_id: TopologyNodeId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The runtime-issued binding id this placement was made under.
+    pub container_binding_id: ExternalId,
+    /// The exact native identity read back from the runtime.
+    pub identity: NativeRuntimeIdentity,
+    /// What the runtime said the container is.
+    pub observed_kind: ObservedContainerKind,
+    /// The container's canonical working directory, where it has one.
+    pub canonical_cwd: Option<ExternalName>,
+    /// When the binding was established or last confirmed.
+    pub observed_at: Timestamp,
+}
+
+/// Initial persisted adaptive-admission state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAdaptiveAdmissionState {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Target MiniProject.
+    pub mini_project_id: MiniProjectId,
+    /// Initial/current scheduler-decided window.
+    pub current_window: u32,
+    /// Current clean-observation streak.
+    pub clean_observation_streak: u32,
+    /// Last applied observation, if any.
+    pub last_observation_id: Option<ExternalId>,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// Compare-and-swap update of persisted adaptive-admission state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdaptiveAdmissionAdvance {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Target MiniProject.
+    pub mini_project_id: MiniProjectId,
+    /// Scheduler-decided new window.
+    pub current_window: u32,
+    /// Scheduler-decided clean-observation streak.
+    pub clean_observation_streak: u32,
+    /// Last observation already applied.
+    pub last_observation_id: Option<ExternalId>,
+    /// Expected persisted revision.
+    pub expected_revision: AggregateRevision,
+    /// Mutation instant.
+    pub updated_at: Timestamp,
 }
 
 /// A task.
@@ -491,6 +789,14 @@ pub struct TaskTransitionRequest {
     pub to: TaskState,
     /// The command receipt that authorizes a resume.
     pub resume_receipt: Option<CommandReceiptId>,
+    /// Whether this transition is an explicit reopen of a terminal task.
+    ///
+    /// Kept apart from `resume_receipt` because the two are different decisions
+    /// carried by the same kind of receipt: a resume lets a held task continue,
+    /// and a reopen contradicts a conclusion the Realm already recorded. A store
+    /// that inferred one from the other would let any resume walk a completed task
+    /// back open.
+    pub reopen: bool,
     /// How the task's run closed, for a failure transition.
     pub run_outcome: Option<TerminalOutcome>,
     /// Artifacts produced, for a completion transition.
@@ -1041,6 +1347,34 @@ pub struct TeamRunClosure {
     pub evidence: TeamTerminalEvidence,
 }
 
+/// The operator receipt that authorizes abandoning one run.
+///
+/// Deliberately *not* a [`NewCommandIntent`]. An intent moves a run's desired
+/// state under compare-and-swap, which bumps the very revision the closure
+/// receipt has to stay bound to — the abandon evidence is verified against the
+/// revision present when the run closes, so an intent would invalidate its own
+/// receipt. This records the decision and nothing else; the closure is a
+/// separate act that cites it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAbandonReceipt {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The receipt id to mint.
+    pub receipt_id: CommandReceiptId,
+    /// The caller's stable key.
+    pub idempotency_key: IdempotencyKey,
+    /// The aggregate being abandoned: a run, or the team run whose every run
+    /// has ended.
+    pub target: AggregateRef,
+    /// The revision the operator decided against, which is the revision the
+    /// closure must be made at.
+    pub target_revision: AggregateRevision,
+    /// The canonical decision document. Its digest is the closure evidence.
+    pub intent: CanonicalDocument,
+    /// When the decision was recorded.
+    pub recorded_at: Timestamp,
+}
+
 /// A new command intent, written atomically with desired state, the outbox entry
 /// and the intent event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1403,6 +1737,548 @@ pub trait ProjectRepository {
     ) -> RepositoryResult<()>;
 }
 
+/// One raw capacity reading, exactly as a collector observed it.
+///
+/// The `reading` is opaque here on purpose. `kontor-accounts` owns what a
+/// reading means; this layer's whole job is to persist it unaltered and hand it
+/// back, and a store that could parse it would eventually be tempted to derive
+/// from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapacityObservation {
+    /// The observation.
+    pub id: CapacityObservationId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account it concerns.
+    pub account_profile_id: AccountProfileId,
+    /// When the collector read it.
+    pub observed_at: Timestamp,
+    /// The collector's evidence, verbatim.
+    pub reading: CanonicalDocument,
+    /// What the account layer derived from it, in the same transaction.
+    pub available: bool,
+    /// Whether the reading indicated the provider pushing back.
+    pub pressure: bool,
+    /// When any cooldown this reading started lifts.
+    pub cooling_until: Option<Timestamp>,
+}
+
+/// One raw capacity reading to persist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCapacityObservation {
+    /// The observation's identity, minted by the collector.
+    pub id: CapacityObservationId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account it concerns.
+    pub account_profile_id: AccountProfileId,
+    /// When the collector read it.
+    pub observed_at: Timestamp,
+    /// The collector's evidence, verbatim.
+    pub reading: CanonicalDocument,
+    /// Derived availability.
+    pub available: bool,
+    /// Derived pressure.
+    pub pressure: bool,
+    /// Derived cooldown expiry, if the reading started one.
+    pub cooling_until: Option<Timestamp>,
+}
+
+/// An operator's standing judgement about one account's availability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvailabilityOverride {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account it concerns.
+    pub account_profile_id: AccountProfileId,
+    /// What the operator asserts.
+    pub available: bool,
+    /// Why. Recorded, never interpreted.
+    pub reason: ExternalName,
+    /// When it lapses on its own.
+    pub expires_at: Option<Timestamp>,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+impl AvailabilityOverride {
+    /// Whether this judgement still stands at `now`.
+    #[must_use]
+    pub fn is_standing(&self, now: Timestamp) -> bool {
+        self.expires_at.is_none_or(|expiry| now < expiry)
+    }
+}
+
+/// An operator judgement to record, under the account's expected revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAvailabilityOverride {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account it concerns.
+    pub account_profile_id: AccountProfileId,
+    /// What the operator asserts.
+    pub available: bool,
+    /// Why.
+    pub reason: ExternalName,
+    /// When it lapses.
+    pub expires_at: Option<Timestamp>,
+    /// The override revision the caller believes is current; `1` for the first.
+    pub expected_revision: AggregateRevision,
+    /// Mutation instant.
+    pub updated_at: Timestamp,
+}
+
+/// Account-owned capacity evidence and the judgement standing beside it.
+///
+/// Raw first: [`CapacityRepository::record_capacity_observation`] is the only
+/// way a reading enters the Realm, and the row it writes can never be updated
+/// or deleted. An override is a separate record precisely so that recording one
+/// cannot silently rewrite what a provider reported.
+pub trait CapacityRepository {
+    /// Persist one raw reading together with what was derived from it.
+    ///
+    /// # Errors
+    /// Refuses an unknown or cross-project account profile, and a duplicate
+    /// observation id — a replayed collector reading is not a second fact.
+    fn record_capacity_observation(
+        &self,
+        request: &NewCapacityObservation,
+    ) -> RepositoryResult<CapacityObservation>;
+
+    /// Read one raw observation.
+    ///
+    /// # Errors
+    /// Backend failures only; another project's observation is `Ok(None)`.
+    fn get_capacity_observation(
+        &self,
+        project_id: ProjectId,
+        id: CapacityObservationId,
+    ) -> RepositoryResult<Option<CapacityObservation>>;
+
+    /// The most recent observation for each of a project's accounts.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn latest_capacity_observations(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<CapacityObservation>>;
+
+    /// Record or replace one account's standing operator judgement.
+    ///
+    /// The first judgement about an account is written at
+    /// [`AggregateRevision::INITIAL`] and must be presented as such, because a
+    /// revision cannot be zero and so "there is no record" has no other
+    /// spelling. The consequence is deliberate and narrow: two operators who
+    /// both read *no* override may both write, and the second wins. Every
+    /// subsequent write is an ordinary compare-and-swap.
+    ///
+    /// # Errors
+    /// Refuses an unknown account profile and a stale expected revision. On
+    /// refusal nothing is written — in particular no observation is touched.
+    fn set_availability_override(
+        &self,
+        request: &NewAvailabilityOverride,
+    ) -> RepositoryResult<AvailabilityOverride>;
+
+    /// A project's standing operator judgements, including lapsed ones.
+    ///
+    /// Expiry is a fact the caller applies, not a row the store deletes: a
+    /// lapsed judgement is still a record that someone made it.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_availability_overrides(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AvailabilityOverride>>;
+}
+
+/// The Realm's capacity ceilings as an operator set them.
+///
+/// Realm-scoped rather than project-scoped, so the operations that read and
+/// replace it are inherent store methods rather than [`CapacityRepository`]
+/// ones: a realm-wide write has no aggregate to name and is made idempotent
+/// through the realm binding table instead of a command receipt.
+///
+/// The `ceilings` document is opaque here: `kontor-scheduler` owns what a
+/// ceiling means, and a store that could parse one would eventually validate it
+/// twice, differently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCapacityConfiguration {
+    /// The ceilings, verbatim.
+    pub ceilings: CanonicalDocument,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+/// Generic topology, typed seat and persisted adaptive-window state.
+pub trait TopologyRepository {
+    /// Publish one immutable project topology specification revision.
+    ///
+    /// A published topology specification is project configuration, so it is
+    /// tier B and always carries a write-time classification. The stamp lives
+    /// beside the document rather than inside it: the canonical hash keeps
+    /// identifying the specification text alone, so withholding a revision
+    /// never changes the hash an epic pinned.
+    ///
+    /// # Errors
+    /// Refuses an invalid document or stamp, dangling project or duplicate
+    /// revision.
+    fn publish_topology_spec(
+        &self,
+        project_id: ProjectId,
+        spec: &ProjectSessionTopologySpec,
+        shareability: &Shareability,
+        published_at: Timestamp,
+    ) -> RepositoryResult<ContentHash>;
+
+    /// Read one topology specification revision's immutable classification.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_topology_spec_shareability(
+        &self,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<Shareability>>;
+
+    /// Read one topology specification revision and re-prove its digest.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_topology_spec(
+        &self,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<ProjectSessionTopologySpec>>;
+
+    /// Every topology specification revision published in one project.
+    ///
+    /// The set an upgrade may move an epic to. Ordered by identity and version
+    /// so a search over it is deterministic — a preview digest that resolved to
+    /// a different revision depending on row order would not be a digest of
+    /// anything.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_topology_specs(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<ProjectSessionTopologySpec>>;
+
+    /// Select an already-published topology revision for future project scopes.
+    ///
+    /// # Errors
+    /// Refuses a missing/hash-mismatched revision.
+    fn set_project_topology_default(
+        &self,
+        selection: &ProjectTopologyDefault,
+    ) -> RepositoryResult<()>;
+
+    /// Read the selected project default.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_project_topology_default(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Option<ProjectTopologyDefault>>;
+
+    /// Move one already-pinned epic to a different published revision.
+    ///
+    /// Deliberately not the same call as
+    /// [`TopologyRepository::pin_mini_project_topology`]: an epic with no pin
+    /// yet is refused here, so this operation can never quietly create the
+    /// first pin, and the first pin can never be an upgrade of nothing. What
+    /// moves is the epic's current position; the revisions on either side stay
+    /// immutable, and the move itself is audited by the receipt that carries it.
+    ///
+    /// # Errors
+    /// Refuses an unpinned or cross-project epic and a target revision that is
+    /// not published in this project.
+    fn repin_mini_project_topology(
+        &self,
+        snapshot: &MiniProjectTopologySnapshot,
+    ) -> RepositoryResult<()>;
+
+    /// Pin one immutable topology revision/hash to a MiniProject.
+    ///
+    /// # Errors
+    /// Refuses a cross-project/missing MiniProject, missing revision, changed
+    /// hash or a second pin.
+    fn pin_mini_project_topology(
+        &self,
+        snapshot: &MiniProjectTopologySnapshot,
+    ) -> RepositoryResult<()>;
+
+    /// Read one MiniProject's pinned topology revision.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_mini_project_topology(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<MiniProjectTopologySnapshot>>;
+
+    /// Publish one immutable standard-role catalog revision.
+    ///
+    /// A published role catalog is project configuration, so it is tier B and
+    /// always carries a write-time classification.
+    ///
+    /// # Errors
+    /// Refuses an invalid or duplicate revision, or an invalid stamp.
+    fn publish_role_catalog(
+        &self,
+        catalog: &RoleCatalogRevision,
+        shareability: &Shareability,
+        published_at: Timestamp,
+    ) -> RepositoryResult<ContentHash>;
+
+    /// Read one role catalog revision's immutable classification.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_role_catalog_shareability(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<Shareability>>;
+
+    /// Read one standard-role catalog revision and re-prove its digest.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_role_catalog(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<RoleCatalogRevision>>;
+
+    /// Create one logical topology node in the declared tree.
+    ///
+    /// # Errors
+    /// Refuses undeclared kinds, illegal/dangling parents, cross-project
+    /// references and maximum-cardinality violations.
+    fn create_topology_node(
+        &self,
+        request: &NewSessionTopologyNode,
+    ) -> RepositoryResult<SessionTopologyNode>;
+
+    /// List all logical nodes in one project and optional MiniProject scope.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_topology_nodes(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: Option<MiniProjectId>,
+    ) -> RepositoryResult<Vec<SessionTopologyNode>>;
+
+    /// Every logical node in one project, parents before children.
+    ///
+    /// Distinct from [`TopologyRepository::list_topology_nodes`], whose `None`
+    /// scope means "the nodes that belong to no epic" rather than "all of
+    /// them". A whole-project inspection needs the second reading, and reading
+    /// it as the first is how a projection quietly reports only the root.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_project_topology_nodes(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<SessionTopologyNode>>;
+
+    /// Read one logical node by its durable identity.
+    ///
+    /// # Errors
+    /// Backend failures only; another project's node is `Ok(None)`.
+    fn get_topology_node(
+        &self,
+        project_id: ProjectId,
+        id: TopologyNodeId,
+    ) -> RepositoryResult<Option<SessionTopologyNode>>;
+
+    /// Move one node's lifecycle under a compare-and-swap.
+    ///
+    /// The order is fixed and one-way — active, retired, archived — because a
+    /// node that could go back to active would resurrect the seats and the
+    /// native container its retirement concluded were finished with.
+    ///
+    /// # Errors
+    /// Refuses an unknown node, a stale revision, a backwards or repeated
+    /// transition, and retiring a node that still has children or non-terminal
+    /// seats. On refusal no column is written.
+    fn transition_topology_node(
+        &self,
+        project_id: ProjectId,
+        id: TopologyNodeId,
+        lifecycle: TopologyLifecycle,
+        expected_revision: AggregateRevision,
+        updated_at: Timestamp,
+    ) -> RepositoryResult<SessionTopologyNode>;
+
+    /// Create one active logical seat binding.
+    ///
+    /// # Errors
+    /// Refuses a dangling/cross-project node, role/catalog mismatch, optional
+    /// task/TeamRun mismatch or duplicate non-terminal `(node, slot)` key.
+    fn create_seat_binding(&self, request: &NewSeatBinding) -> RepositoryResult<SeatBinding>;
+
+    /// List seat bindings hosted by one logical node.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_seat_bindings(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+    ) -> RepositoryResult<Vec<SeatBinding>>;
+
+    /// Read one seat by its exact binding identity.
+    ///
+    /// The read behind every exact-seat operation. It takes the binding id and
+    /// nothing else addressable — no name, no `cwd`, no scan — which is what
+    /// makes "this seat" mean one row rather than the first row that looked
+    /// like it. A binding from another project is `Ok(None)`.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_seat_binding(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+    ) -> RepositoryResult<Option<SeatBinding>>;
+
+    /// The active topology node serving one delivery task.
+    ///
+    /// The read admission makes before it places anything. `None` means this
+    /// task has no node, which is a refusal for a project running an
+    /// Operational topology and simply normal for one that is not.
+    ///
+    /// # Errors
+    /// Backend failures only. A second active node for one task cannot be
+    /// stored, so this never has to choose between two.
+    fn get_task_topology_node(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<SessionTopologyNode>>;
+
+    /// Record what was observed about one seat's attachment.
+    ///
+    /// Advances only the fields the observation carries, so recording an
+    /// attachment cannot silently clear an activity instant, and neither can
+    /// overwrite a release.
+    ///
+    /// # Errors
+    /// Refuses an unknown seat and a replacement citing the seat itself.
+    fn observe_seat_binding(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+        observation: &SeatLivenessObservation,
+        observed_at: Timestamp,
+    ) -> RepositoryResult<SeatBinding>;
+
+    /// Bind one topology node to the native container read back for it.
+    ///
+    /// Idempotent per node *for the same native identity*: re-confirming a
+    /// binding advances its readback instant and creates nothing. A node whose
+    /// stored identity differs is a disagreement to report, never a rebinding
+    /// to perform silently — reconciliation refuses invalid state rather than
+    /// making one side match the other.
+    ///
+    /// # Errors
+    /// Refuses a dangling/cross-project node, a native container already bound
+    /// to a different node, and a rebinding of a node that already holds
+    /// another identity.
+    fn bind_topology_node_container(
+        &self,
+        request: &NewNativeContainerBinding,
+    ) -> RepositoryResult<NativeContainerBinding>;
+
+    /// Conclude the attachment of every seat hosted by one topology node.
+    ///
+    /// The read a watch, reap or stale path uses: it resolves exact Kontor
+    /// bindings and concludes from recorded evidence, and it consults no
+    /// runtime and no AgentsRoom file to do it.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_seat_attachments(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        now: Timestamp,
+    ) -> RepositoryResult<Vec<SeatAttachment>>;
+
+    /// Read the current native container binding of one topology node.
+    ///
+    /// # Errors
+    /// Backend failures only. An unbound node is `None` rather than an error:
+    /// "not placed yet" is a normal state, and the caller that must refuse it
+    /// says so in its own words.
+    fn get_topology_node_container(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+    ) -> RepositoryResult<Option<NativeContainerBinding>>;
+
+    /// Create one MiniProject's persisted adaptive-admission state.
+    ///
+    /// # Errors
+    /// Refuses invalid values, a dangling/cross-project MiniProject or a
+    /// duplicate state row.
+    fn create_adaptive_admission_state(
+        &self,
+        request: &NewAdaptiveAdmissionState,
+    ) -> RepositoryResult<AdaptiveAdmissionState>;
+
+    /// Advance adaptive-admission state under compare-and-swap.
+    ///
+    /// The scheduler owns the decision; this operation only persists it and
+    /// refuses replay of the last observation id.
+    ///
+    /// # Errors
+    /// Refuses a stale revision, replayed observation or invalid bounds.
+    fn advance_adaptive_admission_state(
+        &self,
+        request: &AdaptiveAdmissionAdvance,
+    ) -> RepositoryResult<AdaptiveAdmissionState>;
+
+    /// Read persisted adaptive-admission state.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_adaptive_admission_state(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<AdaptiveAdmissionState>>;
+
+    /// Every epic in one project that has an adaptive position.
+    ///
+    /// A capacity observation is about a provider account, and the accounts a
+    /// project uses serve every epic in it — so one reading moves each epic's
+    /// position, and this is the list of positions there are to move. An epic
+    /// with no row is one that was never applied through this build.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_adaptive_admission_states(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AdaptiveAdmissionState>>;
+}
+
 /// Immutable specification revisions.
 pub trait SpecRepository {
     /// Insert one work-profile revision.
@@ -1758,6 +2634,19 @@ pub trait RunRepository {
     /// Refuses invalid evidence, a stale revision and any attempt to close an
     /// already closed run.
     fn close_agent_run(&self, request: &RunClosure) -> RepositoryResult<()>;
+
+    /// Record the operator decision that authorizes abandoning one run.
+    ///
+    /// Returns the existing receipt when the key was already used for this exact
+    /// decision, so a retry cites the first one rather than minting a second.
+    ///
+    /// # Errors
+    /// Refuses a key already used for a different command, and a run that is not
+    /// in this project.
+    fn record_abandon_receipt(
+        &self,
+        request: &NewAbandonReceipt,
+    ) -> RepositoryResult<CommandReceiptId>;
 
     /// Read a run's raw event history from *after* a cursor.
     ///

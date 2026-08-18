@@ -48,6 +48,7 @@ use kontor_runtime::capability::{
     RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade,
 };
 use kontor_runtime::fake::{AdapterCall, ScriptedFakeRuntime};
+use kontor_runtime::request::LaunchPlacement;
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -250,7 +251,7 @@ impl World {
         SlotLaunch {
             task_id: self.task,
             binding_id: RuntimeBindingId::generate(),
-            workspace: Some(self.workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(self.workspace.clone())),
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),
@@ -472,6 +473,7 @@ impl World {
             expected_revision,
             to,
             resume_receipt: None,
+            reopen: false,
             run_outcome: None,
             produced_artifacts: artifacts.clone(),
             completed_phases: phases.clone(),

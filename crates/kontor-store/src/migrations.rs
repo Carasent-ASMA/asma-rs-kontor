@@ -31,10 +31,19 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 35;
 
 /// The bounded busy timeout applied to every connection.
-const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
+///
+/// It has to cover the longest thing another connection can legitimately be
+/// holding the database for, and that is one complete first-open migration
+/// chain — every generation from zero, in a single transaction. The chain grows
+/// with every schema generation and each table rebuild in it costs real
+/// milliseconds, so a budget sized against a shorter chain turns an ordinary
+/// concurrent first open into a spurious "database is locked" on a loaded
+/// machine. Fifteen seconds is still a bound: a genuinely stuck peer still
+/// fails, it just is not confused with a busy one.
+const BUSY_TIMEOUT: Duration = Duration::from_millis(15_000);
 
 /// How long to wait between attempts at the one statement the busy handler does
 /// not cover. Short enough to be invisible, long enough not to spin a core.
@@ -110,36 +119,53 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0020_role_slot_waivers.sql"),
     include_str!("../migrations/0021_native_memory.sql"),
     include_str!("../migrations/0022_teams_editor.sql"),
-    // ⚠️ MERGE HAZARD — these two numbers are contested and must be renumbered
-    // before this branch integrates. Two branches already hold *different*
-    // scripts here:
-    //
-    //   `feat/ASMA-7871-kontor-operational-bindings`  0023–0027, at 27
-    //   `feat/ASMA-7872-kontor-operational-app-services`  + 0028–0029, at 29
-    //
-    // The live realm has already run 7871's five (`user_version = 27`). An
-    // applied migration can never be renumbered without breaking every database
-    // that ran it, so the direction is forced rather than chosen: **both of
-    // theirs keep their numbers and these two move to the end.**
-    //
-    // Merge order is set by LSA · ASMA-7869 — 7871, then 7872, then this — which
-    // makes the targets `0030` and `0031` at `SCHEMA_VERSION = 31`. Re-derive
-    // them from master rather than trusting this line if either branch grows
-    // another script before it lands.
-    //
-    // The renumber is mechanical, and all five steps are required together
-    // because the list is positional (`the index *is* the version it upgrades
-    // from`): rename the two files; move these two `include_str!` entries to the
-    // end of `MIGRATIONS`; set `SCHEMA_VERSION` to the new length; update each
-    // script's trailing `PRAGMA user_version` to its new index; update the
-    // canary in `kontor-store/tests/schema_v1.rs`.
-    //
-    // OP-REQ-036: a `needs_human` row states its recommendation, its author and
-    // the deliberation path already walked.
-    include_str!("../migrations/0023_escalation_brief.sql"),
-    // One command kind for installing a trigger revision, which is how a bounded
-    // auto-arm capability is declared at all.
-    include_str!("../migrations/0024_publish_trigger_command.sql"),
+    include_str!("../migrations/0023_operational_topology.sql"),
+    include_str!("../migrations/0024_replace_seat_command.sql"),
+    include_str!("../migrations/0025_document_shareability.sql"),
+    // Schema v26. The durable native container binding per topology node, and
+    // the OP-REQ-039 attachment evidence a logical seat is concluded from —
+    // the deadline fixed at creation, the last observed attachment, the last
+    // observed *activity*, the owning epic seat, and the runtime's self-report
+    // as quotable evidence.
+    include_str!("../migrations/0026_operational_liveness.sql"),
+    // Schema v27. The delivery task a task-scoped node serves, so admission can
+    // locate the node before it creates the seat binding that would otherwise
+    // have been the only way to find it.
+    include_str!("../migrations/0027_task_topology_node.sql"),
+    // Schema v28. Account-owned capacity evidence: the immutable raw reading a
+    // native collector took, and the operator override that stands beside it
+    // rather than over it. Cooldown stops being another program's file.
+    include_str!("../migrations/0028_native_capacity.sql"),
+    // Schema v29. Topology specification publication through `/v1`, and the
+    // explicit epic upgrade that moves a pin — which is why the pin row becomes
+    // writable by that one operation, and why the closed kind list grows by two.
+    include_str!("../migrations/0029_topology_publication.sql"),
+    // Schema v30. The container retitle command. One kind, and no title column:
+    // what a container is called is the runtime's fact, read back rather than
+    // mirrored.
+    include_str!("../migrations/0030_retitle_container_command.sql"),
+    // Schema v31. The bounded task reopen: `done -> ready` and nothing else, so
+    // the lifecycle action the surface advertises can reach the domain rule
+    // written for it.
+    include_str!("../migrations/0031_bounded_task_reopen.sql"),
+    // Schema v32. Immutable Project Core Team revisions, and the one command
+    // that publishes them. Kept as whole revisions because promotion freezes
+    // the exact one an epic was staffed from.
+    include_str!("../migrations/0032_core_team_revisions.sql"),
+    // Schema v33. Quick sessions, their one promotion, and the roster an epic
+    // freezes at that moment -- plus the four OP-04 commands. The promotion row
+    // carries its ids so a resumed apply reconciles rather than rebuilds.
+    include_str!("../migrations/0033_quick_sessions_and_promotion.sql"),
+    // Schema v34 (renumbered from 0023 on merge: master grew past 31). An
+    // escalation reaches a human with a recommendation, its author and the
+    // deliberation path already walked (OP-REQ-036): a `needs_human` row states
+    // its brief.
+    include_str!("../migrations/0034_escalation_brief.sql"),
+    // Schema v35 (renumbered from 0024 on merge). One command kind for
+    // installing a trigger revision, which is how a bounded auto-arm capability
+    // is declared at all. The kind list carries every kind master added after
+    // this branch's original 0024.
+    include_str!("../migrations/0035_publish_trigger_command.sql"),
 ];
 
 const _: () = assert!(

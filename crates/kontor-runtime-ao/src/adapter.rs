@@ -101,6 +101,18 @@ pub const UNSUPPORTED: &[(RuntimeCapability, &str)] = &[
          canonical path, so Kontor cannot verify a shared task workspace",
     ),
     (
+        RuntimeCapability::PrepareProject,
+        "AO owns no container above a session: there is no project object to create, name \
+         or read back, so a native root a seat could be placed below could only be \
+         asserted and never proven",
+    ),
+    (
+        RuntimeCapability::RetitleContainer,
+        "AO owns no container above a session, so there is no title to correct: the same \
+         reason it cannot prepare a project. A session's own name is fixed by the spawn \
+         that created it",
+    ),
+    (
         RuntimeCapability::Adopt,
         "AO cannot plant Kontor's full immutable correlation label into a branch that \
          already exists, so an existing session cannot be proven to belong to a run",
@@ -1154,7 +1166,7 @@ impl AoAdapter {
                 autonomous: true,
                 account_pinned: request.account_profile_id().is_some(),
                 binding: None,
-                workspace: Some(request.workspace_claim()),
+                placement: Some(request.placement_claim()),
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::ConcurrentSessions(
                     u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
@@ -1295,6 +1307,37 @@ impl RuntimeAdapter for AoAdapter {
         Err(self.refuse_unsupported(RuntimeCapability::PrepareWorkspace))
     }
 
+    /// Refused: AO owns no container to retitle.
+    ///
+    /// The same reason it cannot prepare a project. A session's name is fixed by
+    /// the spawn that created it, and there is no object above it whose title
+    /// could be corrected.
+    ///
+    /// # Errors
+    /// Always [`RuntimeError::UnsupportedCapability`].
+    async fn retitle_container(
+        &self,
+        request: &kontor_runtime::container::RetitleContainerRequest,
+    ) -> RuntimeResult<kontor_runtime::container::RetitleContainerOutcome> {
+        let _ = request;
+        Err(self.refuse_unsupported(RuntimeCapability::RetitleContainer))
+    }
+
+    /// Refused for the same reason, and before the caller commits to anything.
+    ///
+    /// A preview that succeeded here would promise an apply this runtime cannot
+    /// perform.
+    ///
+    /// # Errors
+    /// Always [`RuntimeError::UnsupportedCapability`].
+    async fn preview_retitle_container(
+        &self,
+        request: &kontor_runtime::container::RetitleContainerRequest,
+    ) -> RuntimeResult<kontor_runtime::container::RetitleContainerOutcome> {
+        let _ = request;
+        Err(self.refuse_unsupported(RuntimeCapability::RetitleContainer))
+    }
+
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
         // The seat is taken here: before the project read, long before the spawn,
         // and in one step with the check that it was there to take.
@@ -1371,7 +1414,7 @@ impl RuntimeAdapter for AoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1446,7 +1489,7 @@ impl RuntimeAdapter for AoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::MessageBytes(request.body_bytes())),
                 context_policy: None,
@@ -1559,7 +1602,7 @@ impl RuntimeAdapter for AoAdapter {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1605,7 +1648,7 @@ impl RuntimeAdapter for AoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1631,7 +1674,7 @@ impl RuntimeAdapter for AoAdapter {
                 autonomous: false,
                 account_pinned: false,
                 binding: None,
-                workspace: None,
+                placement: None,
                 current_generation: None,
                 demand: None,
                 context_policy: None,

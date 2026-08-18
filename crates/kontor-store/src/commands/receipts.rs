@@ -629,9 +629,17 @@ impl SqliteStore {
     /// every state after it requires a native lookup by the persisted
     /// correlation before anything may be sent again.
     ///
+    /// A receipt with no outbox entry is settled, not missing. Not every receipt
+    /// is a dispatch: a closure receipt records a decision Kontor already
+    /// carried out, and deliberately queues nothing. The outbox row is written in
+    /// the same transaction as the receipt it belongs to, so its absence can
+    /// never be a torn write — it can only mean there was nothing to send. This
+    /// used to raise, and one abandoned run was enough to fail the whole startup
+    /// inventory and leave the realm serving with scheduling shut.
+    ///
     /// # Errors
-    /// Returns [`RepositoryError::NotFound`] when the receipt or its outbox
-    /// entry is not in this project.
+    /// Returns [`RepositoryError::NotFound`] when the receipt is not in this
+    /// project.
     pub fn classify_command_recovery(
         &self,
         project_id: ProjectId,
@@ -658,9 +666,12 @@ impl SqliteStore {
             )
             .optional()
             .map_err(backend)?;
-        let (payload, payload_hash) = entry.ok_or(RepositoryError::NotFound {
-            subject: "command outbox entry",
-        })?;
+        let Some((payload, payload_hash)) = entry else {
+            return Ok(CommandRecovery::Settled {
+                receipt_id,
+                state: receipt.state,
+            });
+        };
         let payload = stored_payload(&payload, &payload_hash)?;
 
         match receipt.state {

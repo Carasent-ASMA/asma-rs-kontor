@@ -33,6 +33,7 @@ use async_trait::async_trait;
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 
 use crate::client::{PaseoCommand, PaseoFrame, PaseoOutput, PaseoRpc, PaseoTransport};
+use crate::mcp::PaseoMcp;
 use crate::wire::{PASEO_APP_VERSION, PaseoServerInfo, REQUIRED_FEATURES};
 
 /// One queued answer.
@@ -190,6 +191,7 @@ pub struct RecordedPaseo {
     journals: Mutex<BTreeMap<String, Journal>>,
     calls: Mutex<Vec<String>>,
     mutating_routes: Mutex<BTreeSet<String>>,
+    titles: Mutex<Vec<(String, String)>>,
 }
 
 impl Default for RecordedPaseo {
@@ -212,6 +214,7 @@ impl RecordedPaseo {
             journals: Mutex::new(BTreeMap::new()),
             calls: Mutex::new(Vec::new()),
             mutating_routes: Mutex::new(BTreeSet::new()),
+            titles: Mutex::new(Vec::new()),
         }
     }
 
@@ -450,6 +453,22 @@ impl RecordedPaseo {
             .count()
     }
 
+    /// Every title `route` was asked to give something, in order.
+    ///
+    /// Kept apart from the call ledger because a title is not a ledger key —
+    /// but it *is* Kontor's decision, so a contract has to be able to state
+    /// what a container was actually going to be called.
+    #[must_use]
+    pub fn titles(&self, route: &str) -> Vec<String> {
+        self.titles
+            .lock()
+            .expect("the fixture lock is intact")
+            .iter()
+            .filter(|(made, _)| made == route)
+            .map(|(_, title)| title.clone())
+            .collect()
+    }
+
     /// Every call that could have changed Paseo.
     ///
     /// A refusal that must happen before any effect is proved by this being
@@ -622,6 +641,12 @@ impl PaseoTransport for RecordedPaseo {
         // only successful calls would make the retry rule untestable: the very
         // case that must not repeat would leave no trace of having happened
         // once.
+        if let Some(title) = command.title() {
+            self.titles
+                .lock()
+                .expect("the fixture lock is intact")
+                .push((route.clone(), title.to_owned()));
+        }
         self.record(route.clone(), command.mutates());
 
         let queued = self
@@ -714,5 +739,116 @@ impl PaseoTransport for RecordedPaseo {
             .get_mut(agent_id)
             .map(|frames| frames.drain(..).collect())
             .unwrap_or_default())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The MCP facade
+// ---------------------------------------------------------------------------
+
+/// A recorded MCP facade: one scripted answer per tool, a call ledger out.
+///
+/// Deliberately as narrow as the surface it stands in for. It records the exact
+/// arguments each call carried, because the whole safety argument for renaming
+/// through this facade is *what is not sent*: a request carrying a directory, a
+/// parent or a placement would be a re-placement, and the only way a contract can
+/// state that is to read back what crossed the wire.
+#[derive(Debug, Default)]
+pub struct RecordedMcp {
+    answers: Mutex<BTreeMap<String, serde_json::Value>>,
+    failures: Mutex<BTreeSet<String>>,
+    calls: Mutex<Vec<(String, serde_json::Value)>>,
+}
+
+impl RecordedMcp {
+    /// A facade that answers nothing yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Answer `tool` with `payload`, as the facade's result object.
+    #[must_use]
+    pub fn answering(self, tool: &str, payload: serde_json::Value) -> Self {
+        self.answers
+            .lock()
+            .expect("the fixture lock is intact")
+            .insert(tool.to_owned(), payload);
+        self
+    }
+
+    /// Fail every call to `tool`, as an unreachable facade does.
+    #[must_use]
+    pub fn failing(self, tool: &str) -> Self {
+        self.failures
+            .lock()
+            .expect("the fixture lock is intact")
+            .insert(tool.to_owned());
+        self
+    }
+
+    /// Every call made, in order, with the arguments it carried.
+    #[must_use]
+    pub fn calls(&self) -> Vec<(String, serde_json::Value)> {
+        self.calls
+            .lock()
+            .expect("the fixture lock is intact")
+            .clone()
+    }
+
+    /// The arguments every call to `tool` carried, in order.
+    #[must_use]
+    pub fn arguments(&self, tool: &str) -> Vec<serde_json::Value> {
+        self.calls()
+            .into_iter()
+            .filter(|(made, _)| made == tool)
+            .map(|(_, arguments)| arguments)
+            .collect()
+    }
+}
+
+#[async_trait]
+impl PaseoMcp for RecordedMcp {
+    async fn call(
+        &self,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> RuntimeResult<serde_json::Value> {
+        // Recorded before the fault fires, for the same reason the CLI fixture
+        // does it: the dangerous ordering is the one where the effect happened
+        // and the answer was lost.
+        self.calls
+            .lock()
+            .expect("the fixture lock is intact")
+            .push((tool.to_owned(), arguments));
+        if self
+            .failures
+            .lock()
+            .expect("the fixture lock is intact")
+            .contains(tool)
+        {
+            return Err(RuntimeError::Transport {
+                rule: "channel failed before the runtime answered",
+            });
+        }
+        self.answers
+            .lock()
+            .expect("the fixture lock is intact")
+            .get(tool)
+            .cloned()
+            .ok_or(RuntimeError::Transport {
+                rule: "the MCP facade serves no such tool",
+            })
+    }
+}
+
+#[async_trait]
+impl PaseoMcp for std::sync::Arc<RecordedMcp> {
+    async fn call(
+        &self,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> RuntimeResult<serde_json::Value> {
+        self.as_ref().call(tool, arguments).await
     }
 }

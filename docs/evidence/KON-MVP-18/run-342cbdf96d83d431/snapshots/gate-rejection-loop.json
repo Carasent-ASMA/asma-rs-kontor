@@ -1,0 +1,56 @@
+{
+  "attempts": [
+    {
+      "agent_run_id": "0192f0c0-0000-7000-8000-000000000097",
+      "attempt": "first",
+      "parent_agent_run_id": null,
+      "parked": false,
+      "refusal": null,
+      "rejections_since_pass": 1,
+      "sequence": 1,
+      "task_state_after": "in_progress"
+    },
+    {
+      "agent_run_id": "0192f0c0-0000-7000-8000-00000000009b",
+      "attempt": "second",
+      "parent_agent_run_id": "0192f0c0-0000-7000-8000-000000000097",
+      "parked": true,
+      "refusal": null,
+      "rejections_since_pass": 2,
+      "sequence": 2,
+      "task_state_after": "parked"
+    }
+  ],
+  "gate": "design-review-gate",
+  "history": [
+    {
+      "evaluator_role": "inspector",
+      "evidence": [],
+      "gate": "design-review-gate",
+      "policy_evaluation_id": null,
+      "resulting_state": "rejected",
+      "reviewer_principal": "pilot-reviewer-alpha",
+      "sequence": 1,
+      "verdict": "rejected"
+    },
+    {
+      "evaluator_role": "inspector",
+      "evidence": [],
+      "gate": "design-review-gate",
+      "policy_evaluation_id": "0192f0c0-0000-7000-8000-00000000009c",
+      "resulting_state": "rejected",
+      "reviewer_principal": "pilot-reviewer-alpha",
+      "sequence": 2,
+      "verdict": "rejected"
+    }
+  ],
+  "reviewer_principal": "pilot-reviewer-alpha",
+  "third_launch": {
+    "admits": false,
+    "agent_runs_after": 2,
+    "agent_runs_before": 2,
+    "guardrail": "second_rejection_parks",
+    "reason_code": "second_rejection_parks",
+    "verdict": "park"
+  }
+}

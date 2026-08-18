@@ -42,8 +42,8 @@ use kontor_runtime::observation::{
 };
 use kontor_runtime::request::{
     AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchParts,
-    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
-    ResumeRequest, SendMessageRequest,
+    LaunchPlacement, LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision,
+    PermissionResponseRequest, ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::timeline::{
     EventSubject, SessionEventKind, TimelineBreak, TimelinePosition, pending_permissions,
@@ -197,7 +197,7 @@ impl Team {
             role_slot_id: slot_of(agent_run_id),
             task_id: self.task_id,
             binding_id: self.binding_for(agent_run_id),
-            workspace: Some(self.workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(self.workspace.clone())),
             cwd: self.workspace.root().clone(),
             account_profile_id: None,
             prompt: text("do the work"),
@@ -341,7 +341,7 @@ async fn grade_c_cannot_autonomously_dispatch() {
             role_slot_id: slot_of(advisory_run),
             task_id,
             binding_id: RuntimeBindingId::generate(),
-            workspace: None,
+            placement: None,
             cwd: root("/w/task-1"),
             account_profile_id: None,
             prompt: text("do the work"),
@@ -682,7 +682,7 @@ async fn team_run_roles_share_one_verified_workspace_binding() {
             role_slot_id: slot_of(other_run),
             task_id: team.task_id,
             binding_id: RuntimeBindingId::generate(),
-            workspace: Some(team.workspace.clone()),
+            placement: Some(LaunchPlacement::Workspace(team.workspace.clone())),
             cwd: team.workspace.root().clone(),
             account_profile_id: None,
             prompt: text("do the work"),
@@ -722,7 +722,7 @@ async fn launch_without_a_workspace_binding_is_refused_before_any_effect() {
     team.fake.take_calls();
 
     let mut parts = team.launch_parts(AgentRunId::generate());
-    parts.workspace = None;
+    parts.placement = None;
     let request = admitted(&team.fake, parts).await;
 
     let error = team
@@ -878,7 +878,7 @@ async fn a_fabricated_workspace_binding_is_refused_before_any_effect() {
     forged.binding.team_run_id = other_team;
     let mut parts = team.launch_parts(AgentRunId::generate());
     parts.team_run_id = other_team;
-    parts.workspace = Some(forged);
+    parts.placement = Some(LaunchPlacement::Workspace(forged));
     let request = admitted(&team.fake, parts).await;
     assert_eq!(
         team.fake
@@ -903,7 +903,7 @@ async fn a_fabricated_workspace_binding_is_refused_before_any_effect() {
     let mut imported_parts = team.launch_parts(AgentRunId::generate());
     imported_parts.team_run_id = borrowed_team;
     imported_parts.task_id = borrowed_task;
-    imported_parts.workspace = Some(borrowed);
+    imported_parts.placement = Some(LaunchPlacement::Workspace(borrowed));
     let imported = admitted(&team.fake, imported_parts).await;
     assert_eq!(
         team.fake

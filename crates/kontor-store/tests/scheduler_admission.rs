@@ -790,6 +790,56 @@ fn distinct_verified_trees_may_hold_one_module_and_a_shared_tree_may_not() {
     );
 }
 
+#[test]
+fn a_pre_fix_module_lease_recovers_its_declared_task_worktree() {
+    let harness = Harness::new();
+    let scope = harness.scope("legacy-tree");
+    let task = harness.task(&scope, "Legacy tree", TaskState::Ready);
+    let tree = name("/trees/legacy");
+    harness
+        .store
+        .set_task_worktree(scope.project, task, &tree)
+        .expect("the task worktree is declared");
+
+    let admitted = harness.admitted(
+        &scope,
+        task,
+        Some(module("shared.module")),
+        Some(tree.clone()),
+    );
+    let parts = Parts::new("legacy-tree");
+    harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &admitted,
+            &BTreeSet::new(),
+            &parts,
+            &scope.template,
+            now(),
+        ))
+        .expect("the task admits");
+
+    let raw = harness.raw();
+    raw.execute_batch(
+        "DROP TRIGGER resource_leases_advance_rules;
+         DROP TRIGGER resource_leases_require_lease_event;",
+    )
+    .expect("the fixture can model the pre-fix row shape");
+    raw.execute(
+        "UPDATE resource_leases SET worktree_key = NULL WHERE id = ?1",
+        [parts.module_lease.to_string()],
+    )
+    .expect("the fixture models a lease written before worktree retention");
+
+    let claims = harness
+        .store
+        .active_module_claims(now())
+        .expect("the claims are readable");
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].worktree, Some(tree));
+}
+
 /// The general form of "two schedulers never admit one task twice".
 ///
 /// Every other exclusion has a gap for this case: the task's own module lease does
@@ -963,6 +1013,64 @@ fn a_ceiling_is_recounted_from_the_rows_rather_than_trusted() {
             "{error:?}"
         );
     }
+}
+
+#[test]
+fn four_five_seat_teams_spend_four_capacity_envelopes() {
+    let harness = Harness::new();
+    let scope = harness.scope("team-capacity");
+    let peers = BTreeSet::new();
+
+    for team in 0..4 {
+        let task = harness.task(&scope, &format!("Team {team}"), TaskState::Ready);
+        let admitted = harness.admitted(&scope, task, None, None);
+        let parts = Parts::new(&format!("team-capacity-{team}"));
+        let mut request = commit(&scope, &admitted, &peers, &parts, &scope.template, now());
+        request.capacity.global_max_in_flight = 4;
+        request.capacity.project_max_in_flight = 4;
+        request.capacity.mission_max_in_flight = 4;
+        request.capacity.account_max_in_flight = 4;
+        harness
+            .store
+            .admit_candidate(&request)
+            .expect("each of four TeamRun envelopes admits");
+
+        for seat in 1..5 {
+            harness
+                .store
+                .create_agent_run(&NewAgentRun {
+                    id: AgentRunId::generate(),
+                    project_id: scope.project,
+                    team_run_id: parts.team_run,
+                    parent_agent_run_id: None,
+                    role: role(&format!("seat-{team}-{seat}")),
+                    account_profile_id: Some(scope.account),
+                    binding: None,
+                    created_at: now(),
+                })
+                .expect("the declared seat is durable");
+        }
+    }
+
+    let open_seats: i64 = harness
+        .raw()
+        .query_row(
+            "SELECT count(*) FROM agent_runs WHERE lifecycle = 'queued'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the seat population is readable");
+    assert_eq!(open_seats, 20);
+
+    let task = harness.task(&scope, "Fifth team", TaskState::Ready);
+    let admitted = harness.admitted(&scope, task, None, None);
+    let parts = Parts::new("team-capacity-fifth");
+    let mut request = commit(&scope, &admitted, &peers, &parts, &scope.template, now());
+    request.capacity.global_max_in_flight = 4;
+    assert_eq!(
+        harness.store.admit_candidate(&request),
+        Err(RepositoryError::CapacityExhausted { scope: "global" })
+    );
 }
 
 #[test]

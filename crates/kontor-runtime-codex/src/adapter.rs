@@ -117,6 +117,11 @@ pub const UNSUPPORTED: &[(RuntimeCapability, &str)] = &[
          nothing to enumerate, so Kontor can never claim to know what Codex is running",
     ),
     (
+        RuntimeCapability::PrepareProject,
+        "codex exec has no container above a process: there is no project object to create, \
+         name or read back, so a native root could only be asserted and never verified",
+    ),
+    (
         RuntimeCapability::Resume,
         "codex exec is one shot. A second invocation is a second process with a second \
          session, which is a new launch and must be admitted as one",
@@ -295,8 +300,9 @@ pub struct CodexPinnedAccounts<'a, S> {
 impl<'a, S> CodexPinnedAccounts<'a, S> {
     /// Wire one authority.
     ///
-    /// `availability` is the fleet boundary: `asma fleet` owns cooldown
-    /// mechanics, and this adapter never goes looking for them on disk.
+    /// `availability` is the account layer's answer: `kontor-accounts` owns
+    /// cooldown mechanics, and this adapter never goes looking for them on disk
+    /// or in another program's store.
     #[must_use]
     pub const fn new(
         store: &'a S,
@@ -1453,7 +1459,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 autonomous: true,
                 account_pinned: true,
                 binding: None,
-                workspace: Some(request.workspace_claim()),
+                placement: Some(request.placement_claim()),
                 current_generation: Some(generation),
                 demand: Some(LimitDemand::ConcurrentSessions(
                     u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
@@ -1564,7 +1570,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 autonomous: true,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1619,7 +1625,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1755,7 +1761,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(generation),
                 demand: None,
                 context_policy: None,
@@ -1826,7 +1832,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 autonomous: false,
                 account_pinned: false,
                 binding: Some(&binding),
-                workspace: None,
+                placement: None,
                 current_generation: Some(self.generation()),
                 demand: None,
                 context_policy: None,

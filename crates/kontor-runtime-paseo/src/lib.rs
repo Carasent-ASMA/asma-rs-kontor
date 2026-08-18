@@ -32,6 +32,7 @@
 pub mod adapter;
 pub mod client;
 pub mod fixture;
+pub mod mcp;
 pub mod wire;
 
 pub use adapter::{
@@ -41,4 +42,6 @@ pub use adapter::{
 };
 pub use client::{PaseoCommand, PaseoLiveTransport, PaseoRpc, PaseoTransport};
 pub use fixture::RecordedPaseo;
-pub use wire::{PASEO_APP_VERSION, PASEO_WS_PROTOCOL_VERSION, PaseoFeature, PaseoProjection};
+pub use wire::{
+    PASEO_APP_VERSION, PASEO_WS_PROTOCOL_VERSION, PaseoFeature, PaseoProjection, version_at_least,
+};

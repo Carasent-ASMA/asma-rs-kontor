@@ -40,9 +40,10 @@ pub mod seeds;
 
 pub use kontor_core::spec::WorkProfileSpec;
 pub use pack::{
-    ContextDefinition, GateWaiver, PackAvailability, PackCategoryKey, PackManifestEntry,
-    PackPersona, ProfilePackKey, ProfilePackSpec, ResolvedProfileBundle, RoleDefinition,
-    SkillDefinition, TaskTeamEvidence, certify_task_closure, parse_pack, parse_pack_with_teams,
+    ContextDefinition, DeliveryRoleBinding, GateWaiver, OperationalDelivery, OperationalDomainPack,
+    PackAvailability, PackCategoryKey, PackManifestEntry, PackPersona, ProfilePackKey,
+    ProfilePackSpec, ResolvedProfileBundle, RoleDefinition, SkillDefinition, TaskTeamEvidence,
+    certify_task_closure, parse_operational_domain_pack, parse_pack, parse_pack_with_teams,
     resolve_profile, revise_persona_scenario, revise_work_profile, validate_pack,
 };
-pub use seeds::bundled_pack;
+pub use seeds::{bundled_operational_domain, bundled_pack};

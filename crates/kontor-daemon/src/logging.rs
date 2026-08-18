@@ -80,6 +80,13 @@ pub const ALLOWED_FIELDS: &[&str] = &[
     "record_count",
     "records_hash",
     "removed",
+    // The `&'static str` a refusal names itself by. It is a source constant in
+    // every case — `ApiError::rule` is typed to make that impossible to violate
+    // — so it carries the same class of text as `detail`. Without it a runtime
+    // refusal logs only "the runtime will not work in the workspace this realm
+    // asked for", and the five checks behind that sentence are indistinguishable
+    // to anyone who is not reading the adapter source.
+    "rule",
     "runtime",
     "schema_version",
     "settings",
@@ -88,6 +95,10 @@ pub const ALLOWED_FIELDS: &[&str] = &[
     "source_realm_id",
     "state",
     "state_root",
+    // The aggregate a refusal is about, as a `&'static str` naming a kind —
+    // "task", "native container binding" — never an id and never a row value.
+    // It travels with `rule`, which is useless without it.
+    "subject",
     "task_id",
     "team_run_id",
     "undispatched",

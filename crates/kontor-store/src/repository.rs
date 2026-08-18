@@ -19,13 +19,15 @@ use kontor_core::calendar::{
     ScheduleOverride, WeeklyWindow, WorkCalendarAssignment, WorkScope,
 };
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CommandReceiptId, ContentHash, CredentialAlias,
-    CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey, GuardrailEvaluationId,
-    HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money,
-    PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey,
-    ScheduleOverrideId, SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId,
-    TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TriggerKey, WorkCalendarId, WorkProfileKey,
+    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
+    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ContentHash,
+    CredentialAlias, CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey,
+    GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
+    ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, QuickSessionId, RealmId,
+    RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
+    ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId, TaskId,
+    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
     format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
@@ -33,30 +35,40 @@ use kontor_core::receipt::{
     AggregateRef, CommandKind, CommandOutboxEntry, CommandReceipt, ReceiptAuthority,
 };
 use kontor_core::repository::{
-    AccountProfile, AccountProfileUpdate, AgentRun, CalendarRepository, CommandRepository,
+    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AvailabilityOverride,
+    CalendarRepository, CapacityObservation, CapacityRepository, CommandRepository,
     ConnectorSpecSelector, CredentialReference, CredentialReferenceKind, GateEvaluation,
     HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
-    IntakeRepository, MiniProject, NewAccountProfile, NewAgentRun, NewCommandIntent,
-    NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation,
-    NewMiniProject, NewObservation, NewProject, NewRuntimeEvent, NewSourceEvent, NewTask,
-    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
-    ProjectRepository, RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome,
-    RepositoryError, RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding,
-    RuntimeEvent, SourceEventIngest, SpecRepository, Task, TaskInspection, TaskTransitionRequest,
-    TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository,
+    IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
+    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
+    NewCapacityObservation, NewCommandIntent, NewGateEvaluation, NewIntakeDecision,
+    NewIntakeDecisionRecord, NewIntakeReevaluation, NewMiniProject, NewNativeContainerBinding,
+    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, RealmEventPage,
+    RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
+    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
+    SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
+    StoredCapacityConfiguration, StoredCoreTeamRevision, StoredEpicRoster, StoredPromotion,
+    StoredQuickSession, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun,
+    TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, TopologyRepository,
     WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
-    CanonicalSourceEvent, IntakeReceipt, PersonaScenarioSnapshot, PersonaScenarioSpec,
-    ResolvedWorkProfileSnapshot, SourceIdentity, TeamRunSnapshot, TeamTemplateRevision,
-    TriggerSpec, WorkProfileSpec,
+    CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
+    PersonaScenarioSpec, ProjectSessionTopologySpec, ResolvedWorkProfileSnapshot,
+    RoleCatalogRevision, Shareability, ShareabilityClass, ShareabilityClassifier,
+    ShareabilityProvenance, ShareabilityTier, SourceIdentity, TeamRunSnapshot,
+    TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use kontor_core::state::{
-    AbandonReceiptFacts, DerivedRunState, DesiredRunState, GateState, GateVerdict,
-    NativeRuntimeIdentity, ObservedRunState, RunLifecycle, RunProjection, SeatAttachment,
-    SeatAttachmentObservation, TaskProgressEvidence, TaskState, TaskTeamClosure, TaskTransition,
-    TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
-    TerminalEvidenceSource, TerminalOutcome, certify_task_progress, evaluate_seat_attachment,
+    AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
+    GateVerdict, NativeContainerBinding, NativeRuntimeIdentity, ObservedContainerKind,
+    ObservedRunState, PlacementState, RunLifecycle, RunProjection, SeatAttachment,
+    SeatAttachmentObservation, SeatBinding, SessionTopologyNode, TaskProgressEvidence,
+    TaskReopenAuthority, TaskState, TaskTeamClosure, TaskTransition, TeamChildEvidence,
+    TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence, TerminalEvidenceSource,
+    TerminalOutcome, TopologyLifecycle, certify_task_progress, evaluate_seat_attachment,
     plan_team_advance, plan_team_closure,
 };
 use kontor_core::ticket::{
@@ -70,6 +82,7 @@ use serde::de::DeserializeOwned;
 use crate::SqliteStore;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
+use crate::graph::IdempotencyBinding;
 
 /// Maximum length of an agent-run parent chain that is walked when checking for
 /// a lineage cycle.
@@ -792,6 +805,2447 @@ impl ProjectRepository for SqliteStore {
 }
 
 // ---------------------------------------------------------------------------
+// Operational topology
+// ---------------------------------------------------------------------------
+
+const TOPOLOGY_NODE_COLUMNS: &str = "id, project_id, mini_project_id, spec_id, spec_version, \
+    spec_hash, kind, parent_id, lifecycle, placement, revision, created_at, updated_at, task_id";
+const SEAT_BINDING_COLUMNS: &str = "id, project_id, topology_node_id, role_slot_id, \
+    role_catalog_id, role_catalog_version, role_code, standard_title, custom_display_name, \
+    task_id, team_run_id, lifecycle, attach_deadline, last_attached_at, last_activity_at, \
+    parent_seat_binding_id, released_at, replaced_by_seat_binding_id, runtime_reported, \
+    revision, created_at, updated_at";
+const NATIVE_CONTAINER_COLUMNS: &str = "topology_node_id, project_id, container_binding_id, \
+    runtime_kind, host, generation, native_id, observed_kind, canonical_cwd, bound_at, \
+    last_readback_at, revision";
+const ADAPTIVE_ADMISSION_COLUMNS: &str = "project_id, mini_project_id, current_window, \
+    clean_observation_streak, last_observation_id, revision, updated_at";
+
+fn read_topology_node(row: &Row<'_>) -> RepositoryResult<SessionTopologyNode> {
+    let mini_project_id: Option<String> = row.get(2).map_err(backend)?;
+    let parent_id: Option<String> = row.get(7).map_err(backend)?;
+    Ok(SessionTopologyNode {
+        id: TopologyNodeId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        mini_project_id: mini_project_id
+            .as_deref()
+            .map(MiniProjectId::parse)
+            .transpose()?,
+        topology: TopologySnapshot {
+            spec_id: TopologySpecId::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+            version: read_version(row.get::<_, i64>(4).map_err(backend)?)?,
+            canonical_hash: ContentHash::parse(&row.get::<_, String>(5).map_err(backend)?)?,
+        },
+        kind: TopologyKindKey::parse(&row.get::<_, String>(6).map_err(backend)?)?,
+        parent_id: parent_id
+            .as_deref()
+            .map(TopologyNodeId::parse)
+            .transpose()?,
+        lifecycle: TopologyLifecycle::parse(&row.get::<_, String>(8).map_err(backend)?)?,
+        placement: PlacementState::parse(&row.get::<_, String>(9).map_err(backend)?)?,
+        revision: revision_of(row.get::<_, i64>(10).map_err(backend)?)?,
+        created_at: read_timestamp(&row.get::<_, String>(11).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(12).map_err(backend)?)?,
+        task_id: row
+            .get::<_, Option<String>>(13)
+            .map_err(backend)?
+            .as_deref()
+            .map(TaskId::parse)
+            .transpose()?,
+    })
+}
+
+fn read_seat_binding(row: &Row<'_>) -> RepositoryResult<SeatBinding> {
+    let custom_display_name: Option<String> = row.get(8).map_err(backend)?;
+    let task_id: Option<String> = row.get(9).map_err(backend)?;
+    let team_run_id: Option<String> = row.get(10).map_err(backend)?;
+    Ok(SeatBinding {
+        id: SeatBindingId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        topology_node_id: TopologyNodeId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+        role_slot_id: RoleSlotId::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+        role: CatalogRoleRef {
+            catalog_id: RoleCatalogId::parse(&row.get::<_, String>(4).map_err(backend)?)?,
+            catalog_revision: read_version(row.get::<_, i64>(5).map_err(backend)?)?,
+            role_code: RoleCode::parse(&row.get::<_, String>(6).map_err(backend)?)?,
+            standard_title: ExternalName::parse(&row.get::<_, String>(7).map_err(backend)?)?,
+            custom_display_name: custom_display_name
+                .as_deref()
+                .map(ExternalName::parse)
+                .transpose()?,
+        },
+        task_id: task_id.as_deref().map(TaskId::parse).transpose()?,
+        team_run_id: team_run_id.as_deref().map(TeamRunId::parse).transpose()?,
+        lifecycle: TopologyLifecycle::parse(&row.get::<_, String>(11).map_err(backend)?)?,
+        attach_deadline: read_timestamp(&row.get::<_, String>(12).map_err(backend)?)?,
+        last_attached_at: read_optional_timestamp(row, 13)?,
+        last_activity_at: read_optional_timestamp(row, 14)?,
+        parent_seat_binding_id: row
+            .get::<_, Option<String>>(15)
+            .map_err(backend)?
+            .as_deref()
+            .map(SeatBindingId::parse)
+            .transpose()?,
+        released_at: read_optional_timestamp(row, 16)?,
+        replaced_by: row
+            .get::<_, Option<String>>(17)
+            .map_err(backend)?
+            .as_deref()
+            .map(SeatBindingId::parse)
+            .transpose()?,
+        runtime_reported: row
+            .get::<_, Option<String>>(18)
+            .map_err(backend)?
+            .as_deref()
+            .map(ObservedRunState::parse)
+            .transpose()?,
+        revision: revision_of(row.get::<_, i64>(19).map_err(backend)?)?,
+        created_at: read_timestamp(&row.get::<_, String>(20).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(21).map_err(backend)?)?,
+    })
+}
+
+/// Read one nullable timestamp column.
+fn read_optional_timestamp(row: &Row<'_>, index: usize) -> RepositoryResult<Option<Timestamp>> {
+    row.get::<_, Option<String>>(index)
+        .map_err(backend)?
+        .as_deref()
+        .map(read_timestamp)
+        .transpose()
+}
+
+fn read_native_container_binding(row: &Row<'_>) -> RepositoryResult<NativeContainerBinding> {
+    let canonical_cwd: Option<String> = row.get(8).map_err(backend)?;
+    let generation: i64 = row.get(5).map_err(backend)?;
+    Ok(NativeContainerBinding {
+        topology_node_id: TopologyNodeId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        container_binding_id: ExternalId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+            host: ExternalName::parse(&row.get::<_, String>(4).map_err(backend)?)?,
+            generation: u64::try_from(generation).map_err(|_| {
+                DomainError::invalid("native container generation", "is outside the stored range")
+            })?,
+            native_id: ExternalId::parse(&row.get::<_, String>(6).map_err(backend)?)?,
+        },
+        observed_kind: ObservedContainerKind::parse(&row.get::<_, String>(7).map_err(backend)?)?,
+        canonical_cwd: canonical_cwd
+            .as_deref()
+            .map(ExternalName::parse)
+            .transpose()?,
+        bound_at: read_timestamp(&row.get::<_, String>(9).map_err(backend)?)?,
+        last_readback_at: read_timestamp(&row.get::<_, String>(10).map_err(backend)?)?,
+        revision: revision_of(row.get::<_, i64>(11).map_err(backend)?)?,
+    })
+}
+
+fn read_adaptive_admission(row: &Row<'_>) -> RepositoryResult<AdaptiveAdmissionState> {
+    let last_observation_id: Option<String> = row.get(4).map_err(backend)?;
+    Ok(AdaptiveAdmissionState {
+        project_id: ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        mini_project_id: MiniProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        current_window: u32::try_from(row.get::<_, i64>(2).map_err(backend)?).map_err(|_| {
+            RepositoryError::Backend {
+                detail: "stored adaptive window is out of range".to_owned(),
+            }
+        })?,
+        clean_observation_streak: u32::try_from(row.get::<_, i64>(3).map_err(backend)?).map_err(
+            |_| RepositoryError::Backend {
+                detail: "stored clean-observation streak is out of range".to_owned(),
+            },
+        )?,
+        last_observation_id: last_observation_id
+            .as_deref()
+            .map(ExternalId::parse)
+            .transpose()?,
+        revision: revision_of(row.get::<_, i64>(5).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(6).map_err(backend)?)?,
+    })
+}
+
+fn validate_adaptive_values(
+    current_window: u32,
+    clean_observation_streak: u32,
+) -> RepositoryResult<()> {
+    if current_window == 0 || clean_observation_streak > 1 {
+        return Err(DomainError::invalid(
+            "AdaptiveAdmissionState",
+            "requires a positive window and a clean-observation streak no greater than one",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// A published topology specification is project configuration, never
+/// operational state, so it is classifiable and defaults to `project_shared`.
+const TOPOLOGY_SPEC_TIER: ShareabilityTier = ShareabilityTier::ProjectKnowledge;
+
+/// A published role catalog is project configuration on the same footing.
+const ROLE_CATALOG_TIER: ShareabilityTier = ShareabilityTier::ProjectKnowledge;
+
+/// Rebuild one stamp from its three stored columns.
+///
+/// The pairing is re-proved on the way out as well as on the way in, so a row
+/// edited around the repository cannot read back as a valid classification.
+fn stored_shareability(
+    (class, classifier, provenance): (String, Option<String>, String),
+) -> RepositoryResult<Shareability> {
+    let stamp = Shareability {
+        class: ShareabilityClass::parse(&class)?,
+        classifier: match classifier {
+            None => ShareabilityClassifier::TypeDefaultRule,
+            Some(name) => ShareabilityClassifier::Human(ExternalName::parse(&name)?),
+        },
+        provenance: ShareabilityProvenance::parse(&provenance)?,
+    };
+    stamp.validate_for(ShareabilityTier::ProjectKnowledge)?;
+    Ok(stamp)
+}
+
+fn topology_spec_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    snapshot: &TopologySnapshot,
+) -> RepositoryResult<ProjectSessionTopologySpec> {
+    let found: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT definition, definition_hash FROM topology_specs
+             WHERE project_id = ?1 AND spec_id = ?2 AND version = ?3",
+            params![
+                project_id.to_string(),
+                snapshot.spec_id.to_string(),
+                version_column(snapshot.version)
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let (json, hash) = found.ok_or(RepositoryError::NotFound {
+        subject: "topology specification",
+    })?;
+    let hash = ContentHash::parse(&hash)?;
+    if hash != snapshot.canonical_hash {
+        return Err(conflict(
+            "topology specification",
+            "the pinned canonical hash does not match the published revision",
+        ));
+    }
+    stored_document(&json, hash.as_str())
+}
+
+fn role_catalog_in(
+    transaction: &Transaction<'_>,
+    catalog_id: RoleCatalogId,
+    version: SpecVersion,
+) -> RepositoryResult<RoleCatalogRevision> {
+    let found: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT definition, definition_hash FROM role_catalog_revisions
+             WHERE catalog_id = ?1 AND version = ?2",
+            params![catalog_id.to_string(), version_column(version)],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let (json, hash) = found.ok_or(RepositoryError::NotFound {
+        subject: "role catalog",
+    })?;
+    stored_document(&json, &hash)
+}
+
+/// Project Core Team configuration.
+///
+/// Inherent rather than a trait: there is one implementation, and a port here
+/// would be a second thing to keep in agreement with the two statements below.
+impl SqliteStore {
+    /// Publish the next immutable Core Team revision for one project.
+    ///
+    /// The version is checked against what is already stored inside the same
+    /// transaction rather than trusted from the caller. Two applies racing on
+    /// the same project would otherwise both read version *n*, both compute
+    /// *n+1*, and the second would land on the primary key with a message about
+    /// a unique index rather than about the roster it failed to publish.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the version is not the next
+    /// one for this project.
+    pub fn publish_core_team_revision(
+        &self,
+        revision: &StoredCoreTeamRevision,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let current: Option<i64> = transaction
+            .query_row(
+                "SELECT MAX(version) FROM core_team_revisions WHERE project_id = ?1",
+                params![revision.project_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .flatten();
+        let expected = current.map_or(1, |version| version.saturating_add(1));
+        if version_column(revision.version) != expected {
+            return Err(RepositoryError::Conflict {
+                subject: "core team revision",
+                rule: "must be the next revision for this project",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO core_team_revisions
+                     (project_id, version, catalog_hash, seats, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    revision.project_id.to_string(),
+                    version_column(revision.version),
+                    revision.catalog_hash.as_str(),
+                    revision.seats.to_string(),
+                    text(revision.published_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Record one Quick session and the ids its placement used.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the session already exists.
+    pub fn create_quick_session(&self, session: &StoredQuickSession) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let role =
+            serde_json::to_string(&session.role).map_err(|error| RepositoryError::Backend {
+                detail: format!("a quick session role could not be encoded: {error}"),
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO quick_sessions
+                     (id, project_id, role, role_slot_id, topology_node_id, seat_binding_id,
+                      psw_topology_node_id, psw_native_id, purpose, intent_hash, disposition,
+                      revision, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    session.id.to_string(),
+                    session.project_id.to_string(),
+                    role,
+                    session.role_slot_id.as_str(),
+                    session.topology_node_id.to_string(),
+                    session.seat_binding_id.to_string(),
+                    session.psw_topology_node_id.to_string(),
+                    session.psw_native_id.as_ref().map(ExternalId::as_str),
+                    session.purpose.as_str(),
+                    session.intent_hash.as_str(),
+                    session.disposition.as_str(),
+                    i64::try_from(session.revision.get()).unwrap_or(i64::MAX),
+                    text(session.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                // Two ensures of the same request racing. The loser has written
+                // nothing else yet — the row is deliberately first — so it can
+                // simply read the winner's session and return that.
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "quick session",
+                        rule: "one command opens one session",
+                    }
+                }
+                other => backend(other),
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// One Quick session in one project.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_quick_session(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.quick_session_where("id = ?2", project_id, &quick_session_id.to_string())
+    }
+
+    /// The Quick session one command opened, if it already opened one.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_quick_session_by_intent(
+        &self,
+        project_id: ProjectId,
+        intent_hash: &ContentHash,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.quick_session_where("intent_hash = ?2", project_id, intent_hash.as_str())
+    }
+
+    /// One Quick session, addressed by whichever unique column names it.
+    fn quick_session_where(
+        &self,
+        predicate: &str,
+        project_id: ProjectId,
+        value: &str,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.connection
+            .query_row(
+                &format!(
+                    "SELECT id, role, role_slot_id, topology_node_id, seat_binding_id,
+                            psw_topology_node_id, psw_native_id, purpose, intent_hash,
+                            disposition, revision, created_at
+                     FROM quick_sessions WHERE project_id = ?1 AND {predicate}"
+                ),
+                params![project_id.to_string(), value],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, String>(11)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredQuickSession {
+                    id: QuickSessionId::parse(&columns.0)?,
+                    project_id,
+                    role: serde_json::from_str(&columns.1).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a stored quick session role is unreadable: {error}"),
+                        }
+                    })?,
+                    role_slot_id: RoleSlotId::parse(&columns.2)?,
+                    topology_node_id: TopologyNodeId::parse(&columns.3)?,
+                    seat_binding_id: SeatBindingId::parse(&columns.4)?,
+                    psw_topology_node_id: TopologyNodeId::parse(&columns.5)?,
+                    psw_native_id: columns.6.as_deref().map(ExternalId::parse).transpose()?,
+                    purpose: BoundedText::parse(&columns.7)?,
+                    intent_hash: ContentHash::parse(&columns.8)?,
+                    disposition: SourceDisposition::parse(&columns.9)?,
+                    revision: AggregateRevision::parse(
+                        u64::try_from(columns.10).unwrap_or_default(),
+                    )?,
+                    created_at: read_timestamp(&columns.11)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Move one Quick session's source disposition, bumping its revision.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] when the session does not exist.
+    pub fn set_quick_session_disposition(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+        disposition: SourceDisposition,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE quick_sessions SET disposition = ?3, revision = revision + 1
+                 WHERE project_id = ?1 AND id = ?2",
+                params![
+                    project_id.to_string(),
+                    quick_session_id.to_string(),
+                    disposition.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "quick session",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Authorize one promotion, freezing the ids and the roster its effects
+    /// will use.
+    ///
+    /// Both rows are written before the first effect, and in one transaction.
+    /// They are the two things a resumed apply reads to know what it is
+    /// resuming: the promotion row says which epic, the roster row says which
+    /// seats. Writing either one later — or the two separately — leaves a
+    /// window where a failure has recorded the source as promoted while the
+    /// resume path cannot find what it was promoted into. Since the promotion
+    /// row is keyed by its source and nothing deletes it, a source caught in
+    /// that window would be permanently unpromotable.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the source is already
+    /// promoted.
+    pub fn begin_promotion(
+        &self,
+        promotion: &StoredPromotion,
+        roster: &StoredEpicRoster,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO quick_session_promotions
+                     (quick_session_id, project_id, mini_project_id, preview_hash,
+                      source_disposition, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    promotion.quick_session_id.to_string(),
+                    promotion.project_id.to_string(),
+                    promotion.mini_project_id.to_string(),
+                    promotion.preview_hash.as_str(),
+                    promotion.source_disposition.as_str(),
+                    text(promotion.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "quick session promotion",
+                        rule: "a Quick session is promoted exactly once",
+                    }
+                }
+                other => backend(other),
+            })?;
+        // Legal before the MiniProject exists: `epic_rosters` deliberately
+        // carries no foreign key to `mini_projects`, because the roster is what
+        // the epic is built *from*.
+        transaction
+            .execute(
+                "INSERT INTO epic_rosters
+                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
+                      quick_session_id, revision, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    roster.project_id.to_string(),
+                    roster.mini_project_id.to_string(),
+                    version_column(roster.core_team_version),
+                    roster.catalog_hash.as_str(),
+                    roster.seats.to_string(),
+                    roster.quick_session_id.map(|id| id.to_string()),
+                    i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
+                    text(roster.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Record that a promotion's handoff reached its seat.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] when no promotion is in flight.
+    pub fn complete_promotion(
+        &self,
+        quick_session_id: QuickSessionId,
+        handoff: &serde_json::Value,
+        handoff_hash: &ContentHash,
+        lsa_seat_binding_id: SeatBindingId,
+        completed_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE quick_session_promotions
+                 SET handoff = ?2, handoff_hash = ?3, lsa_seat_binding_id = ?4, completed_at = ?5
+                 WHERE quick_session_id = ?1",
+                params![
+                    quick_session_id.to_string(),
+                    handoff.to_string(),
+                    handoff_hash.as_str(),
+                    lsa_seat_binding_id.to_string(),
+                    text(completed_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "quick session promotion",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// The promotion of one Quick session, in flight or complete.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_promotion(
+        &self,
+        quick_session_id: QuickSessionId,
+    ) -> RepositoryResult<Option<StoredPromotion>> {
+        self.connection
+            .query_row(
+                "SELECT project_id, mini_project_id, preview_hash, source_disposition,
+                        handoff, handoff_hash, lsa_seat_binding_id, completed_at, created_at
+                 FROM quick_session_promotions WHERE quick_session_id = ?1",
+                params![quick_session_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredPromotion {
+                    quick_session_id,
+                    project_id: ProjectId::parse(&columns.0)?,
+                    mini_project_id: MiniProjectId::parse(&columns.1)?,
+                    preview_hash: ContentHash::parse(&columns.2)?,
+                    source_disposition: SourceDisposition::parse(&columns.3)?,
+                    handoff: columns
+                        .4
+                        .map(|handoff| serde_json::from_str(&handoff))
+                        .transpose()
+                        .map_err(|error| RepositoryError::Backend {
+                            detail: format!("a stored handoff is unreadable: {error}"),
+                        })?,
+                    handoff_hash: columns.5.as_deref().map(ContentHash::parse).transpose()?,
+                    lsa_seat_binding_id: columns
+                        .6
+                        .as_deref()
+                        .map(SeatBindingId::parse)
+                        .transpose()?,
+                    completed_at: columns.7.as_deref().map(read_timestamp).transpose()?,
+                    created_at: read_timestamp(&columns.8)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Freeze, or move, the roster one epic is staffed from.
+    ///
+    /// # Errors
+    /// Returns a backend error.
+    pub fn put_epic_roster(&self, roster: &StoredEpicRoster) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO epic_rosters
+                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
+                      quick_session_id, revision, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (project_id, mini_project_id) DO UPDATE SET
+                     core_team_version = excluded.core_team_version,
+                     catalog_hash = excluded.catalog_hash,
+                     seats = excluded.seats,
+                     revision = epic_rosters.revision + 1,
+                     pinned_at = excluded.pinned_at",
+                params![
+                    roster.project_id.to_string(),
+                    roster.mini_project_id.to_string(),
+                    version_column(roster.core_team_version),
+                    roster.catalog_hash.as_str(),
+                    roster.seats.to_string(),
+                    roster.quick_session_id.map(|id| id.to_string()),
+                    i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
+                    text(roster.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// The roster one epic is staffed from.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_epic_roster(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<StoredEpicRoster>> {
+        self.connection
+            .query_row(
+                "SELECT core_team_version, catalog_hash, seats, quick_session_id, revision,
+                        pinned_at
+                 FROM epic_rosters WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredEpicRoster {
+                    project_id,
+                    mini_project_id,
+                    core_team_version: read_version(columns.0)?,
+                    catalog_hash: ContentHash::parse(&columns.1)?,
+                    seats: serde_json::from_str(&columns.2).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a stored epic roster is unreadable: {error}"),
+                        }
+                    })?,
+                    quick_session_id: columns
+                        .3
+                        .as_deref()
+                        .map(QuickSessionId::parse)
+                        .transpose()?,
+                    revision: AggregateRevision::parse(
+                        u64::try_from(columns.4).unwrap_or_default(),
+                    )?,
+                    pinned_at: read_timestamp(&columns.5)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Read the revision a project is currently configured with.
+    ///
+    /// The highest published version, which is the only definition of current
+    /// this schema has.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_current_core_team(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Option<StoredCoreTeamRevision>> {
+        let found: Option<(i64, String, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT version, catalog_hash, seats, created_at
+                 FROM core_team_revisions
+                 WHERE project_id = ?1
+                 ORDER BY version DESC
+                 LIMIT 1",
+                params![project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(version, catalog_hash, seats, created_at)| {
+                Ok(StoredCoreTeamRevision {
+                    project_id,
+                    version: read_version(version)?,
+                    catalog_hash: ContentHash::parse(&catalog_hash)?,
+                    seats: serde_json::from_str(&seats).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("stored core team seats are not valid JSON: {error}"),
+                        }
+                    })?,
+                    published_at: read_timestamp(&created_at)?,
+                })
+            })
+            .transpose()
+    }
+}
+
+impl TopologyRepository for SqliteStore {
+    fn publish_topology_spec(
+        &self,
+        project_id: ProjectId,
+        spec: &ProjectSessionTopologySpec,
+        shareability: &Shareability,
+        published_at: Timestamp,
+    ) -> RepositoryResult<ContentHash> {
+        let document = spec.canonicalize()?;
+        shareability.validate_for(TOPOLOGY_SPEC_TIER)?;
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO topology_specs
+                     (project_id, spec_id, version, name, root_kind, definition,
+                      definition_hash, published_at, shareability_class,
+                      shareability_classifier, shareability_provenance)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    project_id.to_string(),
+                    spec.spec_id.to_string(),
+                    version_column(spec.version),
+                    spec.name.as_str(),
+                    spec.root_kind.as_str(),
+                    document.json(),
+                    document.hash().as_str(),
+                    text(published_at),
+                    shareability.class.as_str(),
+                    shareability.classifier.identity().map(ExternalName::as_str),
+                    shareability.provenance.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(document.hash().clone())
+    }
+
+    fn get_topology_spec_shareability(
+        &self,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<Shareability>> {
+        let found: Option<(String, Option<String>, String)> = self
+            .connection
+            .query_row(
+                "SELECT shareability_class, shareability_classifier,
+                        shareability_provenance
+                 FROM topology_specs
+                 WHERE project_id = ?1 AND spec_id = ?2 AND version = ?3",
+                params![
+                    project_id.to_string(),
+                    spec_id.to_string(),
+                    version_column(version)
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found.map(stored_shareability).transpose()
+    }
+
+    fn get_topology_spec(
+        &self,
+        project_id: ProjectId,
+        spec_id: TopologySpecId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<ProjectSessionTopologySpec>> {
+        let found: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT definition, definition_hash FROM topology_specs
+                 WHERE project_id = ?1 AND spec_id = ?2 AND version = ?3",
+                params![
+                    project_id.to_string(),
+                    spec_id.to_string(),
+                    version_column(version)
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(json, hash)| stored_document(&json, &hash))
+            .transpose()
+    }
+
+    fn list_topology_specs(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<ProjectSessionTopologySpec>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT definition, definition_hash FROM topology_specs
+                 WHERE project_id = ?1 ORDER BY spec_id, version",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut specs = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let document = stored_payload(
+                &row.get::<_, String>(0).map_err(backend)?,
+                &row.get::<_, String>(1).map_err(backend)?,
+            )?;
+            specs.push(document.deserialize::<ProjectSessionTopologySpec>()?);
+        }
+        Ok(specs)
+    }
+
+    fn set_project_topology_default(
+        &self,
+        selection: &ProjectTopologyDefault,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        topology_spec_in(&transaction, selection.project_id, &selection.topology)?;
+        transaction
+            .execute(
+                "INSERT INTO project_topology_defaults
+                     (project_id, spec_id, version, canonical_hash, selected_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(project_id) DO UPDATE SET
+                     spec_id = excluded.spec_id,
+                     version = excluded.version,
+                     canonical_hash = excluded.canonical_hash,
+                     selected_at = excluded.selected_at",
+                params![
+                    selection.project_id.to_string(),
+                    selection.topology.spec_id.to_string(),
+                    version_column(selection.topology.version),
+                    selection.topology.canonical_hash.as_str(),
+                    text(selection.selected_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn get_project_topology_default(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Option<ProjectTopologyDefault>> {
+        let found: Option<(String, i64, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT spec_id, version, canonical_hash, selected_at
+                 FROM project_topology_defaults WHERE project_id = ?1",
+                params![project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(spec_id, version, hash, selected_at)| {
+                Ok(ProjectTopologyDefault {
+                    project_id,
+                    topology: TopologySnapshot {
+                        spec_id: TopologySpecId::parse(&spec_id)?,
+                        version: read_version(version)?,
+                        canonical_hash: ContentHash::parse(&hash)?,
+                    },
+                    selected_at: read_timestamp(&selected_at)?,
+                })
+            })
+            .transpose()
+    }
+
+    fn pin_mini_project_topology(
+        &self,
+        snapshot: &MiniProjectTopologySnapshot,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let owns_mini_project = transaction
+            .query_row(
+                "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
+                params![
+                    snapshot.project_id.to_string(),
+                    snapshot.mini_project_id.to_string()
+                ],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(backend)?
+            .is_some();
+        if !owns_mini_project {
+            return Err(RepositoryError::NotFound {
+                subject: "mini project",
+            });
+        }
+        topology_spec_in(&transaction, snapshot.project_id, &snapshot.topology)?;
+        transaction
+            .execute(
+                "INSERT INTO mini_project_topology_snapshots
+                     (mini_project_id, project_id, spec_id, version, canonical_hash, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    snapshot.mini_project_id.to_string(),
+                    snapshot.project_id.to_string(),
+                    snapshot.topology.spec_id.to_string(),
+                    version_column(snapshot.topology.version),
+                    snapshot.topology.canonical_hash.as_str(),
+                    text(snapshot.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn repin_mini_project_topology(
+        &self,
+        snapshot: &MiniProjectTopologySnapshot,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        // The pin must already exist. An epic with none has not been upgraded,
+        // it has never been placed, and creating the first pin here would let an
+        // upgrade stand in for the placement it is supposed to be moving.
+        let pinned = transaction
+            .query_row(
+                "SELECT 1 FROM mini_project_topology_snapshots
+                 WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![
+                    snapshot.project_id.to_string(),
+                    snapshot.mini_project_id.to_string()
+                ],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(backend)?
+            .is_some();
+        if !pinned {
+            return Err(RepositoryError::NotFound {
+                subject: "mini-project topology snapshot",
+            });
+        }
+        // And the revision it moves to must be one this project published.
+        topology_spec_in(&transaction, snapshot.project_id, &snapshot.topology)?;
+        transaction
+            .execute(
+                "UPDATE mini_project_topology_snapshots
+                 SET spec_id = ?1, version = ?2, canonical_hash = ?3, pinned_at = ?4
+                 WHERE project_id = ?5 AND mini_project_id = ?6",
+                params![
+                    snapshot.topology.spec_id.to_string(),
+                    version_column(snapshot.topology.version),
+                    snapshot.topology.canonical_hash.as_str(),
+                    text(snapshot.pinned_at),
+                    snapshot.project_id.to_string(),
+                    snapshot.mini_project_id.to_string(),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn get_mini_project_topology(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<MiniProjectTopologySnapshot>> {
+        let found: Option<(String, i64, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT spec_id, version, canonical_hash, pinned_at
+                 FROM mini_project_topology_snapshots
+                 WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(spec_id, version, hash, pinned_at)| {
+                Ok(MiniProjectTopologySnapshot {
+                    project_id,
+                    mini_project_id,
+                    topology: TopologySnapshot {
+                        spec_id: TopologySpecId::parse(&spec_id)?,
+                        version: read_version(version)?,
+                        canonical_hash: ContentHash::parse(&hash)?,
+                    },
+                    pinned_at: read_timestamp(&pinned_at)?,
+                })
+            })
+            .transpose()
+    }
+
+    fn publish_role_catalog(
+        &self,
+        catalog: &RoleCatalogRevision,
+        shareability: &Shareability,
+        published_at: Timestamp,
+    ) -> RepositoryResult<ContentHash> {
+        let document = catalog.canonicalize()?;
+        shareability.validate_for(ROLE_CATALOG_TIER)?;
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO role_catalog_revisions
+                     (catalog_id, version, name, definition, definition_hash, published_at,
+                      shareability_class, shareability_classifier, shareability_provenance)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    catalog.catalog_id.to_string(),
+                    version_column(catalog.version),
+                    catalog.name.as_str(),
+                    document.json(),
+                    document.hash().as_str(),
+                    text(published_at),
+                    shareability.class.as_str(),
+                    shareability.classifier.identity().map(ExternalName::as_str),
+                    shareability.provenance.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(document.hash().clone())
+    }
+
+    fn get_role_catalog_shareability(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<Shareability>> {
+        let found: Option<(String, Option<String>, String)> = self
+            .connection
+            .query_row(
+                "SELECT shareability_class, shareability_classifier,
+                        shareability_provenance
+                 FROM role_catalog_revisions
+                 WHERE catalog_id = ?1 AND version = ?2",
+                params![catalog_id.to_string(), version_column(version)],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found.map(stored_shareability).transpose()
+    }
+
+    fn get_role_catalog(
+        &self,
+        catalog_id: RoleCatalogId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<RoleCatalogRevision>> {
+        let found: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT definition, definition_hash FROM role_catalog_revisions
+                 WHERE catalog_id = ?1 AND version = ?2",
+                params![catalog_id.to_string(), version_column(version)],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(json, hash)| stored_document(&json, &hash))
+            .transpose()
+    }
+
+    fn create_topology_node(
+        &self,
+        request: &NewSessionTopologyNode,
+    ) -> RepositoryResult<SessionTopologyNode> {
+        let transaction = self.begin()?;
+        let spec = topology_spec_in(&transaction, request.project_id, &request.topology)?;
+        let declared = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == request.kind)
+            .ok_or(DomainError::Invalid {
+                subject: "SessionTopologyNode",
+                rule: "names a kind absent from the pinned topology specification",
+            })?;
+
+        if let Some(mini_project_id) = request.mini_project_id {
+            let pinned: Option<(String, i64, String)> = transaction
+                .query_row(
+                    "SELECT spec_id, version, canonical_hash
+                     FROM mini_project_topology_snapshots
+                     WHERE project_id = ?1 AND mini_project_id = ?2",
+                    params![request.project_id.to_string(), mini_project_id.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(backend)?;
+            let Some((spec_id, version, hash)) = pinned else {
+                return Err(RepositoryError::NotFound {
+                    subject: "mini-project topology snapshot",
+                });
+            };
+            if TopologySpecId::parse(&spec_id)? != request.topology.spec_id
+                || read_version(version)? != request.topology.version
+                || ContentHash::parse(&hash)? != request.topology.canonical_hash
+            {
+                return Err(conflict(
+                    "topology node",
+                    "the node topology differs from the MiniProject snapshot",
+                ));
+            }
+        }
+
+        match request.parent_id {
+            None if request.kind != spec.root_kind => {
+                return Err(DomainError::invalid(
+                    "SessionTopologyNode",
+                    "only the declared root kind may omit a parent",
+                )
+                .into());
+            }
+            Some(_) if request.kind == spec.root_kind => {
+                return Err(DomainError::invalid(
+                    "SessionTopologyNode",
+                    "the declared root kind must not have a parent",
+                )
+                .into());
+            }
+            Some(parent_id) => {
+                let parent: Option<RepositoryResult<SessionTopologyNode>> = transaction
+                    .query_row(
+                        &format!(
+                            "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                             WHERE project_id = ?1 AND id = ?2"
+                        ),
+                        params![request.project_id.to_string(), parent_id.to_string()],
+                        |row| Ok(read_topology_node(row)),
+                    )
+                    .optional()
+                    .map_err(backend)?;
+                let parent = parent.transpose()?.ok_or(RepositoryError::NotFound {
+                    subject: "topology parent",
+                })?;
+                if parent.lifecycle.is_terminal()
+                    || parent
+                        .mini_project_id
+                        .is_some_and(|scope| Some(scope) != request.mini_project_id)
+                    || parent.topology != request.topology
+                    || !declared.allowed_parents.contains(&parent.kind)
+                {
+                    return Err(conflict(
+                        "topology node",
+                        "the parent is terminal, outside the node scope, or has an illegal kind",
+                    ));
+                }
+            }
+            None => {}
+        }
+
+        if let Some(maximum) = declared.cardinality.maximum {
+            let count: i64 = transaction
+                .query_row(
+                    "SELECT count(*) FROM topology_nodes
+                     WHERE project_id = ?1
+                       AND mini_project_id IS ?2
+                       AND parent_id IS ?3
+                       AND kind = ?4
+                       AND lifecycle <> 'archived'",
+                    params![
+                        request.project_id.to_string(),
+                        request.mini_project_id.map(|id| id.to_string()),
+                        request.parent_id.map(|id| id.to_string()),
+                        request.kind.as_str(),
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if count >= i64::from(maximum) {
+                return Err(conflict(
+                    "topology node",
+                    "the declared maximum cardinality is already occupied",
+                ));
+            }
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO topology_nodes
+                     (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
+                      kind, parent_id, lifecycle, placement, revision, created_at, updated_at,
+                      task_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', 'unbound', 1, ?9, ?9, ?10)",
+                params![
+                    request.id.to_string(),
+                    request.project_id.to_string(),
+                    request.mini_project_id.map(|id| id.to_string()),
+                    request.topology.spec_id.to_string(),
+                    version_column(request.topology.version),
+                    request.topology.canonical_hash.as_str(),
+                    request.kind.as_str(),
+                    request.parent_id.map(|id| id.to_string()),
+                    text(request.created_at),
+                    request.task_id.map(|id| id.to_string()),
+                ],
+            )
+            .map_err(backend)?;
+        let node = transaction
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![request.project_id.to_string(), request.id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(node)
+    }
+
+    fn list_topology_nodes(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: Option<MiniProjectId>,
+    ) -> RepositoryResult<Vec<SessionTopologyNode>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                 WHERE project_id = ?1 AND mini_project_id IS ?2
+                 ORDER BY created_at, id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![
+                project_id.to_string(),
+                mini_project_id.map(|id| id.to_string())
+            ])
+            .map_err(backend)?;
+        let mut nodes = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            nodes.push(read_topology_node(row)?);
+        }
+        Ok(nodes)
+    }
+
+    fn list_project_topology_nodes(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<SessionTopologyNode>> {
+        // Created-at order puts parents before children without a recursive
+        // walk: a child cannot be created before the parent it names.
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                 WHERE project_id = ?1 ORDER BY created_at, id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut nodes = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            nodes.push(read_topology_node(row)?);
+        }
+        Ok(nodes)
+    }
+
+    fn get_topology_node(
+        &self,
+        project_id: ProjectId,
+        id: TopologyNodeId,
+    ) -> RepositoryResult<Option<SessionTopologyNode>> {
+        let node: Option<RepositoryResult<SessionTopologyNode>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        node.transpose()
+    }
+
+    fn transition_topology_node(
+        &self,
+        project_id: ProjectId,
+        id: TopologyNodeId,
+        lifecycle: TopologyLifecycle,
+        expected_revision: AggregateRevision,
+        updated_at: Timestamp,
+    ) -> RepositoryResult<SessionTopologyNode> {
+        let transaction = self.begin()?;
+        let current: Option<RepositoryResult<SessionTopologyNode>> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let current = current.transpose()?.ok_or(RepositoryError::NotFound {
+            subject: "topology node",
+        })?;
+        current
+            .revision
+            .expect("topology node", expected_revision)?;
+
+        let advances = matches!(
+            (current.lifecycle, lifecycle),
+            (TopologyLifecycle::Active, TopologyLifecycle::Retired)
+                | (TopologyLifecycle::Retired, TopologyLifecycle::Archived)
+        );
+        if !advances {
+            return Err(conflict(
+                "topology node",
+                "the lifecycle only advances active to retired to archived",
+            ));
+        }
+
+        // Retiring a node concludes that everything below it is finished with.
+        // A node with a live child or a non-terminal seat is not, and retiring
+        // it would leave both addressable under a parent nothing may use.
+        if lifecycle == TopologyLifecycle::Retired {
+            let live_children: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM topology_nodes
+                     WHERE project_id = ?1 AND parent_id = ?2 AND lifecycle = 'active'",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if live_children > 0 {
+                return Err(conflict(
+                    "topology node",
+                    "the node still has active children",
+                ));
+            }
+            let live_seats: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM seat_bindings
+                     WHERE project_id = ?1 AND topology_node_id = ?2 AND lifecycle = 'active'",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if live_seats > 0 {
+                return Err(conflict(
+                    "topology node",
+                    "the node still hosts active seats",
+                ));
+            }
+        }
+
+        transaction
+            .execute(
+                "UPDATE topology_nodes SET lifecycle = ?1, revision = revision + 1, updated_at = ?2
+                 WHERE project_id = ?3 AND id = ?4 AND revision = ?5",
+                params![
+                    lifecycle.as_str(),
+                    text(updated_at),
+                    project_id.to_string(),
+                    id.to_string(),
+                    revision_column(expected_revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        let updated = transaction
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(updated)
+    }
+
+    fn create_seat_binding(&self, request: &NewSeatBinding) -> RepositoryResult<SeatBinding> {
+        let transaction = self.begin()?;
+        let node: Option<RepositoryResult<SessionTopologyNode>> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.topology_node_id.to_string()
+                ],
+                |row| Ok(read_topology_node(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let node = node.transpose()?.ok_or(RepositoryError::NotFound {
+            subject: "topology node",
+        })?;
+        if node.lifecycle.is_terminal() {
+            return Err(conflict("seat binding", "the topology node is archived"));
+        }
+        let spec = topology_spec_in(&transaction, request.project_id, &node.topology)?;
+        let hosts_sessions = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == node.kind)
+            .is_some_and(|declared| {
+                declared
+                    .projection_capabilities
+                    .contains(&kontor_core::spec::NodeProjectionCapability::SessionHost)
+            });
+        if !hosts_sessions {
+            return Err(conflict(
+                "seat binding",
+                "the topology node kind is not declared as a session host",
+            ));
+        }
+        let catalog = role_catalog_in(
+            &transaction,
+            request.role.catalog_id,
+            request.role.catalog_revision,
+        )?;
+        request.role.validate_against(&catalog)?;
+
+        if let Some(task_id) = request.task_id {
+            let task_scope: Option<Option<String>> = transaction
+                .query_row(
+                    "SELECT mini_project_id FROM tasks WHERE project_id = ?1 AND id = ?2",
+                    params![request.project_id.to_string(), task_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(backend)?;
+            let task_scope = task_scope.ok_or(RepositoryError::NotFound { subject: "task" })?;
+            if task_scope
+                .as_deref()
+                .map(MiniProjectId::parse)
+                .transpose()?
+                != node.mini_project_id
+            {
+                return Err(conflict(
+                    "seat binding",
+                    "the task and topology node belong to different MiniProject scopes",
+                ));
+            }
+        }
+        if let Some(team_run_id) = request.team_run_id {
+            let task_id: Option<String> = transaction
+                .query_row(
+                    "SELECT task_id FROM team_runs WHERE project_id = ?1 AND id = ?2",
+                    params![request.project_id.to_string(), team_run_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(backend)?;
+            let task_id = task_id.ok_or(RepositoryError::NotFound {
+                subject: "team run",
+            })?;
+            if request.task_id != Some(TaskId::parse(&task_id)?) {
+                return Err(conflict(
+                    "seat binding",
+                    "the TeamRun does not belong to the selected task",
+                ));
+            }
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO seat_bindings
+                     (id, project_id, topology_node_id, role_slot_id, role_catalog_id,
+                      role_catalog_version, role_code, standard_title, custom_display_name,
+                      task_id, team_run_id, lifecycle, attach_deadline,
+                      parent_seat_binding_id, revision, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                         'active', ?12, ?13, 1, ?14, ?14)",
+                params![
+                    request.id.to_string(),
+                    request.project_id.to_string(),
+                    request.topology_node_id.to_string(),
+                    request.role_slot_id.to_string(),
+                    request.role.catalog_id.to_string(),
+                    version_column(request.role.catalog_revision),
+                    request.role.role_code.as_str(),
+                    request.role.standard_title.as_str(),
+                    request
+                        .role
+                        .custom_display_name
+                        .as_ref()
+                        .map(ExternalName::as_str),
+                    request.task_id.map(|id| id.to_string()),
+                    request.team_run_id.map(|id| id.to_string()),
+                    text(request.attach_deadline),
+                    request.parent_seat_binding_id.map(|id| id.to_string()),
+                    text(request.created_at),
+                ],
+            )
+            .map_err(backend)?;
+        let binding = transaction
+            .query_row(
+                &format!(
+                    "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![request.project_id.to_string(), request.id.to_string()],
+                |row| Ok(read_seat_binding(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(binding)
+    }
+
+    fn get_task_topology_node(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<SessionTopologyNode>> {
+        self.connection
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND task_id = ?2 AND lifecycle = 'active'"
+                ),
+                params![project_id.to_string(), task_id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
+    }
+
+    fn observe_seat_binding(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+        observation: &SeatLivenessObservation,
+        observed_at: Timestamp,
+    ) -> RepositoryResult<SeatBinding> {
+        if observation.replaced_by == Some(id) {
+            return Err(conflict(
+                "seat binding",
+                "a seat cannot be its own replacement",
+            ));
+        }
+        let transaction = self.begin()?;
+        // COALESCE, never assignment: an observation carries what was seen and
+        // nothing else, so recording an attachment must not erase an activity
+        // instant recorded a moment earlier by a different observer. The one
+        // exception is `runtime_reported`, which is a *current* self-report and
+        // is meant to be replaced by the latest one.
+        let changed = transaction
+            .execute(
+                // Releasing also retires the row. A released seat is finished,
+                // and leaving it `active` would keep it occupying the unique
+                // `(node, role_slot)` key — so the slot it no longer holds could
+                // never be filled again. Its evidence is untouched: every
+                // conclusion below still reads `released_at`, and
+                // `closes_children` was already true either way.
+                "UPDATE seat_bindings SET
+                     last_attached_at = COALESCE(?3, last_attached_at),
+                     last_activity_at = COALESCE(?4, last_activity_at),
+                     runtime_reported = COALESCE(?5, runtime_reported),
+                     released_at = COALESCE(released_at, ?6),
+                     replaced_by_seat_binding_id =
+                         COALESCE(replaced_by_seat_binding_id, ?7),
+                     lifecycle = CASE
+                         WHEN COALESCE(released_at, ?6) IS NOT NULL THEN 'retired'
+                         ELSE lifecycle
+                     END,
+                     revision = revision + 1,
+                     updated_at = ?8
+                 WHERE project_id = ?1 AND id = ?2",
+                params![
+                    project_id.to_string(),
+                    id.to_string(),
+                    observation.attached_at.map(text),
+                    observation.activity_at.map(text),
+                    observation.runtime_reported.map(|it| it.as_str()),
+                    observation.released_at.map(text),
+                    observation.replaced_by.map(|it| it.to_string()),
+                    text(observed_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "seat binding",
+            });
+        }
+        let binding = transaction
+            .query_row(
+                &format!(
+                    "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_seat_binding(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(binding)
+    }
+
+    fn bind_topology_node_container(
+        &self,
+        request: &NewNativeContainerBinding,
+    ) -> RepositoryResult<NativeContainerBinding> {
+        let transaction = self.begin()?;
+        let owning_project: Option<String> = transaction
+            .query_row(
+                "SELECT project_id FROM topology_nodes WHERE id = ?1",
+                params![request.topology_node_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let owning_project = owning_project.ok_or(RepositoryError::NotFound {
+            subject: "topology node",
+        })?;
+        if ProjectId::parse(&owning_project)? != request.project_id {
+            return Err(conflict(
+                "native container binding",
+                "the topology node belongs to another project",
+            ));
+        }
+
+        let existing: Option<NativeContainerBinding> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {NATIVE_CONTAINER_COLUMNS} FROM topology_node_containers
+                     WHERE topology_node_id = ?1"
+                ),
+                params![request.topology_node_id.to_string()],
+                |row| Ok(read_native_container_binding(row)),
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()?;
+
+        if let Some(existing) = existing {
+            // Re-confirming the binding this node already holds advances the
+            // readback instant and nothing else. A *different* identity is a
+            // disagreement between Kontor and the runtime, and this is not the
+            // place that resolves one: silently rewriting the row would make
+            // the node point at whatever was seen last, which is precisely the
+            // repair OP-02 forbids.
+            if existing.identity != request.identity {
+                return Err(conflict(
+                    "native container binding",
+                    "this topology node is bound to another native container",
+                ));
+            }
+            transaction
+                .execute(
+                    "UPDATE topology_node_containers
+                     SET last_readback_at = ?2, observed_kind = ?3, revision = revision + 1
+                     WHERE topology_node_id = ?1",
+                    params![
+                        request.topology_node_id.to_string(),
+                        text(request.observed_at),
+                        request.observed_kind.as_str(),
+                    ],
+                )
+                .map_err(backend)?;
+        } else {
+            // A native container already owned by another node is a collision,
+            // and it is refused here rather than discovered later — by then
+            // both nodes have been treated as placed.
+            transaction
+                .execute(
+                    "INSERT INTO topology_node_containers
+                         (topology_node_id, project_id, container_binding_id, runtime_kind,
+                          host, generation, native_id, observed_kind, canonical_cwd,
+                          bound_at, last_readback_at, revision)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 1)",
+                    params![
+                        request.topology_node_id.to_string(),
+                        request.project_id.to_string(),
+                        request.container_binding_id.as_str(),
+                        request.identity.runtime_kind.as_str(),
+                        request.identity.host.as_str(),
+                        i64::try_from(request.identity.generation).map_err(|_| {
+                            DomainError::invalid(
+                                "native container generation",
+                                "is outside the storable range",
+                            )
+                        })?,
+                        request.identity.native_id.as_str(),
+                        request.observed_kind.as_str(),
+                        request.canonical_cwd.as_ref().map(ExternalName::as_str),
+                        text(request.observed_at),
+                    ],
+                )
+                .map_err(|error| match &error {
+                    rusqlite::Error::SqliteFailure(failure, _)
+                        if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        conflict(
+                            "native container binding",
+                            "this native container is already bound to another topology node",
+                        )
+                    }
+                    _ => backend(error),
+                })?;
+        }
+
+        let binding = transaction
+            .query_row(
+                &format!(
+                    "SELECT {NATIVE_CONTAINER_COLUMNS} FROM topology_node_containers
+                     WHERE topology_node_id = ?1"
+                ),
+                params![request.topology_node_id.to_string()],
+                |row| Ok(read_native_container_binding(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(binding)
+    }
+
+    fn list_seat_attachments(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        now: Timestamp,
+    ) -> RepositoryResult<Vec<SeatAttachment>> {
+        let transaction = self.begin()?;
+        let mut statement = transaction
+            .prepare(&format!(
+                "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                 WHERE project_id = ?1 AND topology_node_id = ?2 ORDER BY created_at, id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![
+                project_id.to_string(),
+                topology_node_id.to_string()
+            ])
+            .map_err(backend)?;
+        let mut bindings = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            bindings.push(read_seat_binding(row)?);
+        }
+        drop(rows);
+        drop(statement);
+        conclude_seat_attachments(&transaction, project_id, &bindings, now)
+    }
+
+    fn get_topology_node_container(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+    ) -> RepositoryResult<Option<NativeContainerBinding>> {
+        self.connection
+            .query_row(
+                &format!(
+                    "SELECT {NATIVE_CONTAINER_COLUMNS} FROM topology_node_containers
+                     WHERE project_id = ?1 AND topology_node_id = ?2"
+                ),
+                params![project_id.to_string(), topology_node_id.to_string()],
+                |row| Ok(read_native_container_binding(row)),
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
+    }
+
+    fn list_seat_bindings(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+    ) -> RepositoryResult<Vec<SeatBinding>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                 WHERE project_id = ?1 AND topology_node_id = ?2
+                 ORDER BY created_at, id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![
+                project_id.to_string(),
+                topology_node_id.to_string()
+            ])
+            .map_err(backend)?;
+        let mut bindings = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            bindings.push(read_seat_binding(row)?);
+        }
+        Ok(bindings)
+    }
+
+    fn get_seat_binding(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+    ) -> RepositoryResult<Option<SeatBinding>> {
+        let binding: Option<RepositoryResult<SeatBinding>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_seat_binding(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        binding.transpose()
+    }
+
+    fn create_adaptive_admission_state(
+        &self,
+        request: &NewAdaptiveAdmissionState,
+    ) -> RepositoryResult<AdaptiveAdmissionState> {
+        validate_adaptive_values(request.current_window, request.clean_observation_streak)?;
+        let transaction = self.begin()?;
+        let owns_mini_project = transaction
+            .query_row(
+                "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
+                params![
+                    request.project_id.to_string(),
+                    request.mini_project_id.to_string()
+                ],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(backend)?
+            .is_some();
+        if !owns_mini_project {
+            return Err(RepositoryError::NotFound {
+                subject: "mini project",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO adaptive_admission_state
+                     (project_id, mini_project_id, current_window, clean_observation_streak,
+                      last_observation_id, revision, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)",
+                params![
+                    request.project_id.to_string(),
+                    request.mini_project_id.to_string(),
+                    i64::from(request.current_window),
+                    i64::from(request.clean_observation_streak),
+                    request.last_observation_id.as_ref().map(ExternalId::as_str),
+                    text(request.created_at),
+                ],
+            )
+            .map_err(backend)?;
+        let state = transaction
+            .query_row(
+                &format!(
+                    "SELECT {ADAPTIVE_ADMISSION_COLUMNS} FROM adaptive_admission_state
+                     WHERE project_id = ?1 AND mini_project_id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.mini_project_id.to_string()
+                ],
+                |row| Ok(read_adaptive_admission(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(state)
+    }
+
+    fn advance_adaptive_admission_state(
+        &self,
+        request: &AdaptiveAdmissionAdvance,
+    ) -> RepositoryResult<AdaptiveAdmissionState> {
+        validate_adaptive_values(request.current_window, request.clean_observation_streak)?;
+        let transaction = self.begin()?;
+        let current: Option<RepositoryResult<AdaptiveAdmissionState>> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {ADAPTIVE_ADMISSION_COLUMNS} FROM adaptive_admission_state
+                     WHERE project_id = ?1 AND mini_project_id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.mini_project_id.to_string()
+                ],
+                |row| Ok(read_adaptive_admission(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let current = current.transpose()?.ok_or(RepositoryError::NotFound {
+            subject: "adaptive admission state",
+        })?;
+        current
+            .revision
+            .expect("adaptive admission state", request.expected_revision)?;
+        if request.last_observation_id.is_some()
+            && request.last_observation_id == current.last_observation_id
+        {
+            return Err(conflict(
+                "adaptive admission state",
+                "the observation was already applied",
+            ));
+        }
+        transaction
+            .execute(
+                "UPDATE adaptive_admission_state
+                 SET current_window = ?1, clean_observation_streak = ?2,
+                     last_observation_id = ?3, revision = revision + 1, updated_at = ?4
+                 WHERE project_id = ?5 AND mini_project_id = ?6 AND revision = ?7",
+                params![
+                    i64::from(request.current_window),
+                    i64::from(request.clean_observation_streak),
+                    request.last_observation_id.as_ref().map(ExternalId::as_str),
+                    text(request.updated_at),
+                    request.project_id.to_string(),
+                    request.mini_project_id.to_string(),
+                    revision_column(request.expected_revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        let state = transaction
+            .query_row(
+                &format!(
+                    "SELECT {ADAPTIVE_ADMISSION_COLUMNS} FROM adaptive_admission_state
+                     WHERE project_id = ?1 AND mini_project_id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.mini_project_id.to_string()
+                ],
+                |row| Ok(read_adaptive_admission(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(state)
+    }
+
+    fn list_adaptive_admission_states(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AdaptiveAdmissionState>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {ADAPTIVE_ADMISSION_COLUMNS} FROM adaptive_admission_state
+                 WHERE project_id = ?1 ORDER BY mini_project_id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut states = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            states.push(read_adaptive_admission(row)?);
+        }
+        Ok(states)
+    }
+
+    fn get_adaptive_admission_state(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<AdaptiveAdmissionState>> {
+        let state: Option<RepositoryResult<AdaptiveAdmissionState>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {ADAPTIVE_ADMISSION_COLUMNS} FROM adaptive_admission_state
+                     WHERE project_id = ?1 AND mini_project_id = ?2"
+                ),
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| Ok(read_adaptive_admission(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        state.transpose()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Account-owned capacity evidence
+// ---------------------------------------------------------------------------
+
+const CAPACITY_OBSERVATION_COLUMNS: &str = "id, project_id, account_profile_id, observed_at, \
+    reading, reading_hash, available, pressure, cooling_until";
+
+const AVAILABILITY_OVERRIDE_COLUMNS: &str = "project_id, account_profile_id, available, reason, \
+    expires_at, revision, updated_at";
+
+fn read_capacity_observation(row: &Row<'_>) -> RepositoryResult<CapacityObservation> {
+    let cooling_until: Option<String> = row.get(8).map_err(backend)?;
+    Ok(CapacityObservation {
+        id: CapacityObservationId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        account_profile_id: AccountProfileId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+        observed_at: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
+        reading: stored_payload(
+            &row.get::<_, String>(4).map_err(backend)?,
+            &row.get::<_, String>(5).map_err(backend)?,
+        )?,
+        available: row.get::<_, i64>(6).map_err(backend)? != 0,
+        pressure: row.get::<_, i64>(7).map_err(backend)? != 0,
+        cooling_until: cooling_until.as_deref().map(read_timestamp).transpose()?,
+    })
+}
+
+fn read_capacity_configuration(row: &Row<'_>) -> RepositoryResult<StoredCapacityConfiguration> {
+    Ok(StoredCapacityConfiguration {
+        ceilings: stored_payload(
+            &row.get::<_, String>(0).map_err(backend)?,
+            &row.get::<_, String>(1).map_err(backend)?,
+        )?,
+        revision: revision_of(row.get::<_, i64>(2).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
+    })
+}
+
+fn read_availability_override(row: &Row<'_>) -> RepositoryResult<AvailabilityOverride> {
+    let expires_at: Option<String> = row.get(4).map_err(backend)?;
+    Ok(AvailabilityOverride {
+        project_id: ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        account_profile_id: AccountProfileId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        available: row.get::<_, i64>(2).map_err(backend)? != 0,
+        reason: ExternalName::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+        expires_at: expires_at.as_deref().map(read_timestamp).transpose()?,
+        revision: revision_of(row.get::<_, i64>(5).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(6).map_err(backend)?)?,
+    })
+}
+
+impl CapacityRepository for SqliteStore {
+    fn record_capacity_observation(
+        &self,
+        request: &NewCapacityObservation,
+    ) -> RepositoryResult<CapacityObservation> {
+        let transaction = self.begin()?;
+        // The account is proved to exist here rather than left to the foreign
+        // key, so a collector that read an account this project does not own is
+        // told which thing was wrong instead of getting a generic constraint
+        // refusal.
+        if read_account_profile_in(&transaction, request.project_id, request.account_profile_id)?
+            .is_none()
+        {
+            return Err(RepositoryError::NotFound {
+                subject: "account profile",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO capacity_observations
+                     (id, project_id, account_profile_id, observed_at, reading, reading_hash,
+                      available, pressure, cooling_until)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    request.id.to_string(),
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    text(request.observed_at),
+                    request.reading.json(),
+                    request.reading.hash().as_str(),
+                    i64::from(request.available),
+                    i64::from(request.pressure),
+                    request.cooling_until.map(text),
+                ],
+            )
+            .map_err(backend)?;
+        let observation = transaction
+            .query_row(
+                &format!(
+                    "SELECT {CAPACITY_OBSERVATION_COLUMNS} FROM capacity_observations
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![request.project_id.to_string(), request.id.to_string()],
+                |row| Ok(read_capacity_observation(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(observation)
+    }
+
+    fn get_capacity_observation(
+        &self,
+        project_id: ProjectId,
+        id: CapacityObservationId,
+    ) -> RepositoryResult<Option<CapacityObservation>> {
+        let observation: Option<RepositoryResult<CapacityObservation>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {CAPACITY_OBSERVATION_COLUMNS} FROM capacity_observations
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_capacity_observation(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        observation.transpose()
+    }
+
+    fn latest_capacity_observations(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<CapacityObservation>> {
+        // Latest per account by observation instant, with the id as the
+        // tie-break: two readings taken in the same second still have a stable
+        // order, because the id is time-ordered.
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {CAPACITY_OBSERVATION_COLUMNS} FROM capacity_observations AS outer_row
+                 WHERE project_id = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM capacity_observations AS newer
+                       WHERE newer.project_id = outer_row.project_id
+                         AND newer.account_profile_id = outer_row.account_profile_id
+                         AND (newer.observed_at, newer.id) > (outer_row.observed_at, outer_row.id)
+                   )
+                 ORDER BY account_profile_id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut observations = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            observations.push(read_capacity_observation(row)?);
+        }
+        Ok(observations)
+    }
+
+    fn set_availability_override(
+        &self,
+        request: &NewAvailabilityOverride,
+    ) -> RepositoryResult<AvailabilityOverride> {
+        let transaction = self.begin()?;
+        if read_account_profile_in(&transaction, request.project_id, request.account_profile_id)?
+            .is_none()
+        {
+            return Err(RepositoryError::NotFound {
+                subject: "account profile",
+            });
+        }
+        let current: Option<RepositoryResult<AvailabilityOverride>> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {AVAILABILITY_OVERRIDE_COLUMNS} FROM availability_overrides
+                     WHERE project_id = ?1 AND account_profile_id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string()
+                ],
+                |row| Ok(read_availability_override(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let current = current.transpose()?;
+        // The first judgement about an account is written at revision one, and
+        // a caller has to say so. Letting any revision create the first record
+        // would make "I read it as absent" indistinguishable from "I read a
+        // record that has since been replaced".
+        let next = match &current {
+            Some(existing) => {
+                existing
+                    .revision
+                    .expect("availability override", request.expected_revision)?;
+                existing.revision.next()?
+            }
+            None => {
+                AggregateRevision::INITIAL
+                    .expect("availability override", request.expected_revision)?;
+                AggregateRevision::INITIAL
+            }
+        };
+        transaction
+            .execute(
+                "INSERT INTO availability_overrides
+                     (project_id, account_profile_id, available, reason, expires_at, revision,
+                      updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (project_id, account_profile_id) DO UPDATE SET
+                     available = excluded.available,
+                     reason = excluded.reason,
+                     expires_at = excluded.expires_at,
+                     revision = excluded.revision,
+                     updated_at = excluded.updated_at",
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    i64::from(request.available),
+                    request.reason.as_str(),
+                    request.expires_at.map(text),
+                    revision_column(next)?,
+                    text(request.updated_at),
+                ],
+            )
+            .map_err(backend)?;
+        let stored = transaction
+            .query_row(
+                &format!(
+                    "SELECT {AVAILABILITY_OVERRIDE_COLUMNS} FROM availability_overrides
+                     WHERE project_id = ?1 AND account_profile_id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string()
+                ],
+                |row| Ok(read_availability_override(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn list_availability_overrides(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AvailabilityOverride>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {AVAILABILITY_OVERRIDE_COLUMNS} FROM availability_overrides
+                 WHERE project_id = ?1 ORDER BY account_profile_id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut overrides = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            overrides.push(read_availability_override(row)?);
+        }
+        Ok(overrides)
+    }
+}
+
+/// The Realm's capacity ceilings.
+///
+/// Inherent rather than on [`CapacityRepository`] because the configuration is
+/// realm-scoped: there is no aggregate for a command receipt to name, so a
+/// replay is answered through the realm binding table `0015` built for exactly
+/// this class of operation.
+impl SqliteStore {
+    /// The stored ceilings, if an operator has set any.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn get_capacity_configuration(
+        &self,
+    ) -> RepositoryResult<Option<StoredCapacityConfiguration>> {
+        let stored: Option<RepositoryResult<StoredCapacityConfiguration>> = self
+            .connection
+            .query_row(
+                "SELECT ceilings, ceilings_hash, revision, updated_at FROM capacity_configuration
+                 WHERE id = 1",
+                [],
+                |row| Ok(read_capacity_configuration(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        stored.transpose()
+    }
+
+    /// Replace the ceilings under compare-and-swap, answering a replay from
+    /// what is already durable.
+    ///
+    /// The key is judged before the revision, and that order is the whole
+    /// idempotency story: a retry of a call that already succeeded presents the
+    /// revision it read *before* the write, which as a bare compare-and-swap
+    /// would be stale. Recognising the key first turns that retry into the
+    /// original answer instead of a conflict.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] for a key already bound to
+    /// different content, and a revision conflict for a genuinely stale write.
+    /// On refusal nothing is written.
+    pub fn set_capacity_configuration(
+        &self,
+        ceilings: &CanonicalDocument,
+        binding: &IdempotencyBinding,
+        expected_revision: AggregateRevision,
+    ) -> RepositoryResult<StoredCapacityConfiguration> {
+        let transaction = self.begin()?;
+        let bound: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT operation, fingerprint FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![binding.key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let read_current = |transaction: &Transaction<'_>| {
+            let current: Option<RepositoryResult<StoredCapacityConfiguration>> = transaction
+                .query_row(
+                    "SELECT ceilings, ceilings_hash, revision, updated_at
+                     FROM capacity_configuration WHERE id = 1",
+                    [],
+                    |row| Ok(read_capacity_configuration(row)),
+                )
+                .optional()
+                .map_err(backend)?;
+            current.transpose()
+        };
+        match bound {
+            Some((operation, fingerprint))
+                if operation == binding.operation
+                    && fingerprint == binding.fingerprint.as_str() =>
+            {
+                return read_current(&transaction)?.ok_or(RepositoryError::NotFound {
+                    subject: "capacity configuration",
+                });
+            }
+            Some(_) => {
+                return Err(conflict(
+                    "idempotency key",
+                    "this key is already bound to a different operation",
+                ));
+            }
+            None => {}
+        }
+
+        let next = match read_current(&transaction)? {
+            Some(existing) => {
+                existing
+                    .revision
+                    .expect("capacity configuration", expected_revision)?;
+                existing.revision.next()?
+            }
+            None => {
+                AggregateRevision::INITIAL.expect("capacity configuration", expected_revision)?;
+                AggregateRevision::INITIAL
+            }
+        };
+        transaction
+            .execute(
+                "INSERT INTO realm_idempotency_bindings
+                     (idempotency_key, operation, fingerprint, bound_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    binding.key,
+                    binding.operation,
+                    binding.fingerprint.as_str(),
+                    text(binding.bound_at)
+                ],
+            )
+            .map_err(backend)?;
+        transaction
+            .execute(
+                "INSERT INTO capacity_configuration (id, ceilings, ceilings_hash, revision, updated_at)
+                 VALUES (1, ?1, ?2, ?3, ?4)
+                 ON CONFLICT (id) DO UPDATE SET
+                     ceilings = excluded.ceilings,
+                     ceilings_hash = excluded.ceilings_hash,
+                     revision = excluded.revision,
+                     updated_at = excluded.updated_at",
+                params![
+                    ceilings.json(),
+                    ceilings.hash().as_str(),
+                    revision_column(next)?,
+                    text(binding.bound_at),
+                ],
+            )
+            .map_err(backend)?;
+        let stored = read_current(&transaction)?.ok_or(RepositoryError::NotFound {
+            subject: "capacity configuration",
+        })?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Specification revisions
 // ---------------------------------------------------------------------------
 
@@ -1297,15 +3751,104 @@ const SEAT_ATTACH_GRACE: SignedDuration = SignedDuration::from_mins(10);
 /// stalled rather than working (OP-REQ-039c).
 const SEAT_MAX_IDLE: SignedDuration = SignedDuration::from_mins(30);
 
-/// One `agent_runs` row, as the seat-attachment read selects it.
-///
-/// Named because the tuple is five columns wide and `clippy::type_complexity`
-/// is right about it: the shape says nothing at the call site, and the alias
-/// costs one line.
+/// One `agent_runs` row exactly as [`read_seat_attachments`] selects it:
+/// lifecycle, observed state, last confirmed instant, creation and closure.
 type SeatAttachmentRow = (String, String, Option<String>, String, Option<String>);
 
-/// Conclude each seat of one team run from its persisted row.
+/// Conclude each seat of one team run from persisted OP-REQ-039 evidence.
+///
+/// The evidence lives on the logical [`SeatBinding`], and every input is read
+/// rather than derived: the deadline was fixed when the seat was created, the
+/// activity instant was written by an observed runtime event, and orphanhood
+/// comes from the owning epic seat's own Kontor lifecycle. Deriving any of the
+/// three at read time is what let a seat that never attached stay
+/// indistinguishable from one that was merely slow.
+///
+/// A team run with no seat bindings falls through to
+/// [`read_legacy_seat_attachments`]. That is the pre-OP-02 world — nothing
+/// creates seat bindings on the production path until the admission work in
+/// checkpoint 4 — and refusing to conclude anything there would remove the
+/// phantom-seat guard rather than improve it.
 fn read_seat_attachments(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    team_run_id: &str,
+    now: Timestamp,
+) -> RepositoryResult<Vec<SeatAttachment>> {
+    let mut statement = transaction
+        .prepare(&format!(
+            "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+             WHERE project_id = ?1 AND team_run_id = ?2 ORDER BY created_at, id"
+        ))
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![project_id.to_string(), team_run_id])
+        .map_err(backend)?;
+    let mut bindings = Vec::new();
+    while let Some(row) = rows.next().map_err(backend)? {
+        bindings.push(read_seat_binding(row)?);
+    }
+    drop(rows);
+    drop(statement);
+
+    if bindings.is_empty() {
+        return read_legacy_seat_attachments(transaction, project_id, team_run_id, now);
+    }
+    conclude_seat_attachments(transaction, project_id, &bindings, now)
+}
+
+/// Conclude a set of seats from their persisted evidence and their owners'.
+///
+/// The one place the OP-REQ-039 join lives, so the team-run reader above and the
+/// node-keyed read below cannot drift into two different answers about the same
+/// seat.
+fn conclude_seat_attachments(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    bindings: &[SeatBinding],
+    now: Timestamp,
+) -> RepositoryResult<Vec<SeatAttachment>> {
+    let mut attachments = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        // Orphanhood is a fact about the *owner*, so it is read from the owner's
+        // row. A seat with no parent is a root rather than an orphan.
+        let parent_closed = match binding.parent_seat_binding_id {
+            Some(parent_id) => transaction
+                .query_row(
+                    &format!(
+                        "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                         WHERE project_id = ?1 AND id = ?2"
+                    ),
+                    params![project_id.to_string(), parent_id.to_string()],
+                    |row| Ok(read_seat_binding(row)),
+                )
+                .optional()
+                .map_err(backend)?
+                .transpose()?
+                // A parent that is not there at all is gone, and a seat whose
+                // owner cannot be found is steered by nobody. Reading a missing
+                // owner as "still open" is the assumption that keeps orphans
+                // counted as capacity.
+                .is_none_or(|parent| parent.closes_children()),
+            None => false,
+        };
+        attachments.push(evaluate_seat_attachment(
+            &binding.attachment_observation(parent_closed),
+            now,
+            SEAT_MAX_IDLE,
+        ));
+    }
+    Ok(attachments)
+}
+
+/// Conclude each seat of one team run from its `agent_runs` row.
+///
+/// The pre-OP-02 path, kept only for team runs that have no seat bindings yet.
+/// Its three known weaknesses are exactly what OP-REQ-039 names: the deadline is
+/// derived from `created_at` at read time, a generic confirmation stands in for
+/// observed activity, and an orphan cannot be seen at all. Checkpoint 4 retires
+/// this function by giving every production seat a binding.
+fn read_legacy_seat_attachments(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
     team_run_id: &str,
@@ -1905,6 +4448,20 @@ impl WorkflowRepository for SqliteStore {
         let transition = TaskTransition {
             to: request.to,
             resume_receipt: request.resume_receipt,
+            // The authority *is* the receipt, so a reopen with no receipt cannot
+            // be assembled here — which is the check, rather than a second flag
+            // beside it.
+            reopen: match (request.reopen, request.resume_receipt) {
+                (true, Some(receipt)) => Some(TaskReopenAuthority::granted_by(receipt)),
+                (true, None) => {
+                    return Err(DomainError::MissingAuthority {
+                        subject: "task reopen",
+                        rule: "reopening a terminal task requires a command receipt",
+                    }
+                    .into());
+                }
+                (false, _) => None,
+            },
             run_outcome: request.run_outcome,
             closure: certificate.as_ref(),
             progress: progress.as_ref(),
@@ -2689,6 +5246,105 @@ impl RunRepository for SqliteStore {
 
     fn record_observation(&self, request: &NewObservation) -> RepositoryResult<RunProjection> {
         crate::events::append::record_observation(self, request)
+    }
+
+    fn record_abandon_receipt(
+        &self,
+        request: &NewAbandonReceipt,
+    ) -> RepositoryResult<CommandReceiptId> {
+        let transaction = self.begin()?;
+        // A repeat of the same decision cites the first receipt. The comparison
+        // is on what the receipt is *for*, so a key reused for a different run or
+        // a different document is refused rather than silently answered with an
+        // unrelated authorization.
+        let existing: Option<(String, String, String, String)> = transaction
+            .query_row(
+                "SELECT id, kind, target, intent_hash FROM command_receipts
+                 WHERE idempotency_key = ?1",
+                params![request.idempotency_key.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let target = request.target;
+        if let Some((id, kind, stored_target, intent_hash)) = existing {
+            let stored_target: AggregateRef = from_json(&stored_target)?;
+            if kind != CommandKind::AbandonRun.as_str()
+                || stored_target != target
+                || intent_hash != request.intent.hash().as_str()
+            {
+                return Err(DomainError::invalid(
+                    "CommandReceipt",
+                    "an idempotency key may not be reused for a different command",
+                )
+                .into());
+            }
+            return CommandReceiptId::parse(&id).map_err(Into::into);
+        }
+
+        // Born `confirmed`, not `intent_persisted`. Nothing is dispatched here:
+        // the closure is already committed in this same transaction, so there is
+        // no outbox entry and never will be. `intent_persisted` is the one state
+        // that authorizes a launch, and a restart's recovery scan reads it as
+        // "this was queued and never sent" — it then demands the outbox row that
+        // by design does not exist, and the whole startup inventory fails.
+        transaction
+            .execute(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                      intent_hash, state, attempts, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'confirmed', 0, ?9, ?9)",
+                params![
+                    request.receipt_id.to_string(),
+                    request.project_id.to_string(),
+                    request.idempotency_key.as_str(),
+                    CommandKind::AbandonRun.as_str(),
+                    to_json(&target)?,
+                    revision_column(request.target_revision)?,
+                    request.intent.json(),
+                    request.intent.hash().as_str(),
+                    text(request.recorded_at)
+                ],
+            )
+            .map_err(backend)?;
+        let (kind, columns) = target_columns(&target);
+        transaction
+            .execute(
+                "INSERT INTO command_targets
+                     (project_id, receipt_id, target_kind, target_project_id,
+                      target_mini_project_id, target_task_id, target_team_run_id,
+                      target_agent_run_id, target_ticket_link_id, target_work_calendar_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    request.project_id.to_string(),
+                    request.receipt_id.to_string(),
+                    kind,
+                    columns[0],
+                    columns[1],
+                    columns[2],
+                    columns[3],
+                    columns[4],
+                    columns[5],
+                    columns[6]
+                ],
+            )
+            .map_err(backend)?;
+        // The intent document is the evidence: it is what the decision was, and
+        // the transitions table refuses a confirmation that cites none.
+        let evidence = ExternalId::parse(request.intent.hash().as_str())?;
+        crate::commands::receipts::append_transition(
+            &transaction,
+            request.project_id,
+            request.receipt_id,
+            1,
+            kontor_core::receipt::CommandReceiptState::Confirmed,
+            None,
+            None,
+            Some(&evidence),
+            request.recorded_at,
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(request.receipt_id)
     }
 
     fn close_agent_run(&self, request: &RunClosure) -> RepositoryResult<()> {
