@@ -48,14 +48,15 @@ use async_trait::async_trait;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{
     AgentRunId, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId, Timestamp, TopologyNodeId,
+    RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::ModelRung;
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
-    LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
+    ConsultationLaunchOutcome, ConsultationLaunchRequest, LaunchOutcome, MessageAck, PermissionAck,
+    RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, ClaimedSeat, OccupiedSeat, RoleSlotKey,
@@ -755,6 +756,10 @@ struct PaseoState {
     /// inside it, so a ledger keyed by the run would make the second run of one
     /// ticket look like a new place to put things.
     containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
+    /// Consultation launches currently between exact-label census and readback.
+    /// The native census is the durable uniqueness proof; this closes the
+    /// in-process race while that proof is being established.
+    consultation_claims: BTreeSet<SeatBindingId>,
     bindings: IssuedBindingRegistry,
     admissions: AdmissionLedger,
     records: BTreeMap<RuntimeBindingId, PaseoSeatRecord>,
@@ -938,6 +943,7 @@ impl PaseoAdapter {
                 // this process kept. Seeding it from a checkpoint would hide
                 // the one path the restart fixture exists to exercise.
                 containers: BTreeMap::new(),
+                consultation_claims: BTreeSet::new(),
                 placements: checkpoint.placements.iter().cloned().collect(),
                 bindings: {
                     let mut registry = IssuedBindingRegistry::new();
@@ -2966,6 +2972,149 @@ impl PaseoAdapter {
             _ => Err(RuntimeError::CorrelationFailed),
         }
     }
+
+    fn consultation_labels(
+        &self,
+        request: &ConsultationLaunchRequest,
+        project: &PaseoProjectBinding,
+        workspace_id: &str,
+    ) -> BTreeMap<String, String> {
+        let scope = &self.config.scope;
+        [
+            (
+                label::CONSULTATION_RUN,
+                format!(
+                    "{}/{}",
+                    request.run_id.family().as_str(),
+                    request.run_id.as_text()
+                ),
+            ),
+            (label::JIRA_EPIC, scope.jira_epic_key.as_str().to_owned()),
+            (
+                label::PROJECT_ID,
+                project.mini_project_id.as_str().to_owned(),
+            ),
+            (label::SEAT_BINDING, request.seat_binding_id.to_string()),
+            (label::ROLE, request.role_slot_id.as_str().to_owned()),
+            (label::ROLE_SLOT, request.role_slot_id.as_str().to_owned()),
+            (label::WORKSPACE_ID, workspace_id.to_owned()),
+            (label::WORKTREE, request.cwd.as_str().to_owned()),
+            (
+                label::PARENT_AGENT,
+                scope.orchestrator_agent_id.as_str().to_owned(),
+            ),
+            (label::READ_ONLY, "true".to_owned()),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect()
+    }
+
+    async fn launch_consultation_inner(
+        &self,
+        request: &ConsultationLaunchRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        let declared = self.declared().await?;
+        let project = self.require_project()?;
+        let generation = self.generation();
+        let held = self
+            .fetch_project_agents(&project, false)
+            .await?
+            .into_iter()
+            .filter(|agent| !agent.is_archived())
+            .count();
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Launch,
+                autonomous: true,
+                account_pinned: false,
+                binding: None,
+                // The consultation container is verified against the adapter's
+                // own ledger immediately below; there is no fake TeamRun/Task
+                // pair with which to build a delivery PlacementClaim.
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::ConcurrentSessions(
+                    u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
+                )),
+                context_policy: Some(&request.context_policy),
+            },
+        )?;
+
+        request.container.ensure_correlated()?;
+        request.container.ensure_generation(generation)?;
+        request.container.ensure_root(&request.cwd)?;
+        let prepared = self
+            .lock()
+            .containers
+            .get(&request.container.topology_node_id())
+            .cloned()
+            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+        if prepared != request.container {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "this is not the consultation container this runtime prepared",
+            });
+        }
+        let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
+        let workspace = self.fetch_workspace(&workspace_id).await?;
+        self.verify_workspace_placement(&workspace, &project, &request.cwd)?;
+
+        let labels = self.consultation_labels(request, &project, &workspace_id);
+        let slot_labels = [(
+            label::SEAT_BINDING.to_owned(),
+            request.seat_binding_id.to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let census = self.fetch_agents(&slot_labels, false).await?;
+        let exact = census
+            .iter()
+            .filter(|agent| agent.matches_labels(&labels) && !agent.is_archived())
+            .collect::<Vec<_>>();
+        let (native_id, created) = match exact.as_slice() {
+            [agent] => (agent.id.clone(), false),
+            [] if census.iter().any(|agent| !agent.is_archived()) => {
+                return Err(RuntimeError::SlotAlreadyAdmitted {
+                    rule: "a live Paseo agent already carries this consultation seat binding",
+                });
+            }
+            [] => {
+                let command = PaseoCommand::consultation_run(
+                    &workspace_id,
+                    request.cwd.as_str(),
+                    &request.model_rung,
+                    request.display_name.as_str(),
+                    &labels,
+                    self.config.scope.orchestrator_agent_id.as_str(),
+                    request.prompt.as_str(),
+                )?;
+                let native_id = match self.transport.run(&command).await {
+                    Ok(output) => {
+                        output
+                            .parse::<PaseoCliAgentStarted>("PaseoCliAgentStarted")?
+                            .agent_id
+                    }
+                    Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
+                    Err(other) => return Err(other),
+                };
+                (native_id, true)
+            }
+            _ => return Err(RuntimeError::CorrelationFailed),
+        };
+        let agent = self.fetch_agent(&native_id).await?;
+        self.verify_agent_placement(&agent, &workspace_id, &labels)?;
+        Self::verify_agent_route(&agent, &request.model_rung)?;
+        Ok(ConsultationLaunchOutcome {
+            identity: self.identity(ExternalId::parse(&agent.id)?, generation),
+            provider_session_id: agent
+                .provider_session_id()
+                .map(ExternalId::parse)
+                .transpose()?,
+            observed_at: request.requested_at,
+            created,
+        })
+    }
 }
 
 #[async_trait]
@@ -3082,6 +3231,25 @@ impl RuntimeAdapter for PaseoAdapter {
     async fn prepare_plane(&self) -> RuntimeResult<()> {
         self.prepare_project(&self.plane_command_id()).await?;
         Ok(())
+    }
+
+    async fn launch_consultation(
+        &self,
+        request: &ConsultationLaunchRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        {
+            let state = &mut *self.lock();
+            if !state.consultation_claims.insert(request.seat_binding_id) {
+                return Err(RuntimeError::SlotAlreadyAdmitted {
+                    rule: "this consultation seat already has a launch in flight",
+                });
+            }
+        }
+        let outcome = self.launch_consultation_inner(request).await;
+        self.lock()
+            .consultation_claims
+            .remove(&request.seat_binding_id);
+        outcome
     }
 
     /// Admission is bookkeeping about seats: it starts nothing and reaches no

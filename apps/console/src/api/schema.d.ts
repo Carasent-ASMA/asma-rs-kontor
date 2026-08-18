@@ -2278,6 +2278,11 @@ export interface components {
              */
             expected_revision: number;
         };
+        /**
+         * @description What the caller did with one Advisor's evidence-only output.
+         * @enum {string}
+         */
+        AdviceDispositionDto: "accepted" | "partially_accepted" | "rejected" | "superseded";
         /** @description One Advisor consultation. */
         AdvisorRunDto: {
             /** @description The consultation. */
@@ -2290,8 +2295,12 @@ export interface components {
             realm_id: string;
             /** @description The receipt it was committed under. */
             receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The one Advisor seat. */
+            seats: components["schemas"]["ConsultationSeatDto"][];
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
+            /** @description Dedicated ASW node. */
+            topology_node_id: string;
         };
         /** @description The JSON body every refusal is reported with. */
         ApiErrorBody: {
@@ -2801,6 +2810,32 @@ export interface components {
             account_profile_ids?: string[];
         };
         /**
+         * @description The closeout receipts recorded so far.
+         *
+         *     Receipt ids and inventoried revisions, never caller booleans: `done` is a
+         *     conjunction over authoritative records, and a boolean would let a caller
+         *     assert one it does not hold.
+         */
+        CloseoutEvidenceDto: {
+            /** @description Archive receipt. */
+            archive_receipt: string;
+            /** @description Delivered module/service revisions, keyed by module/service name. */
+            delivered_versions: Record<string, never>;
+            /** @description Merge confirmation. */
+            merge_receipt: string;
+            /** @description Notification receipt. */
+            notification_receipt: string;
+            /** @description Release confirmation, or its typed not-applicable disposition. */
+            release_receipt: string;
+            /** @description Final summary receipt. */
+            summary_receipt: string;
+        };
+        /**
+         * @description One fixed closeout prerequisite.
+         * @enum {string}
+         */
+        CloseoutRequirementDto: "merge" | "release" | "version_inventory" | "summary" | "notification" | "archive";
+        /**
          * @description Server-owned help for one controlled code.
          *
          *     Keyed by `(category, code)`. Compatibility and retired codes stay present as
@@ -2853,15 +2888,30 @@ export interface components {
              * @description How many findings have been recorded so far.
              */
             findings_recorded: number;
+            outcome?: null | components["schemas"]["ConsultationVerdictDto"];
             /** @description The Realm it belongs to. */
             realm_id: string;
             /** @description The receipt it was committed under. */
             receipt: components["schemas"]["MutationReceiptDto"];
+            /**
+             * Format: int32
+             * @description One-based immutable round.
+             */
+            round: number;
+            /** @description Every template-declared seat in stable slot order. */
+            seats: components["schemas"]["ConsultationSeatDto"][];
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
             /** @description The pinned template it runs under. */
             template: components["schemas"]["ProfileRevisionDto"];
+            /** @description Dedicated CSW node. */
+            topology_node_id: string;
         };
+        /**
+         * @description One Committee aggregate verdict.
+         * @enum {string}
+         */
+        CommitteeVerdictDto: "pass" | "fail";
         /**
          * @description What a caller states when asking a seat to compact.
          *
@@ -2918,6 +2968,59 @@ export interface components {
             /** @description Why it was requested. */
             trigger: string;
         };
+        /** @description One typed reason completion cannot leave the phase it stands in. */
+        CompletionBlockerDto: {
+            /** @enum {string} */
+            blocker: "missing_ticket";
+            /** @description The ticket. */
+            task_id: string;
+        } | {
+            /** @enum {string} */
+            blocker: "missing_ticket_goal";
+            /** @description The missing goal key. */
+            goal: string;
+            /** @description The ticket. */
+            task_id: string;
+        } | {
+            /** @enum {string} */
+            blocker: "missing_ticket_evidence";
+            /** @description The missing evidence key. */
+            evidence: string;
+            /** @description The ticket. */
+            task_id: string;
+        } | {
+            /** @enum {string} */
+            blocker: "integration_team_run";
+        } | {
+            /** @enum {string} */
+            blocker: "committee_verdict";
+            /**
+             * Format: int32
+             * @description One-based round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            blocker: "remediation_authorization";
+            /**
+             * Format: int32
+             * @description One-based remediation round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            blocker: "remediation_result";
+            /**
+             * Format: int32
+             * @description One-based remediation round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            blocker: "closeout";
+            /** @description Which prerequisite. */
+            requirement: components["schemas"]["CloseoutRequirementDto"];
+        };
         /** @description What a completion write produced. */
         CompletionOutcomeDto: {
             /** @description The receipt it was committed under. */
@@ -2925,14 +3028,81 @@ export interface components {
             /** @description The completion state as it now stands. */
             state: components["schemas"]["CompletionStateDto"];
         };
+        /**
+         * @description Which phase one epic's completion stands in.
+         *
+         *     A typed union rather than a string, because the round is data a caller acts
+         *     on: deciding whether a second Committee round is still permitted means
+         *     reading the round, and a caller that had to parse `"verdict round 2"` out of
+         *     a phrase would be re-implementing the state machine to do it.
+         */
+        CompletionPhaseDto: {
+            /** @enum {string} */
+            phase: "ticket_gate";
+        } | {
+            /** @enum {string} */
+            phase: "integration";
+        } | {
+            /** @enum {string} */
+            phase: "verdict";
+            /**
+             * Format: int32
+             * @description One-based round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            phase: "awaiting_lsa";
+            /**
+             * Format: int32
+             * @description The failed round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            phase: "remediation";
+            /**
+             * Format: int32
+             * @description One-based remediation round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            phase: "closeout";
+        } | {
+            /** @enum {string} */
+            phase: "done";
+        } | {
+            /** @enum {string} */
+            phase: "needs_human";
+        };
+        /** @description One immutable Committee round in the epic's lineage. */
+        CompletionRoundDto: {
+            /** @description The roles and consultations that produced it. */
+            deliberation: components["schemas"]["DeliberationStepDto"][];
+            /** @description The immutable finding/evidence digest. */
+            evidence: string;
+            /**
+             * Format: int32
+             * @description One-based round.
+             */
+            round: number;
+            /** @description The typed aggregate verdict. */
+            verdict: components["schemas"]["CommitteeVerdictDto"];
+        };
         /** @description One epic's completion state. */
         CompletionStateDto: {
+            /** @description What is still blocking that phase, in a stable order. */
+            blockers: components["schemas"]["CompletionBlockerDto"][];
+            /** @description The closeout receipts recorded so far. */
+            closeout: components["schemas"]["CloseoutEvidenceDto"];
             /** @description The epic. */
             epic_id: string;
-            /** @description What is still outstanding, in a stable order. */
-            outstanding: string[];
+            /** @description Initial and remediation integration results, oldest first. */
+            integrations: components["schemas"]["IntegrationRecordDto"][];
+            needs_human?: null | components["schemas"]["NeedsHumanDto"];
             /** @description Which phase it currently stands in. */
-            phase: string;
+            phase: components["schemas"]["CompletionPhaseDto"];
             /** @description The pinned completion profile it is judged against. */
             profile: components["schemas"]["ProfileRevisionDto"];
             /** @description The Realm it was read in. */
@@ -2942,11 +3112,31 @@ export interface components {
              * @description The revision a write must present.
              */
             revision: number;
+            /** @description The immutable Committee round lineage, oldest first. */
+            rounds: components["schemas"]["CompletionRoundDto"][];
             /**
              * Format: int64
              * @description The position this read is consistent with.
              */
             snapshot_cursor: number;
+            /** @description The wake intents this completion has appended, oldest first. */
+            wakes: components["schemas"]["CompletionWakeDto"][];
+        };
+        /** @description One recorded intent to wake the epic's existing TPM seat. */
+        CompletionWakeDto: {
+            /** @description Whether the runtime has acknowledged the turn. */
+            acknowledged: boolean;
+            /**
+             * Format: int64
+             * @description The completion revision this wake reports.
+             */
+            completion_revision: number;
+            /** @description Why the seat is being woken. */
+            reason: string;
+            /** @description The receipt the wake was recorded under. */
+            receipt: string;
+            /** @description The existing seat woken. Never a seat the wake created. */
+            seat_binding_id: string;
         };
         /**
          * @description One connector specification revision this build can serve.
@@ -2978,6 +3168,21 @@ export interface components {
              */
             version: number;
         };
+        /** @description One declared consultation seat and its exact runtime readback. */
+        ConsultationSeatDto: {
+            /** @description Logical role under the pinned policy. */
+            logical_role: string;
+            observed_binding?: null | components["schemas"]["ObservedBindingDto"];
+            /** @description Stable profile/template slot. */
+            role_slot_id: string;
+            /** @description Exact persistent SeatBinding. */
+            seat_binding_id: string;
+        };
+        /**
+         * @description The closed Committee verdict vocabulary.
+         * @enum {string}
+         */
+        ConsultationVerdictDto: "compliant" | "non_compliant";
         /**
          * @description What one bound container's title is, and what it should be.
          *
@@ -3207,6 +3412,20 @@ export interface components {
             presence: string;
             /** @description The role this seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
+        };
+        /** @description One durable step in the deliberation path already tried. */
+        DeliberationStepDto: {
+            /** @description The consultation or recovery mechanism used. */
+            consultation: string;
+            /** @description Its outcome. */
+            outcome: string;
+            /** @description The role(s) that acted. */
+            role: string;
+            /**
+             * Format: int32
+             * @description The completion/remediation round.
+             */
+            round: number;
         };
         /**
          * @description The native shape the server derived for one node.
@@ -3570,6 +3789,13 @@ export interface components {
             /** @description The trigger that decided, at the revision it decided under. */
             trigger: components["schemas"]["RevisionRefDto"];
         };
+        /** @description One durable integration result, initial or remediation. */
+        IntegrationRecordDto: {
+            /** @description Receipt for the integration TeamRun/result. */
+            receipt: string;
+            /** @description Per-repository results, in a stable order. */
+            repositories: components["schemas"]["RepositoryOutcomeDto"][];
+        };
         /**
          * @description Invoke one consultation against an epic.
          *
@@ -3578,6 +3804,8 @@ export interface components {
          *     is the realm's routing decision, not the caller's.
          */
         InvokeConsultationRequest: {
+            /** @description Exact active epic seat whose role is authorized by the pinned policy. */
+            caller_seat_binding_id: string;
             /**
              * Format: int64
              * @description The epic revision the caller believes is current.
@@ -3587,6 +3815,11 @@ export interface components {
             profile: components["schemas"]["RevisionRefDto"];
             /** @description What is being asked. */
             question: string;
+            /**
+             * @description Optional ticket scope. It must belong to the epic in the route; absent
+             *     means the epic as a whole.
+             */
+            task_id?: string | null;
         };
         /** @description One immutable late-handoff disposition recorded after runtime cancellation. */
         LateHandoffAttestationDto: {
@@ -3736,6 +3969,19 @@ export interface components {
              * @description The control-plane position the answer is consistent with.
              */
             snapshot_cursor: number;
+        };
+        /**
+         * @description The mandatory context a `needs_human` completion carries.
+         *
+         *     Both fields are required by construction. A stalling path that could enter
+         *     human attention without them would be handing an operator a request with no
+         *     recommendation and no record of what had already been tried.
+         */
+        NeedsHumanDto: {
+            /** @description The concrete recommended resolution. */
+            recommended_resolution: string;
+            /** @description Every role, consultation, failed round and remediation already used. */
+            tried_deliberation_path: components["schemas"]["DeliberationStepDto"][];
         };
         /**
          * @description What a runtime actually reported for one node, at one instant.
@@ -4250,13 +4496,26 @@ export interface components {
         };
         /** @description Record one round of Committee findings. */
         RecordFindingsRequest: {
+            /** @description Whether every evidence reference required by the finding is present. */
+            evidence_complete: boolean;
+            /** @description References to already-authoritative evidence; no payload upload. */
+            evidence_refs?: string[];
             /**
              * Format: int64
              * @description The run revision the caller believes is current.
              */
             expected_revision: number;
-            /** @description The findings document. */
-            findings: Record<string, never>;
+            /** @description Bounded explanation. */
+            rationale: string;
+            /**
+             * Format: int32
+             * @description One-based round.
+             */
+            round: number;
+            /** @description Exact consultation SeatBinding submitting its own slot's evidence. */
+            seat_binding_id: string;
+            /** @description Typed reviewer/Judge conclusion. */
+            verdict: components["schemas"]["ConsultationVerdictDto"];
         };
         /** @description What `gates/{gate_id}:record` is asked for. */
         RecordGateRequest: {
@@ -4312,15 +4571,51 @@ export interface components {
             /** @description The pack document. Validated in full before anything is stored. */
             pack: Record<string, never>;
         };
-        /** @description Send one epic's completion back for remediation. */
+        /** @description Record one epic's remediation authority. */
         RemediateCompletionRequest: {
+            /** @description Which authority is acting, and over what. */
+            action: components["schemas"]["RemediationActionDto"];
             /**
              * Format: int64
              * @description The completion revision the caller believes is current.
              */
             expected_revision: number;
-            /** @description Why. Recorded, never interpreted. */
-            reason: string;
+        };
+        /**
+         * @description One of the two remediation authorities, as a closed tagged action.
+         *
+         *     Remediation takes two distinct seats acting in order, so the request names
+         *     which one is acting rather than carrying a free-text reason. A single
+         *     untyped `reason` could not express the rule the pinned policy enforces: the
+         *     LSA proposes the bounded correction and the TPM routes it, and neither
+         *     receipt alone may launch a round.
+         */
+        RemediationActionDto: {
+            /** @enum {string} */
+            action: "lsa_proposal";
+            /**
+             * @description The immutable evidence digest of that failed round, as the proposer
+             *     read it. A proposal naming another round's evidence is refused rather
+             *     than applied to the round it happens to be filed against.
+             */
+            failed_round_evidence: string;
+            /** @description The digest of the proposed bounded correction. */
+            proposal: string;
+            /**
+             * Format: int32
+             * @description The failed round being answered.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            action: "tpm_route";
+            /**
+             * Format: int32
+             * @description The remediation round being routed.
+             */
+            round: number;
+            /** @description The digest of the routed task set, dependencies and team selections. */
+            route: string;
         };
         /** @description What the Admin-only unusable-seat replacement is asked for. */
         ReplaceSeatRequest: {
@@ -4357,6 +4652,23 @@ export interface components {
             task_id: string;
             /** @description The preserved team run. */
             team_run_id: string;
+        };
+        /**
+         * @description One repository's integration outcome.
+         *
+         *     Polyrepo integration is a collection of these plus the root pointer where one
+         *     applies. Completion never assumes one repository, one branch or one commit,
+         *     so there is no single-revision field for it to assume into.
+         */
+        RepositoryOutcomeDto: {
+            /** @description Delivered module revision. */
+            module_revision: string;
+            /** @description Pull-request or equivalent integration reference. */
+            pull_request: string;
+            /** @description Repository/module name. */
+            repository: string;
+            /** @description Root-pointer revision when this module has one. */
+            root_pointer_revision: string;
         };
         /** @description What `ticket:resolve-conflict` is asked for. */
         ResolveConflictRequest: {
@@ -4834,11 +5146,23 @@ export interface components {
         };
         /** @description Settle one consultation. */
         SettleConsultationRequest: {
+            disposition?: null | components["schemas"]["AdviceDispositionDto"];
             /**
              * Format: int64
              * @description The run revision the caller believes is current.
              */
             expected_revision: number;
+            /** @description Immutable Advisor output. Required only on the Advisor route. */
+            output?: string | null;
+            /** @description Bounded disposition rationale. */
+            rationale?: string | null;
+            /** @description Separately-authorized command receipts cited by the disposition. */
+            receipt_ids?: string[];
+            /**
+             * @description Exact seat recording Advisor output/disposition. Absent for Committee
+             *     settlement, whose evidence is already keyed by finding SeatBindings.
+             */
+            seat_binding_id?: string | null;
         };
         /**
          * @description What `turns:settle` is asked for.

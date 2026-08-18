@@ -3167,6 +3167,7 @@ dependencies = [
  "kontor-core",
  "kontor-integrations-asma",
  "kontor-mcp",
+ "kontor-policy",
  "kontor-profiles",
  "kontor-runtime",
  "kontor-runtime-paseo",

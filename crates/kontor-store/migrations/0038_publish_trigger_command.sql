@@ -1,5 +1,6 @@
 -- ===========================================================================
--- Schema v35. One command kind for installing a trigger revision.
+-- Schema v38. One command kind for installing a trigger revision and the
+-- converged command-kind set from both schema lineages.
 --
 -- Same reasoning and same mechanism as v8 and v12: `command_receipts.kind` is a
 -- closed `CHECK` list and SQLite cannot alter a `CHECK` in place, so the table is
@@ -21,7 +22,7 @@
 -- original 0024 (replace_seat through upgrade_epic_roster) plus publish_trigger.
 -- ===========================================================================
 
-CREATE TABLE command_receipts_v35 (
+CREATE TABLE command_receipts_v38 (
     id               TEXT    NOT NULL PRIMARY KEY
                              CHECK (length(id) = 36 AND id NOT GLOB '*[^0-9a-f-]*'),
     project_id       TEXT    NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
@@ -47,7 +48,12 @@ CREATE TABLE command_receipts_v35 (
                                  'retitle_container',
                                  'apply_core_team', 'ensure_quick_session',
                                  'promote_quick_session', 'materialize_core_team',
-                                 'upgrade_epic_roster', 'publish_trigger')),
+                                 'upgrade_epic_roster', 'apply_advisor_profile',
+                                 'apply_committee_template', 'apply_completion_profile',
+                                 'advance_completion', 'remediate_completion',
+                                 'invoke_advisor_run', 'settle_advisor_run',
+                                 'invoke_committee_run', 'record_committee_findings',
+                                 'settle_committee_run', 'publish_trigger')),
     target           TEXT    NOT NULL CHECK (json_valid(target)),
     target_revision  INTEGER NOT NULL CHECK (target_revision >= 1),
     intent           TEXT    NOT NULL CHECK (json_valid(intent)),
@@ -67,15 +73,30 @@ CREATE TABLE command_receipts_v35 (
     UNIQUE (project_id, id)
 ) STRICT;
 
-INSERT INTO command_receipts_v35
+INSERT INTO command_receipts_v38
 SELECT id, project_id, idempotency_key, kind, target, target_revision, intent,
        intent_hash, state, correlation, native_identity, result_ref, attempts,
        created_at, updated_at
 FROM command_receipts;
 
 DROP TABLE command_receipts;
-ALTER TABLE command_receipts_v35 RENAME TO command_receipts;
+ALTER TABLE command_receipts_v38 RENAME TO command_receipts;
 
 CREATE INDEX ix_command_receipts_state ON command_receipts (project_id, state);
 
-PRAGMA user_version = 35;
+-- Rebuilding a table drops its table-scoped triggers. Restore the two receipt
+-- invariants after the final rebuild in this convergence chain.
+CREATE TRIGGER command_receipts_identity_immutable BEFORE UPDATE ON command_receipts
+WHEN OLD.idempotency_key <> NEW.idempotency_key
+     OR OLD.target <> NEW.target
+     OR OLD.intent <> NEW.intent
+     OR OLD.intent_hash <> NEW.intent_hash
+     OR OLD.kind <> NEW.kind
+     OR OLD.project_id <> NEW.project_id
+     OR OLD.state IN ('confirmed', 'failed')
+BEGIN SELECT RAISE(ABORT, 'a command receipt identity is immutable'); END;
+
+CREATE TRIGGER command_receipts_no_delete BEFORE DELETE ON command_receipts
+BEGIN SELECT RAISE(ABORT, 'command receipts are not deletable'); END;
+
+PRAGMA user_version = 38;

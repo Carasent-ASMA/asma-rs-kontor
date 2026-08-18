@@ -678,6 +678,10 @@
       {
         "role": "reviewer",
         "role_code": "AUD"
+      },
+      {
+        "role": "advisor",
+        "role_code": "SA"
       }
     ]
   }

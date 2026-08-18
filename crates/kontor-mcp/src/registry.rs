@@ -3252,6 +3252,18 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "What is being asked.",
             ),
             req(
+                "caller_seat_binding_id",
+                Place::Body,
+                ArgType::SeatBindingId,
+                "The exact active epic seat invoking the consultation.",
+            ),
+            opt(
+                "task_id",
+                Place::Body,
+                ArgType::TaskId,
+                "An optional ticket in the addressed epic.",
+            ),
+            req(
                 "expected_revision",
                 Place::Body,
                 ArgType::Revision,
@@ -3280,6 +3292,36 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The consultation.",
             ),
             IDEMPOTENCY,
+            opt(
+                "seat_binding_id",
+                Place::Body,
+                ArgType::SeatBindingId,
+                "The exact Advisor seat recording its output.",
+            ),
+            opt(
+                "output",
+                Place::Body,
+                ArgType::Text,
+                "The immutable Advisor output.",
+            ),
+            opt(
+                "disposition",
+                Place::Body,
+                ArgType::Enum(&["accepted", "partially_accepted", "rejected", "superseded"]),
+                "What the authorized caller decided about the advice.",
+            ),
+            opt(
+                "rationale",
+                Place::Body,
+                ArgType::Text,
+                "The disposition rationale.",
+            ),
+            opt(
+                "receipt_ids",
+                Place::Body,
+                ArgType::TextArray,
+                "Separately-authorized receipts cited by the disposition.",
+            ),
             req(
                 "expected_revision",
                 Place::Body,
@@ -3388,6 +3430,18 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "What is being asked.",
             ),
             req(
+                "caller_seat_binding_id",
+                Place::Body,
+                ArgType::SeatBindingId,
+                "The exact active epic seat invoking the consultation.",
+            ),
+            opt(
+                "task_id",
+                Place::Body,
+                ArgType::TaskId,
+                "An optional ticket in the addressed epic.",
+            ),
+            req(
                 "expected_revision",
                 Place::Body,
                 ArgType::Revision,
@@ -3417,10 +3471,35 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
             IDEMPOTENCY,
             req(
-                "findings",
+                "seat_binding_id",
                 Place::Body,
-                ArgType::Json,
-                "The findings document.",
+                ArgType::SeatBindingId,
+                "The exact Committee seat submitting its own finding.",
+            ),
+            req("round", Place::Body, ArgType::U32, "The one-based round."),
+            req(
+                "verdict",
+                Place::Body,
+                ArgType::Enum(&["compliant", "non_compliant"]),
+                "The typed reviewer or Judge conclusion.",
+            ),
+            req(
+                "evidence_complete",
+                Place::Body,
+                ArgType::Bool,
+                "Whether every required evidence reference is present.",
+            ),
+            req(
+                "rationale",
+                Place::Body,
+                ArgType::Text,
+                "The bounded finding rationale.",
+            ),
+            opt(
+                "evidence_refs",
+                Place::Body,
+                ArgType::TextArray,
+                "References to already-authoritative evidence.",
             ),
             req(
                 "expected_revision",
@@ -3451,6 +3530,36 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The consultation.",
             ),
             IDEMPOTENCY,
+            opt(
+                "seat_binding_id",
+                Place::Body,
+                ArgType::SeatBindingId,
+                "Advisor-only; Committee settlement refuses it.",
+            ),
+            opt(
+                "output",
+                Place::Body,
+                ArgType::Text,
+                "Advisor-only; Committee settlement refuses it.",
+            ),
+            opt(
+                "disposition",
+                Place::Body,
+                ArgType::Enum(&["accepted", "partially_accepted", "rejected", "superseded"]),
+                "Advisor-only; Committee settlement refuses it.",
+            ),
+            opt(
+                "rationale",
+                Place::Body,
+                ArgType::Text,
+                "Advisor-only; Committee settlement refuses it.",
+            ),
+            opt(
+                "receipt_ids",
+                Place::Body,
+                ArgType::TextArray,
+                "Advisor-only; Committee settlement refuses it.",
+            ),
             req(
                 "expected_revision",
                 Place::Body,
@@ -3546,7 +3655,7 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
             req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
         ],
-        about: "One epic's completion state and what is still outstanding.",
+        about: "One epic's completion state and what is still blocking it.",
     },
     ToolSpec {
         name: "kontor_completion_advance",
@@ -3594,13 +3703,15 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The revision the caller read.",
             ),
             req(
-                "reason",
+                "action",
                 Place::Body,
-                ArgType::ExternalName,
-                "Why. Recorded, never interpreted.",
+                ArgType::Json,
+                "Which remediation authority is acting: an `lsa_proposal` naming the \
+                 failed round, its evidence and the bounded correction, or a `tpm_route` \
+                 naming the round and the routed task set.",
             ),
         ],
-        about: "Send one epic's completion back for remediation.",
+        about: "Record one epic's LSA remediation proposal or TPM next-round route.",
     },
 ];
 

@@ -1,4 +1,4 @@
--- OP-REQ-036: an escalation reaches a human with a recommended resolution, its
+-- Schema v37. OP-REQ-036: an escalation reaches a human with a recommended resolution, its
 -- author, and the deliberation path already walked.
 --
 -- The three columns are nullable because every episode that has not escalated
@@ -40,4 +40,4 @@ BEGIN
     SELECT RAISE(ABORT, 'an escalation to a human states a recommendation, its author and the path already tried');
 END;
 
-PRAGMA user_version = 34;
+PRAGMA user_version = 37;

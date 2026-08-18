@@ -41,8 +41,20 @@ const EXPECTED_TABLES: &[&str] = &[
     "command_receipts",
     "command_targets",
     "compaction_receipts",
+    "consultation_profile_revisions",
+    // Schema v36 (KON-OP-05): frozen consultation execution, exact native
+    // seat bindings, and immutable Committee findings.
+    "consultation_runs",
+    "consultation_seats",
+    "committee_findings",
     "context_packs",
     "core_team_revisions",
+    // Schema v32 (KON-OP-06): published Completion Profile revisions, one durable
+    // completion run per epic, and the TPM wake outbox.
+    "completion_profile_revisions",
+    "epic_completion",
+    "epic_completion_remediation_proposals",
+    "epic_completion_wakes",
     "epic_rosters",
     "execution_authorization_revocations",
     "execution_authorization_tasks",
@@ -261,6 +273,21 @@ fn raw(directory: &TempDir) -> Connection {
     connection
 }
 
+fn migrate_through_v33(connection: &Connection) {
+    for migration in MIGRATIONS_THROUGH_V24
+        .iter()
+        .chain(OP03_MIGRATIONS_V25_THROUGH_V31)
+        .chain(&[
+            include_str!("../migrations/0032_core_team_revisions.sql"),
+            include_str!("../migrations/0033_quick_sessions_and_promotion.sql"),
+        ])
+    {
+        connection
+            .execute_batch(migration)
+            .expect("the canonical migrations through v33 run");
+    }
+}
+
 fn table_names(connection: &Connection) -> BTreeSet<String> {
     let mut statement = connection
         .prepare(
@@ -286,7 +313,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 35);
+    assert_eq!(SCHEMA_VERSION, 38);
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.
@@ -382,6 +409,152 @@ fn the_deployed_op03_v31_lineage_converges_without_losing_its_receipts() {
             .expect("the catalogue is readable");
         assert_eq!(exists, 1, "the OP-04 table `{table}` was not added");
     }
+}
+
+/// Master and the operational-recovery branch both shipped schema v35 with
+/// different objects. This constructs master's durable shape -- escalation
+/// brief plus a `publish_trigger` receipt, but no consultation tables -- and
+/// proves the merge recognizes shape rather than trusting the colliding number.
+#[test]
+fn the_operational_hardening_v35_lineage_converges_without_losing_its_receipt() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000f1";
+    const PROJECT: &str = "0193f000-0000-7000-8000-0000000000f2";
+    const RECEIPT: &str = "0193f000-0000-7000-8000-0000000000f3";
+    const HASH: &str = "a9d5f6d002d956b8af5787a05e0ca000d45c03977ffa54ee8fbed719fed5fd23";
+
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        migrate_through_v33(&connection);
+        connection
+            .execute_batch(include_str!("../migrations/0037_escalation_brief.sql"))
+            .expect("the historical escalation migration runs");
+        connection
+            .execute_batch(include_str!(
+                "../migrations/0038_publish_trigger_command.sql"
+            ))
+            .expect("the historical publish-trigger receipt shape is built");
+        connection
+            .execute_batch("PRAGMA user_version = 35;")
+            .expect("the historical lineage carries its shipped version");
+        connection
+            .execute(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, ?1, 1, '2026-08-18T06:00:00Z', NULL)",
+                [REALM],
+            )
+            .expect("the Realm identity is written");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, root_path, revision, created_at)
+                 VALUES (?1, 'P', '/tmp/hardening-v35', 1, '2026-08-18T06:00:00Z')",
+                [PROJECT],
+            )
+            .expect("the project is written");
+        connection
+            .execute(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision,
+                      intent, intent_hash, state, attempts, created_at, updated_at)
+                 VALUES (?1, ?2, 'historical-publish-trigger', 'publish_trigger',
+                         json_object('kind', 'project', 'project_id', ?2), 1,
+                         json_object('schema_version', 1), ?3, 'intent_persisted', 0,
+                         '2026-08-18T06:00:00Z', '2026-08-18T06:00:00Z')",
+                rusqlite::params![RECEIPT, PROJECT, HASH],
+            )
+            .expect("the historical publish-trigger receipt is written");
+    }
+
+    let store = SqliteStore::open(&path).expect("the operational-hardening lineage converges");
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
+    assert_eq!(store.realm_id().to_string(), REALM);
+    store
+        .foreign_key_check()
+        .expect("the receipt survives with sound references");
+
+    let project = ProjectId::parse(PROJECT).expect("a project id");
+    let receipt = kontor_core::id::CommandReceiptId::parse(RECEIPT).expect("a receipt id");
+    let kept = store
+        .get_receipt(project, receipt)
+        .expect("the historical receipt decodes")
+        .expect("the historical receipt survives");
+    assert_eq!(kept.kind, kontor_core::receipt::CommandKind::PublishTrigger);
+
+    let connection = raw(&directory);
+    for table in [
+        "consultation_profile_revisions",
+        "completion_profile_revisions",
+        "consultation_runs",
+    ] {
+        let exists: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .expect("the catalogue is readable");
+        assert_eq!(exists, 1, "the converged table `{table}` is missing");
+    }
+    let receipt_triggers: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema
+             WHERE type = 'trigger' AND name LIKE 'command_receipts_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the trigger catalogue is readable");
+    assert_eq!(
+        receipt_triggers, 2,
+        "the final rebuild restores both invariants"
+    );
+}
+
+/// The currently deployed recovery daemon is schema v36. Its normal append-only
+/// path must add the operational-hardening objects and keep its Realm identity.
+#[test]
+fn the_deployed_consultation_v36_lineage_upgrades_forward() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000f4";
+
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        migrate_through_v33(&connection);
+        for migration in [
+            include_str!("../migrations/0034_consultation_profiles.sql"),
+            include_str!("../migrations/0035_epic_completion.sql"),
+            include_str!("../migrations/0036_consultation_runs.sql"),
+        ] {
+            connection
+                .execute_batch(migration)
+                .expect("the deployed consultation lineage runs");
+        }
+        connection
+            .execute(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, ?1, 1, '2026-08-18T06:00:00Z', NULL)",
+                [REALM],
+            )
+            .expect("the deployed Realm identity is written");
+    }
+
+    let store = SqliteStore::open(&path).expect("the deployed v36 lineage upgrades");
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
+    assert_eq!(store.realm_id().to_string(), REALM);
+    let connection = raw(&directory);
+    let escalation_columns: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('recovery_episodes')
+             WHERE name IN ('escalation_recommendation',
+                            'escalation_recommended_by', 'deliberation_path_json')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the recovery shape is readable");
+    assert_eq!(escalation_columns, 3);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it

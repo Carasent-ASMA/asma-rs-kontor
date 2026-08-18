@@ -227,12 +227,64 @@ impl PaseoCommand {
         parent_agent_id: &str,
         prompt: &str,
     ) -> RuntimeResult<Self> {
+        Self::agent_run_with_mode(
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            title,
+            labels,
+            parent_agent_id,
+            prompt,
+            Some(paseo_mode(autonomy)),
+        )
+    }
+
+    /// Start a consultation in the provider's non-mutating review/plan mode.
+    pub fn consultation_run(
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        parent_agent_id: &str,
+        prompt: &str,
+    ) -> RuntimeResult<Self> {
+        let mode = match model_rung.provider.0.as_str() {
+            "claude" | "cursor" => Some("plan"),
+            "codex" => Some("auto-review"),
+            provider => permission_mode(provider)?,
+        };
+        Self::agent_run_with_mode(
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            title,
+            labels,
+            parent_agent_id,
+            prompt,
+            mode,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn agent_run_with_mode(
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        parent_agent_id: &str,
+        prompt: &str,
+        permission_mode: Option<&str>,
+    ) -> RuntimeResult<Self> {
         let mut argv = Argv::new(&["agent", "run", "--background"])
             .option("--workspace", workspace_id)
             .option("--cwd", canonical_cwd)
             .option("--provider", &model_rung.provider.0)
-            .option("--model", &model_rung.model.0)
-            .option("--mode", paseo_mode(autonomy));
+            .option("--model", &model_rung.model.0);
+        if let Some(permission_mode) = permission_mode {
+            argv = argv.option("--mode", permission_mode);
+        }
         if let Some(effort) = model_rung.effort {
             argv = argv.option("--thinking", effort.as_str());
         }

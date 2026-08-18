@@ -13,13 +13,16 @@
 use kontor_core::DomainResult;
 
 use crate::pack::{
-    OperationalDomainPack, ProfilePackSpec, parse_operational_domain_pack, parse_pack_with_teams,
+    ConsultationPresetPack, OperationalDomainPack, ProfilePackSpec, parse_consultation_presets,
+    parse_operational_domain_pack, parse_pack_with_teams,
 };
 
 /// The profiles, manifest and personas this build ships, as data.
 const BUNDLED_PACK: &str = include_str!("../fixtures/mvp-profile-pack.json");
 /// The Operational topology and standard-role catalog this build ships.
 const OPERATIONAL_DOMAIN: &str = include_str!("../fixtures/operational-domain.json");
+/// The consultation presets this build ships.
+const CONSULTATION_PRESETS: &str = include_str!("../fixtures/consultation-presets.json");
 
 /// The pack bundled with this build.
 ///
@@ -42,4 +45,17 @@ pub fn bundled_pack() -> DomainResult<ProfilePackSpec> {
 /// or validate.
 pub fn bundled_operational_domain() -> DomainResult<OperationalDomainPack> {
     parse_operational_domain_pack(OPERATIONAL_DOMAIN)
+}
+
+/// The consultation presets bundled with this build.
+///
+/// Publishing one is still an Admin apply against a project: this is the data a
+/// deployment may publish, not a catalog that exists without anybody having
+/// published it.
+///
+/// # Errors
+/// Returns [`kontor_core::DomainError`] when the checked-in data does not parse
+/// or validate.
+pub fn bundled_consultation_presets() -> DomainResult<ConsultationPresetPack> {
+    parse_consultation_presets(CONSULTATION_PRESETS)
 }
