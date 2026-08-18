@@ -18,7 +18,9 @@ use crate::calendar::{
     HolidayImportBatch, HolidaySourceRevision, OverrideRevocation, ScheduleOverride,
     WorkCalendarAssignment, WorkScope,
 };
-use crate::consultation::ConsultationFamily;
+use crate::consultation::{
+    CommitteeRole, CommitteeVerdict, ConsultationFamily, ConsultationRunId, ConsultationRunState,
+};
 use crate::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
     CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ConnectorKey,
@@ -233,6 +235,105 @@ pub struct StoredConsultationProfileRevision {
     pub definition_hash: ContentHash,
     /// Publication instant.
     pub published_at: Timestamp,
+}
+
+/// One repository-backed Advisor or Committee invocation.
+///
+/// The exact policy revision, question, context document and topology id are
+/// frozen before the first runtime effect. `result` is absent until settlement
+/// and, once present, is immutable by repository rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredConsultationRun {
+    /// Family-qualified run identity.
+    pub id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic the consultation belongs to.
+    pub mini_project_id: MiniProjectId,
+    /// Exact published profile/template identity.
+    pub profile_id: String,
+    /// Exact published profile/template version.
+    pub profile_version: SpecVersion,
+    /// Digest of the pinned definition.
+    pub definition_hash: ContentHash,
+    /// Bounded question asked at invocation.
+    pub question: BoundedText,
+    /// Digest of the question bytes.
+    pub question_hash: ContentHash,
+    /// Canonical frozen input and provenance.
+    pub context: serde_json::Value,
+    /// Digest of the canonical context document.
+    pub context_hash: ContentHash,
+    /// Exact caller seat whose role was authorized by the pinned definition.
+    pub caller_seat_binding_id: SeatBindingId,
+    /// Dedicated ASW/CSW node, stable across retries and restarts.
+    pub topology_node_id: TopologyNodeId,
+    /// Invocation idempotency key, persisted before native effects.
+    pub invoke_key: IdempotencyKey,
+    /// Canonical invocation intent digest bound to that key.
+    pub invoke_intent_hash: ContentHash,
+    /// Current lifecycle.
+    pub state: ConsultationRunState,
+    /// One-based Committee round; Advisors remain on round one.
+    pub round: u32,
+    /// Immutable family-specific result after settlement.
+    pub result: Option<serde_json::Value>,
+    /// Digest of `result`, when settled.
+    pub result_hash: Option<ContentHash>,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+    /// Last durable change.
+    pub updated_at: Timestamp,
+    /// Settlement instant.
+    pub settled_at: Option<Timestamp>,
+}
+
+/// One template-declared native consultation seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredConsultationSeat {
+    /// Owning consultation.
+    pub run_id: ConsultationRunId,
+    /// Stable template slot.
+    pub role_slot_id: RoleSlotId,
+    /// Committee function. Advisors have no Committee role.
+    pub committee_role: Option<CommitteeRole>,
+    /// Logical role used for policy and display.
+    pub logical_role: RoleKey,
+    /// Exact persistent topology seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact selected provider/model/effort rung.
+    pub model_rung: crate::spec::ModelRung,
+    /// Runtime readback after launch/recovery.
+    pub native_identity: Option<NativeRuntimeIdentity>,
+    /// Provider-native conversation id, when the runtime exposes one.
+    pub provider_session_id: Option<ExternalId>,
+    /// When the native identity was last read back.
+    pub observed_at: Option<Timestamp>,
+}
+
+/// One immutable Committee finding or Judge aggregate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCommitteeFinding {
+    /// Owning Committee.
+    pub committee_run_id: crate::id::CommitteeRunId,
+    /// One-based round.
+    pub round: u32,
+    /// Exact template slot that submitted it.
+    pub role_slot_id: RoleSlotId,
+    /// Whether this is an independent finding or the Judge aggregate.
+    pub role: CommitteeRole,
+    /// Typed verdict. The Judge must match the server-recomputed value.
+    pub verdict: CommitteeVerdict,
+    /// Whether every required evidence reference was supplied.
+    pub evidence_complete: bool,
+    /// Canonical bounded evidence document.
+    pub document: serde_json::Value,
+    /// Digest of the exact document.
+    pub document_hash: ContentHash,
+    /// Submission instant.
+    pub recorded_at: Timestamp,
 }
 
 /// One durable Quick session, as it is stored.

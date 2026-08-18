@@ -1669,6 +1669,13 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     // reason as `apply_core_team`: it deliberately does not move any running
     // epic's frozen pin, so no epic aggregate is a legal target for it.
     ("apply_completion_profile", "project", "witness", None),
+    // Consultation execution is frozen inside one epic. The native runtime
+    // seats and CSW are evidence for that epic, not independent aggregates.
+    ("invoke_advisor_run", "mini_project", "witness", None),
+    ("settle_advisor_run", "mini_project", "witness", None),
+    ("invoke_committee_run", "mini_project", "witness", None),
+    ("record_committee_findings", "mini_project", "witness", None),
+    ("settle_committee_run", "mini_project", "witness", None),
     // The two completion writes are about one epic's own frozen run.
     ("advance_completion", "mini_project", "witness", None),
     ("remediate_completion", "mini_project", "witness", None),

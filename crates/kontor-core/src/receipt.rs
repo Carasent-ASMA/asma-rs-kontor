@@ -163,6 +163,16 @@ closed_enum! {
         /// The project is the aggregate, for the same reason: a template seats
         /// no CSW until it is convened.
         ApplyCommitteeTemplate => "apply_committee_template",
+        /// Invoke and materialize one Advisor run under a pinned profile.
+        InvokeAdvisorRun => "invoke_advisor_run",
+        /// Freeze one Advisor's output and the caller's disposition.
+        SettleAdvisorRun => "settle_advisor_run",
+        /// Invoke and materialize one Committee under a pinned template.
+        InvokeCommitteeRun => "invoke_committee_run",
+        /// Append one immutable reviewer finding or Judge aggregate.
+        RecordCommitteeFindings => "record_committee_findings",
+        /// Recompute and freeze one Committee's typed outcome.
+        SettleCommitteeRun => "settle_committee_run",
         /// Open one ad-hoc Quick session under the project's session base.
         ///
         /// The project is the aggregate. A Quick session creates no MiniProject
@@ -475,6 +485,11 @@ impl CommandKind {
             Self::AdvanceCompletion | Self::RemediateCompletion => {
                 witness(matches!(target, A::MiniProject))
             }
+            Self::InvokeAdvisorRun
+            | Self::SettleAdvisorRun
+            | Self::InvokeCommitteeRun
+            | Self::RecordCommitteeFindings
+            | Self::SettleCommitteeRun => witness(matches!(target, A::MiniProject)),
         }
     }
 

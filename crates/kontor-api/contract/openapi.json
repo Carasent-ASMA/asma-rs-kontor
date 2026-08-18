@@ -6876,6 +6876,16 @@
         },
         "additionalProperties": false
       },
+      "AdviceDispositionDto": {
+        "type": "string",
+        "description": "What the caller did with one Advisor's evidence-only output.",
+        "enum": [
+          "accepted",
+          "partially_accepted",
+          "rejected",
+          "superseded"
+        ]
+      },
       "AdvisorRunDto": {
         "type": "object",
         "description": "One Advisor consultation.",
@@ -6884,6 +6894,8 @@
           "advisor_run_id",
           "epic_id",
           "profile",
+          "topology_node_id",
+          "seats",
           "state",
           "receipt"
         ],
@@ -6908,9 +6920,20 @@
             "$ref": "#/components/schemas/MutationReceiptDto",
             "description": "The receipt it was committed under."
           },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsultationSeatDto"
+            },
+            "description": "The one Advisor seat."
+          },
           "state": {
             "type": "string",
             "description": "Its lifecycle, in the server's own vocabulary."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "Dedicated ASW node."
           }
         }
       },
@@ -7997,8 +8020,11 @@
           "committee_run_id",
           "epic_id",
           "template",
+          "topology_node_id",
+          "seats",
           "state",
           "findings_recorded",
+          "round",
           "receipt"
         ],
         "properties": {
@@ -8016,6 +8042,17 @@
             "description": "How many findings have been recorded so far.",
             "minimum": 0
           },
+          "outcome": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConsultationVerdictDto",
+                "description": "Server-recomputed settled outcome, when terminal."
+              }
+            ]
+          },
           "realm_id": {
             "type": "string",
             "description": "The Realm it belongs to."
@@ -8024,6 +8061,19 @@
             "$ref": "#/components/schemas/MutationReceiptDto",
             "description": "The receipt it was committed under."
           },
+          "round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "One-based immutable round.",
+            "minimum": 0
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsultationSeatDto"
+            },
+            "description": "Every template-declared seat in stable slot order."
+          },
           "state": {
             "type": "string",
             "description": "Its lifecycle, in the server's own vocabulary."
@@ -8031,6 +8081,10 @@
           "template": {
             "$ref": "#/components/schemas/ProfileRevisionDto",
             "description": "The pinned template it runs under."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "Dedicated CSW node."
           }
         }
       },
@@ -8691,6 +8745,48 @@
             "minimum": 0
           }
         }
+      },
+      "ConsultationSeatDto": {
+        "type": "object",
+        "description": "One declared consultation seat and its exact runtime readback.",
+        "required": [
+          "role_slot_id",
+          "logical_role",
+          "seat_binding_id"
+        ],
+        "properties": {
+          "logical_role": {
+            "type": "string",
+            "description": "Logical role under the pinned policy."
+          },
+          "observed_binding": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ObservedBindingDto",
+                "description": "Native runtime identity after launch/recovery."
+              }
+            ]
+          },
+          "role_slot_id": {
+            "type": "string",
+            "description": "Stable profile/template slot."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Exact persistent SeatBinding."
+          }
+        }
+      },
+      "ConsultationVerdictDto": {
+        "type": "string",
+        "description": "The closed Committee verdict vocabulary.",
+        "enum": [
+          "compliant",
+          "non_compliant"
+        ]
       },
       "ContainerRetitlePreviewDto": {
         "type": "object",
@@ -9923,9 +10019,14 @@
         "required": [
           "profile",
           "question",
+          "caller_seat_binding_id",
           "expected_revision"
         ],
         "properties": {
+          "caller_seat_binding_id": {
+            "type": "string",
+            "description": "Exact active epic seat whose role is authorized by the pinned policy."
+          },
           "expected_revision": {
             "type": "integer",
             "format": "int64",
@@ -9939,6 +10040,13 @@
           "question": {
             "type": "string",
             "description": "What is being asked."
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional ticket scope. It must belong to the epic in the route; absent\nmeans the epic as a whole."
           }
         },
         "additionalProperties": false
@@ -11325,19 +11433,48 @@
         "type": "object",
         "description": "Record one round of Committee findings.",
         "required": [
-          "findings",
+          "seat_binding_id",
+          "round",
+          "verdict",
+          "evidence_complete",
+          "rationale",
           "expected_revision"
         ],
         "properties": {
+          "evidence_complete": {
+            "type": "boolean",
+            "description": "Whether every evidence reference required by the finding is present."
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "References to already-authoritative evidence; no payload upload."
+          },
           "expected_revision": {
             "type": "integer",
             "format": "int64",
             "description": "The run revision the caller believes is current.",
             "minimum": 0
           },
-          "findings": {
-            "type": "object",
-            "description": "The findings document."
+          "rationale": {
+            "type": "string",
+            "description": "Bounded explanation."
+          },
+          "round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "One-based round.",
+            "minimum": 0
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Exact consultation SeatBinding submitting its own slot's evidence."
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/ConsultationVerdictDto",
+            "description": "Typed reviewer/Judge conclusion."
           }
         },
         "additionalProperties": false
@@ -12651,11 +12788,50 @@
           "expected_revision"
         ],
         "properties": {
+          "disposition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdviceDispositionDto",
+                "description": "What the authorized caller decided about the advice."
+              }
+            ]
+          },
           "expected_revision": {
             "type": "integer",
             "format": "int64",
             "description": "The run revision the caller believes is current.",
             "minimum": 0
+          },
+          "output": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Immutable Advisor output. Required only on the Advisor route."
+          },
+          "rationale": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bounded disposition rationale."
+          },
+          "receipt_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Separately-authorized command receipts cited by the disposition."
+          },
+          "seat_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact seat recording Advisor output/disposition. Absent for Committee\nsettlement, whose evidence is already keyed by finding SeatBindings."
           }
         },
         "additionalProperties": false

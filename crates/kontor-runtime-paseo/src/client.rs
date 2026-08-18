@@ -189,6 +189,56 @@ impl PaseoCommand {
         prompt: &str,
     ) -> RuntimeResult<Self> {
         let permission_mode = permission_mode(&model_rung.provider.0)?;
+        Self::agent_run_with_mode(
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            title,
+            labels,
+            parent_agent_id,
+            prompt,
+            permission_mode,
+        )
+    }
+
+    /// Start a consultation in the provider's non-mutating review/plan mode.
+    pub fn consultation_run(
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        parent_agent_id: &str,
+        prompt: &str,
+    ) -> RuntimeResult<Self> {
+        let mode = match model_rung.provider.0.as_str() {
+            "claude" | "cursor" => Some("plan"),
+            "codex" => Some("auto-review"),
+            provider => permission_mode(provider)?,
+        };
+        Self::agent_run_with_mode(
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            title,
+            labels,
+            parent_agent_id,
+            prompt,
+            mode,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn agent_run_with_mode(
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        parent_agent_id: &str,
+        prompt: &str,
+        permission_mode: Option<&str>,
+    ) -> RuntimeResult<Self> {
         let mut argv = Argv::new(&["agent", "run", "--background"])
             .option("--workspace", workspace_id)
             .option("--cwd", canonical_cwd)

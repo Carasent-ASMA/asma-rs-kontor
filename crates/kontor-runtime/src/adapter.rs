@@ -16,12 +16,18 @@
 use async_trait::async_trait;
 use kontor_core::DomainError;
 use kontor_core::compaction::CompactionReceipt;
-use kontor_core::id::{RuntimeBindingId, Timestamp};
+use kontor_core::consultation::ConsultationRunId;
+use kontor_core::id::{
+    BoundedText, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId, SeatBindingId, Timestamp,
+};
+use kontor_core::spec::{ContextPolicySnapshot, ModelRung};
+use kontor_core::state::NativeRuntimeIdentity;
 
 use crate::admission::AdmissionRequest;
 use crate::capability::{
     IssuedBinding, RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, TrustGrade,
 };
+use crate::container::ContainerBindingSnapshot;
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, HistoryRequest, InspectRequest, LaunchRequest,
@@ -29,7 +35,7 @@ use crate::request::{
     SendMessageRequest,
 };
 use crate::timeline::{HistoryPage, LiveSubscription, TimelineBreak, TimelinePosition};
-use crate::workspace::{WorkspaceOutcome, WorkspacePrepareRequest};
+use crate::workspace::{WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot};
 
 /// Everything an adapter operation can refuse.
 ///
@@ -227,6 +233,49 @@ pub struct LaunchOutcome {
     pub observation: ControlPlaneObservation,
 }
 
+/// Launch one read-only consultation seat in an already prepared ASW/CSW.
+///
+/// Unlike delivery launch this is not a TeamRun and has no TaskId. Its native
+/// uniqueness key is the durable SeatBinding id, while the family-qualified run
+/// id is the recovery/correlation label shared by every seat in the workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationLaunchRequest {
+    /// Owning consultation.
+    pub run_id: ConsultationRunId,
+    /// Exact persistent seat being filled.
+    pub seat_binding_id: SeatBindingId,
+    /// Template slot.
+    pub role_slot_id: RoleSlotId,
+    /// Runtime-facing read-only title.
+    pub display_name: ExternalName,
+    /// Exact node-keyed container prepared by this runtime.
+    pub container: ContainerBindingSnapshot,
+    /// Working directory read back on the container.
+    pub cwd: WorkspaceRoot,
+    /// Frozen prompt/context for this seat.
+    pub prompt: BoundedText,
+    /// Exact provider/model/effort route.
+    pub model_rung: ModelRung,
+    /// Immutable context-window policy.
+    pub context_policy: ContextPolicySnapshot,
+    /// Invocation instant.
+    pub requested_at: Timestamp,
+}
+
+/// Native readback of one consultation seat launch or exact-label recovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationLaunchOutcome {
+    /// Exact native identity in this runtime generation.
+    pub identity: NativeRuntimeIdentity,
+    /// Provider-native conversation id, when exposed.
+    pub provider_session_id: Option<ExternalId>,
+    /// When the identity was read back.
+    pub observed_at: Timestamp,
+    /// Whether this call created the session or recovered the existing exact
+    /// labelled one after a lost acknowledgement/restart.
+    pub created: bool,
+}
+
 /// The runtime's answer to one delivered message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageAck {
@@ -314,6 +363,20 @@ pub trait RuntimeAdapter: Send + Sync {
     /// caller must treat it as "not ready" rather than as "empty".
     async fn prepare_plane(&self) -> RuntimeResult<()> {
         Ok(())
+    }
+
+    /// Start or recover one read-only Advisor/Committee seat.
+    ///
+    /// The default refuses because consultation placement is a distinct runtime
+    /// capability boundary: a delivery-only adapter must not accidentally
+    /// accept a consultation by treating it as a fake TeamRun.
+    async fn launch_consultation(
+        &self,
+        _request: &ConsultationLaunchRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Launch,
+        })
     }
 
     /// Take back into this runtime's own registry the bindings a previous

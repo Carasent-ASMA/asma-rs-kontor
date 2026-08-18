@@ -42,6 +42,11 @@ const EXPECTED_TABLES: &[&str] = &[
     "command_targets",
     "compaction_receipts",
     "consultation_profile_revisions",
+    // Schema v36 (KON-OP-05): frozen consultation execution, exact native
+    // seat bindings, and immutable Committee findings.
+    "consultation_runs",
+    "consultation_seats",
+    "committee_findings",
     "context_packs",
     "core_team_revisions",
     // Schema v32 (KON-OP-06): published Completion Profile revisions, one durable
@@ -286,7 +291,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 35);
+    assert_eq!(SCHEMA_VERSION, 36);
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.

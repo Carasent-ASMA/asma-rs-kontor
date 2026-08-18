@@ -153,6 +153,12 @@ pub mod label {
     /// agent one of its agents spawned; Kontor writes the same key for a seat
     /// it launches. One key, two writers, one meaning.
     pub const PARENT_AGENT: &str = "paseo.parent-agent-id";
+    /// Family-qualified Advisor/Committee run id.
+    pub const CONSULTATION_RUN: &str = "kontor.consultation_run";
+    /// Exact persistent consultation seat.
+    pub const SEAT_BINDING: &str = "kontor.seat_binding_id";
+    /// Explicit non-mutating authority marker for consultation sessions.
+    pub const READ_ONLY: &str = "kontor.read_only";
 
     /// Every label key, in the order they are applied.
     pub const ALL: &[&str] = &[

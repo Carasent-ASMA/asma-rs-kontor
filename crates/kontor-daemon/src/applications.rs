@@ -51,14 +51,15 @@ use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CloseoutEvidenceDto,
     CloseoutRequirementDto, CommitteeRunDto, CommitteeVerdictDto, CompletionBlockerDto,
     CompletionOutcomeDto, CompletionPhaseDto, CompletionRoundDto, CompletionStateDto,
-    CompletionWakeDto, CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest,
-    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamSeatDto,
-    CoreTeamSeatSelectionDto, DeliberationStepDto, EnsureQuickSessionRequest, IntegrationRecordDto,
-    InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest, ProfileCatalogDto,
-    ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto,
-    PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
-    RecordFindingsRequest, RemediateCompletionRequest, RemediationActionDto, RepositoryOutcomeDto,
-    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
+    CompletionWakeDto, ConsultationSeatDto, ConsultationVerdictDto, CoreTeamApplyRequest,
+    CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamOutcomeDto, CoreTeamPreviewDto,
+    CoreTeamPreviewRequest, CoreTeamSeatDto, CoreTeamSeatSelectionDto, DeliberationStepDto,
+    EnsureQuickSessionRequest, IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto,
+    ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
+    ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
+    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RemediateCompletionRequest,
+    RemediationActionDto, RepositoryOutcomeDto, RosterUpgradePreviewDto,
+    RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
     AppliedContainerRetitleDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
@@ -90,7 +91,11 @@ use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
-use kontor_core::consultation::{AdvisorProfileSpec, CommitteeTemplateSpec, ConsultationFamily};
+use kontor_core::consultation::{
+    AdvisorProfileSpec, CommitteeRole, CommitteeTemplateSpec,
+    CommitteeVerdict as ConsultationVerdict, ConsultationFamily, ConsultationRunId,
+    ConsultationRunState, ConsultationScope, RecordedFinding, conjunctive_outcome,
+};
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
@@ -110,10 +115,11 @@ use kontor_core::repository::{
     NewMiniProject, NewNativeContainerBinding, NewSeatBinding, NewSessionTopologyNode,
     NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault, RealmRepository,
     RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
-    SpecRepository, StoredCompletionProfile, StoredCompletionWake,
-    StoredConsultationProfileRevision, StoredCoreTeamRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    TaskTransitionRequest, TicketRepository, TopologyRepository, WorkflowRepository,
+    SpecRepository, StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
+    StoredConsultationProfileRevision, StoredConsultationRun, StoredConsultationSeat,
+    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
+    StoredQuickSession, StoredRemediationProposal, TaskTransitionRequest, TicketRepository,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -136,7 +142,7 @@ use kontor_profiles::pack::{
     OperationalDomainPack, PackAvailability, PackCategoryKey, ProfilePackSpec,
     ResolvedProfileBundle, parse_pack, resolve_profile, validate_pack,
 };
-use kontor_runtime::adapter::{RuntimeAdapter, RuntimeError};
+use kontor_runtime::adapter::{ConsultationLaunchRequest, RuntimeAdapter, RuntimeError};
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::container::{
@@ -176,6 +182,16 @@ struct FrozenRoster {
     revision_of_epic: AggregateRevision,
     /// The Quick session this epic came from, when it came from one.
     quick_session_id: Option<QuickSessionId>,
+}
+
+/// The already-validated authority and policy inputs frozen into one Committee.
+struct CommitteeInvocation<'a> {
+    project_id: ProjectId,
+    epic_id: MiniProjectId,
+    request: &'a InvokeConsultationRequest,
+    template_revision: &'a StoredConsultationProfileRevision,
+    template: &'a CommitteeTemplateSpec,
+    caller: &'a kontor_core::state::SeatBinding,
 }
 
 /// The adopted session base a Quick session is placed under.
@@ -2895,7 +2911,48 @@ impl Services {
         project_id: ProjectId,
         family: ConsultationFamily,
     ) -> Result<Vec<StoredConsultationProfileRevision>, ApiError> {
-        self.state()?
+        let state = self.state()?;
+        if family == ConsultationFamily::Committee {
+            let published = state
+                .with_store(|store| store.list_consultation_profile_revisions(project_id, family))
+                .map_err(|error| self.refuse(&error))?;
+            let presets = kontor_profiles::seeds::bundled_consultation_presets()
+                .map_err(|error| self.refuse_domain(&error))?;
+            for template in presets.committee_templates {
+                let canonical = template
+                    .canonicalize()
+                    .map_err(|error| self.refuse_domain(&error))?;
+                let id = template.template_id.to_string();
+                if let Some(existing) = published.iter().find(|revision| {
+                    revision.profile_id == id && revision.version == template.version
+                }) {
+                    if existing.definition_hash != *canonical.hash() {
+                        return Err(self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "a built-in Committee preset identity names different published bytes",
+                        ));
+                    }
+                    continue;
+                }
+                state
+                    .with_store(|store| {
+                        store.publish_consultation_profile_revision(
+                            &StoredConsultationProfileRevision {
+                                project_id,
+                                family,
+                                profile_id: id.clone(),
+                                version: template.version,
+                                name: template.name.clone(),
+                                definition: canonical.json().to_owned(),
+                                definition_hash: canonical.hash().clone(),
+                                published_at: kontor_api::now(),
+                            },
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
+        }
+        state
             .with_store(|store| store.list_consultation_profile_revisions(project_id, family))
             .map_err(|error| self.refuse(&error))
     }
@@ -3086,24 +3143,28 @@ impl Services {
         let delivery = &self.domain.delivery;
         Ok(match target {
             SemanticTopologyTargetDto::ProjectRoot => TopologyScope {
+                node_id: None,
                 kind: None,
                 epic_id: None,
                 task_id: None,
                 key: "project_root".to_owned(),
             },
             SemanticTopologyTargetDto::QuickSession { quick_session_id } => TopologyScope {
+                node_id: None,
                 kind: Some(delivery.quick_kind.clone()),
                 epic_id: None,
                 task_id: None,
                 key: format!("quick_session:{quick_session_id}"),
             },
             SemanticTopologyTargetDto::Epic { epic_id } => TopologyScope {
+                node_id: None,
                 kind: Some(delivery.epic_kind.clone()),
                 epic_id: Some(self.epic_row(project_id, *epic_id)?.id),
                 task_id: None,
                 key: format!("epic:{epic_id}"),
             },
             SemanticTopologyTargetDto::EpicControl { epic_id } => TopologyScope {
+                node_id: None,
                 kind: Some(delivery.control_kind.clone()),
                 epic_id: Some(self.epic_row(project_id, *epic_id)?.id),
                 task_id: None,
@@ -3112,6 +3173,7 @@ impl Services {
             SemanticTopologyTargetDto::Ticket { task_id } => {
                 let task = self.task_row(project_id, *task_id)?;
                 TopologyScope {
+                    node_id: None,
                     kind: Some(delivery.task_kind.clone()),
                     epic_id: Some(task.mini_project_id.ok_or_else(|| {
                         self.deny(
@@ -3123,23 +3185,29 @@ impl Services {
                     key: format!("ticket:{task_id}"),
                 }
             }
-            // A consultation is scoped to the epic its run belongs to. Both
-            // successor families are OP-05's to open, so the run itself is not
-            // resolvable here yet — what *is* resolvable, and what the topology
-            // needs, is a consultation node below an epic the caller can name.
-            SemanticTopologyTargetDto::AdvisorConsultation { .. } => {
-                return Err(self.deny(
-                    ApiErrorCode::Unavailable,
-                    "advisor consultations are opened by the service that owns them, \
-                     which is not composed in this build",
-                ));
+            SemanticTopologyTargetDto::AdvisorConsultation { advisor_run_id } => {
+                let run =
+                    self.consultation_run(project_id, ConsultationRunId::Advisor(*advisor_run_id))?;
+                TopologyScope {
+                    node_id: Some(run.topology_node_id),
+                    kind: Some(delivery.advisor_kind.clone()),
+                    epic_id: Some(run.mini_project_id),
+                    task_id: None,
+                    key: format!("advisor_consultation:{advisor_run_id}"),
+                }
             }
-            SemanticTopologyTargetDto::CommitteeConsultation { .. } => {
-                return Err(self.deny(
-                    ApiErrorCode::Unavailable,
-                    "committee consultations are opened by the service that owns them, \
-                     which is not composed in this build",
-                ));
+            SemanticTopologyTargetDto::CommitteeConsultation { committee_run_id } => {
+                let run = self.consultation_run(
+                    project_id,
+                    ConsultationRunId::Committee(*committee_run_id),
+                )?;
+                TopologyScope {
+                    node_id: Some(run.topology_node_id),
+                    kind: Some(delivery.committee_kind.clone()),
+                    epic_id: Some(run.mini_project_id),
+                    task_id: None,
+                    key: format!("committee_consultation:{committee_run_id}"),
+                }
             }
         })
     }
@@ -3159,6 +3227,21 @@ impl Services {
         let topology = self.project_topology(project_id)?;
         let spec = self.pinned_spec(project_id)?;
         let now = kontor_api::now();
+
+        if let Some(node_id) = scope.node_id {
+            return state
+                .with_store(|store| store.get_topology_node(project_id, node_id))
+                .map_err(|error| self.refuse(&error))?
+                .filter(|node| {
+                    node.mini_project_id == scope.epic_id && Some(&node.kind) == scope.kind.as_ref()
+                })
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the consultation's frozen topology node is missing or changed scope",
+                    )
+                });
+        }
 
         let unscoped = state
             .with_store(|store| store.list_topology_nodes(project_id, None))
@@ -4129,6 +4212,485 @@ impl Services {
             last_confirmed_at: Some(taken_at),
         })
     }
+
+    /// Read one durable consultation by its family-qualified identity.
+    fn consultation_run(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> Result<StoredConsultationRun, ApiError> {
+        self.state()?
+            .with_store(|store| store.get_consultation_run(project_id, run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such consultation run exists in this project",
+                )
+            })
+    }
+
+    /// Resolve and revalidate the immutable Committee template a run pins.
+    fn committee_template(
+        &self,
+        run: &StoredConsultationRun,
+    ) -> Result<(StoredConsultationProfileRevision, CommitteeTemplateSpec), ApiError> {
+        if run.id.family() != ConsultationFamily::Committee {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "this operation requires a Committee run",
+            ));
+        }
+        let stored = self
+            .stored_consultation_profiles(run.project_id, ConsultationFamily::Committee)?
+            .into_iter()
+            .find(|revision| {
+                revision.profile_id == run.profile_id
+                    && revision.version == run.profile_version
+                    && revision.definition_hash == run.definition_hash
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the Committee run's pinned template revision is unavailable",
+                )
+            })?;
+        let template: CommitteeTemplateSpec =
+            serde_json::from_str(&stored.definition).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the stored Committee template cannot be read by this build",
+                )
+            })?;
+        template
+            .validate()
+            .map_err(|error| self.refuse_domain(&error))?;
+        Ok((stored, template))
+    }
+
+    /// Prove that the exact active seat may invoke this template at this scope.
+    fn authorize_committee_caller(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &InvokeConsultationRequest,
+        template: &CommitteeTemplateSpec,
+    ) -> Result<kontor_core::state::SeatBinding, ApiError> {
+        let state = self.state()?;
+        if let Some(task_id) = request.task_id {
+            let task = self.task_row(project_id, task_id)?;
+            if task.mini_project_id != Some(epic_id) {
+                return Err(self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the requested ticket does not belong to this epic",
+                ));
+            }
+            if !template.allowed_scopes.contains(&ConsultationScope::Ticket) {
+                return Err(self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the pinned Committee template does not permit ticket-scoped invocation",
+                ));
+            }
+        } else if !template.allowed_scopes.contains(&ConsultationScope::Epic) {
+            return Err(self.deny(
+                ApiErrorCode::Forbidden,
+                "the pinned Committee template does not permit epic-scoped invocation",
+            ));
+        }
+        let seat = state
+            .with_store(|store| store.get_seat_binding(project_id, request.caller_seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|seat| seat.is_non_terminal() && !seat.closes_children())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the caller SeatBinding is not active",
+                )
+            })?;
+        let node = state
+            .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|node| node.mini_project_id == Some(epic_id))
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the caller SeatBinding does not belong to this epic",
+                )
+            })?;
+        if node.lifecycle != TopologyLifecycle::Active {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the caller SeatBinding's topology node is not active",
+            ));
+        }
+        let slot_role = seat.role_slot_id.as_role_key().as_str();
+        let catalog_role = seat.role.role_code.as_str();
+        if !template.allowed_caller_roles.iter().any(|allowed| {
+            allowed.as_str().eq_ignore_ascii_case(slot_role)
+                || allowed.as_str().eq_ignore_ascii_case(catalog_role)
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::Forbidden,
+                "the caller SeatBinding's role may not invoke this Committee template",
+            ));
+        }
+        Ok(seat)
+    }
+
+    /// Freeze a new Committee and every logical seat before the first native effect.
+    fn freeze_committee_run(
+        &self,
+        key: &IdempotencyKey,
+        intent: &CanonicalDocument,
+        invocation: CommitteeInvocation<'_>,
+    ) -> Result<StoredConsultationRun, ApiError> {
+        let CommitteeInvocation {
+            project_id,
+            epic_id,
+            request,
+            template_revision,
+            template,
+            caller,
+        } = invocation;
+        let state = self.state()?;
+        let topology = self.project_topology(project_id)?;
+        let epic_node = self.ensure_scope_chain(
+            project_id,
+            &TopologyScope {
+                node_id: None,
+                kind: Some(self.domain.delivery.epic_kind.clone()),
+                epic_id: Some(epic_id),
+                task_id: None,
+                key: format!("epic:{epic_id}"),
+            },
+        )?;
+        let now = kontor_api::now();
+        let run_id = CommitteeRunId::generate();
+        let node_id = TopologyNodeId::generate();
+        let question_hash = ContentHash::of(request.question.as_str().as_bytes());
+        let context = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "realm_id": state.realm_id().to_string(),
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "task_id": request.task_id.map(|id| id.to_string()),
+            "caller_seat_binding_id": caller.id.to_string(),
+            "caller_role_slot": caller.role_slot_id.as_str(),
+            "template_id": template_revision.profile_id,
+            "template_version": template_revision.version.get(),
+            "template_hash": template_revision.definition_hash.as_str(),
+            "question_hash": question_hash.as_str(),
+        }))?;
+        let run = StoredConsultationRun {
+            id: ConsultationRunId::Committee(run_id),
+            project_id,
+            mini_project_id: epic_id,
+            profile_id: template_revision.profile_id.clone(),
+            profile_version: template_revision.version,
+            definition_hash: template_revision.definition_hash.clone(),
+            question: request.question.clone(),
+            question_hash,
+            context: serde_json::from_str(context.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the frozen Committee context could not be decoded",
+                )
+            })?,
+            context_hash: context.hash().clone(),
+            caller_seat_binding_id: caller.id,
+            topology_node_id: node_id,
+            invoke_key: key.clone(),
+            invoke_intent_hash: intent.hash().clone(),
+            state: ConsultationRunState::Materializing,
+            round: 1,
+            result: None,
+            result_hash: None,
+            revision: AggregateRevision::INITIAL,
+            created_at: now,
+            updated_at: now,
+            settled_at: None,
+        };
+        let node = NewSessionTopologyNode {
+            id: node_id,
+            project_id,
+            mini_project_id: Some(epic_id),
+            topology,
+            kind: self.domain.delivery.committee_kind.clone(),
+            parent_id: Some(epic_node.id),
+            task_id: None,
+            created_at: now,
+        };
+        let deadline = now
+            .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
+            .unwrap_or(now);
+        let mut stored_seats = Vec::with_capacity(template.slots.len());
+        let mut bindings = Vec::with_capacity(template.slots.len());
+        for slot in &template.slots {
+            let code = self
+                .domain
+                .delivery
+                .role_code(&slot.logical_role)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the seeded delivery binding does not map a Committee logical role",
+                    )
+                })?;
+            let seat_binding_id = SeatBindingId::generate();
+            stored_seats.push(StoredConsultationSeat {
+                run_id: run.id,
+                role_slot_id: slot.id.clone(),
+                committee_role: Some(slot.role),
+                logical_role: slot.logical_role.clone(),
+                seat_binding_id,
+                model_rung: slot.models.rungs.first().cloned().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "a Committee slot has no model route",
+                    )
+                })?,
+                native_identity: None,
+                provider_session_id: None,
+                observed_at: None,
+            });
+            bindings.push(NewSeatBinding {
+                id: seat_binding_id,
+                project_id,
+                topology_node_id: node_id,
+                role_slot_id: slot.id.clone(),
+                role: self.catalog_role_for_code(code)?,
+                task_id: None,
+                team_run_id: None,
+                attach_deadline: deadline,
+                parent_seat_binding_id: Some(caller.id),
+                created_at: now,
+            });
+        }
+        let pairs: Vec<_> = stored_seats.iter().zip(bindings.iter()).collect();
+        state
+            .with_store(|store| store.create_consultation_run(&run, &node, &pairs))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(run)
+    }
+
+    /// Launch or exact-label recover the Committee seats currently eligible.
+    /// Reviewers launch at invoke; the Judge launches only after all independent
+    /// findings are durable, so it cannot observe them early or race them.
+    async fn materialize_committee_seats(
+        &self,
+        run: &StoredConsultationRun,
+        template: &CommitteeTemplateSpec,
+        include_judge: bool,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let project = self.project_row(run.project_id)?;
+        let node = state
+            .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Committee's frozen topology node is missing",
+                )
+            })?;
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime selected for Committee placement is not configured",
+            )
+        })?;
+        let cwd = WorkspaceRoot::parse(project.root_path.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let container = self
+            .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
+            .await?;
+        let capabilities = adapter
+            .discover_capabilities()
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let context_policy = ContextPolicySnapshot::standard(
+            &capabilities.limits.context_window,
+            capabilities.supports(RuntimeCapability::ContextPolicy),
+            SCHEMA_VERSION,
+            kontor_api::now(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        let findings = if include_judge {
+            state
+                .with_store(|store| {
+                    store.list_committee_findings(
+                        run.project_id,
+                        match run.id {
+                            ConsultationRunId::Committee(id) => id,
+                            ConsultationRunId::Advisor(_) => unreachable!(),
+                        },
+                        run.round,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+        } else {
+            Vec::new()
+        };
+        let mut seats = state
+            .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        for seat in &mut seats {
+            let slot = template
+                .slots
+                .iter()
+                .find(|slot| slot.id == seat.role_slot_id)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "a frozen Committee seat is absent from its pinned template",
+                    )
+                })?;
+            if seat.native_identity.is_some()
+                || (slot.role == CommitteeRole::Judge && !include_judge)
+            {
+                continue;
+            }
+            let evidence = if slot.role == CommitteeRole::Judge {
+                serde_json::to_string(
+                    &findings
+                        .iter()
+                        .filter(|finding| finding.role == CommitteeRole::Reviewer)
+                        .map(|finding| &finding.document)
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the durable Committee findings could not be delivered to the Judge",
+                    )
+                })?
+            } else {
+                "[]".to_owned()
+            };
+            let prompt = BoundedText::parse(&format!(
+                "Read-only Committee seat. You may inspect evidence but must not mutate code, \
+                 Jira, topology, scheduling, or runtime state. Charter: {} Role instructions: {} \
+                 Question: {} Durable reviewer findings available to this seat: {}",
+                template.charter.as_str(),
+                slot.behavior.as_str(),
+                run.question.as_str(),
+                evidence,
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            let display_name =
+                ExternalName::parse(&format!("{} · {}", slot.id.as_str(), run.id.as_text()))
+                    .map_err(|error| self.refuse_domain(&error))?;
+            let outcome = adapter
+                .launch_consultation(&ConsultationLaunchRequest {
+                    run_id: run.id,
+                    seat_binding_id: seat.seat_binding_id,
+                    role_slot_id: seat.role_slot_id.clone(),
+                    display_name,
+                    container: container.clone(),
+                    cwd: cwd.clone(),
+                    prompt,
+                    model_rung: seat.model_rung.clone(),
+                    context_policy: context_policy.clone(),
+                    requested_at: kontor_api::now(),
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            seat.native_identity = Some(outcome.identity);
+            seat.provider_session_id = outcome.provider_session_id;
+            seat.observed_at = Some(outcome.observed_at);
+            state
+                .with_store(|store| store.bind_consultation_seat(run.project_id, seat))
+                .map_err(|error| self.refuse(&error))?;
+            state
+                .with_store(|store| {
+                    store.observe_seat_binding(
+                        run.project_id,
+                        seat.seat_binding_id,
+                        &SeatLivenessObservation {
+                            attached_at: Some(outcome.observed_at),
+                            runtime_reported: Some(kontor_core::state::ObservedRunState::Running),
+                            ..SeatLivenessObservation::default()
+                        },
+                        outcome.observed_at,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        Ok(())
+    }
+
+    /// Stable wire projection of one Committee run and its durable evidence.
+    fn committee_run_dto(
+        &self,
+        run: &StoredConsultationRun,
+        receipt_id: CommandReceiptId,
+        applied: AppliedDto,
+    ) -> Result<CommitteeRunDto, ApiError> {
+        let state = self.state()?;
+        let (revision, _) = self.committee_template(run)?;
+        let seats = state
+            .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        let committee_run_id = match run.id {
+            ConsultationRunId::Committee(id) => id,
+            ConsultationRunId::Advisor(_) => {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "this projection requires a Committee run",
+                ));
+            }
+        };
+        let findings = state
+            .with_store(|store| {
+                store.list_committee_findings(run.project_id, committee_run_id, run.round)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let outcome = run
+            .result
+            .as_ref()
+            .and_then(|value| value.get("verdict"))
+            .and_then(serde_json::Value::as_str)
+            .map(|value| match ConsultationVerdict::parse(value) {
+                Ok(ConsultationVerdict::Compliant) => Ok(ConsultationVerdictDto::Compliant),
+                Ok(ConsultationVerdict::NonCompliant) => Ok(ConsultationVerdictDto::NonCompliant),
+                Err(error) => Err(self.refuse_domain(&error)),
+            })
+            .transpose()?;
+        Ok(CommitteeRunDto {
+            realm_id: state.realm_id(),
+            committee_run_id,
+            epic_id: run.mini_project_id,
+            template: consultation_revision_dto(&revision),
+            topology_node_id: run.topology_node_id,
+            seats: seats
+                .into_iter()
+                .map(|seat| ConsultationSeatDto {
+                    role_slot_id: seat.role_slot_id.as_str().to_owned(),
+                    logical_role: seat.logical_role.as_str().to_owned(),
+                    seat_binding_id: seat.seat_binding_id,
+                    observed_binding: seat.native_identity.map(|identity| ObservedBindingDto {
+                        runtime_kind: identity.runtime_kind,
+                        native_id: identity.native_id,
+                        native_name: None,
+                        cwd: None,
+                        observed_at: seat.observed_at.unwrap_or(run.updated_at),
+                    }),
+                })
+                .collect(),
+            state: run.state.as_str().to_owned(),
+            findings_recorded: u32::try_from(findings.len()).unwrap_or(u32::MAX),
+            round: run.round,
+            outcome,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied,
+                revision: run.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
 }
 
 /// Evidence for a family this process cannot currently ask anything.
@@ -4470,6 +5032,8 @@ fn account_profile_dto(
 /// semantic rather than a native shape wearing a nicer name.
 #[derive(Debug, Clone)]
 struct TopologyScope {
+    /// Exact already-frozen node for consultation scopes.
+    node_id: Option<TopologyNodeId>,
     /// The node kind this scope materializes as; `None` is the project root.
     kind: Option<TopologyKindKey>,
     /// The epic this scope belongs to, when it belongs to one.
@@ -4645,6 +5209,25 @@ fn consultation_revision_dto(stored: &StoredConsultationProfileRevision) -> Prof
         name: stored.name.clone(),
         definition_hash: stored.definition_hash.clone(),
     }
+}
+
+/// Normalize a human Committee name and a profile reference to one catalog key.
+/// The built-in Completion profile says `independent_review@1`, while the
+/// published template's display name is `Independent review`; neither spelling
+/// is an identity on its own, but the normalized name plus pinned version is.
+fn normalize_committee_reference(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '@' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// One candidate definition, parsed into the type its route selected.
@@ -5418,10 +6001,8 @@ impl Services {
     /// Derive the one observation this run's phase is waiting for.
     ///
     /// Only observations whose authoritative source is composed in this build are
-    /// derived. The final Committee verdict is not: OP-05 owns it, its service is
-    /// still uncomposed, so no CommitteeRun exists to settle a round. Returning
-    /// `Unavailable` there is the honest answer — a synthesized pass would close
-    /// an epic on a verdict nobody reached.
+    /// derived. Committee outcomes come exclusively from settled durable runs;
+    /// a native session finishing or a caller claiming a verdict is never enough.
     fn observe_completion(
         &self,
         stored: &StoredEpicCompletion,
@@ -5437,10 +6018,105 @@ impl Services {
                 ApiErrorCode::Unavailable,
                 "integration TeamRun outcomes are not yet observable in this build",
             )),
-            CompletionPhase::Verdict(_) => Err(self.deny(
-                ApiErrorCode::Unavailable,
-                "the Committee service is not composed in this build, so no round can settle",
-            )),
+            CompletionPhase::Verdict(round) => {
+                let runs = self
+                    .state()?
+                    .with_store(|store| {
+                        store.list_consultation_runs(
+                            stored.project_id,
+                            stored.mini_project_id,
+                            ConsultationFamily::Committee,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                let compiled = self.pinned_completion(stored)?;
+                let expected_template =
+                    normalize_committee_reference(compiled.profile.verdict_committee.as_str());
+                let settled = runs
+                    .into_iter()
+                    .filter(|run| {
+                        run.state == ConsultationRunState::Settled
+                            && u8::try_from(run.round).ok() == Some(round)
+                    })
+                    .find(|run| {
+                        self.committee_template(run).is_ok_and(|(revision, _)| {
+                            normalize_committee_reference(&format!(
+                                "{}@{}",
+                                revision.name.as_str(),
+                                revision.version.get()
+                            )) == expected_template
+                        })
+                    })
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "no settled Committee run matches this completion round",
+                        )
+                    })?;
+                let result = settled.result.as_ref().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the settled Committee run has no immutable result",
+                    )
+                })?;
+                let verdict = match result.get("verdict").and_then(serde_json::Value::as_str) {
+                    Some("compliant") => CommitteeVerdict::Pass,
+                    Some("non_compliant") => CommitteeVerdict::Fail,
+                    _ => {
+                        return Err(self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the settled Committee result has no recognized verdict",
+                        ));
+                    }
+                };
+                let evidence = result
+                    .get("evidence_hash")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the settled Committee result has no evidence digest",
+                        )
+                    })
+                    .and_then(|value| {
+                        ContentHash::parse(value).map_err(|error| self.refuse_domain(&error))
+                    })?;
+                let committee_run_id = match settled.id {
+                    ConsultationRunId::Committee(id) => id,
+                    ConsultationRunId::Advisor(_) => unreachable!(),
+                };
+                let findings = self
+                    .state()?
+                    .with_store(|store| {
+                        store.list_committee_findings(
+                            stored.project_id,
+                            committee_run_id,
+                            settled.round,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                let consultation = ExternalName::parse(&committee_run_id.to_string())
+                    .map_err(|error| self.refuse_domain(&error))?;
+                let deliberation = findings
+                    .into_iter()
+                    .map(|finding| {
+                        Ok(DeliberationStep {
+                            role: ExternalName::parse(finding.role_slot_id.as_str())
+                                .map_err(|error| self.refuse_domain(&error))?,
+                            consultation: consultation.clone(),
+                            round,
+                            outcome: ExternalName::parse(finding.verdict.as_str())
+                                .map_err(|error| self.refuse_domain(&error))?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ApiError>>()?;
+                Ok(CompletionObservation::VerdictRecorded {
+                    round,
+                    verdict,
+                    evidence,
+                    deliberation,
+                })
+            }
             CompletionPhase::AwaitRemediation(_) => Err(self.deny(
                 ApiErrorCode::InvalidRequest,
                 "this round is waiting for its LSA proposal and TPM route, not for an advance",
@@ -8207,39 +8883,480 @@ impl ApplicationOperations for Services {
     }
     async fn invoke_committee_run(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _epic_id: MiniProjectId,
-        _request: &InvokeConsultationRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &InvokeConsultationRequest,
     ) -> Result<CommitteeRunDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Committee service is not composed in this build",
-        ))
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "invoke_committee_run",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "profile": [request.profile.id.as_str(), request.profile.version.get()],
+            "question": request.question.as_str(),
+            "caller_seat_binding_id": request.caller_seat_binding_id.to_string(),
+            "task_id": request.task_id.map(|id| id.to_string()),
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            let run = self
+                .state()?
+                .with_store(|store| store.get_consultation_run_by_key(project_id, key))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the invocation receipt has no durable Committee run",
+                    )
+                })?;
+            return self.committee_run_dto(&run, receipt.id, AppliedDto::Unchanged);
+        }
+
+        let run = if let Some(existing) = self
+            .state()?
+            .with_store(|store| store.get_consultation_run_by_key(project_id, key))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if existing.id.family() != ConsultationFamily::Committee
+                || existing.mini_project_id != epic_id
+                || existing.invoke_intent_hash != *intent.hash()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key was already used for a different consultation",
+                ));
+            }
+            existing
+        } else {
+            let epic = self.epic_row(project_id, epic_id)?;
+            if epic.revision != request.expected_revision {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the epic moved since the Committee invocation was prepared",
+                    )
+                    .with_revision(Some(epic.revision)));
+            }
+            let revision = self
+                .stored_consultation_profiles(project_id, ConsultationFamily::Committee)?
+                .into_iter()
+                .find(|revision| {
+                    revision.profile_id == request.profile.id
+                        && revision.version == request.profile.version
+                })
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "no such Committee template revision is published in this project",
+                    )
+                })?;
+            let template: CommitteeTemplateSpec = serde_json::from_str(&revision.definition)
+                .map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the stored Committee template cannot be read by this build",
+                    )
+                })?;
+            template
+                .validate()
+                .map_err(|error| self.refuse_domain(&error))?;
+            let caller =
+                self.authorize_committee_caller(project_id, epic_id, request, &template)?;
+            self.freeze_committee_run(
+                key,
+                &intent,
+                CommitteeInvocation {
+                    project_id,
+                    epic_id,
+                    request,
+                    template_revision: &revision,
+                    template: &template,
+                    caller: &caller,
+                },
+            )?
+        };
+        let (_, template) = self.committee_template(&run)?;
+        self.materialize_committee_seats(&run, &template, false)
+            .await?;
+        let run = if run.state == ConsultationRunState::Materializing {
+            self.state()?
+                .with_store(|store| {
+                    store.advance_consultation_run(
+                        project_id,
+                        run.id,
+                        run.revision,
+                        ConsultationRunState::Running,
+                        None,
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+        } else {
+            run
+        };
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::InvokeCommitteeRun,
+            target,
+            run.revision,
+            &intent,
+        )?;
+        self.committee_run_dto(&run, receipt_id, AppliedDto::Created)
     }
     async fn record_committee_findings(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _committee_run_id: CommitteeRunId,
-        _request: &RecordFindingsRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &RecordFindingsRequest,
     ) -> Result<CommitteeRunDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Committee service is not composed in this build",
-        ))
+        let mut run =
+            self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: run.mini_project_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "record_committee_findings",
+            "project": project_id.to_string(),
+            "committee_run": committee_run_id.to_string(),
+            "seat_binding_id": request.seat_binding_id.to_string(),
+            "round": request.round,
+            "verdict": match request.verdict {
+                ConsultationVerdictDto::Compliant => "compliant",
+                ConsultationVerdictDto::NonCompliant => "non_compliant",
+            },
+            "evidence_complete": request.evidence_complete,
+            "rationale": request.rationale.as_str(),
+            "evidence_refs": request.evidence_refs,
+        }))?;
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            return self.committee_run_dto(&run, receipt.id, AppliedDto::Unchanged);
+        }
+        if run.state == ConsultationRunState::Settled
+            || run.state == ConsultationRunState::NeedsHuman
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "this Committee run no longer accepts findings",
+            ));
+        }
+        if request.round != run.round {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the finding does not name the Committee's current round",
+            ));
+        }
+        if request.evidence_complete && request.evidence_refs.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a finding cannot claim complete evidence without an evidence reference",
+            ));
+        }
+        let (_, template) = self.committee_template(&run)?;
+        let seats = self
+            .state()?
+            .with_store(|store| store.list_consultation_seats(project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        let seat = seats
+            .iter()
+            .find(|seat| seat.seat_binding_id == request.seat_binding_id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the submitting SeatBinding is not a seat of this Committee",
+                )
+            })?;
+        if seat.native_identity.is_none() {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the submitting Committee seat has no attested native session",
+            ));
+        }
+        let role = seat.committee_role.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "a Committee seat has no frozen Committee role",
+            )
+        })?;
+        let verdict = match request.verdict {
+            ConsultationVerdictDto::Compliant => ConsultationVerdict::Compliant,
+            ConsultationVerdictDto::NonCompliant => ConsultationVerdict::NonCompliant,
+        };
+        let before = self
+            .state()?
+            .with_store(|store| {
+                store.list_committee_findings(project_id, committee_run_id, run.round)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let reviewer_findings: Vec<RecordedFinding> = before
+            .iter()
+            .filter(|finding| finding.role == CommitteeRole::Reviewer)
+            .map(|finding| RecordedFinding {
+                slot: finding.role_slot_id.clone(),
+                verdict: finding.verdict,
+                evidence_complete: finding.evidence_complete,
+            })
+            .collect();
+        if role == CommitteeRole::Judge {
+            let recomputed = conjunctive_outcome(
+                &template
+                    .reviewer_slots()
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                &reviewer_findings,
+            )
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the Judge cannot submit before every independent finding is durable",
+                )
+            })?;
+            if verdict != recomputed {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the Judge verdict contradicts the server-recomputed conjunction",
+                ));
+            }
+        }
+        let document = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "committee_run_id": committee_run_id.to_string(),
+            "round": request.round,
+            "role_slot_id": seat.role_slot_id.as_str(),
+            "role": role.as_str(),
+            "verdict": verdict.as_str(),
+            "evidence_complete": request.evidence_complete,
+            "rationale": request.rationale.as_str(),
+            "evidence_refs": request.evidence_refs,
+        }))?;
+        let finding = StoredCommitteeFinding {
+            committee_run_id,
+            round: request.round,
+            role_slot_id: seat.role_slot_id.clone(),
+            role,
+            verdict,
+            evidence_complete: request.evidence_complete,
+            document: serde_json::from_str(document.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Committee finding could not be frozen",
+                )
+            })?,
+            document_hash: document.hash().clone(),
+            recorded_at: kontor_api::now(),
+        };
+        let mut projected = reviewer_findings;
+        if role == CommitteeRole::Reviewer
+            && !projected
+                .iter()
+                .any(|item| item.slot == finding.role_slot_id)
+        {
+            projected.push(RecordedFinding {
+                slot: finding.role_slot_id.clone(),
+                verdict: finding.verdict,
+                evidence_complete: finding.evidence_complete,
+            });
+        }
+        let reviewers_complete = conjunctive_outcome(
+            &template
+                .reviewer_slots()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            &projected,
+        )
+        .is_some();
+        let next_state = if reviewers_complete {
+            ConsultationRunState::AwaitingJudge
+        } else {
+            ConsultationRunState::Running
+        };
+        let (updated, inserted) = self
+            .state()?
+            .with_store(|store| {
+                store.record_committee_finding(
+                    project_id,
+                    run.id,
+                    &finding,
+                    request.expected_revision,
+                    next_state,
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        run = updated;
+        if reviewers_complete && template.judge_slot().is_some() {
+            self.materialize_committee_seats(&run, &template, true)
+                .await?;
+        }
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::RecordCommitteeFindings,
+            target,
+            run.revision,
+            &intent,
+        )?;
+        self.committee_run_dto(
+            &run,
+            receipt_id,
+            if inserted {
+                AppliedDto::Created
+            } else {
+                AppliedDto::Unchanged
+            },
+        )
     }
     async fn settle_committee_run(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _committee_run_id: CommitteeRunId,
-        _request: &SettleConsultationRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &SettleConsultationRequest,
     ) -> Result<CommitteeRunDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Committee service is not composed in this build",
-        ))
+        let run =
+            self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: run.mini_project_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "settle_committee_run",
+            "project": project_id.to_string(),
+            "committee_run": committee_run_id.to_string(),
+        }))?;
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            return self.committee_run_dto(&run, receipt.id, AppliedDto::Unchanged);
+        }
+        if request.seat_binding_id.is_some()
+            || request.output.is_some()
+            || request.disposition.is_some()
+            || request.rationale.is_some()
+            || !request.receipt_ids.is_empty()
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "Advisor settlement fields are not accepted on the Committee route",
+            ));
+        }
+        if run.state == ConsultationRunState::Settled {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "this Committee was settled under another idempotency key",
+            ));
+        }
+        if run.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the Committee run moved since the caller read it",
+                )
+                .with_revision(Some(run.revision)));
+        }
+        let (_, template) = self.committee_template(&run)?;
+        let findings = self
+            .state()?
+            .with_store(|store| {
+                store.list_committee_findings(project_id, committee_run_id, run.round)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let reviewers: Vec<RecordedFinding> = findings
+            .iter()
+            .filter(|finding| finding.role == CommitteeRole::Reviewer)
+            .map(|finding| RecordedFinding {
+                slot: finding.role_slot_id.clone(),
+                verdict: finding.verdict,
+                evidence_complete: finding.evidence_complete,
+            })
+            .collect();
+        let outcome = conjunctive_outcome(
+            &template
+                .reviewer_slots()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            &reviewers,
+        )
+        .ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a Committee cannot settle before every independent finding is durable",
+            )
+        })?;
+        if let Some(judge_slot) = template.judge_slot() {
+            let judge = findings
+                .iter()
+                .find(|finding| &finding.role_slot_id == judge_slot)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "the Committee cannot settle before its Judge aggregate is durable",
+                    )
+                })?;
+            if judge.role != CommitteeRole::Judge || judge.verdict != outcome {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the durable Judge aggregate contradicts the recomputed outcome",
+                ));
+            }
+        }
+        let evidence_hash = self
+            .intent(&serde_json::json!({
+                "schema_version": 1,
+                "committee_run_id": committee_run_id.to_string(),
+                "round": run.round,
+                "findings": findings
+                    .iter()
+                    .map(|finding| finding.document_hash.as_str())
+                    .collect::<Vec<_>>(),
+            }))?
+            .hash()
+            .clone();
+        let result_document = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "verdict": outcome.as_str(),
+            "evidence_hash": evidence_hash.as_str(),
+            "round": run.round,
+            "finding_hashes": findings
+                .iter()
+                .map(|finding| finding.document_hash.as_str())
+                .collect::<Vec<_>>(),
+        }))?;
+        let result: serde_json::Value =
+            serde_json::from_str(result_document.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Committee result could not be frozen",
+                )
+            })?;
+        let settled = self
+            .state()?
+            .with_store(|store| {
+                store.advance_consultation_run(
+                    project_id,
+                    run.id,
+                    run.revision,
+                    ConsultationRunState::Settled,
+                    Some((&result, result_document.hash())),
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::SettleCommitteeRun,
+            target,
+            settled.revision,
+            &intent,
+        )?;
+        self.committee_run_dto(&settled, receipt_id, AppliedDto::Created)
     }
     fn completion_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
         let state = self.state()?;

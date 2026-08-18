@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 35;
+pub const SCHEMA_VERSION: i64 = 36;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -166,6 +166,9 @@ const MIGRATIONS: &[&str] = &[
     // callback collides with the intent already standing instead of opening a
     // second turn.
     include_str!("../migrations/0035_epic_completion.sql"),
+    // Schema v36. Repository-backed Advisor/Committee runs, their exact native
+    // seats, immutable Committee findings and the five run command kinds.
+    include_str!("../migrations/0036_consultation_runs.sql"),
 ];
 
 const _: () = assert!(

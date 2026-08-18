@@ -12018,25 +12018,39 @@ fn advisor_definition(profile_id: &str, version: u32) -> serde_json::Value {
 
 const ADVISOR_PROFILE: &str = "01991c00-0000-7000-8000-0000000000a1";
 
-/// The composed catalog routes answer instead of falling through to the stubs.
-///
-/// Unlike an unconfigured Core Team, an empty consultation catalog is not a lie:
-/// a project that has published no consultation definition genuinely has none, and the
-/// aggregate revision it reports says the catalog is untouched rather than
-/// missing. What would have been a lie is answering emptily while no service
-/// existed, which is what that guard was for.
+/// The Advisor catalog starts empty; the production Committee preset is seeded.
+/// Existing projects receive the same hash-verified preset lazily, which is what
+/// makes upgrading a realm repair the catalog without rebuilding its database.
 #[tokio::test]
-async fn unpublished_consultation_catalogs_answer_empty_and_say_so() {
+async fn consultation_catalogs_seed_the_operational_committee_preset() {
     let world = World::open().await;
-    for family in ["advisor-profiles", "committee-templates"] {
-        let answer = Call::get(format!("/v1/projects/{}/{family}", world.project))
-            .signed_as(&world, "observer")
-            .send(&world)
-            .await;
-        assert_eq!(answer.status, 200, "{family}: {}", answer.body);
-        assert_eq!(answer.json()["revisions"].as_array().map(Vec::len), Some(0));
-        assert_eq!(answer.json()["revision"].as_u64(), Some(1));
-    }
+    let advisors = Call::get(format!("/v1/projects/{}/advisor-profiles", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(advisors.status, 200, "{}", advisors.body);
+    assert_eq!(
+        advisors.json()["revisions"].as_array().map(Vec::len),
+        Some(0)
+    );
+
+    let committees = Call::get(format!(
+        "/v1/projects/{}/committee-templates",
+        world.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(committees.status, 200, "{}", committees.body);
+    assert_eq!(
+        committees.json()["revisions"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        committees.json()["revisions"][0]["id"],
+        "01991c00-0000-7000-8000-000000000001"
+    );
+    assert_eq!(committees.json()["revisions"][0]["version"], 1);
 }
 
 /// Preview, publish, read back — and the version after it.
@@ -15819,5 +15833,261 @@ async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {
         answer.json().get("receipt_id").is_none(),
         "a refusal must not carry a receipt: {}",
         answer.body
+    );
+}
+
+/// The outage regression: the seeded Committee service must create real
+/// read-only seats, hold the Judge until both independent findings are durable,
+/// recompute the conjunction, settle, and replay without another native launch.
+#[tokio::test]
+async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
+    let composed = compose_realm("/tmp/kontor-op05-committee").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let (quick, preview_hash) =
+        quick_session_ready_to_promote(world, project, "Committee fixture", "committee-quick")
+            .await;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
+        &serde_json::json!({"preview_hash": preview_hash, "expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-promote")
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-control-seats")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let caller = materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .iter()
+        .find(|seat| seat["role"]["role_code"] == "LSA")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the LSA SeatBinding")
+        .to_owned();
+    let tpm = materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .iter()
+        .find(|seat| seat["role"]["role_code"] == "TPM")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the TPM SeatBinding")
+        .to_owned();
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let invoke_body = serde_json::json!({
+        "profile": {
+            "id": "01991c00-0000-7000-8000-000000000001",
+            "version": 1
+        },
+        "question": "Does this evidence satisfy the operational gate?",
+        "caller_seat_binding_id": caller,
+        "expected_revision": epic_read.json()["revision"],
+    });
+    let invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &invoke_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-invoke")
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    assert_eq!(invoked.json()["state"], "running");
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run id")
+        .to_owned();
+    let invoked_json = invoked.json();
+    let seats = invoked_json["seats"].as_array().expect("Committee seats");
+    let reviewer_ids: Vec<String> = seats
+        .iter()
+        .filter(|seat| {
+            seat["role_slot_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("reviewer"))
+        })
+        .map(|seat| {
+            assert!(
+                seat["observed_binding"].is_object(),
+                "reviewer was not launched"
+            );
+            seat["seat_binding_id"]
+                .as_str()
+                .expect("seat id")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(reviewer_ids.len(), 2, "{}", invoked.body);
+    let judge = seats
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "judge")
+        .expect("a Judge seat");
+    assert!(
+        judge["observed_binding"].is_null(),
+        "Judge launched before findings"
+    );
+
+    let mut revision = invoked.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("run revision");
+    for (index, reviewer) in reviewer_ids.iter().enumerate() {
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+            &serde_json::json!({
+                "seat_binding_id": reviewer,
+                "round": 1,
+                "verdict": "compliant",
+                "evidence_complete": true,
+                "rationale": format!("reviewer {} found the evidence complete", index + 1),
+                "evidence_refs": [format!("evidence:reviewer-{}", index + 1)],
+                "expected_revision": revision,
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("committee-reviewer-{}", index + 1))
+        .send(world)
+        .await;
+        assert_eq!(recorded.status, 200, "{}", recorded.body);
+        revision = recorded.json()["receipt"]["revision"]
+            .as_u64()
+            .expect("run revision");
+        if index == 1 {
+            assert_eq!(recorded.json()["state"], "awaiting_judge");
+            assert!(
+                recorded.json()["seats"]
+                    .as_array()
+                    .expect("seats")
+                    .iter()
+                    .find(|seat| seat["role_slot_id"] == "judge")
+                    .is_some_and(|seat| seat["observed_binding"].is_object()),
+                "Judge did not launch after both findings: {}",
+                recorded.body
+            );
+        }
+    }
+    let judge_id = invoked.json()["seats"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "judge")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("Judge id")
+        .to_owned();
+    let judged = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+        &serde_json::json!({
+            "seat_binding_id": judge_id,
+            "round": 1,
+            "verdict": "compliant",
+            "evidence_complete": true,
+            "rationale": "The conjunctive rule passes on both findings.",
+            "evidence_refs": ["evidence:reviewer-1", "evidence:reviewer-2"],
+            "expected_revision": revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-judge")
+    .send(world)
+    .await;
+    assert_eq!(judged.status, 200, "{}", judged.body);
+    revision = judged.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("run revision");
+
+    let settled = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/settle"),
+        &serde_json::json!({"expected_revision": revision}),
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-settle")
+    .send(world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["state"], "settled");
+    assert_eq!(settled.json()["outcome"], "compliant");
+
+    // Completion consumes the durable result; it does not require a caller to
+    // restate the verdict and does not synthesize one from native session state.
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("the built-in profile compiles");
+    let mut completion = kontor_scheduler::start(
+        &compiled,
+        SeatBindingId::parse(&tpm).expect("the TPM seat id"),
+        Vec::new(),
+    )
+    .expect("completion starts");
+    completion.phase = kontor_scheduler::CompletionPhase::Verdict(1);
+    let project_id = ProjectId::parse(project).expect("project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("epic id");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_epic_completion(&StoredEpicCompletion {
+                project_id,
+                mini_project_id: epic_id,
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&completion).expect("completion serializes"),
+                revision: completion.revision,
+                updated_at: kontor_api::now(),
+            })
+            .expect("completion state is seeded at its verdict gate");
+    });
+    let advanced = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("completion-consume-committee")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+    assert_eq!(advanced.json()["state"]["phase"]["phase"], "closeout");
+    assert_eq!(advanced.json()["state"]["rounds"][0]["verdict"], "pass");
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &invoke_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-invoke")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["committee_run_id"], run);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::LaunchConsultation(_)))
+            .count(),
+        3,
+        "a replay launched another native Committee seat"
     );
 }

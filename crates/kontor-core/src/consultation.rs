@@ -21,8 +21,8 @@
 //! same path with two and five.
 
 use crate::id::{
-    AdvisorProfileId, ArtifactKey, BoundedText, CanonicalDocument, CommitteeTemplateId,
-    ExternalName, RoleKey, RoleSlotId, SchemaVersion, SpecVersion,
+    AdvisorProfileId, AdvisorRunId, ArtifactKey, BoundedText, CanonicalDocument, CommitteeRunId,
+    CommitteeTemplateId, ExternalName, RoleKey, RoleSlotId, SchemaVersion, SpecVersion,
 };
 use crate::spec::{BudgetBounds, ModelChainPolicy, ProviderRef, SkillRef};
 use crate::{DomainError, DomainResult};
@@ -41,6 +41,41 @@ pub const MAX_COMMITTEE_SLOTS: usize = 16;
 /// a ceiling that would promise one.
 pub const MAX_COMMITTEE_ROUNDS: u32 = 2;
 
+/// The stable identity of either consultation family.
+///
+/// The public routes remain family-specific, but persistence and runtime
+/// placement are deliberately shared. Carrying the discriminator with the id
+/// prevents an Advisor UUID from being looked up as a Committee merely because
+/// both identifiers have the same wire shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "family", content = "run_id", rename_all = "snake_case")]
+pub enum ConsultationRunId {
+    /// One Advisor consultation.
+    Advisor(AdvisorRunId),
+    /// One Committee consultation.
+    Committee(CommitteeRunId),
+}
+
+impl ConsultationRunId {
+    /// Which service owns this run.
+    #[must_use]
+    pub const fn family(self) -> ConsultationFamily {
+        match self {
+            Self::Advisor(_) => ConsultationFamily::Advisor,
+            Self::Committee(_) => ConsultationFamily::Committee,
+        }
+    }
+
+    /// The canonical UUID text shared by storage and runtime labels.
+    #[must_use]
+    pub fn as_text(self) -> String {
+        match self {
+            Self::Advisor(id) => id.to_string(),
+            Self::Committee(id) => id.to_string(),
+        }
+    }
+}
+
 crate::closed_enum! {
     /// Which consultation family a published revision belongs to.
     ///
@@ -54,6 +89,26 @@ crate::closed_enum! {
         Advisor => "advisor",
         /// Committee templates.
         Committee => "committee",
+    }
+}
+
+crate::closed_enum! {
+    /// The durable lifecycle of one consultation.
+    ///
+    /// A run becomes `running` only after every declared native seat has been
+    /// read back. Committee findings then drive the two waiting states; no
+    /// runtime completion signal can skip either of them.
+    ConsultationRunState, "ConsultationRunState" {
+        /// The run and its frozen ids exist; native placement is incomplete.
+        Materializing => "materializing",
+        /// An Advisor is working, or a Committee's independent reviewers are.
+        Running => "running",
+        /// Every reviewer finding is durable and the Judge may now read them.
+        AwaitingJudge => "awaiting_judge",
+        /// The evidence-only result and disposition/verdict are immutable.
+        Settled => "settled",
+        /// The bounded protocol could not produce a typed result.
+        NeedsHuman => "needs_human",
     }
 }
 

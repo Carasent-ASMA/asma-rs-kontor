@@ -853,9 +853,32 @@ pub struct InvokeConsultationRequest {
     /// What is being asked.
     #[schema(value_type = String)]
     pub question: BoundedText,
+    /// Exact active epic seat whose role is authorized by the pinned policy.
+    #[schema(value_type = String)]
+    pub caller_seat_binding_id: SeatBindingId,
+    /// Optional ticket scope. It must belong to the epic in the route; absent
+    /// means the epic as a whole.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
     /// The epic revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
+}
+
+/// One declared consultation seat and its exact runtime readback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ConsultationSeatDto {
+    /// Stable profile/template slot.
+    pub role_slot_id: String,
+    /// Logical role under the pinned policy.
+    pub logical_role: String,
+    /// Exact persistent SeatBinding.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Native runtime identity after launch/recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_binding: Option<ObservedBindingDto>,
 }
 
 /// One Advisor consultation.
@@ -872,6 +895,11 @@ pub struct AdvisorRunDto {
     pub epic_id: MiniProjectId,
     /// The pinned profile it runs under.
     pub profile: ProfileRevisionDto,
+    /// Dedicated ASW node.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The one Advisor seat.
+    pub seats: Vec<ConsultationSeatDto>,
     /// Its lifecycle, in the server's own vocabulary.
     pub state: String,
     /// The receipt it was committed under.
@@ -892,21 +920,53 @@ pub struct CommitteeRunDto {
     pub epic_id: MiniProjectId,
     /// The pinned template it runs under.
     pub template: ProfileRevisionDto,
+    /// Dedicated CSW node.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// Every template-declared seat in stable slot order.
+    pub seats: Vec<ConsultationSeatDto>,
     /// Its lifecycle, in the server's own vocabulary.
     pub state: String,
     /// How many findings have been recorded so far.
     pub findings_recorded: u32,
+    /// One-based immutable round.
+    pub round: u32,
+    /// Server-recomputed settled outcome, when terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ConsultationVerdictDto>,
     /// The receipt it was committed under.
     pub receipt: MutationReceiptDto,
+}
+
+/// The closed Committee verdict vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsultationVerdictDto {
+    /// Every required reviewer passed with complete evidence.
+    Compliant,
+    /// At least one reviewer failed or cited incomplete evidence.
+    NonCompliant,
 }
 
 /// Record one round of Committee findings.
 #[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecordFindingsRequest {
-    /// The findings document.
-    #[schema(value_type = Object)]
-    pub findings: serde_json::Value,
+    /// Exact consultation SeatBinding submitting its own slot's evidence.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// One-based round.
+    pub round: u32,
+    /// Typed reviewer/Judge conclusion.
+    pub verdict: ConsultationVerdictDto,
+    /// Whether every evidence reference required by the finding is present.
+    pub evidence_complete: bool,
+    /// Bounded explanation.
+    #[schema(value_type = String)]
+    pub rationale: BoundedText,
+    /// References to already-authoritative evidence; no payload upload.
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
     /// The run revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
@@ -916,9 +976,42 @@ pub struct RecordFindingsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SettleConsultationRequest {
+    /// Exact seat recording Advisor output/disposition. Absent for Committee
+    /// settlement, whose evidence is already keyed by finding SeatBindings.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_binding_id: Option<SeatBindingId>,
+    /// Immutable Advisor output. Required only on the Advisor route.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<BoundedText>,
+    /// What the authorized caller decided about the advice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<AdviceDispositionDto>,
+    /// Bounded disposition rationale.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<BoundedText>,
+    /// Separately-authorized command receipts cited by the disposition.
+    #[serde(default)]
+    pub receipt_ids: Vec<String>,
     /// The run revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
+}
+
+/// What the caller did with one Advisor's evidence-only output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdviceDispositionDto {
+    /// Adopted.
+    Accepted,
+    /// Named parts adopted.
+    PartiallyAccepted,
+    /// Considered and declined.
+    Rejected,
+    /// Replaced by a later recorded decision.
+    Superseded,
 }
 
 /// Which phase one epic's completion stands in.

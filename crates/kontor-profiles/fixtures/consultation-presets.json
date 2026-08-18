@@ -45,7 +45,7 @@
       ],
       "aggregation": "conjunctive",
       "diversity": "distinct_provider_per_slot",
-      "allowed_caller_roles": ["architect"],
+      "allowed_caller_roles": ["architect", "lsa", "tpm"],
       "allowed_scopes": ["epic", "ticket"],
       "budget": {
         "max_tokens": 400000,

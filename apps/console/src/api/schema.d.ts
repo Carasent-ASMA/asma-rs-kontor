@@ -2261,6 +2261,11 @@ export interface components {
              */
             expected_revision: number;
         };
+        /**
+         * @description What the caller did with one Advisor's evidence-only output.
+         * @enum {string}
+         */
+        AdviceDispositionDto: "accepted" | "partially_accepted" | "rejected" | "superseded";
         /** @description One Advisor consultation. */
         AdvisorRunDto: {
             /** @description The consultation. */
@@ -2273,8 +2278,12 @@ export interface components {
             realm_id: string;
             /** @description The receipt it was committed under. */
             receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The one Advisor seat. */
+            seats: components["schemas"]["ConsultationSeatDto"][];
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
+            /** @description Dedicated ASW node. */
+            topology_node_id: string;
         };
         /** @description The JSON body every refusal is reported with. */
         ApiErrorBody: {
@@ -2862,14 +2871,24 @@ export interface components {
              * @description How many findings have been recorded so far.
              */
             findings_recorded: number;
+            outcome?: null | components["schemas"]["ConsultationVerdictDto"];
             /** @description The Realm it belongs to. */
             realm_id: string;
             /** @description The receipt it was committed under. */
             receipt: components["schemas"]["MutationReceiptDto"];
+            /**
+             * Format: int32
+             * @description One-based immutable round.
+             */
+            round: number;
+            /** @description Every template-declared seat in stable slot order. */
+            seats: components["schemas"]["ConsultationSeatDto"][];
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
             /** @description The pinned template it runs under. */
             template: components["schemas"]["ProfileRevisionDto"];
+            /** @description Dedicated CSW node. */
+            topology_node_id: string;
         };
         /**
          * @description One Committee aggregate verdict.
@@ -3132,6 +3151,21 @@ export interface components {
              */
             version: number;
         };
+        /** @description One declared consultation seat and its exact runtime readback. */
+        ConsultationSeatDto: {
+            /** @description Logical role under the pinned policy. */
+            logical_role: string;
+            observed_binding?: null | components["schemas"]["ObservedBindingDto"];
+            /** @description Stable profile/template slot. */
+            role_slot_id: string;
+            /** @description Exact persistent SeatBinding. */
+            seat_binding_id: string;
+        };
+        /**
+         * @description The closed Committee verdict vocabulary.
+         * @enum {string}
+         */
+        ConsultationVerdictDto: "compliant" | "non_compliant";
         /**
          * @description What one bound container's title is, and what it should be.
          *
@@ -3753,6 +3787,8 @@ export interface components {
          *     is the realm's routing decision, not the caller's.
          */
         InvokeConsultationRequest: {
+            /** @description Exact active epic seat whose role is authorized by the pinned policy. */
+            caller_seat_binding_id: string;
             /**
              * Format: int64
              * @description The epic revision the caller believes is current.
@@ -3762,6 +3798,11 @@ export interface components {
             profile: components["schemas"]["RevisionRefDto"];
             /** @description What is being asked. */
             question: string;
+            /**
+             * @description Optional ticket scope. It must belong to the epic in the route; absent
+             *     means the epic as a whole.
+             */
+            task_id?: string | null;
         };
         /** @description One immutable late-handoff disposition recorded after runtime cancellation. */
         LateHandoffAttestationDto: {
@@ -4424,13 +4465,26 @@ export interface components {
         };
         /** @description Record one round of Committee findings. */
         RecordFindingsRequest: {
+            /** @description Whether every evidence reference required by the finding is present. */
+            evidence_complete: boolean;
+            /** @description References to already-authoritative evidence; no payload upload. */
+            evidence_refs?: string[];
             /**
              * Format: int64
              * @description The run revision the caller believes is current.
              */
             expected_revision: number;
-            /** @description The findings document. */
-            findings: Record<string, never>;
+            /** @description Bounded explanation. */
+            rationale: string;
+            /**
+             * Format: int32
+             * @description One-based round.
+             */
+            round: number;
+            /** @description Exact consultation SeatBinding submitting its own slot's evidence. */
+            seat_binding_id: string;
+            /** @description Typed reviewer/Judge conclusion. */
+            verdict: components["schemas"]["ConsultationVerdictDto"];
         };
         /** @description What `gates/{gate_id}:record` is asked for. */
         RecordGateRequest: {
@@ -5061,11 +5115,23 @@ export interface components {
         };
         /** @description Settle one consultation. */
         SettleConsultationRequest: {
+            disposition?: null | components["schemas"]["AdviceDispositionDto"];
             /**
              * Format: int64
              * @description The run revision the caller believes is current.
              */
             expected_revision: number;
+            /** @description Immutable Advisor output. Required only on the Advisor route. */
+            output?: string | null;
+            /** @description Bounded disposition rationale. */
+            rationale?: string | null;
+            /** @description Separately-authorized command receipts cited by the disposition. */
+            receipt_ids?: string[];
+            /**
+             * @description Exact seat recording Advisor output/disposition. Absent for Committee
+             *     settlement, whose evidence is already keyed by finding SeatBindings.
+             */
+            seat_binding_id?: string | null;
         };
         /**
          * @description What `turns:settle` is asked for.

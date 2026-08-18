@@ -18,17 +18,19 @@ use kontor_core::calendar::{
     HolidayProviderKind, HolidaySourceRevision, IanaTimeZone, OverrideExpiry, OverrideRevocation,
     ScheduleOverride, WeeklyWindow, WorkCalendarAssignment, WorkScope,
 };
-use kontor_core::consultation::ConsultationFamily;
+use kontor_core::consultation::{
+    CommitteeRole, CommitteeVerdict, ConsultationFamily, ConsultationRunId, ConsultationRunState,
+};
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ContentHash,
-    CredentialAlias, CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey,
-    GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
-    ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, QuickSessionId, RealmId,
-    RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
-    ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId, TaskId,
-    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
-    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
+    CalendarExceptionId, CalendarProfileId, CanonicalDocument, CapacityObservationId,
+    CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode, EventCursor,
+    ExternalId, ExternalName, GateKey, GuardrailEvaluationId, HolidaySourceId, IdempotencyKey,
+    IntakeReceiptId, MiniProjectId, ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId,
+    QuickSessionId, RealmId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId,
+    RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion,
+    StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
+    TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
     format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
@@ -50,12 +52,12 @@ use kontor_core::repository::{
     RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
     RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
     SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredCapacityConfiguration, StoredCompletionProfile, StoredCompletionWake,
-    StoredConsultationProfileRevision, StoredCoreTeamRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task,
-    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
-    validate_dependency_graph,
+    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredConsultationProfileRevision, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task, TaskInspection,
+    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
@@ -118,6 +120,241 @@ pub(crate) fn conflict(subject: &'static str, rule: &'static str) -> RepositoryE
 
 pub(crate) fn text(timestamp: Timestamp) -> String {
     format_utc_timestamp(timestamp)
+}
+
+fn canonical_json(value: &serde_json::Value, subject: &'static str) -> RepositoryResult<String> {
+    CanonicalDocument::from_serializable(value)
+        .map(|document| document.json().to_owned())
+        .map_err(|_| RepositoryError::Conflict {
+            subject,
+            rule: "the document cannot be canonicalized",
+        })
+}
+
+type ConsultationRunColumns = (
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    i64,
+    String,
+    String,
+    Option<String>,
+);
+
+fn consultation_run_id(
+    family: ConsultationFamily,
+    value: &str,
+) -> RepositoryResult<ConsultationRunId> {
+    match family {
+        ConsultationFamily::Advisor => AdvisorRunId::parse(value).map(ConsultationRunId::Advisor),
+        ConsultationFamily::Committee => {
+            CommitteeRunId::parse(value).map(ConsultationRunId::Committee)
+        }
+    }
+    .map_err(RepositoryError::from)
+}
+
+fn read_consultation_run(
+    project_id: ProjectId,
+    run_id: ConsultationRunId,
+    columns: ConsultationRunColumns,
+) -> RepositoryResult<StoredConsultationRun> {
+    let (
+        mini_project_id,
+        profile_id,
+        profile_version,
+        definition_hash,
+        question,
+        question_hash,
+        context,
+        context_hash,
+        caller_seat_binding_id,
+        topology_node_id,
+        invoke_key,
+        invoke_intent_hash,
+        state,
+        round,
+        result,
+        result_hash,
+        revision,
+        created_at,
+        updated_at,
+        settled_at,
+    ) = columns;
+    let question = BoundedText::parse(&question)?;
+    let question_hash = ContentHash::parse(&question_hash)?;
+    if ContentHash::of(question.as_str().as_bytes()) != question_hash {
+        return Err(RepositoryError::Conflict {
+            subject: "consultation run",
+            rule: "the stored question no longer matches its digest",
+        });
+    }
+    let context_hash = ContentHash::parse(&context_hash)?;
+    let context = CanonicalDocument::from_stored(&context, &context_hash)?;
+    let result_hash = result_hash
+        .map(|hash| ContentHash::parse(&hash))
+        .transpose()?;
+    let result = match (result, result_hash.as_ref()) {
+        (Some(json), Some(hash)) => Some(
+            serde_json::from_str(CanonicalDocument::from_stored(&json, hash)?.json()).map_err(
+                |error| RepositoryError::Backend {
+                    detail: format!("a consultation result could not be decoded: {error}"),
+                },
+            )?,
+        ),
+        (None, None) => None,
+        _ => {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "result bytes and digest must be present together",
+            });
+        }
+    };
+    Ok(StoredConsultationRun {
+        id: run_id,
+        project_id,
+        mini_project_id: MiniProjectId::parse(&mini_project_id)?,
+        profile_id,
+        profile_version: read_version(profile_version)?,
+        definition_hash: ContentHash::parse(&definition_hash)?,
+        question,
+        question_hash,
+        context: serde_json::from_str(context.json()).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a consultation context could not be decoded: {error}"),
+            }
+        })?,
+        context_hash,
+        caller_seat_binding_id: SeatBindingId::parse(&caller_seat_binding_id)?,
+        topology_node_id: TopologyNodeId::parse(&topology_node_id)?,
+        invoke_key: IdempotencyKey::parse(&invoke_key)?,
+        invoke_intent_hash: ContentHash::parse(&invoke_intent_hash)?,
+        state: ConsultationRunState::parse(&state)?,
+        round: u32::try_from(round).map_err(|_| RepositoryError::Conflict {
+            subject: "consultation run",
+            rule: "round is outside the supported range",
+        })?,
+        result,
+        result_hash,
+        revision: revision_of(revision)?,
+        created_at: read_timestamp(&created_at)?,
+        updated_at: read_timestamp(&updated_at)?,
+        settled_at: settled_at.map(|value| read_timestamp(&value)).transpose()?,
+    })
+}
+
+type ConsultationSeatColumns = (
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn read_consultation_seat(
+    run_id: ConsultationRunId,
+    columns: ConsultationSeatColumns,
+) -> RepositoryResult<StoredConsultationSeat> {
+    let (
+        role_slot_id,
+        committee_role,
+        logical_role,
+        seat_binding_id,
+        model_rung,
+        runtime_kind,
+        host,
+        generation,
+        native_id,
+        provider_session_id,
+        observed_at,
+    ) = columns;
+    let native_identity = match (runtime_kind, host, generation, native_id) {
+        (Some(runtime_kind), Some(host), Some(generation), Some(native_id)) => {
+            Some(NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                host: ExternalName::parse(&host)?,
+                generation: u64::try_from(generation).map_err(|_| RepositoryError::Conflict {
+                    subject: "consultation seat",
+                    rule: "runtime generation is negative",
+                })?,
+                native_id: ExternalId::parse(&native_id)?,
+            })
+        }
+        (None, None, None, None) => None,
+        _ => {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat",
+                rule: "native identity is only partially present",
+            });
+        }
+    };
+    Ok(StoredConsultationSeat {
+        run_id,
+        role_slot_id: RoleSlotId::parse(&role_slot_id)?,
+        committee_role: committee_role
+            .map(|role| CommitteeRole::parse(&role))
+            .transpose()?,
+        logical_role: RoleKey::parse(&logical_role)?,
+        seat_binding_id: SeatBindingId::parse(&seat_binding_id)?,
+        model_rung: serde_json::from_str(&model_rung).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a consultation model rung could not be decoded: {error}"),
+            }
+        })?,
+        native_identity,
+        provider_session_id: provider_session_id
+            .map(|value| ExternalId::parse(&value))
+            .transpose()?,
+        observed_at: observed_at
+            .map(|value| read_timestamp(&value))
+            .transpose()?,
+    })
+}
+
+type CommitteeFindingColumns = (String, String, String, i64, String, String, String);
+
+fn read_committee_finding(
+    committee_run_id: CommitteeRunId,
+    round: u32,
+    columns: CommitteeFindingColumns,
+) -> RepositoryResult<StoredCommitteeFinding> {
+    let (role_slot_id, role, verdict, complete, document, document_hash, recorded_at) = columns;
+    let document_hash = ContentHash::parse(&document_hash)?;
+    let document = CanonicalDocument::from_stored(&document, &document_hash)?;
+    Ok(StoredCommitteeFinding {
+        committee_run_id,
+        round,
+        role_slot_id: RoleSlotId::parse(&role_slot_id)?,
+        role: CommitteeRole::parse(&role)?,
+        verdict: CommitteeVerdict::parse(&verdict)?,
+        evidence_complete: complete == 1,
+        document: serde_json::from_str(document.json()).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a Committee finding could not be decoded: {error}"),
+            }
+        })?,
+        document_hash,
+        recorded_at: read_timestamp(&recorded_at)?,
+    })
 }
 
 pub(crate) fn read_timestamp(value: &str) -> RepositoryResult<Timestamp> {
@@ -1231,6 +1468,658 @@ impl SqliteStore {
                 },
             )
             .collect()
+    }
+
+    /// Atomically freeze one consultation, its dedicated topology node and all
+    /// template-declared logical seats before any native launch.
+    ///
+    /// # Errors
+    /// Refuses any duplicate run/node/seat, cross-project reference or backend
+    /// failure. No partial topology survives a refused insert.
+    pub fn create_consultation_run(
+        &self,
+        run: &StoredConsultationRun,
+        node: &NewSessionTopologyNode,
+        seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
+    ) -> RepositoryResult<()> {
+        if run.project_id != node.project_id
+            || run.topology_node_id != node.id
+            || node.mini_project_id != Some(run.mini_project_id)
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "the frozen run and topology node do not describe one scope",
+            });
+        }
+        let verified_context = CanonicalDocument::from_serializable(&run.context)?;
+        if ContentHash::of(run.question.as_str().as_bytes()) != run.question_hash
+            || verified_context.hash() != &run.context_hash
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "frozen input does not match its digest",
+            });
+        }
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO topology_nodes
+                     (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
+                      kind, parent_id, lifecycle, placement, task_id, revision,
+                      created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                         'active', 'unbound', NULL, 1, ?9, ?9)",
+                params![
+                    node.id.to_string(),
+                    node.project_id.to_string(),
+                    node.mini_project_id.map(|id| id.to_string()),
+                    node.topology.spec_id.to_string(),
+                    version_column(node.topology.version),
+                    node.topology.canonical_hash.as_str(),
+                    node.kind.as_str(),
+                    node.parent_id.map(|id| id.to_string()),
+                    text(node.created_at),
+                ],
+            )
+            .map_err(backend)?;
+
+        let context = canonical_json(&run.context, "consultation context")?;
+        let result = run
+            .result
+            .as_ref()
+            .map(|value| canonical_json(value, "consultation result"))
+            .transpose()?;
+        transaction
+            .execute(
+                "INSERT INTO consultation_runs
+                     (run_id, project_id, mini_project_id, family, profile_id,
+                      profile_version, definition_hash, question, question_hash,
+                      context, context_hash, caller_seat_binding_id, topology_node_id,
+                      invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
+                      updated_at, settled_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                         ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                params![
+                    run.id.as_text(),
+                    run.project_id.to_string(),
+                    run.mini_project_id.to_string(),
+                    run.id.family().as_str(),
+                    run.profile_id,
+                    version_column(run.profile_version),
+                    run.definition_hash.as_str(),
+                    run.question.as_str(),
+                    run.question_hash.as_str(),
+                    context,
+                    run.context_hash.as_str(),
+                    run.caller_seat_binding_id.to_string(),
+                    run.topology_node_id.to_string(),
+                    run.invoke_key.as_str(),
+                    run.invoke_intent_hash.as_str(),
+                    run.state.as_str(),
+                    i64::from(run.round),
+                    result,
+                    run.result_hash.as_ref().map(ContentHash::as_str),
+                    i64::try_from(run.revision.get()).unwrap_or(i64::MAX),
+                    text(run.created_at),
+                    text(run.updated_at),
+                    run.settled_at.map(text),
+                ],
+            )
+            .map_err(backend)?;
+
+        for (seat, binding) in seats {
+            if seat.run_id != run.id
+                || binding.id != seat.seat_binding_id
+                || binding.project_id != run.project_id
+                || binding.topology_node_id != node.id
+                || binding.role_slot_id != seat.role_slot_id
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "consultation seat",
+                    rule: "the frozen seat and SeatBinding do not describe one slot",
+                });
+            }
+            transaction
+                .execute(
+                    "INSERT INTO seat_bindings
+                         (id, project_id, topology_node_id, role_slot_id,
+                          role_catalog_id, role_catalog_version, role_code,
+                          standard_title, custom_display_name, task_id, team_run_id,
+                          lifecycle, attach_deadline, last_attached_at, last_activity_at,
+                          parent_seat_binding_id, released_at,
+                          replaced_by_seat_binding_id, runtime_reported,
+                          revision, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                             NULL, NULL, 'active', ?10, NULL, NULL, ?11,
+                             NULL, NULL, NULL, 1, ?12, ?12)",
+                    params![
+                        binding.id.to_string(),
+                        binding.project_id.to_string(),
+                        binding.topology_node_id.to_string(),
+                        binding.role_slot_id.as_str(),
+                        binding.role.catalog_id.to_string(),
+                        version_column(binding.role.catalog_revision),
+                        binding.role.role_code.as_str(),
+                        binding.role.standard_title.as_str(),
+                        binding
+                            .role
+                            .custom_display_name
+                            .as_ref()
+                            .map(ExternalName::as_str),
+                        text(binding.attach_deadline),
+                        binding.parent_seat_binding_id.map(|id| id.to_string()),
+                        text(binding.created_at),
+                    ],
+                )
+                .map_err(backend)?;
+            let model = serde_json::to_string(&seat.model_rung).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("a consultation model rung could not be encoded: {error}"),
+                }
+            })?;
+            transaction
+                .execute(
+                    "INSERT INTO consultation_seats
+                         (run_id, project_id, role_slot_id, committee_role,
+                          logical_role, seat_binding_id, model_rung,
+                          runtime_kind, host, generation, native_id,
+                          provider_session_id, observed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                             NULL, NULL, NULL, NULL, NULL, NULL)",
+                    params![
+                        run.id.as_text(),
+                        run.project_id.to_string(),
+                        seat.role_slot_id.as_str(),
+                        seat.committee_role.map(CommitteeRole::as_str),
+                        seat.logical_role.as_str(),
+                        seat.seat_binding_id.to_string(),
+                        model,
+                    ],
+                )
+                .map_err(backend)?;
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// One family-qualified consultation in one project.
+    pub fn get_consultation_run(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> RepositoryResult<Option<StoredConsultationRun>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT mini_project_id, profile_id, profile_version,
+                        definition_hash, question, question_hash, context,
+                        context_hash, caller_seat_binding_id, topology_node_id,
+                        invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
+                        updated_at, settled_at
+                 FROM consultation_runs
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = ?3",
+                params![project_id.to_string(), run_id.as_text(), run_id.family().as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, String>(12)?,
+                        row.get::<_, i64>(13)?,
+                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, Option<String>>(15)?,
+                        row.get::<_, i64>(16)?,
+                        row.get::<_, String>(17)?,
+                        row.get::<_, String>(18)?,
+                        row.get::<_, Option<String>>(19)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|columns| read_consultation_run(project_id, run_id, columns))
+            .transpose()
+    }
+
+    /// The run an invocation key already froze, if any.
+    pub fn get_consultation_run_by_key(
+        &self,
+        project_id: ProjectId,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<StoredConsultationRun>> {
+        let found: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT run_id, family FROM consultation_runs
+                 WHERE project_id = ?1 AND invoke_key = ?2",
+                params![project_id.to_string(), key.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((run_id, family)) = found else {
+            return Ok(None);
+        };
+        let family = ConsultationFamily::parse(&family)?;
+        self.get_consultation_run(project_id, consultation_run_id(family, &run_id)?)
+    }
+
+    /// Every run of one family in an epic, oldest first.
+    pub fn list_consultation_runs(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+        family: ConsultationFamily,
+    ) -> RepositoryResult<Vec<StoredConsultationRun>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT run_id FROM consultation_runs
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND family = ?3
+                 ORDER BY created_at, run_id",
+            )
+            .map_err(backend)?;
+        let ids = statement
+            .query_map(
+                params![
+                    project_id.to_string(),
+                    mini_project_id.to_string(),
+                    family.as_str()
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        ids.into_iter()
+            .map(|id| {
+                let run_id = consultation_run_id(family, &id)?;
+                self.get_consultation_run(project_id, run_id)?
+                    .ok_or(RepositoryError::NotFound {
+                        subject: "consultation run",
+                    })
+            })
+            .collect()
+    }
+
+    /// The frozen seats of one consultation, in slot order.
+    pub fn list_consultation_seats(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> RepositoryResult<Vec<StoredConsultationSeat>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT role_slot_id, committee_role, logical_role,
+                        seat_binding_id, model_rung, runtime_kind, host,
+                        generation, native_id, provider_session_id, observed_at
+                 FROM consultation_seats
+                 WHERE project_id = ?1 AND run_id = ?2
+                 ORDER BY role_slot_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string(), run_id.as_text()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                ))
+            })
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(|row| read_consultation_seat(run_id, row))
+            .collect()
+    }
+
+    /// Persist the exact native identity a consultation launch read back.
+    /// Repeating the same observation is a replay; a different identity for the
+    /// same frozen seat is a conflict.
+    pub fn bind_consultation_seat(
+        &self,
+        project_id: ProjectId,
+        seat: &StoredConsultationSeat,
+    ) -> RepositoryResult<()> {
+        let identity = seat
+            .native_identity
+            .as_ref()
+            .ok_or(RepositoryError::Conflict {
+                subject: "consultation seat",
+                rule: "a native readback is required before binding",
+            })?;
+        let transaction = self.begin()?;
+        let existing: Option<(String, String, i64, String)> = transaction
+            .query_row(
+                "SELECT runtime_kind, host, generation, native_id
+                 FROM consultation_seats
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND runtime_kind IS NOT NULL",
+                params![
+                    project_id.to_string(),
+                    seat.run_id.as_text(),
+                    seat.role_slot_id.as_str()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((runtime, host, generation, native)) = existing {
+            if runtime != identity.runtime_kind.as_str()
+                || host != identity.host.as_str()
+                || u64::try_from(generation).ok() != Some(identity.generation)
+                || native != identity.native_id.as_str()
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "consultation seat",
+                    rule: "a frozen seat cannot move to another native session",
+                });
+            }
+            transaction.commit().map_err(backend)?;
+            return Ok(());
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_seats
+                 SET runtime_kind = ?4, host = ?5, generation = ?6,
+                     native_id = ?7, provider_session_id = ?8, observed_at = ?9
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND runtime_kind IS NULL",
+                params![
+                    project_id.to_string(),
+                    seat.run_id.as_text(),
+                    seat.role_slot_id.as_str(),
+                    identity.runtime_kind.as_str(),
+                    identity.host.as_str(),
+                    i64::try_from(identity.generation).unwrap_or(i64::MAX),
+                    identity.native_id.as_str(),
+                    seat.provider_session_id.as_ref().map(ExternalId::as_str),
+                    seat.observed_at.map(text),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::NotFound {
+                subject: "consultation seat",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Append one immutable Committee finding. Returns `true` when inserted and
+    /// `false` for an exact replay.
+    pub fn append_committee_finding(
+        &self,
+        project_id: ProjectId,
+        finding: &StoredCommitteeFinding,
+    ) -> RepositoryResult<bool> {
+        let document = canonical_json(&finding.document, "Committee finding")?;
+        let transaction = self.begin()?;
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT document_hash FROM committee_findings
+                 WHERE project_id = ?1 AND committee_run_id = ?2
+                   AND round = ?3 AND role_slot_id = ?4",
+                params![
+                    project_id.to_string(),
+                    finding.committee_run_id.to_string(),
+                    i64::from(finding.round),
+                    finding.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some(hash) = existing {
+            if hash != finding.document_hash.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "Committee finding",
+                    rule: "a slot already recorded a different finding for this round",
+                });
+            }
+            transaction.commit().map_err(backend)?;
+            return Ok(false);
+        }
+        transaction
+            .execute(
+                "INSERT INTO committee_findings
+                     (committee_run_id, project_id, round, role_slot_id, role,
+                      verdict, evidence_complete, document, document_hash, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    finding.committee_run_id.to_string(),
+                    project_id.to_string(),
+                    i64::from(finding.round),
+                    finding.role_slot_id.as_str(),
+                    finding.role.as_str(),
+                    finding.verdict.as_str(),
+                    i64::from(finding.evidence_complete),
+                    document,
+                    finding.document_hash.as_str(),
+                    text(finding.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(true)
+    }
+
+    /// Atomically append one immutable finding and advance the owning run.
+    /// An exact existing document is a replay and leaves the revision alone;
+    /// a different document for the frozen slot conflicts.
+    pub fn record_committee_finding(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        finding: &StoredCommitteeFinding,
+        expected_revision: AggregateRevision,
+        next_state: ConsultationRunState,
+        updated_at: Timestamp,
+    ) -> RepositoryResult<(StoredConsultationRun, bool)> {
+        let ConsultationRunId::Committee(committee_run_id) = run_id else {
+            return Err(RepositoryError::Conflict {
+                subject: "Committee finding",
+                rule: "a finding can only belong to a Committee run",
+            });
+        };
+        if committee_run_id != finding.committee_run_id {
+            return Err(RepositoryError::Conflict {
+                subject: "Committee finding",
+                rule: "the finding and run identity differ",
+            });
+        }
+        let document = canonical_json(&finding.document, "Committee finding")?;
+        let transaction = self.begin()?;
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT document_hash FROM committee_findings
+                 WHERE project_id = ?1 AND committee_run_id = ?2
+                   AND round = ?3 AND role_slot_id = ?4",
+                params![
+                    project_id.to_string(),
+                    committee_run_id.to_string(),
+                    i64::from(finding.round),
+                    finding.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some(hash) = existing {
+            if hash != finding.document_hash.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "Committee finding",
+                    rule: "a slot already recorded a different finding for this round",
+                });
+            }
+            transaction.commit().map_err(backend)?;
+            let run = self.get_consultation_run(project_id, run_id)?.ok_or(
+                RepositoryError::NotFound {
+                    subject: "consultation run",
+                },
+            )?;
+            return Ok((run, false));
+        }
+        transaction
+            .execute(
+                "INSERT INTO committee_findings
+                     (committee_run_id, project_id, round, role_slot_id, role,
+                      verdict, evidence_complete, document, document_hash, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    finding.committee_run_id.to_string(),
+                    project_id.to_string(),
+                    i64::from(finding.round),
+                    finding.role_slot_id.as_str(),
+                    finding.role.as_str(),
+                    finding.verdict.as_str(),
+                    i64::from(finding.evidence_complete),
+                    document,
+                    finding.document_hash.as_str(),
+                    text(finding.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                 SET state = ?4, revision = revision + 1, updated_at = ?5
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = ?3
+                   AND revision = ?6 AND result IS NULL",
+                params![
+                    project_id.to_string(),
+                    run_id.as_text(),
+                    run_id.family().as_str(),
+                    next_state.as_str(),
+                    text(updated_at),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "the run moved since it was read",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        let run =
+            self.get_consultation_run(project_id, run_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "consultation run",
+                })?;
+        Ok((run, true))
+    }
+
+    /// Every immutable finding in one Committee round, in slot order.
+    pub fn list_committee_findings(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: kontor_core::id::CommitteeRunId,
+        round: u32,
+    ) -> RepositoryResult<Vec<StoredCommitteeFinding>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT role_slot_id, role, verdict, evidence_complete,
+                        document, document_hash, recorded_at
+                 FROM committee_findings
+                 WHERE project_id = ?1 AND committee_run_id = ?2 AND round = ?3
+                 ORDER BY role_slot_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![
+                    project_id.to_string(),
+                    committee_run_id.to_string(),
+                    i64::from(round)
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(|row| read_committee_finding(committee_run_id, round, row))
+            .collect()
+    }
+
+    /// Advance one consultation under compare-and-swap.
+    pub fn advance_consultation_run(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        expected_revision: AggregateRevision,
+        state: ConsultationRunState,
+        result: Option<(&serde_json::Value, &ContentHash)>,
+        updated_at: Timestamp,
+    ) -> RepositoryResult<StoredConsultationRun> {
+        let encoded = result
+            .map(|(value, _)| canonical_json(value, "consultation result"))
+            .transpose()?;
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                 SET state = ?4, result = ?5, result_hash = ?6,
+                     revision = revision + 1, updated_at = ?7,
+                     settled_at = CASE WHEN ?4 = 'settled' THEN ?7 ELSE NULL END
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = ?3
+                   AND revision = ?8",
+                params![
+                    project_id.to_string(),
+                    run_id.as_text(),
+                    run_id.family().as_str(),
+                    state.as_str(),
+                    encoded,
+                    result.map(|(_, hash)| hash.as_str()),
+                    text(updated_at),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "the run moved since it was read",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_run(project_id, run_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })
     }
 
     /// Record one Quick session and the ids its placement used.

@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus, CompactionTelemetry};
 use kontor_core::id::{
     AgentRunId, CanonicalDocument, CompactionReceiptId, ContentHash, ExternalId, ExternalName,
-    RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId, Timestamp, TopologyNodeId,
+    RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
     parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
@@ -28,7 +28,8 @@ use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact
 use serde::Deserialize;
 
 use crate::adapter::{
-    LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
+    ConsultationLaunchOutcome, ConsultationLaunchRequest, LaunchOutcome, MessageAck, PermissionAck,
+    RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -281,6 +282,8 @@ pub enum AdapterCall {
     PreviewRetitleContainer(TopologyNodeId),
     /// A run was launched.
     Launch(AgentRunId),
+    /// A read-only consultation seat was launched or recovered.
+    LaunchConsultation(SeatBindingId),
     /// A binding was resumed.
     Resume(RuntimeBindingId),
     /// A message was delivered.
@@ -464,6 +467,8 @@ struct FakeState {
     /// the container too would make "re-find it by its stored native id"
     /// untestable, and that path is the whole of the restart contract.
     containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
+    /// Consultation seats keyed by their durable SeatBinding identity.
+    consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// The visible title each container currently carries.
     ///
     /// Held apart from the binding because it is the one thing about a
@@ -901,6 +906,7 @@ impl ScriptedFakeRuntime {
                     .expect("valid runtime root"),
                 workspaces: BTreeMap::new(),
                 containers: BTreeMap::new(),
+                consultations: BTreeMap::new(),
                 container_titles: BTreeMap::new(),
                 task_title_scopes: BTreeMap::new(),
                 bindings: BTreeMap::new(),
@@ -1727,6 +1733,63 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         }
         outcome
     }
+
+    async fn launch_consultation(
+        &self,
+        request: &ConsultationLaunchRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        request
+            .container
+            .ensure_node(request.container.binding.topology_node_id)?;
+        request.container.ensure_correlated()?;
+        if request.container.binding.root.as_ref() != Some(&request.cwd) {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the consultation cwd is not the prepared container root",
+            });
+        }
+        preflight(
+            &state.capabilities,
+            &OperationContext {
+                operation: RuntimeCapability::Launch,
+                autonomous: true,
+                account_pinned: false,
+                binding: None,
+                placement: None,
+                current_generation: None,
+                demand: Some(LimitDemand::MessageBytes(
+                    u64::try_from(request.prompt.as_str().len()).unwrap_or(u64::MAX),
+                )),
+                context_policy: Some(&request.context_policy),
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::LaunchConsultation(request.seat_binding_id));
+        if let Some(existing) = state.consultations.get(&request.seat_binding_id) {
+            return Ok(existing.clone());
+        }
+        state.minted = state.minted.saturating_add(1);
+        let identity = state.identity(ExternalId::parse(&format!(
+            "native-consultation-{}",
+            state.minted
+        ))?);
+        let outcome = ConsultationLaunchOutcome {
+            identity,
+            provider_session_id: Some(ExternalId::parse(&format!(
+                "provider-consultation-{}",
+                state.minted
+            ))?),
+            observed_at: request.requested_at,
+            created: true,
+        };
+        state
+            .consultations
+            .insert(request.seat_binding_id, outcome.clone());
+        Ok(outcome)
+    }
+
     async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation> {
         let mut state = self.lock();
         let declared = state.capabilities.clone();
