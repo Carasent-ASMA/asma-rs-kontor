@@ -2,7 +2,38 @@
 
 Date: 2026-08-18
 Task: `KON-OP-09` / Jira `ASMA-7878`
-QA gate verdict: **rejected**
+QA gate verdict: **passed** at `ffeffc3` (round 2)
+
+| Round | Head | Verdict |
+| --- | --- | --- |
+| 1 | `47948b6` / `7cf08a4` | rejected — two acceptance proofs missing |
+| 2 | `ffeffc3` / `4f3242b` | **passed** |
+
+## Round 2 — passed
+
+The `ffeffc3` remediation closes both findings from round 1, and inspector
+round 3 (`4f3242b`) independently reviewed the changes and their focused
+mutations. This QA rerun independently verified the accepted head:
+
+| Check | Result |
+| --- | --- |
+| Generated API drift | pass |
+| Console type check | pass |
+| Console component/contract tests | 16 files, **290 passed** |
+| Browser QA | 4 passed: Project Operations and Delivery Teams at desktop and phone widths |
+| Rust format and clippy | pass |
+| Workspace verification | pass, including `tests/e2e/pilot.rs` and `pilot_live.rs` |
+
+The corrected UI now holds one idempotency key for an unchanged request intent,
+releasing it only after a confirmed receipt. It also renders the Core Team and
+Completion server projections independently from their catalog siblings, so a
+catalog refusal no longer erases valid evidence. The new behavior-level tests
+cover replay/key rotation and the three independent-panel cases.
+
+The prior rejected round remains below as the historical record that prompted
+this remediation. The remaining `release()`-coverage gap and the unavailable
+materialize/settle controls are non-blocking observations, as recorded in the
+independent round-3 review; they do not invalidate the OP-09 acceptance proof.
 
 ## Scope and immutable evidence
 
