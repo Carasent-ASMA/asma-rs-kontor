@@ -38,7 +38,7 @@ use crate::capability::{
 };
 use crate::container::{
     ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
-    ContainerProjection, ContainerRequest,
+    ContainerProjection, ContainerRequest, RetitleContainerOutcome, RetitleContainerRequest,
 };
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -77,6 +77,9 @@ pub enum ScriptStep {
     /// The next cancel returns an authoritatively observed cancellation instead
     /// of a bare acknowledgement.
     CancelObservedTerminal,
+    /// The next inspect finds the bound session's native process missing while
+    /// making no claim that the run itself finished.
+    InspectProcessMissing,
     /// The next live subscription ends without the session reaching a terminal
     /// state.
     CloseStreamWithoutTerminal,
@@ -114,6 +117,7 @@ impl ScriptStep {
             Self::EchoCorrelation { .. } => RuntimeCapability::Launch,
             Self::LoseSendAck => RuntimeCapability::SendMessage,
             Self::CancelObservedTerminal => RuntimeCapability::Cancel,
+            Self::InspectProcessMissing => RuntimeCapability::Inspect,
             Self::CloseStreamWithoutTerminal => RuntimeCapability::LiveEvents,
             Self::CompactPending
             | Self::CompactFailed
@@ -270,6 +274,8 @@ pub enum AdapterCall {
     PrepareWorkspace(TeamRunId),
     /// A topology node's native container was prepared.
     PrepareContainer(TopologyNodeId),
+    /// A container's visible title was corrected.
+    RetitleContainer(TopologyNodeId),
     /// A run was launched.
     Launch(AgentRunId),
     /// A binding was resumed.
@@ -278,6 +284,8 @@ pub enum AdapterCall {
     Send(RuntimeBindingId, MessageId),
     /// A cancellation was requested.
     Cancel(RuntimeBindingId),
+    /// A session was permanently retired for replacement.
+    Retire(RuntimeBindingId),
     /// A session was inspected.
     Inspect(RuntimeBindingId),
     /// A native session was adopted.
@@ -453,6 +461,12 @@ struct FakeState {
     /// the container too would make "re-find it by its stored native id"
     /// untestable, and that path is the whole of the restart contract.
     containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
+    /// The visible title each container currently carries.
+    ///
+    /// Held apart from the binding because it is the one thing about a
+    /// container that may change without the binding changing — which is the
+    /// whole point of a retitle, and the reason it can be read back.
+    container_titles: BTreeMap<TopologyNodeId, String>,
     /// Every binding this runtime has issued, held as the frozen snapshot it
     /// handed back. It is the only copy nobody outside can edit, which is what
     /// makes it — and not a caller's clone — the thing terminal evidence is
@@ -790,6 +804,7 @@ impl ScriptedFakeRuntime {
                     .expect("valid runtime root"),
                 workspaces: BTreeMap::new(),
                 containers: BTreeMap::new(),
+                container_titles: BTreeMap::new(),
                 bindings: BTreeMap::new(),
                 permissions: PermissionLedger::new(),
                 compactions: BTreeMap::new(),
@@ -1490,9 +1505,89 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .containers
             .insert(request.topology_node_id, snapshot.clone());
+        state.container_titles.insert(
+            request.topology_node_id,
+            request.display_name.as_str().to_owned(),
+        );
         Ok(ContainerOutcome {
             snapshot,
             created: true,
+        })
+    }
+
+    async fn retitle_container(
+        &self,
+        request: &RetitleContainerRequest,
+    ) -> RuntimeResult<RetitleContainerOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        // Judged against the capabilities this container was *bound* under, the
+        // same rule every other operation on it follows: a later upgrade cannot
+        // retroactively license work on an older placement.
+        let governing = state
+            .containers
+            .get(&request.topology_node_id)
+            .map_or_else(|| state.capabilities.clone(), |it| it.capabilities.clone());
+        preflight(
+            &governing,
+            &OperationContext {
+                operation: RuntimeCapability::RetitleContainer,
+                autonomous: true,
+                account_pinned: false,
+                binding: None,
+                placement: None,
+                current_generation: None,
+                demand: None,
+                context_policy: None,
+            },
+        )?;
+        state.take_step(
+            RuntimeCapability::RetitleContainer,
+            RequestKey::Node(request.topology_node_id),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::RetitleContainer(request.topology_node_id));
+
+        let snapshot = state
+            .containers
+            .get(&request.topology_node_id)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "this topology node holds no native container to retitle",
+            })?;
+        // Addressed by the exact native id inside the exact generation. A id
+        // that matched in another generation names whatever replaced the
+        // container after a restart, which is not the thing Kontor bound.
+        if snapshot.binding.identity.native_id != request.bound_native_id
+            || snapshot.binding.identity.generation != request.generation
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the addressed native container is not the one bound to this node",
+            });
+        }
+
+        let desired = request.desired_title.as_str().to_owned();
+        let current = state
+            .container_titles
+            .get(&request.topology_node_id)
+            .cloned()
+            .unwrap_or_default();
+        let changed = current != desired;
+        state
+            .container_titles
+            .insert(request.topology_node_id, desired);
+        // Read back rather than echoed: a caller must be able to tell a silently
+        // ignored rename from one that happened.
+        let observed_title = state
+            .container_titles
+            .get(&request.topology_node_id)
+            .cloned()
+            .unwrap_or_default();
+        Ok(RetitleContainerOutcome {
+            snapshot,
+            observed_title,
+            changed,
         })
     }
 
@@ -1552,10 +1647,21 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 context_policy: None,
             },
         )?;
-        state.take_step(
-            RuntimeCapability::Resume,
-            RequestKey::Binding(request.binding.binding_id()),
-        )?;
+        // Resume is now the normal prelude to delivering a later turn. Existing
+        // scripts describe the operation whose behavior they vary (usually the
+        // following send), so an ordinary resume must not consume or contradict
+        // that queued deviation. A script explicitly targeting resume remains
+        // strict and is consumed here.
+        if state
+            .steps
+            .front()
+            .is_some_and(|queued| queued.step.operation() == RuntimeCapability::Resume)
+        {
+            state.take_step(
+                RuntimeCapability::Resume,
+                RequestKey::Binding(request.binding.binding_id()),
+            )?;
+        }
         state
             .calls
             .push(AdapterCall::Resume(request.binding.binding_id()));
@@ -1685,6 +1791,24 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         )
     }
 
+    async fn retire(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        let mut state = self.lock();
+        state.session(binding)?.state = ObservedRunState::Cancelled;
+        state.calls.push(AdapterCall::Retire(binding.binding_id()));
+        Self::observation(
+            binding,
+            RuntimeContact::Reachable,
+            ObservedRunState::Cancelled,
+            ObservationSource::Inspect,
+            0,
+            at,
+        )
+    }
+
     async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation> {
         let mut state = self.lock();
         let declared = state.capabilities.clone();
@@ -1702,7 +1826,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 context_policy: None,
             },
         )?;
-        state.take_step(
+        let step = state.take_step(
             RuntimeCapability::Inspect,
             RequestKey::Binding(request.binding.binding_id()),
         )?;
@@ -1710,10 +1834,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .calls
             .push(AdapterCall::Inspect(request.binding.binding_id()));
         let observed = state.session(&request.binding)?.state;
+        let process_missing = matches!(step, Some(ScriptStep::InspectProcessMissing));
         Self::observation(
             &request.binding,
-            RuntimeContact::Reachable,
-            observed,
+            if process_missing {
+                RuntimeContact::ProcessMissing
+            } else {
+                RuntimeContact::Reachable
+            },
+            if process_missing {
+                ObservedRunState::Unknown
+            } else {
+                observed
+            },
             ObservationSource::Inspect,
             0,
             request.requested_at,

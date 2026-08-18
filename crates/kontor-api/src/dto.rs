@@ -21,7 +21,6 @@ use kontor_core::id::{
     ExternalName, GateKey, PhaseKey, ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey,
     SchemaVersion, SpecVersion, TaskId, TeamRunId, TeamTemplateId, Timestamp, WorkProfileKey,
 };
-use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceipt, CommandReceiptState};
 use kontor_core::repository::{
     HistoryGapKind, HistoryGapMarker, RunInspection, RuntimeEvent, TaskInspection,
@@ -619,18 +618,6 @@ impl From<&CommandReceipt> for ReceiptDto {
             updated_at: receipt.updated_at,
         }
     }
-}
-
-/// A receipt, and whether this call is the one that recorded it.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct ReceiptResponse {
-    /// The Realm-qualified receipt envelope.
-    #[serde(flatten)]
-    #[schema(value_type = Object)]
-    pub envelope: ReceiptEnvelope<ReceiptDto>,
-    /// `true` when the idempotency key had already recorded this exact command,
-    /// so nothing was written and the original receipt is being returned.
-    pub replayed: bool,
 }
 
 /// One item of session content.

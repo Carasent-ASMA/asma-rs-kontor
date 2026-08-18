@@ -247,6 +247,12 @@ pub struct OperationalDelivery {
     pub control_kind: TopologyKindKey,
     /// The kind one delivery task's session host materializes as.
     pub task_kind: TopologyKindKey,
+    /// The kind one Quick session materializes as.
+    pub quick_kind: TopologyKindKey,
+    /// The kind one Advisor consultation materializes as.
+    pub advisor_kind: TopologyKindKey,
+    /// The kind one Committee consultation materializes as.
+    pub committee_kind: TopologyKindKey,
     /// The standard role the owning control seat is opened under.
     pub control_role_code: RoleCode,
     /// The Foundation-to-catalog role correspondence for delivery seats.

@@ -34,18 +34,32 @@
 //!
 //! # What this crate is not
 //!
-//! It contains no runtime adapter, scheduler, API, export engine or `asma fleet`
-//! transport. The runtime contract stays authoritative for capability
-//! enforcement — an account-pinned launch is refused by
-//! [`kontor_runtime::capability::preflight`] itself, not by a second copy of
-//! that rule here — and `asma fleet` stays authoritative for cooldown mechanics,
-//! which arrive here as a typed [`AvailabilityObservation`] this crate never
-//! goes looking for on disk.
+//! It contains no runtime adapter, API or export engine. The runtime contract
+//! stays authoritative for capability enforcement — an account-pinned launch is
+//! refused by [`kontor_runtime::capability::preflight`] itself, not by a second
+//! copy of that rule here.
+//!
+//! # What this crate now owns
+//!
+//! Cooldown and admission mechanics. They used to belong to `asma fleet`, which
+//! meant a Realm could only know whether an account was usable by shelling out
+//! to another tool — so the answer was as available as that tool was, and
+//! Kontor could not run without it. The observation is now collected here,
+//! persisted as raw evidence before anything is derived from it, and folded
+//! into the adaptive admission window by [`fold`]. The scheduler still owns the
+//! arithmetic; this crate owns which evidence moves it.
 
+mod admission;
+mod capacity;
 mod launch;
 mod profile;
 mod resolver;
 
+pub use admission::{AdaptivePosition, fold};
+pub use capacity::{
+    COOLDOWN_SECONDS, CapacityReading, DerivedAvailability, ProbeOutcome, ProbeRefusal,
+    cools_until, derive,
+};
 pub use launch::{
     AccountAvailability, AccountLaunchReceipt, AdmittedLaunch, AvailabilityObservation,
     FailoverOutcome, FailoverReason, FailoverRefusal, FailoverRequest, LaunchAdmissionRequest,

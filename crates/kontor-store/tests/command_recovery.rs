@@ -1360,3 +1360,84 @@ fn a_reused_idempotency_key_must_name_the_same_durable_command() {
     assert_eq!(replay, original);
     assert_eq!(census(&fixture), after, "and enqueues nothing");
 }
+
+#[test]
+fn a_receipt_that_queued_nothing_is_settled_rather_than_a_missing_outbox_entry() {
+    // The incident: abandoning one run left the realm serving with scheduling
+    // shut. A closure receipt records a decision already carried out in its own
+    // transaction, so it deliberately writes no outbox entry — and the recovery
+    // scan raised `NotFound` on the row it was defined never to have, which
+    // failed the whole startup inventory rather than that one receipt.
+    let fixture = fixture();
+    let receipt_id = CommandReceiptId::generate();
+    let intent = document("abandon");
+    fixture
+        .store
+        .record_abandon_receipt(&kontor_core::repository::NewAbandonReceipt {
+            project_id: fixture.project,
+            receipt_id,
+            idempotency_key: IdempotencyKey::parse("abandon-1").expect("a key"),
+            target: AggregateRef::AgentRun {
+                agent_run_id: kontor_core::id::AgentRunId::parse(RUN).expect("a canonical id"),
+            },
+            target_revision: AggregateRevision::parse(1).expect("a valid revision"),
+            intent,
+            recorded_at: now(),
+        })
+        .expect("the abandon receipt is recorded");
+    assert_eq!(
+        census(&fixture)["command_outbox"],
+        0,
+        "a closure receipt queues nothing, which is the whole point"
+    );
+
+    let fixture = fixture.restart();
+    let recovery = fixture
+        .store
+        .classify_command_recovery(fixture.project, receipt_id)
+        .expect("a receipt with nothing queued is still classifiable");
+    assert!(
+        !recovery.authorizes_launch(),
+        "a decision already carried out must never authorize a launch"
+    );
+    assert!(
+        matches!(
+            recovery,
+            CommandRecovery::Settled {
+                state: CommandReceiptState::Confirmed,
+                ..
+            }
+        ),
+        "a closure receipt is born confirmed: it is not queued and never will be"
+    );
+
+    // The reader has to hold on its own, because the rows an older binary
+    // already wrote are still `intent_persisted` with nothing queued behind
+    // them, and no migration reaches a realm that has already started. One such
+    // row was enough to fail the whole inventory.
+    let legacy = CommandReceiptId::generate();
+    let connection = Connection::open(&fixture.path).expect("a raw connection opens");
+    connection
+        .execute(
+            "INSERT INTO command_receipts
+                 (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                  intent_hash, state, attempts, created_at, updated_at)
+             SELECT ?1, project_id, ?2, kind, target, target_revision, intent, intent_hash,
+                    'intent_persisted', attempts, created_at, updated_at
+               FROM command_receipts WHERE id = ?3",
+            rusqlite::params![legacy.to_string(), "abandon-legacy", receipt_id.to_string()],
+        )
+        .expect("a receipt as an older binary wrote it");
+    let recovery = fixture
+        .store
+        .classify_command_recovery(fixture.project, legacy)
+        .expect("an already-written closure receipt does not fail the inventory");
+    assert!(
+        !recovery.authorizes_launch(),
+        "nothing was ever queued, so nothing may be sent"
+    );
+    assert!(
+        matches!(recovery, CommandRecovery::Settled { .. }),
+        "a receipt with no outbox entry is settled, not a missing row"
+    );
+}

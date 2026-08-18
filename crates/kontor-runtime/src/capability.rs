@@ -65,6 +65,15 @@ pub enum RuntimeCapability {
     ContextPolicy,
     /// Compact a live session's context in place, keeping its identity.
     Compact,
+    /// Change a bound container's visible title, keeping its native identity.
+    ///
+    /// Separate from [`Self::PrepareProject`] because a runtime that can *make*
+    /// a container very often cannot rename one: a title is frequently fixed at
+    /// creation, and a runtime asked to "rename" it would either archive and
+    /// recreate — destroying the identity every binding resolves by — or
+    /// silently do nothing. Declaring this is how a runtime says it can do
+    /// neither of those things and change only the name.
+    RetitleContainer,
 }
 
 impl RuntimeCapability {
@@ -84,6 +93,7 @@ impl RuntimeCapability {
         Self::PermissionResponse,
         Self::ContextPolicy,
         Self::Compact,
+        Self::RetitleContainer,
     ];
 
     /// The stable spelling used in JSON, errors and logs.
@@ -104,6 +114,7 @@ impl RuntimeCapability {
             Self::PermissionResponse => "permission_response",
             Self::ContextPolicy => "context_policy",
             Self::Compact => "compact",
+            Self::RetitleContainer => "retitle_container",
         }
     }
 
@@ -125,6 +136,7 @@ impl RuntimeCapability {
                 | Self::Adopt
                 | Self::PermissionResponse
                 | Self::Compact
+                | Self::RetitleContainer
         )
     }
 }

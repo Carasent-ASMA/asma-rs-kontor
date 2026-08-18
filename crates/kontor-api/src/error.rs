@@ -128,6 +128,77 @@ impl ApiErrorCode {
             Self::ReconciliationPending | Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
+
+    /// What a caller holding only this code can try.
+    ///
+    /// A floor, not the answer: a refusal that knows more about its own cause
+    /// says so through [`ApiError::advising`]. What this rules out is a refusal
+    /// with *no* corrective line at all, which is the shape an operator can do
+    /// nothing with.
+    #[must_use]
+    pub const fn default_action(self) -> &'static str {
+        match self {
+            Self::Unauthenticated => "present a credential for this realm",
+            Self::Forbidden => "present a credential carrying the tier this operation requires",
+            Self::RealmMismatch => "re-read the value from this realm and retry with that one",
+            Self::RevisionConflict => {
+                "re-read the aggregate and retry with the revision it reports"
+            }
+            Self::IdempotencyConflict => {
+                "use a fresh idempotency key, or retry the original request unchanged"
+            }
+            Self::UnsupportedCapability => {
+                "read the runtime's capabilities and use an operation it declares"
+            }
+            Self::StaleBinding => "settle the run to learn what its runtime now reports",
+            Self::ResnapshotRequired => "read a fresh snapshot and resume from its cursor",
+            Self::TimelineRefetchRequired => "read the session timeline again from the runtime",
+            Self::ReconciliationPending => "wait for startup reconciliation to finish, then retry",
+            Self::CapacityExhausted => {
+                "retry when work in flight finishes; nothing was refused about the request itself"
+            }
+            Self::RoleSlotUnbound => {
+                "bind the outstanding role slot, or waive it under the frozen template's policy"
+            }
+            Self::HandoffUnsettled => "settle the outstanding turn before terminalizing the run",
+            Self::PlacementBlocked => "resolve where the work belongs in the topology, then retry",
+            Self::Unavailable => "retry once the dependency answers; nothing was changed",
+            Self::NotFound => "check the identifier against a read of this realm",
+            Self::InvalidRequest => "correct the request and send it again",
+        }
+    }
+}
+
+/// What to advise a caller whose transition was refused.
+///
+/// `from` and `to` are `&'static str` state names, so the advice can quote them
+/// — but the returned action is itself `&'static str`, which means it cannot be
+/// built by formatting. Two fixed lines rather than one generated one: the
+/// common mistake is asking for the state the aggregate is already in, and
+/// telling someone to "move it to X" when it is already at X is the kind of
+/// advice that wastes an afternoon.
+const fn illegal_transition_action(from: &'static str, to: &'static str) -> &'static str {
+    if const_str_eq(from, to) {
+        "the aggregate is already in the state that was asked for; no transition is needed"
+    } else {
+        "read the aggregate's current state and choose a transition it accepts from there"
+    }
+}
+
+/// `str` equality in a `const fn`, which `==` is not.
+const fn const_str_eq(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 /// The JSON body every refusal is reported with.
@@ -150,6 +221,24 @@ pub struct ApiErrorBody {
     /// The newest position allocated, for a resnapshot.
     #[schema(value_type = Option<i64>)]
     pub newest_cursor: Option<EventCursor>,
+    /// Which type, field or state machine refused, when the refusal names one.
+    ///
+    /// Always a `&'static str` written in this workspace — a type name, a field
+    /// name or an operation name — so it can never be a stored value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<&'static str>,
+    /// The structural path of the offending node, when the refusal has one.
+    ///
+    /// A path and never a value: `steps[2].instruction`, not what was in it.
+    /// This is the field that turns "something in your document was refused"
+    /// into something a caller can actually go and look at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// What the caller can do about it, in one line.
+    ///
+    /// Corrective rather than descriptive: a refusal that only restates itself
+    /// leaves an operator with nothing to try.
+    pub action: &'static str,
 }
 
 /// Everything this API can refuse.
@@ -166,6 +255,25 @@ pub struct ApiError {
     pub current_revision: Option<AggregateRevision>,
     /// The retained window, when the caller must resnapshot.
     pub retained: Option<(EventCursor, EventCursor)>,
+    /// Where the refusal happened, when it can say.
+    ///
+    /// Boxed because it is the uncommon case and [`ApiError`] is the `Err` of
+    /// almost every function in this crate: two more inline fields push the
+    /// whole `Result` past the size a large-error lint accepts, and paying that
+    /// on every successful call to describe the rare failure is the wrong
+    /// trade.
+    pub diagnostic: Option<Box<ErrorDiagnostic>>,
+    /// The one-line corrective action.
+    pub action: &'static str,
+}
+
+/// Where a refusal happened, in structural terms only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorDiagnostic {
+    /// The type, field or state machine that refused.
+    pub subject: Option<&'static str>,
+    /// The structural path of the offending node. Never its value.
+    pub at: Option<String>,
 }
 
 impl ApiError {
@@ -178,7 +286,55 @@ impl ApiError {
             rule,
             current_revision: None,
             retained: None,
+            diagnostic: None,
+            action: code.default_action(),
         }
+    }
+
+    /// Name the type, field or state machine that refused.
+    #[must_use]
+    pub fn about(mut self, subject: &'static str) -> Self {
+        self.diagnostic_mut().subject = Some(subject);
+        self
+    }
+
+    /// Point at the structural node that refused. Never a value.
+    #[must_use]
+    pub fn located_at(mut self, path: impl Into<String>) -> Self {
+        self.diagnostic_mut().at = Some(path.into());
+        self
+    }
+
+    /// The type, field or state machine that refused, when one is named.
+    #[must_use]
+    pub fn subject(&self) -> Option<&'static str> {
+        self.diagnostic
+            .as_ref()
+            .and_then(|diagnostic| diagnostic.subject)
+    }
+
+    /// The structural path of the offending node, when there is one.
+    #[must_use]
+    pub fn at(&self) -> Option<&str> {
+        self.diagnostic
+            .as_ref()
+            .and_then(|diagnostic| diagnostic.at.as_deref())
+    }
+
+    fn diagnostic_mut(&mut self) -> &mut ErrorDiagnostic {
+        self.diagnostic.get_or_insert_with(|| {
+            Box::new(ErrorDiagnostic {
+                subject: None,
+                at: None,
+            })
+        })
+    }
+
+    /// State what the caller can do about it.
+    #[must_use]
+    pub const fn advising(mut self, action: &'static str) -> Self {
+        self.action = action;
+        self
     }
 
     /// Attach the revision the aggregate actually stands at.
@@ -205,14 +361,24 @@ impl ApiError {
             current_revision: self.current_revision,
             oldest_retained_cursor: self.retained.map(|(oldest, _)| oldest),
             newest_cursor: self.retained.map(|(_, newest)| newest),
+            subject: self.subject(),
+            at: self.at().map(str::to_owned),
+            action: self.action,
         }
     }
 
     /// Refuse a domain rejection that reached the transport.
     ///
-    /// The mapping reads the *kind* of rejection, never its message, so a new
-    /// domain variant degrades to an honest `invalid_request` instead of being
-    /// reported as something more specific than it is.
+    /// Every variant is mapped deliberately. The mapping reads the *kind* of
+    /// rejection and its structural fields — `subject` is a `&'static str`
+    /// written in this workspace and `path` is a document path, never a
+    /// document value — so the envelope can say which type refused and where,
+    /// while still never echoing what was rejected.
+    ///
+    /// The catch-all is not a shrug. [`DomainError`] is `#[non_exhaustive]`, so
+    /// a variant added in a later generation would otherwise stop this crate
+    /// compiling; what it must not do is *pretend to classify*. It says
+    /// plainly that classification was unavailable and where to look instead.
     #[must_use]
     pub fn from_domain(realm_id: RealmId, error: &DomainError) -> Self {
         match error {
@@ -221,26 +387,84 @@ impl ApiError {
                 ApiErrorCode::RealmMismatch,
                 "the value belongs to another realm",
             ),
-            DomainError::RevisionConflict { found, .. } => Self::new(
+            DomainError::RevisionConflict { subject, found, .. } => Self::new(
                 realm_id,
                 ApiErrorCode::RevisionConflict,
                 "the aggregate moved since the caller read it",
             )
+            .about(subject)
             .with_revision(AggregateRevision::parse(*found).ok()),
-            DomainError::MissingAuthority { .. } => Self::new(
+            DomainError::MissingAuthority { subject, .. } => Self::new(
                 realm_id,
                 ApiErrorCode::Forbidden,
                 "the acting authority is not sufficient for this operation",
-            ),
-            DomainError::Terminal { .. } => Self::new(
+            )
+            .about(subject),
+            DomainError::Terminal { subject } => Self::new(
                 realm_id,
                 ApiErrorCode::RevisionConflict,
                 "the aggregate is terminal and immutable",
-            ),
+            )
+            .about(subject)
+            .advising("the aggregate is closed; act on its successor instead of reopening it"),
+            // A value failed its own type's invariant. The type is safe to name
+            // and is usually the whole answer: "invalid ExternalName" tells a
+            // caller which field to look at without quoting what they sent.
+            DomainError::Invalid { subject, .. } => Self::new(
+                realm_id,
+                ApiErrorCode::InvalidRequest,
+                "a value did not satisfy the invariant of its type",
+            )
+            .about(subject)
+            .advising("correct the named field to satisfy its type and send the request again"),
+            // The same, one level in. `path` is structural — `steps[2].role`,
+            // never what was in it — and it is the difference between "your
+            // document was refused" and something a caller can go and look at.
+            DomainError::InvalidAt { subject, path, .. } => Self::new(
+                realm_id,
+                ApiErrorCode::InvalidRequest,
+                "a value inside the document did not satisfy its invariant",
+            )
+            .about(subject)
+            .located_at(path.clone())
+            .advising("correct the node named by `at` and send the document again"),
+            // Not a malformed request: a well-formed one against a state that
+            // does not accept it. The states are `&'static str`, so naming them
+            // costs nothing and saves a round trip.
+            DomainError::IllegalTransition { subject, from, to } => Self::new(
+                realm_id,
+                ApiErrorCode::InvalidRequest,
+                "the aggregate does not accept this transition from the state it is in",
+            )
+            .about(subject)
+            .advising(illegal_transition_action(from, to)),
+            // Nothing is wrong with the request; something it depends on has
+            // not been recorded yet.
+            DomainError::MissingEvidence { subject, .. } => Self::new(
+                realm_id,
+                ApiErrorCode::InvalidRequest,
+                "the operation requires evidence that has not been recorded",
+            )
+            .about(subject)
+            .advising("record the evidence this operation requires, then retry"),
+            // The one refusal that must stay vague about *what* it saw, and can
+            // still be exact about *where*.
+            DomainError::SensitiveMaterial { path } => Self::new(
+                realm_id,
+                ApiErrorCode::InvalidRequest,
+                "the document carries credential, token or unredacted personal material",
+            )
+            .about("SensitiveMaterial")
+            .located_at(path.clone())
+            .advising("remove or redact the node named by `at`; its value is never echoed back"),
             _ => Self::new(
                 realm_id,
                 ApiErrorCode::InvalidRequest,
-                "the request was refused by a domain rule",
+                "a domain rule refused the request and this build cannot classify it",
+            )
+            .advising(
+                "this daemon is older than the rule that refused; check the daemon log for the \
+                 domain error, and upgrade the daemon so the refusal can be classified",
             ),
         }
     }
@@ -258,11 +482,25 @@ impl ApiError {
             // A uniqueness, immutability or ordering rule refused the write. From
             // the transport's side that is always "you were working from a state
             // that has moved", which is what a revision conflict says.
-            RepositoryError::Conflict { .. } => Self::new(
-                realm_id,
-                ApiErrorCode::RevisionConflict,
-                "a persistence rule refused the write against the presented state",
-            ),
+            //
+            // Which rule, on which aggregate, is logged. The caller is told one
+            // thing for every uniqueness and immutability rule in the store —
+            // otherwise a client could enumerate them — but an operator holding
+            // only "a persistence rule refused the write" has nothing to act on,
+            // and both fields are `&'static str` written in this workspace.
+            RepositoryError::Conflict { subject, rule } => {
+                warn!(
+                    realm_id = %realm_id,
+                    subject = %subject,
+                    rule = %rule,
+                    "a persistence rule refused a write"
+                );
+                Self::new(
+                    realm_id,
+                    ApiErrorCode::RevisionConflict,
+                    "a persistence rule refused the write against the presented state",
+                )
+            }
             // Which ceiling bound is a fact about this Realm's configuration and
             // its current load, so it is logged for the operator who runs the
             // plane and withheld from the caller who hit it. One static rule for
@@ -287,11 +525,26 @@ impl ApiError {
                 ApiErrorCode::Unavailable,
                 "the control-plane store could not answer",
             ),
-            _ => Self::new(
-                realm_id,
-                ApiErrorCode::Unavailable,
-                "the control-plane store refused the operation",
-            ),
+            // `RepositoryError` is `#[non_exhaustive]`, so this arm exists to
+            // keep a newer store from breaking this crate. It must not pretend
+            // to have classified anything: it says so, and it writes the detail
+            // where an operator can actually find it.
+            other => {
+                warn!(
+                    realm_id = %realm_id,
+                    detail = %other,
+                    "the store refused an operation with no mapped refusal"
+                );
+                Self::new(
+                    realm_id,
+                    ApiErrorCode::Unavailable,
+                    "the control-plane store refused the operation and this build cannot classify it",
+                )
+                .advising(
+                    "check the daemon log for the store error this refusal was logged with, and \
+                     upgrade the daemon so the refusal can be classified",
+                )
+            }
         }
     }
 
@@ -395,7 +648,11 @@ impl ApiError {
                 Self::new(
                     realm_id,
                     ApiErrorCode::Unavailable,
-                    "the session's runtime refused the operation",
+                    "the runtime refused the operation and this build cannot classify it",
+                )
+                .advising(
+                    "check the daemon log for the runtime error this refusal was logged with, and \
+                     upgrade the daemon so the refusal can be classified",
                 )
             }
         }

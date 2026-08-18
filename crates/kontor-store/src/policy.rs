@@ -1045,6 +1045,11 @@ fn finish_park(
 /// A receipt, not a dispatch: there is no outbox entry, because nothing is being
 /// sent anywhere. The decision is Kontor's own and it is already carried out by
 /// the time this transaction commits.
+///
+/// Which is why it is born `confirmed`. `intent_persisted` would claim the
+/// opposite — that something is queued and unsent — and a restart's recovery
+/// scan believes it, demanding the outbox row this receipt is defined never to
+/// have and failing the whole startup inventory on its absence.
 fn insert_closure_receipt(
     transaction: &Transaction<'_>,
     request: &GateRejection,
@@ -1057,7 +1062,7 @@ fn insert_closure_receipt(
             "INSERT INTO command_receipts
                  (id, project_id, idempotency_key, kind, target, target_revision, intent,
                   intent_hash, state, attempts, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'intent_persisted', 0, ?9, ?9)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'confirmed', 0, ?9, ?9)",
             params![
                 plan.closure_receipt_id.to_string(),
                 request.project_id.to_string(),
@@ -1093,15 +1098,18 @@ fn insert_closure_receipt(
             ],
         )
         .map_err(backend)?;
+    // The intent document is the evidence: it is what the decision was, and the
+    // transitions table refuses a confirmation that cites none.
+    let evidence = ExternalId::parse(plan.closure_intent.hash().as_str())?;
     append_transition(
         transaction,
         request.project_id,
         plan.closure_receipt_id,
         1,
-        CommandReceiptState::IntentPersisted,
+        CommandReceiptState::Confirmed,
         None,
         None,
-        None,
+        Some(&evidence),
         request.recorded_at,
     )
 }

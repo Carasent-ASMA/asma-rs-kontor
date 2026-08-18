@@ -30,8 +30,11 @@ const EXPECTED_TABLES: &[&str] = &[
     "agent_runs",
     "approval_receipts",
     "artifact_evidence",
+    "availability_overrides",
     "calendar_exceptions",
     "calendar_profiles",
+    "capacity_configuration",
+    "capacity_observations",
     "child_calendar_windows",
     "command_outbox",
     "command_receipt_transitions",
@@ -39,6 +42,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "command_targets",
     "compaction_receipts",
     "context_packs",
+    "core_team_revisions",
+    "epic_rosters",
     "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
@@ -82,6 +87,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "policy_evaluations",
     "projects",
     "project_topology_defaults",
+    "quick_session_promotions",
+    "quick_sessions",
     "realm_idempotency_bindings",
     "realm_metadata",
     "recovery_episodes",
@@ -257,7 +264,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 27);
+    assert_eq!(SCHEMA_VERSION, 31);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
@@ -597,7 +604,7 @@ fn every_connection_reports_wal_foreign_keys_and_a_bounded_busy_timeout() {
         "wal"
     );
     assert!(store.foreign_keys_enabled().expect("readable"));
-    assert_eq!(store.busy_timeout_ms().expect("readable"), 5_000);
+    assert_eq!(store.busy_timeout_ms().expect("readable"), 15_000);
 
     // Reopening must re-apply the per-connection pragmas, not inherit them.
     drop(store);
@@ -606,7 +613,7 @@ fn every_connection_reports_wal_foreign_keys_and_a_bounded_busy_timeout() {
         reopened.foreign_keys_enabled().expect("readable"),
         "foreign keys must be re-enabled on every connection"
     );
-    assert_eq!(reopened.busy_timeout_ms().expect("readable"), 5_000);
+    assert_eq!(reopened.busy_timeout_ms().expect("readable"), 15_000);
     assert_eq!(
         reopened.journal_mode().expect("readable").to_lowercase(),
         "wal"

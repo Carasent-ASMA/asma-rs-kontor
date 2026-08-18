@@ -300,8 +300,9 @@ pub struct CodexPinnedAccounts<'a, S> {
 impl<'a, S> CodexPinnedAccounts<'a, S> {
     /// Wire one authority.
     ///
-    /// `availability` is the fleet boundary: `asma fleet` owns cooldown
-    /// mechanics, and this adapter never goes looking for them on disk.
+    /// `availability` is the account layer's answer: `kontor-accounts` owns
+    /// cooldown mechanics, and this adapter never goes looking for them on disk
+    /// or in another program's store.
     #[must_use]
     pub const fn new(
         store: &'a S,

@@ -64,10 +64,11 @@ use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerProjection, ContainerRequest,
+    RetitleContainerRequest,
 };
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,
-    PaseoDelivery, PaseoExecutionScope, PaseoProjectOutcome, PaseoSlotPlan,
+    PaseoDelivery, PaseoExecutionScope, PaseoProjectOutcome, PaseoSlotPlan, PaseoTaskScope,
 };
 use kontor_runtime_paseo::client::{PaseoCommand, PaseoTransport};
 use kontor_runtime_paseo::fixture::RecordedPaseo;
@@ -3755,6 +3756,60 @@ async fn a_configured_root_is_adopted_by_exact_id_and_never_created() {
     );
 }
 
+/// A root above the seat is registered from the plane's checkout, not refused.
+///
+/// Kontor gives a working directory only to the node the seat actually edits
+/// in: an epic root and a project root are places to put things, not trees. That
+/// is right, and it is also everything Paseo needs told to it, because a Paseo
+/// project *is* a registered checkout. Refusing the request instead meant the
+/// whole lineage failed at its first level, and every admission through the
+/// topology path was blocked with `unsupported_capability` before any seat.
+#[tokio::test]
+async fn a_root_that_names_no_directory_is_registered_from_the_planes_checkout() {
+    let recorded = Arc::new(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("project.add.request", v(PROJECT_ADDED)),
+    );
+    let adapter = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("the plane builds");
+
+    let outcome = adapter
+        .prepare_container(&ContainerRequest {
+            container_binding_id: ContainerBindingId::generate(),
+            topology_node_id: node(NODE_B),
+            topology: topology(),
+            capabilities: vec![NodeProjectionCapability::NativeRoot],
+            display_name: name("Epic · ASMA-7872"),
+            parent: None,
+            // The whole point: nothing above the leaf carries one.
+            cwd: None,
+            bound_native_id: None,
+            task_id: None,
+            team_run_id: None,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        })
+        .await
+        .expect("a root with no directory of its own is still registrable");
+
+    assert_eq!(
+        recorded.count("rpc project.add.request"),
+        1,
+        "the root was registered rather than refused"
+    );
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        PROJECT_ID,
+        "and the binding is made from the readback, as every root's is"
+    );
+}
+
 /// The shape comes from the pinned capabilities, and an undeclared one produces
 /// no native effect at all.
 #[tokio::test]
@@ -3842,5 +3897,226 @@ async fn a_container_created_outside_the_bound_parent_is_refused() {
     assert!(
         plane.adapter.container_binding(node(NODE_A)).is_none(),
         "a refused placement leaves no binding behind"
+    );
+}
+
+/// A topology-created TSW is named from its task's scope, not from its node id.
+///
+/// The daemon builds `display_name` from the node kind's `name_template` and
+/// the topology node id, because that is the only name it *can* build: the Jira
+/// issue and the short ticket code are this plane's configuration, not the
+/// control plane's. So the title is the adapter's to render, from the same
+/// scope `prepare_workspace` renders from — and the caller's name is ignored
+/// for a child that names a task.
+///
+/// The regression this pins is a workspace called `Task Session Workspace ·
+/// 0189…` in a live Realm. Paseo has no rename, so that title is permanent.
+#[tokio::test]
+async fn a_task_scoped_child_is_titled_from_its_ticket_and_not_from_its_node_id() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let node_id = node(NODE_A);
+
+    // Exactly what topology admission sends: a kind template, a node id, and
+    // the task the node serves.
+    let request = ContainerRequest {
+        display_name: name(&format!("Task Session Workspace · {node_id}")),
+        task_id: Some(task()),
+        ..child_request(node_id, Some(bound_root(node(NODE_B))))
+    };
+    let outcome = plane
+        .adapter
+        .prepare_container(&request)
+        .await
+        .expect("the child container is prepared");
+
+    let titles = plane.daemon.titles("workspace create");
+    assert_eq!(titles.len(), 1, "one container, one title: {titles:?}");
+    assert!(
+        titles[0].starts_with("TSW · ASMA-7755 · KON-11"),
+        "the title is the ticket's, not the node's: {}",
+        titles[0]
+    );
+    // The node id belongs in the bracketed correlation label and nowhere else.
+    // That half is machine-read; the half in front of it is what a human sees.
+    let (display, correlation) = titles[0]
+        .split_once(" [")
+        .expect("a created title carries its correlation label");
+    assert_eq!(
+        display, "TSW · ASMA-7755 · KON-11",
+        "the visible half is exactly the ticket's title"
+    );
+    assert!(
+        !display.contains(&node_id.to_string()),
+        "a node id is an identity, and Paseo has no rename: {display}"
+    );
+    assert!(
+        correlation.contains(&node_id.to_string()),
+        "and the machine-read half still names the node: {correlation}"
+    );
+
+    // The correlation is unchanged: the label Paseo reports back still names
+    // the node, which is what every later readback resolves by.
+    assert_eq!(
+        outcome.snapshot.correlation.label.topology_node_id(),
+        node_id,
+        "the node correlation must survive the renaming rule"
+    );
+    assert_eq!(outcome.snapshot.topology_node_id(), node_id);
+}
+
+/// A child that names no task keeps the name its caller derived.
+///
+/// The project and epic roots are structural, not ticket-scoped: there is no
+/// task scope to render them from, and rendering them from one would put a
+/// ticket's name on a container that outlives it.
+#[tokio::test]
+async fn a_child_that_names_no_task_keeps_the_structural_name() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+
+    plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the child container is prepared");
+
+    let titles = plane.daemon.titles("workspace create");
+    assert!(
+        titles[0].starts_with("TSW · ASMA-7755 · KON-11"),
+        "the caller's own name is used verbatim: {}",
+        titles[0]
+    );
+}
+
+/// A task this plane has no scope for is refused before anything is created.
+///
+/// The alternative is the defect: falling back to the caller's name would put a
+/// node id on a native container permanently, because there is no rename.
+#[tokio::test]
+async fn a_task_with_no_configured_scope_is_refused_before_any_native_effect() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+    // A plane serving several tickets, none of them the one asked for.
+    let mut scoped = config();
+    scoped.scope.task_scopes = [(
+        TaskId::parse("01890000-0000-7000-8000-0000000000c9").expect("a canonical TaskId"),
+        PaseoTaskScope {
+            plan_item_key: external("KON-MVP-12"),
+            jira_issue_key: external("ASMA-7756"),
+            ticket_short_code: external("KON-12"),
+            canonical_worktree_cwd: root(),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let daemon = std::sync::Arc::new(recorded);
+    let adapter = PaseoAdapter::new(
+        scoped,
+        Box::new(std::sync::Arc::clone(&daemon)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a consistent checkpoint restores");
+
+    let node_id = node(NODE_A);
+    let refused = adapter
+        .prepare_container(&ContainerRequest {
+            display_name: name(&format!("Task Session Workspace · {node_id}")),
+            task_id: Some(task()),
+            ..child_request(node_id, Some(bound_root(node(NODE_B))))
+        })
+        .await;
+    assert!(
+        matches!(refused, Err(RuntimeError::WorkspaceMismatch { .. })),
+        "an unscoped task must be refused, not named after its node: {refused:?}"
+    );
+    assert!(
+        daemon.mutations().is_empty(),
+        "the refusal must land before any native effect: {:?}",
+        daemon.mutations()
+    );
+}
+
+/// This adapter cannot retitle a container, and says so without touching one.
+///
+/// The supported Paseo 0.3.1 surface has `workspace create`, `workspace list`
+/// and `workspace archive`, and no verb that changes a workspace's title.
+/// `agent update-labels` addresses an agent, not the workspace holding it.
+///
+/// The two things that would appear to work are both refused. Archiving and
+/// recreating destroys the native id every Kontor binding resolves by, and
+/// writing the daemon's own state is an undocumented surface with no contract
+/// and no readback. So the answer is `unsupported_capability`, naming the
+/// capability, and Kontor keeps the correction as pending.
+#[tokio::test]
+async fn this_adapter_refuses_to_retitle_and_reaches_nothing() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO));
+    let plane = Plane::fresh(recorded);
+
+    let refused = plane
+        .adapter
+        .retitle_container(&RetitleContainerRequest {
+            topology_node_id: node(NODE_A),
+            bound_native_id: external(WORKSPACE_ID),
+            generation: 1,
+            desired_title: name("TSW · ASMA-7755 · KON-11"),
+            requested_at: at("2026-08-17T09:00:00Z"),
+        })
+        .await;
+
+    assert!(
+        matches!(
+            refused,
+            Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::RetitleContainer
+            })
+        ),
+        "the refusal must name the capability rather than fail vaguely: {refused:?}"
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "an unsupported operation must reach nothing: {:?}",
+        plane.daemon.mutations()
+    );
+    assert!(
+        plane.daemon.titles("workspace create").is_empty(),
+        "and it must certainly not create a replacement container"
+    );
+}
+
+/// The capability is not declared, so a caller can tell before asking.
+#[tokio::test]
+async fn this_adapter_does_not_declare_the_retitle_capability() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO));
+    let plane = Plane::fresh(recorded);
+
+    let declared = plane
+        .adapter
+        .discover_capabilities()
+        .await
+        .expect("the plane answers its capabilities");
+    assert!(
+        !declared.supports(RuntimeCapability::RetitleContainer),
+        "a runtime with no rename verb must not advertise one"
     );
 }

@@ -127,9 +127,20 @@ fn no_tool_names_a_runtime_endpoint_or_a_provider() {
         BTreeSet::from(["runtime_family"]),
         "a tool grew a runtime argument beyond the family it selects"
     );
+    // `kontor_topology_archive` is the one tool allowed to spell one of these
+    // verbs, and only because it does not mean what the verb means here.
+    // `Archived` is a lifecycle state a topology node already has in the store;
+    // moving a node into it is a control-plane write about Kontor's own record,
+    // and the daemon refuses it unless the node is already retired and reads
+    // back. The exception is by exact name rather than by prefix, so a second
+    // archiving tool — or a runtime-archiving one — still fails here.
+    const ARCHIVES_A_RECORD_NOT_A_CONTAINER: &str = "kontor_topology_archive";
     for verb in ["create", "kill", "archive", "attach", "detach", "reload"] {
         assert!(
-            !REGISTRY.iter().any(|tool| tool.name.contains(verb)),
+            !REGISTRY
+                .iter()
+                .filter(|tool| tool.name != ARCHIVES_A_RECORD_NOT_A_CONTAINER)
+                .any(|tool| tool.name.contains(verb)),
             "direct runtime: a tool named `{verb}` would be driving a runtime directly"
         );
     }

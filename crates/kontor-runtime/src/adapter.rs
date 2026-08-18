@@ -410,6 +410,49 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Change one already-bound container's visible title, and nothing else.
+    ///
+    /// The container is addressed by its exact native id inside its exact
+    /// generation. Never by title — that is the value being corrected, so it
+    /// cannot be the handle — and never by working directory, which several
+    /// containers can share. An implementation that searched by either could
+    /// rename the wrong container, and there is usually no way to tell
+    /// afterwards.
+    ///
+    /// Parent, working directory, projection and native identity are all
+    /// preserved. A runtime that can only achieve a new title by destroying and
+    /// recreating the container has *not* got this capability: every binding
+    /// Kontor holds resolves by the id that would be destroyed.
+    ///
+    /// Idempotent, and it says which happened. A container already carrying the
+    /// desired title is the goal rather than an error, so a replay reports
+    /// `changed: false` instead of refusing.
+    ///
+    /// The title is read back from the runtime after the change rather than
+    /// assumed. An adapter that returned the requested title would make a
+    /// silently-ignored rename indistinguishable from a successful one, which
+    /// is the failure this whole operation exists to correct.
+    ///
+    /// The default refuses. Most runtimes fix a container's title at creation,
+    /// and a caller must be able to tell "this runtime will not" from "this
+    /// runtime did".
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::UnsupportedCapability`] by default, and in an
+    /// implementation: [`RuntimeError::StaleBinding`] when the addressed
+    /// container is absent from the named generation, and
+    /// [`RuntimeError::CorrelationFailed`] when the container read back does not
+    /// carry this node's label.
+    async fn retitle_container(
+        &self,
+        request: &crate::container::RetitleContainerRequest,
+    ) -> RuntimeResult<crate::container::RetitleContainerOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::RetitleContainer,
+        })
+    }
+
     /// Decide, atomically, whether one seat may be filled — and say so once.
     ///
     /// **This is where AC-4 is enforced.** An implementation keeps a table keyed
@@ -497,6 +540,30 @@ pub trait RuntimeAdapter: Send + Sync {
     /// Refuses every preflight failure. The returned observation acknowledges
     /// the request; it does not evidence that the run closed.
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation>;
+
+    /// Permanently retire one native session under an explicit replacement
+    /// decision, preserving its content and returning fresh terminal evidence.
+    ///
+    /// This is deliberately distinct from [`RuntimeAdapter::cancel`]. A stopped
+    /// process may still be resumed in place; retirement ends the seat's tenure
+    /// so a linked successor may be admitted without creating two live owners.
+    /// Runtimes that cannot prove such a retirement refuse before changing the
+    /// session.
+    ///
+    /// # Errors
+    /// Refuses a stale binding, a runtime that cannot retire the session, and a
+    /// retirement whose fresh readback does not evidence the same session as
+    /// terminal.
+    async fn retire(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        let _ = (binding, at);
+        Err(RuntimeError::ReplacementNotEvidenced {
+            rule: "this runtime cannot retire a predecessor for replacement",
+        })
+    }
 
     /// Read the current authoritative state of one native session.
     ///

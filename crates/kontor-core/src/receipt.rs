@@ -109,6 +109,55 @@ closed_enum! {
         SettleRuntime => "settle_runtime",
         /// Replace one runtime-terminal persistent seat with its linked successor.
         ReplaceSeat => "replace_seat",
+        /// Run the native capacity collectors and fold what they report.
+        ///
+        /// It targets the *project*, for the same reason as
+        /// [`CommandKind::EnsureAccountProfile`]: what is being recorded is
+        /// authority over the project's fleet, not over one account in it.
+        RefreshCapacity => "refresh_capacity",
+        /// Stand an operator judgement beside one account's raw evidence.
+        ///
+        /// Never over it. The raw observation is immutable, so this kind can
+        /// only ever have added a second record — which is what makes the
+        /// disagreement auditable.
+        OverrideAvailability => "override_availability",
+        /// Observe one exact bound seat and record what came back.
+        ObserveSeat => "observe_seat",
+        /// Retire and release one exact bound seat.
+        RetireSeat => "retire_seat",
+        /// Publish one immutable project topology specification revision.
+        ///
+        /// It targets the *project*, because deciding which node kinds may ever
+        /// exist is authority over the project and not over any node in it —
+        /// and the revision it publishes is not an aggregate a command may name.
+        PublishTopologySpec => "publish_topology_spec",
+        /// Move one epic's pinned topology revision to another published one.
+        ///
+        /// The epic is the aggregate: the pin is the epic's, and the revision it
+        /// moves to is immutable and shared.
+        UpgradeTopology => "upgrade_topology",
+        /// Publish the next immutable Project Core Team revision.
+        ///
+        /// The project is the aggregate. This changes project configuration and
+        /// nothing else: it seats no epic, because a Core Team is the roster an
+        /// epic is staffed *from*, and a running epic holds the revision it
+        /// froze at promotion.
+        ApplyCoreTeam => "apply_core_team",
+        /// Open one ad-hoc Quick session under the project's session base.
+        ///
+        /// The project is the aggregate. A Quick session creates no MiniProject
+        /// and no TeamRun, so there is no narrower one to name.
+        EnsureQuickSession => "ensure_quick_session",
+        /// Turn one Quick session into an epic.
+        ///
+        /// The epic is the aggregate, because the epic is what the command
+        /// brings into existence and what every later command about this work
+        /// will address.
+        PromoteQuickSession => "promote_quick_session",
+        /// Materialize one epic's frozen roster into seats.
+        MaterializeCoreTeam => "materialize_core_team",
+        /// Move one epic's roster pin to another published revision.
+        UpgradeEpicRoster => "upgrade_epic_roster",
         /// Bring a provider-account profile into existence, or prove the one
         /// with that label matches.
         ///
@@ -343,6 +392,31 @@ impl CommandKind {
             // is already true desires nothing.
             Self::SettleRuntime => witness(matches!(target, A::AgentRun)),
             Self::ReplaceSeat => witness(matches!(target, A::TeamRun)),
+            // Capacity is a fact about the project's fleet. Neither command
+            // names an account, because an account profile is not an aggregate
+            // a command may target — and a refresh covers several of them at
+            // once, so naming one would understate what it authorized.
+            Self::RefreshCapacity | Self::OverrideAvailability => {
+                witness(matches!(target, A::Project))
+            }
+            // A seat is not an aggregate a command may target, and a persistent
+            // control-plane seat has no TeamRun to stand in for one — that is
+            // precisely what makes it persistent. The project is what the
+            // authority is over, and it is the one aggregate every seat has.
+            Self::ObserveSeat | Self::RetireSeat => witness(matches!(target, A::Project)),
+            Self::PublishTopologySpec => witness(matches!(target, A::Project)),
+            Self::UpgradeTopology => witness(matches!(target, A::MiniProject)),
+            // The project, and only the project. A Core Team is project
+            // configuration: allowing an epic here would let a receipt claim
+            // that publishing a roster changed one running epic, which is the
+            // one thing publishing a roster deliberately does not do.
+            Self::ApplyCoreTeam | Self::EnsureQuickSession => witness(matches!(target, A::Project)),
+            // The epic each of these is about. Promotion names the epic it
+            // creates rather than the project it creates it in: the receipt has
+            // to be findable from the thing that now exists.
+            Self::PromoteQuickSession
+            | Self::MaterializeCoreTeam
+            | Self::UpgradeEpicRoster => witness(matches!(target, A::MiniProject)),
         }
     }
 

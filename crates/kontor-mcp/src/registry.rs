@@ -74,6 +74,27 @@ pub enum ArgType {
     AccountProfileId,
     /// A canonical v7 UUID naming one intake decision.
     IntakeReceiptId,
+    /// A canonical v7 UUID naming one topology specification across revisions.
+    TopologySpecId,
+    /// A canonical v7 UUID naming one durable node in a project session topology.
+    ///
+    /// A node id is only ever *returned* by a projection and then addressed back:
+    /// it is the one topology handle a model may hold, which is what lets it
+    /// retire a node it can see without ever naming a kind, a parent or a native
+    /// container.
+    TopologyNodeId,
+    /// A canonical v7 UUID naming one persistent seat binding.
+    SeatBindingId,
+    /// A canonical v7 UUID naming one server-owned role catalog across revisions.
+    RoleCatalogId,
+    /// A canonical v7 UUID naming one raw provider/account observation.
+    CapacityObservationId,
+    /// A canonical v7 UUID naming one Quick session.
+    QuickSessionId,
+    /// A canonical v7 UUID naming one Advisor consultation.
+    AdvisorRunId,
+    /// A canonical v7 UUID naming one Committee consultation.
+    CommitteeRunId,
     /// An open, deployment-defined key.
     ///
     /// Its lexical rule — lowercase ASCII, digits, `.`, `_`, `-` — is also what
@@ -125,6 +146,14 @@ impl ArgType {
             | Self::AgentRunId
             | Self::AccountProfileId
             | Self::IntakeReceiptId
+            | Self::TopologySpecId
+            | Self::TopologyNodeId
+            | Self::SeatBindingId
+            | Self::RoleCatalogId
+            | Self::CapacityObservationId
+            | Self::QuickSessionId
+            | Self::AdvisorRunId
+            | Self::CommitteeRunId
             | Self::OpenKey
             | Self::ExternalName
             | Self::ExternalId
@@ -301,7 +330,7 @@ impl ToolSpec {
 
 /// Every operation a Paseo Lead Architect can reach, and nothing else.
 ///
-/// The three public `/v1` routes deliberately absent are listed in
+/// The public `/v1` routes deliberately absent are listed in
 /// [`NON_AGENT_ROUTES`]. The parity oracle proves that this table plus that list
 /// covers the generated contract exactly.
 pub static REGISTRY: &[ToolSpec] = &[
@@ -1195,6 +1224,47 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Replace one runtime-terminal unusable seat with its linked successor.",
     },
     ToolSpec {
+        name: "kontor_runtime_abandon",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
+        kind: OpKind::Write,
+        // The sibling of settlement, for the one case settlement cannot serve: a
+        // run whose launch was refused holds no session, so there is no runtime
+        // verdict to read and `runtime:settle` answers 404 forever. The caller
+        // supplies the outcome here — deliberately, because an operator *is* the
+        // evidence — and the daemon refuses the moment a seat is actually bound,
+        // so this can never be used to overrule a runtime that could speak.
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The unbound run to abandon.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the abandonment was decided against.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why the operator is abandoning it. Quoted in the receipt.",
+            ),
+        ],
+        about: "Abandon one run whose launch was refused, so its task is schedulable again.",
+    },
+    ToolSpec {
         name: "kontor_ticket_reconcile_plan",
         tier: CallerTier::Operator,
         method: Method::Post,
@@ -1957,6 +2027,1389 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Irreversibly switch memory authority to Kontor after verification.",
     },
+    // ---- The topology vocabulary: kinds, roles and what every code means ----
+    //
+    // Draft and validate are POSTs that commit nothing, so they are reads and
+    // take no key. Publication is the only write here, and it names both the
+    // hash it was judged at and the revision it expects.
+    ToolSpec {
+        name: "kontor_topology_spec_draft",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology-specs:draft",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            opt(
+                "base",
+                Place::Body,
+                ArgType::Json,
+                "An `{id, version}` revision to start from.",
+            ),
+            req(
+                "name",
+                Place::Body,
+                ArgType::ExternalName,
+                "Human name for the specification.",
+            ),
+            req(
+                "root_kind",
+                Place::Body,
+                ArgType::OpenKey,
+                "The unique logical root kind.",
+            ),
+            req(
+                "node_kinds",
+                Place::Body,
+                ArgType::Json,
+                "The data-defined node-kind vocabulary, in declaration order.",
+            ),
+            opt(
+                "historical_codes",
+                Place::Body,
+                ArgType::Json,
+                "Codes this vocabulary explains but never declares as usable.",
+            ),
+        ],
+        about: "Build one complete topology-specification candidate. Persists nothing.",
+    },
+    ToolSpec {
+        name: "kontor_topology_spec_validate",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology-specs:validate",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "candidate",
+                Place::Body,
+                ArgType::Json,
+                "One complete candidate document.",
+            ),
+        ],
+        about: "Judge one candidate and return its ordered violations. Persists nothing.",
+    },
+    ToolSpec {
+        name: "kontor_topology_spec_publish",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology-specs:publish",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "candidate",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate to publish.",
+            ),
+            req(
+                "validation_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the validation answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+        ],
+        about: "Publish one revalidated candidate as an immutable revision.",
+    },
+    ToolSpec {
+        name: "kontor_topology_spec_get",
+        tier: CallerTier::Admin,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "spec_id",
+                Place::Path,
+                ArgType::TopologySpecId,
+                "The specification identity.",
+            ),
+            req(
+                "version",
+                Place::Path,
+                ArgType::SpecVersion,
+                "The published revision.",
+            ),
+        ],
+        about: "One exact immutable topology-specification document and its canonical hash.",
+    },
+    ToolSpec {
+        name: "kontor_role_catalog_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/catalog/role-catalogs/{catalog_id}/{version}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "catalog_id",
+                Place::Path,
+                ArgType::RoleCatalogId,
+                "The catalog identity.",
+            ),
+            req(
+                "version",
+                Place::Path,
+                ArgType::SpecVersion,
+                "The revision.",
+            ),
+        ],
+        about: "One whole role-catalog revision, in its declared order.",
+    },
+    ToolSpec {
+        name: "kontor_role_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/catalog/role-catalogs/{catalog_id}/{version}/roles/{role_code}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "catalog_id",
+                Place::Path,
+                ArgType::RoleCatalogId,
+                "The catalog identity.",
+            ),
+            req(
+                "version",
+                Place::Path,
+                ArgType::SpecVersion,
+                "The revision.",
+            ),
+            req(
+                "role_code",
+                Place::Path,
+                ArgType::OpenKey,
+                "The stable role code.",
+            ),
+        ],
+        about: "One resolved catalog entry. An unknown revision or code is refused, never guessed.",
+    },
+    ToolSpec {
+        name: "kontor_code_help_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/code-help",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The epic whose pinned revisions are read.",
+            ),
+        ],
+        about: "Every controlled code one epic's pinned revisions define, sorted and server-owned.",
+    },
+    // ---- Semantic topology: a scope is named, never a native shape ---------
+    ToolSpec {
+        name: "kontor_topology_inspect",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/topology:inspect",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            opt(
+                "epic_id",
+                Place::Query,
+                ArgType::MiniProjectId,
+                "Narrow to one epic's pinned subgraph.",
+            ),
+        ],
+        about: "The stored authoritative topology, with each node's derived and observed shape.",
+    },
+    ToolSpec {
+        name: "kontor_topology_drift",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology:drift",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "target",
+                Place::Body,
+                ArgType::Json,
+                "The semantic scope: a project root, Quick session, epic, epic control, ticket, \
+                 Advisor or Committee consultation.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Read the exact native identities back and record what was observed.",
+    },
+    ToolSpec {
+        name: "kontor_topology_ensure",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology:ensure",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "target",
+                Place::Body,
+                ArgType::Json,
+                "The semantic scope: a project root, Quick session, epic, epic control, ticket, \
+                 Advisor or Committee consultation.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Ensure the logical nodes one semantic scope needs. No native effect.",
+    },
+    ToolSpec {
+        name: "kontor_topology_materialize",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology:materialize",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "target",
+                Place::Body,
+                ArgType::Json,
+                "The semantic scope: a project root, Quick session, epic, epic control, ticket, \
+                 Advisor or Committee consultation.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Materialize or reconcile an ensured scope through the admission path.",
+    },
+    ToolSpec {
+        name: "kontor_topology_retire",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "topology_node_id",
+                Place::Path,
+                ArgType::TopologyNodeId,
+                "The node a projection returned.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why the node is leaving service. Recorded, never interpreted.",
+            ),
+        ],
+        about: "Retire one already-returned node after child and seat policy checks.",
+    },
+    ToolSpec {
+        name: "kontor_topology_archive",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "topology_node_id",
+                Place::Path,
+                ArgType::TopologyNodeId,
+                "The node a projection returned.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why the node is leaving service. Recorded, never interpreted.",
+            ),
+        ],
+        about: "Archive one already-retired node after exact readback.",
+    },
+    ToolSpec {
+        name: "kontor_topology_upgrade_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The epic whose pin would move.",
+            ),
+            req(
+                "target_spec",
+                Place::Body,
+                ArgType::Json,
+                "An `{id, version}` published revision to diff against.",
+            ),
+        ],
+        about: "What moving one epic's pinned specification would do. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_topology_upgrade_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The epic whose pin moves.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Apply the named upgrade preview and return the new immutable pin.",
+    },
+    // ---- Native capacity: evidence is collected, never asserted ------------
+    ToolSpec {
+        name: "kontor_capacity_config_get",
+        tier: CallerTier::Admin,
+        method: Method::Get,
+        path: "/v1/capacity/configuration",
+        kind: OpKind::Read,
+        args: &[],
+        about: "The current immutable capacity configuration revision and its effective values.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_config_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/capacity/configuration:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "ceilings",
+                Place::Body,
+                ArgType::Json,
+                "The complete set of ceilings to stand up.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The configuration revision the caller read.",
+            ),
+        ],
+        about: "What a full capacity replacement would clamp. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_config_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/capacity/configuration:apply",
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "ceilings",
+                Place::Body,
+                ArgType::Json,
+                "The complete set of ceilings to stand up.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The configuration revision the caller read.",
+            ),
+        ],
+        about: "Apply a full capacity replacement under the expected revision.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/capacity",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "One project's admission picture: availability, active TeamRuns and the adaptive window.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_refresh",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/capacity:refresh",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            opt(
+                "account_profile_ids",
+                Place::Body,
+                ArgType::TextArray,
+                "Configured account profiles to collect. Empty means every one.",
+            ),
+        ],
+        about: "Run the configured native collectors and fold what they report.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_observation_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/capacity/observations/{observation_id}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "observation_id",
+                Place::Path,
+                ArgType::CapacityObservationId,
+                "The raw observation.",
+            ),
+        ],
+        about: "One redacted raw observation and the availability derived from it.",
+    },
+    ToolSpec {
+        name: "kontor_capacity_override",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/availability:override",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "account_profile_id",
+                Place::Path,
+                ArgType::AccountProfileId,
+                "The account profile.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The account revision the caller read.",
+            ),
+            req(
+                "available",
+                Place::Body,
+                ArgType::Bool,
+                "What the operator asserts.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why. Recorded, never interpreted.",
+            ),
+            opt(
+                "expires_at",
+                Place::Body,
+                ArgType::Timestamp,
+                "When the override lapses on its own.",
+            ),
+        ],
+        about: "Stand an operator judgement beside an account's raw evidence, never over it.",
+    },
+    ToolSpec {
+        name: "kontor_seat_attention",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/attention",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The exact binding a projection returned.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The binding revision the caller read.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why the seat is being looked at.",
+            ),
+        ],
+        about: "Observe one exact bound seat and record typed attention evidence.",
+    },
+    ToolSpec {
+        name: "kontor_seat_retire",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The exact binding a projection returned.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The binding revision the caller read.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why the seat is being released.",
+            ),
+        ],
+        about: "Retire and release one exact binding after supported readback; never a scan by name.",
+    },
+    // ---- Successor-ticket contracts: fixed now, answered when composed ----
+    ToolSpec {
+        name: "kontor_core_team_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/core-team",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "One project's Core Team and the seats filling it.",
+    },
+    ToolSpec {
+        name: "kontor_core_team_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/core-team:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "seats",
+                Place::Body,
+                ArgType::Json,
+                "The roles the Core Team should seat, in order.",
+            ),
+        ],
+        about: "What a Core Team change would do. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_core_team_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/core-team:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "seats",
+                Place::Body,
+                ArgType::Json,
+                "The roles the Core Team should seat, in order.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Apply a named Core Team preview.",
+    },
+    ToolSpec {
+        name: "kontor_core_team_materialize",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Materialize the Core Team's seats for one epic.",
+    },
+    ToolSpec {
+        name: "kontor_quick_roles_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/quick-roles",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "The roles a Quick session may be opened against.",
+    },
+    ToolSpec {
+        name: "kontor_quick_session_ensure",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/quick-sessions:ensure",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "role",
+                Place::Body,
+                ArgType::Json,
+                "An `{catalog_revision, role_code}` selection.",
+            ),
+            req(
+                "purpose",
+                Place::Body,
+                ArgType::ExternalName,
+                "What the session is for.",
+            ),
+        ],
+        about: "Open a Quick session, or return the one this key opened.",
+    },
+    ToolSpec {
+        name: "kontor_promotion_preview",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "quick_session_id",
+                Place::Path,
+                ArgType::QuickSessionId,
+                "The Quick session.",
+            ),
+        ],
+        about: "What promoting one Quick session would produce.",
+    },
+    ToolSpec {
+        name: "kontor_promotion_apply",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "quick_session_id",
+                Place::Path,
+                ArgType::QuickSessionId,
+                "The Quick session.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Apply a named promotion preview.",
+    },
+    ToolSpec {
+        name: "kontor_roster_upgrade_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "target",
+                Place::Body,
+                ArgType::Json,
+                "An `{id, version}` published revision to diff against.",
+            ),
+        ],
+        about: "What moving one epic's pinned roster would do.",
+    },
+    ToolSpec {
+        name: "kontor_roster_upgrade_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Apply a named roster upgrade preview.",
+    },
+    ToolSpec {
+        name: "kontor_advisor_profiles_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/advisor-profiles",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Every published Advisor profile revision.",
+    },
+    ToolSpec {
+        name: "kontor_advisor_profile_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/advisor-profiles:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "definition",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate definition.",
+            ),
+        ],
+        about: "Judge one Advisor profile definition. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_advisor_profile_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/advisor-profiles:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "definition",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate definition.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Publish one Advisor profile revision.",
+    },
+    ToolSpec {
+        name: "kontor_advisor_run_invoke",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/advisor-runs:invoke",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "profile",
+                Place::Body,
+                ArgType::Json,
+                "An `{id, version}` profile revision.",
+            ),
+            req(
+                "question",
+                Place::Body,
+                ArgType::Text,
+                "What is being asked.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Invoke one Advisor consultation against an epic.",
+    },
+    ToolSpec {
+        name: "kontor_advisor_run_settle",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "advisor_run_id",
+                Place::Path,
+                ArgType::AdvisorRunId,
+                "The consultation.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Settle one Advisor consultation.",
+    },
+    ToolSpec {
+        name: "kontor_committee_templates_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/committee-templates",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Every published Committee template revision.",
+    },
+    ToolSpec {
+        name: "kontor_committee_template_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/committee-templates:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "definition",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate definition.",
+            ),
+        ],
+        about: "Judge one Committee template definition. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_committee_template_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/committee-templates:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "definition",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate definition.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Publish one Committee template revision.",
+    },
+    ToolSpec {
+        name: "kontor_committee_run_invoke",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/committee-runs:invoke",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "profile",
+                Place::Body,
+                ArgType::Json,
+                "An `{id, version}` template revision.",
+            ),
+            req(
+                "question",
+                Place::Body,
+                ArgType::Text,
+                "What is being asked.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Invoke one Committee consultation against an epic.",
+    },
+    ToolSpec {
+        name: "kontor_committee_findings_record",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "committee_run_id",
+                Place::Path,
+                ArgType::CommitteeRunId,
+                "The consultation.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "findings",
+                Place::Body,
+                ArgType::Json,
+                "The findings document.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Record one round of Committee findings.",
+    },
+    ToolSpec {
+        name: "kontor_committee_run_settle",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "committee_run_id",
+                Place::Path,
+                ArgType::CommitteeRunId,
+                "The consultation.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Settle one Committee consultation.",
+    },
+    ToolSpec {
+        name: "kontor_completion_profiles_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/completion-profiles",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Every published Completion profile revision.",
+    },
+    ToolSpec {
+        name: "kontor_completion_profile_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/completion-profiles:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "definition",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate definition.",
+            ),
+        ],
+        about: "Judge one Completion profile definition. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_completion_profile_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/completion-profiles:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "definition",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate definition.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Publish one Completion profile revision.",
+    },
+    ToolSpec {
+        name: "kontor_completion_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/completion",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+        ],
+        about: "One epic's completion state and what is still outstanding.",
+    },
+    ToolSpec {
+        name: "kontor_completion_advance",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/completion:advance",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Advance one epic's completion.",
+    },
+    ToolSpec {
+        name: "kontor_completion_remediate",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/completion:remediate",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::ExternalName,
+                "Why. Recorded, never interpreted.",
+            ),
+        ],
+        about: "Send one epic's completion back for remediation.",
+    },
 ];
 
 /// The two connector reads are scoped the same way, so they share one list.
@@ -2069,12 +3522,6 @@ pub static NON_AGENT_ROUTES: &[NonAgentRoute] = &[
         path: "/v1/openapi.json",
         reason: "the contract document itself, consumed by tests and build tooling",
     },
-    NonAgentRoute {
-        method: Method::Post,
-        path: "/v1/commands/{kind}",
-        reason: "the generic intent surface; the concrete application tools supersede it, \
-                 and exposing it would bypass this closed tool vocabulary",
-    },
 ];
 
 #[cfg(test)]
@@ -2186,8 +3633,8 @@ mod tests {
     }
 
     #[test]
-    fn the_allowlist_names_three_routes_no_tool_also_claims() {
-        assert_eq!(NON_AGENT_ROUTES.len(), 3);
+    fn the_allowlist_names_two_routes_no_tool_also_claims() {
+        assert_eq!(NON_AGENT_ROUTES.len(), 2);
         for route in NON_AGENT_ROUTES {
             assert!(
                 !route.reason.is_empty(),

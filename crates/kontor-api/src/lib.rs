@@ -230,7 +230,6 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/tasks/{task_id}",
             get(control::task_snapshot),
         )
-        .route("/v1/commands/{kind}", post(control::command))
         .route("/v1/events", get(control::events))
         // The declarative application operations. Every one of them answers with
         // the durable projection its service produced, not with an intent.
@@ -253,6 +252,224 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/runtime-capabilities",
             get(applications::runtime_capabilities),
+        )
+        // The topology vocabulary: what kinds may exist, what roles may be
+        // selected, and what every controlled code means. Draft and validate are
+        // POSTs that persist nothing, so neither takes an idempotency key.
+        .route(
+            "/v1/projects/{project_id}/topology-specs:draft",
+            post(applications::draft_topology_spec),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology-specs:validate",
+            post(applications::validate_topology_spec),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology-specs:publish",
+            post(applications::publish_topology_spec),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}",
+            get(applications::topology_spec),
+        )
+        .route(
+            "/v1/catalog/role-catalogs/{catalog_id}/{version}",
+            get(applications::role_catalog),
+        )
+        .route(
+            "/v1/catalog/role-catalogs/{catalog_id}/{version}/roles/{role_code}",
+            get(applications::role),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/code-help",
+            get(applications::code_help),
+        )
+        // Semantic topology. A caller names a scope Kontor already owns; the
+        // server derives the kind, the parent and the native shape from the
+        // pinned specification. Inspect is a stored read; drift is a write
+        // because it records the raw readback before deriving disagreement.
+        .route(
+            "/v1/projects/{project_id}/topology:inspect",
+            get(applications::inspect_topology),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology:drift",
+            post(applications::drift_topology),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology:ensure",
+            post(applications::ensure_topology),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology:materialize",
+            post(applications::materialize_topology),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire",
+            post(applications::retire_topology_node),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive",
+            post(applications::archive_topology_node),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
+            post(applications::preview_topology_upgrade),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply",
+            post(applications::apply_topology_upgrade),
+        )
+        // Native capacity. `kontor-accounts` owns the observations and the
+        // policy; nothing here accepts a threshold, a process id, an argv or a
+        // raw availability, because those are configuration or trusted
+        // connector facts rather than things a caller may assert.
+        .route(
+            "/v1/capacity/configuration",
+            get(applications::capacity_configuration),
+        )
+        .route(
+            "/v1/capacity/configuration:preview",
+            post(applications::preview_capacity_configuration),
+        )
+        .route(
+            "/v1/capacity/configuration:apply",
+            post(applications::apply_capacity_configuration),
+        )
+        .route(
+            "/v1/projects/{project_id}/capacity",
+            get(applications::project_capacity),
+        )
+        .route(
+            "/v1/projects/{project_id}/capacity:refresh",
+            post(applications::refresh_capacity),
+        )
+        .route(
+            "/v1/projects/{project_id}/capacity/observations/{observation_id}",
+            get(applications::capacity_observation),
+        )
+        .route(
+            "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/availability:override",
+            post(applications::override_availability),
+        )
+        .route(
+            "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/attention",
+            post(applications::seat_attention),
+        )
+        .route(
+            "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire",
+            post(applications::retire_seat),
+        )
+        // The successor-ticket contracts. OP-04, OP-05 and OP-06 own the
+        // behaviour; the wire vocabulary is fixed here so it is one decision.
+        // Each refuses with a typed unavailable until its service is composed.
+        .route(
+            "/v1/projects/{project_id}/core-team",
+            get(applications::core_team),
+        )
+        .route(
+            "/v1/projects/{project_id}/core-team:preview",
+            post(applications::preview_core_team),
+        )
+        .route(
+            "/v1/projects/{project_id}/core-team:apply",
+            post(applications::apply_core_team),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize",
+            post(applications::materialize_core_team),
+        )
+        .route(
+            "/v1/projects/{project_id}/quick-roles",
+            get(applications::quick_roles),
+        )
+        .route(
+            "/v1/projects/{project_id}/quick-sessions:ensure",
+            post(applications::ensure_quick_session),
+        )
+        .route(
+            "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:preview",
+            post(applications::preview_promotion),
+        )
+        .route(
+            "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:apply",
+            post(applications::apply_promotion),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-preview",
+            post(applications::preview_roster_upgrade),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply",
+            post(applications::apply_roster_upgrade),
+        )
+        .route(
+            "/v1/projects/{project_id}/advisor-profiles",
+            get(applications::advisor_profiles),
+        )
+        .route(
+            "/v1/projects/{project_id}/advisor-profiles:preview",
+            post(applications::preview_advisor_profile),
+        )
+        .route(
+            "/v1/projects/{project_id}/advisor-profiles:apply",
+            post(applications::apply_advisor_profile),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/advisor-runs:invoke",
+            post(applications::invoke_advisor_run),
+        )
+        .route(
+            "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle",
+            post(applications::settle_advisor_run),
+        )
+        .route(
+            "/v1/projects/{project_id}/committee-templates",
+            get(applications::committee_templates),
+        )
+        .route(
+            "/v1/projects/{project_id}/committee-templates:preview",
+            post(applications::preview_committee_template),
+        )
+        .route(
+            "/v1/projects/{project_id}/committee-templates:apply",
+            post(applications::apply_committee_template),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/committee-runs:invoke",
+            post(applications::invoke_committee_run),
+        )
+        .route(
+            "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record",
+            post(applications::record_committee_findings),
+        )
+        .route(
+            "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle",
+            post(applications::settle_committee_run),
+        )
+        .route(
+            "/v1/projects/{project_id}/completion-profiles",
+            get(applications::completion_profiles),
+        )
+        .route(
+            "/v1/projects/{project_id}/completion-profiles:preview",
+            post(applications::preview_completion_profile),
+        )
+        .route(
+            "/v1/projects/{project_id}/completion-profiles:apply",
+            post(applications::apply_completion_profile),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/completion",
+            get(applications::completion),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/completion:advance",
+            post(applications::advance_completion),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/completion:remediate",
+            post(applications::remediate_completion),
         )
         .route(
             "/v1/projects/{project_id}/provider-account-profiles",
@@ -326,6 +543,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
             post(applications::settle_runtime),
+        )
+        .route(
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
+            post(applications::abandon_run),
         )
         // A *turn* is smaller than a run: settling one closes Kontor's bounded
         // piece of work and leaves the seat's native session live.

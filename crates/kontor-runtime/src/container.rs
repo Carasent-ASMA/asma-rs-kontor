@@ -386,6 +386,52 @@ pub struct ContainerBinding {
     pub bound_at: Timestamp,
 }
 
+/// Change one already-bound container's visible title.
+///
+/// Every field is an identity Kontor already holds. There is deliberately no
+/// parent, no working directory and no projection: a retitle changes the name
+/// and nothing else, so a request that could carry a placement would be a
+/// re-placement wearing a smaller word.
+///
+/// The native container is addressed by `bound_native_id` and by nothing else.
+/// Not by title — which is the very thing being corrected and therefore the one
+/// value that cannot identify it — and not by working directory, which several
+/// containers can share.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetitleContainerRequest {
+    /// The node whose container is being retitled.
+    pub topology_node_id: TopologyNodeId,
+    /// The exact native container to address. The only handle in this request.
+    pub bound_native_id: ExternalId,
+    /// The generation `bound_native_id` is meaningful in.
+    ///
+    /// A native id names one container inside one generation. Retitling
+    /// something found under a *different* generation would be renaming
+    /// whatever replaced it after a restart.
+    pub generation: u64,
+    /// The title the container must end up carrying, derived by the caller from
+    /// the pinned specification and its typed scope.
+    pub desired_title: ExternalName,
+    /// When the retitle was requested.
+    pub requested_at: Timestamp,
+}
+
+/// What a retitle produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetitleContainerOutcome {
+    /// The binding, read back after the change.
+    pub snapshot: ContainerBindingSnapshot,
+    /// The title the runtime reported *after* the change, read back rather than
+    /// assumed.
+    pub observed_title: String,
+    /// Whether this call changed anything, or found it already correct.
+    ///
+    /// A retitle is idempotent: a container already carrying the desired title
+    /// is the goal, not an error, and saying which happened is what lets a
+    /// replay answer honestly.
+    pub changed: bool,
+}
+
 /// A container binding together with the evidence quality it was created under.
 ///
 /// The capability snapshot is frozen exactly as it is for a session or workspace

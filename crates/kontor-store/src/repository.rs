@@ -19,35 +19,40 @@ use kontor_core::calendar::{
     ScheduleOverride, WeeklyWindow, WorkCalendarAssignment, WorkScope,
 };
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CommandReceiptId, ContentHash, CredentialAlias,
-    CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey, GuardrailEvaluationId,
-    HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money,
-    PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SignedDuration,
-    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
-    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
-    WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
+    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ContentHash,
+    CredentialAlias, CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey,
+    GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
+    ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, QuickSessionId, RealmId,
+    RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
+    ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId, TaskId,
+    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
     AggregateRef, CommandKind, CommandOutboxEntry, CommandReceipt, ReceiptAuthority,
 };
 use kontor_core::repository::{
-    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, CalendarRepository,
-    CommandRepository, ConnectorSpecSelector, CredentialReference, CredentialReferenceKind,
-    GateEvaluation, HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord,
-    IntakeOutcome, IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAccountProfile,
-    NewAdaptiveAdmissionState, NewAgentRun, NewCommandIntent, NewGateEvaluation, NewIntakeDecision,
+    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AvailabilityOverride,
+    CalendarRepository, CapacityObservation, CapacityRepository, CommandRepository,
+    ConnectorSpecSelector, CredentialReference, CredentialReferenceKind, GateEvaluation,
+    HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
+    IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
+    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
+    NewCapacityObservation, NewCommandIntent, NewGateEvaluation, NewIntakeDecision,
     NewIntakeDecisionRecord, NewIntakeReevaluation, NewMiniProject, NewNativeContainerBinding,
     NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
     NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
     PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, RealmEventPage,
     RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
     RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SourceEventIngest, SpecRepository, Task, TaskInspection,
-    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
+    SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
+    StoredCapacityConfiguration, StoredCoreTeamRevision, StoredEpicRoster, StoredPromotion,
+    StoredQuickSession, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun,
+    TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, TopologyRepository,
+    WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
@@ -76,6 +81,7 @@ use serde::de::DeserializeOwned;
 use crate::SqliteStore;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
+use crate::graph::IdempotencyBinding;
 
 /// Maximum length of an agent-run parent chain that is walked when checking for
 /// a lineage cycle.
@@ -1048,6 +1054,522 @@ fn role_catalog_in(
     stored_document(&json, &hash)
 }
 
+/// Project Core Team configuration.
+///
+/// Inherent rather than a trait: there is one implementation, and a port here
+/// would be a second thing to keep in agreement with the two statements below.
+impl SqliteStore {
+    /// Publish the next immutable Core Team revision for one project.
+    ///
+    /// The version is checked against what is already stored inside the same
+    /// transaction rather than trusted from the caller. Two applies racing on
+    /// the same project would otherwise both read version *n*, both compute
+    /// *n+1*, and the second would land on the primary key with a message about
+    /// a unique index rather than about the roster it failed to publish.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the version is not the next
+    /// one for this project.
+    pub fn publish_core_team_revision(
+        &self,
+        revision: &StoredCoreTeamRevision,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let current: Option<i64> = transaction
+            .query_row(
+                "SELECT MAX(version) FROM core_team_revisions WHERE project_id = ?1",
+                params![revision.project_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .flatten();
+        let expected = current.map_or(1, |version| version.saturating_add(1));
+        if version_column(revision.version) != expected {
+            return Err(RepositoryError::Conflict {
+                subject: "core team revision",
+                rule: "must be the next revision for this project",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO core_team_revisions
+                     (project_id, version, catalog_hash, seats, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    revision.project_id.to_string(),
+                    version_column(revision.version),
+                    revision.catalog_hash.as_str(),
+                    revision.seats.to_string(),
+                    text(revision.published_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Record one Quick session and the ids its placement used.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the session already exists.
+    pub fn create_quick_session(&self, session: &StoredQuickSession) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let role =
+            serde_json::to_string(&session.role).map_err(|error| RepositoryError::Backend {
+                detail: format!("a quick session role could not be encoded: {error}"),
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO quick_sessions
+                     (id, project_id, role, role_slot_id, topology_node_id, seat_binding_id,
+                      psw_topology_node_id, psw_native_id, purpose, intent_hash, disposition,
+                      revision, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    session.id.to_string(),
+                    session.project_id.to_string(),
+                    role,
+                    session.role_slot_id.as_str(),
+                    session.topology_node_id.to_string(),
+                    session.seat_binding_id.to_string(),
+                    session.psw_topology_node_id.to_string(),
+                    session.psw_native_id.as_ref().map(ExternalId::as_str),
+                    session.purpose.as_str(),
+                    session.intent_hash.as_str(),
+                    session.disposition.as_str(),
+                    i64::try_from(session.revision.get()).unwrap_or(i64::MAX),
+                    text(session.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                // Two ensures of the same request racing. The loser has written
+                // nothing else yet — the row is deliberately first — so it can
+                // simply read the winner's session and return that.
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "quick session",
+                        rule: "one command opens one session",
+                    }
+                }
+                other => backend(other),
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// One Quick session in one project.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_quick_session(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.quick_session_where("id = ?2", project_id, &quick_session_id.to_string())
+    }
+
+    /// The Quick session one command opened, if it already opened one.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_quick_session_by_intent(
+        &self,
+        project_id: ProjectId,
+        intent_hash: &ContentHash,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.quick_session_where("intent_hash = ?2", project_id, intent_hash.as_str())
+    }
+
+    /// One Quick session, addressed by whichever unique column names it.
+    fn quick_session_where(
+        &self,
+        predicate: &str,
+        project_id: ProjectId,
+        value: &str,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.connection
+            .query_row(
+                &format!(
+                    "SELECT id, role, role_slot_id, topology_node_id, seat_binding_id,
+                            psw_topology_node_id, psw_native_id, purpose, intent_hash,
+                            disposition, revision, created_at
+                     FROM quick_sessions WHERE project_id = ?1 AND {predicate}"
+                ),
+                params![project_id.to_string(), value],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, String>(11)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredQuickSession {
+                    id: QuickSessionId::parse(&columns.0)?,
+                    project_id,
+                    role: serde_json::from_str(&columns.1).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a stored quick session role is unreadable: {error}"),
+                        }
+                    })?,
+                    role_slot_id: RoleSlotId::parse(&columns.2)?,
+                    topology_node_id: TopologyNodeId::parse(&columns.3)?,
+                    seat_binding_id: SeatBindingId::parse(&columns.4)?,
+                    psw_topology_node_id: TopologyNodeId::parse(&columns.5)?,
+                    psw_native_id: columns.6.as_deref().map(ExternalId::parse).transpose()?,
+                    purpose: BoundedText::parse(&columns.7)?,
+                    intent_hash: ContentHash::parse(&columns.8)?,
+                    disposition: SourceDisposition::parse(&columns.9)?,
+                    revision: AggregateRevision::parse(
+                        u64::try_from(columns.10).unwrap_or_default(),
+                    )?,
+                    created_at: read_timestamp(&columns.11)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Move one Quick session's source disposition, bumping its revision.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] when the session does not exist.
+    pub fn set_quick_session_disposition(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+        disposition: SourceDisposition,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE quick_sessions SET disposition = ?3, revision = revision + 1
+                 WHERE project_id = ?1 AND id = ?2",
+                params![
+                    project_id.to_string(),
+                    quick_session_id.to_string(),
+                    disposition.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "quick session",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Authorize one promotion, freezing the ids and the roster its effects
+    /// will use.
+    ///
+    /// Both rows are written before the first effect, and in one transaction.
+    /// They are the two things a resumed apply reads to know what it is
+    /// resuming: the promotion row says which epic, the roster row says which
+    /// seats. Writing either one later — or the two separately — leaves a
+    /// window where a failure has recorded the source as promoted while the
+    /// resume path cannot find what it was promoted into. Since the promotion
+    /// row is keyed by its source and nothing deletes it, a source caught in
+    /// that window would be permanently unpromotable.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the source is already
+    /// promoted.
+    pub fn begin_promotion(
+        &self,
+        promotion: &StoredPromotion,
+        roster: &StoredEpicRoster,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO quick_session_promotions
+                     (quick_session_id, project_id, mini_project_id, preview_hash,
+                      source_disposition, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    promotion.quick_session_id.to_string(),
+                    promotion.project_id.to_string(),
+                    promotion.mini_project_id.to_string(),
+                    promotion.preview_hash.as_str(),
+                    promotion.source_disposition.as_str(),
+                    text(promotion.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "quick session promotion",
+                        rule: "a Quick session is promoted exactly once",
+                    }
+                }
+                other => backend(other),
+            })?;
+        // Legal before the MiniProject exists: `epic_rosters` deliberately
+        // carries no foreign key to `mini_projects`, because the roster is what
+        // the epic is built *from*.
+        transaction
+            .execute(
+                "INSERT INTO epic_rosters
+                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
+                      quick_session_id, revision, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    roster.project_id.to_string(),
+                    roster.mini_project_id.to_string(),
+                    version_column(roster.core_team_version),
+                    roster.catalog_hash.as_str(),
+                    roster.seats.to_string(),
+                    roster.quick_session_id.map(|id| id.to_string()),
+                    i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
+                    text(roster.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Record that a promotion's handoff reached its seat.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] when no promotion is in flight.
+    pub fn complete_promotion(
+        &self,
+        quick_session_id: QuickSessionId,
+        handoff: &serde_json::Value,
+        handoff_hash: &ContentHash,
+        lsa_seat_binding_id: SeatBindingId,
+        completed_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE quick_session_promotions
+                 SET handoff = ?2, handoff_hash = ?3, lsa_seat_binding_id = ?4, completed_at = ?5
+                 WHERE quick_session_id = ?1",
+                params![
+                    quick_session_id.to_string(),
+                    handoff.to_string(),
+                    handoff_hash.as_str(),
+                    lsa_seat_binding_id.to_string(),
+                    text(completed_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "quick session promotion",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// The promotion of one Quick session, in flight or complete.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_promotion(
+        &self,
+        quick_session_id: QuickSessionId,
+    ) -> RepositoryResult<Option<StoredPromotion>> {
+        self.connection
+            .query_row(
+                "SELECT project_id, mini_project_id, preview_hash, source_disposition,
+                        handoff, handoff_hash, lsa_seat_binding_id, completed_at, created_at
+                 FROM quick_session_promotions WHERE quick_session_id = ?1",
+                params![quick_session_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredPromotion {
+                    quick_session_id,
+                    project_id: ProjectId::parse(&columns.0)?,
+                    mini_project_id: MiniProjectId::parse(&columns.1)?,
+                    preview_hash: ContentHash::parse(&columns.2)?,
+                    source_disposition: SourceDisposition::parse(&columns.3)?,
+                    handoff: columns
+                        .4
+                        .map(|handoff| serde_json::from_str(&handoff))
+                        .transpose()
+                        .map_err(|error| RepositoryError::Backend {
+                            detail: format!("a stored handoff is unreadable: {error}"),
+                        })?,
+                    handoff_hash: columns.5.as_deref().map(ContentHash::parse).transpose()?,
+                    lsa_seat_binding_id: columns
+                        .6
+                        .as_deref()
+                        .map(SeatBindingId::parse)
+                        .transpose()?,
+                    completed_at: columns.7.as_deref().map(read_timestamp).transpose()?,
+                    created_at: read_timestamp(&columns.8)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Freeze, or move, the roster one epic is staffed from.
+    ///
+    /// # Errors
+    /// Returns a backend error.
+    pub fn put_epic_roster(&self, roster: &StoredEpicRoster) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO epic_rosters
+                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
+                      quick_session_id, revision, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (project_id, mini_project_id) DO UPDATE SET
+                     core_team_version = excluded.core_team_version,
+                     catalog_hash = excluded.catalog_hash,
+                     seats = excluded.seats,
+                     revision = epic_rosters.revision + 1,
+                     pinned_at = excluded.pinned_at",
+                params![
+                    roster.project_id.to_string(),
+                    roster.mini_project_id.to_string(),
+                    version_column(roster.core_team_version),
+                    roster.catalog_hash.as_str(),
+                    roster.seats.to_string(),
+                    roster.quick_session_id.map(|id| id.to_string()),
+                    i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
+                    text(roster.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// The roster one epic is staffed from.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_epic_roster(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<StoredEpicRoster>> {
+        self.connection
+            .query_row(
+                "SELECT core_team_version, catalog_hash, seats, quick_session_id, revision,
+                        pinned_at
+                 FROM epic_rosters WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredEpicRoster {
+                    project_id,
+                    mini_project_id,
+                    core_team_version: read_version(columns.0)?,
+                    catalog_hash: ContentHash::parse(&columns.1)?,
+                    seats: serde_json::from_str(&columns.2).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a stored epic roster is unreadable: {error}"),
+                        }
+                    })?,
+                    quick_session_id: columns
+                        .3
+                        .as_deref()
+                        .map(QuickSessionId::parse)
+                        .transpose()?,
+                    revision: AggregateRevision::parse(
+                        u64::try_from(columns.4).unwrap_or_default(),
+                    )?,
+                    pinned_at: read_timestamp(&columns.5)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Read the revision a project is currently configured with.
+    ///
+    /// The highest published version, which is the only definition of current
+    /// this schema has.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_current_core_team(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Option<StoredCoreTeamRevision>> {
+        let found: Option<(i64, String, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT version, catalog_hash, seats, created_at
+                 FROM core_team_revisions
+                 WHERE project_id = ?1
+                 ORDER BY version DESC
+                 LIMIT 1",
+                params![project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(version, catalog_hash, seats, created_at)| {
+                Ok(StoredCoreTeamRevision {
+                    project_id,
+                    version: read_version(version)?,
+                    catalog_hash: ContentHash::parse(&catalog_hash)?,
+                    seats: serde_json::from_str(&seats).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("stored core team seats are not valid JSON: {error}"),
+                        }
+                    })?,
+                    published_at: read_timestamp(&created_at)?,
+                })
+            })
+            .transpose()
+    }
+}
+
 impl TopologyRepository for SqliteStore {
     fn publish_topology_spec(
         &self,
@@ -1133,6 +1655,31 @@ impl TopologyRepository for SqliteStore {
         found
             .map(|(json, hash)| stored_document(&json, &hash))
             .transpose()
+    }
+
+    fn list_topology_specs(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<ProjectSessionTopologySpec>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT definition, definition_hash FROM topology_specs
+                 WHERE project_id = ?1 ORDER BY spec_id, version",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut specs = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let document = stored_payload(
+                &row.get::<_, String>(0).map_err(backend)?,
+                &row.get::<_, String>(1).map_err(backend)?,
+            )?;
+            specs.push(document.deserialize::<ProjectSessionTopologySpec>()?);
+        }
+        Ok(specs)
     }
 
     fn set_project_topology_default(
@@ -1228,6 +1775,53 @@ impl TopologyRepository for SqliteStore {
                     version_column(snapshot.topology.version),
                     snapshot.topology.canonical_hash.as_str(),
                     text(snapshot.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn repin_mini_project_topology(
+        &self,
+        snapshot: &MiniProjectTopologySnapshot,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        // The pin must already exist. An epic with none has not been upgraded,
+        // it has never been placed, and creating the first pin here would let an
+        // upgrade stand in for the placement it is supposed to be moving.
+        let pinned = transaction
+            .query_row(
+                "SELECT 1 FROM mini_project_topology_snapshots
+                 WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![
+                    snapshot.project_id.to_string(),
+                    snapshot.mini_project_id.to_string()
+                ],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(backend)?
+            .is_some();
+        if !pinned {
+            return Err(RepositoryError::NotFound {
+                subject: "mini-project topology snapshot",
+            });
+        }
+        // And the revision it moves to must be one this project published.
+        topology_spec_in(&transaction, snapshot.project_id, &snapshot.topology)?;
+        transaction
+            .execute(
+                "UPDATE mini_project_topology_snapshots
+                 SET spec_id = ?1, version = ?2, canonical_hash = ?3, pinned_at = ?4
+                 WHERE project_id = ?5 AND mini_project_id = ?6",
+                params![
+                    snapshot.topology.spec_id.to_string(),
+                    version_column(snapshot.topology.version),
+                    snapshot.topology.canonical_hash.as_str(),
+                    text(snapshot.pinned_at),
+                    snapshot.project_id.to_string(),
+                    snapshot.mini_project_id.to_string(),
                 ],
             )
             .map_err(backend)?;
@@ -1512,6 +2106,149 @@ impl TopologyRepository for SqliteStore {
             nodes.push(read_topology_node(row)?);
         }
         Ok(nodes)
+    }
+
+    fn list_project_topology_nodes(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<SessionTopologyNode>> {
+        // Created-at order puts parents before children without a recursive
+        // walk: a child cannot be created before the parent it names.
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                 WHERE project_id = ?1 ORDER BY created_at, id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut nodes = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            nodes.push(read_topology_node(row)?);
+        }
+        Ok(nodes)
+    }
+
+    fn get_topology_node(
+        &self,
+        project_id: ProjectId,
+        id: TopologyNodeId,
+    ) -> RepositoryResult<Option<SessionTopologyNode>> {
+        let node: Option<RepositoryResult<SessionTopologyNode>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        node.transpose()
+    }
+
+    fn transition_topology_node(
+        &self,
+        project_id: ProjectId,
+        id: TopologyNodeId,
+        lifecycle: TopologyLifecycle,
+        expected_revision: AggregateRevision,
+        updated_at: Timestamp,
+    ) -> RepositoryResult<SessionTopologyNode> {
+        let transaction = self.begin()?;
+        let current: Option<RepositoryResult<SessionTopologyNode>> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let current = current.transpose()?.ok_or(RepositoryError::NotFound {
+            subject: "topology node",
+        })?;
+        current
+            .revision
+            .expect("topology node", expected_revision)?;
+
+        let advances = matches!(
+            (current.lifecycle, lifecycle),
+            (TopologyLifecycle::Active, TopologyLifecycle::Retired)
+                | (TopologyLifecycle::Retired, TopologyLifecycle::Archived)
+        );
+        if !advances {
+            return Err(conflict(
+                "topology node",
+                "the lifecycle only advances active to retired to archived",
+            ));
+        }
+
+        // Retiring a node concludes that everything below it is finished with.
+        // A node with a live child or a non-terminal seat is not, and retiring
+        // it would leave both addressable under a parent nothing may use.
+        if lifecycle == TopologyLifecycle::Retired {
+            let live_children: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM topology_nodes
+                     WHERE project_id = ?1 AND parent_id = ?2 AND lifecycle = 'active'",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if live_children > 0 {
+                return Err(conflict(
+                    "topology node",
+                    "the node still has active children",
+                ));
+            }
+            let live_seats: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM seat_bindings
+                     WHERE project_id = ?1 AND topology_node_id = ?2 AND lifecycle = 'active'",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if live_seats > 0 {
+                return Err(conflict(
+                    "topology node",
+                    "the node still hosts active seats",
+                ));
+            }
+        }
+
+        transaction
+            .execute(
+                "UPDATE topology_nodes SET lifecycle = ?1, revision = revision + 1, updated_at = ?2
+                 WHERE project_id = ?3 AND id = ?4 AND revision = ?5",
+                params![
+                    lifecycle.as_str(),
+                    text(updated_at),
+                    project_id.to_string(),
+                    id.to_string(),
+                    revision_column(expected_revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        let updated = transaction
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_topology_node(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(updated)
     }
 
     fn create_seat_binding(&self, request: &NewSeatBinding) -> RepositoryResult<SeatBinding> {
@@ -1927,6 +2664,26 @@ impl TopologyRepository for SqliteStore {
         Ok(bindings)
     }
 
+    fn get_seat_binding(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+    ) -> RepositoryResult<Option<SeatBinding>> {
+        let binding: Option<RepositoryResult<SeatBinding>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_seat_binding(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        binding.transpose()
+    }
+
     fn create_adaptive_admission_state(
         &self,
         request: &NewAdaptiveAdmissionState,
@@ -2051,6 +2808,27 @@ impl TopologyRepository for SqliteStore {
         Ok(state)
     }
 
+    fn list_adaptive_admission_states(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AdaptiveAdmissionState>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {ADAPTIVE_ADMISSION_COLUMNS} FROM adaptive_admission_state
+                 WHERE project_id = ?1 ORDER BY mini_project_id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut states = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            states.push(read_adaptive_admission(row)?);
+        }
+        Ok(states)
+    }
+
     fn get_adaptive_admission_state(
         &self,
         project_id: ProjectId,
@@ -2069,6 +2847,400 @@ impl TopologyRepository for SqliteStore {
             .optional()
             .map_err(backend)?;
         state.transpose()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Account-owned capacity evidence
+// ---------------------------------------------------------------------------
+
+const CAPACITY_OBSERVATION_COLUMNS: &str = "id, project_id, account_profile_id, observed_at, \
+    reading, reading_hash, available, pressure, cooling_until";
+
+const AVAILABILITY_OVERRIDE_COLUMNS: &str = "project_id, account_profile_id, available, reason, \
+    expires_at, revision, updated_at";
+
+fn read_capacity_observation(row: &Row<'_>) -> RepositoryResult<CapacityObservation> {
+    let cooling_until: Option<String> = row.get(8).map_err(backend)?;
+    Ok(CapacityObservation {
+        id: CapacityObservationId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        account_profile_id: AccountProfileId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+        observed_at: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
+        reading: stored_payload(
+            &row.get::<_, String>(4).map_err(backend)?,
+            &row.get::<_, String>(5).map_err(backend)?,
+        )?,
+        available: row.get::<_, i64>(6).map_err(backend)? != 0,
+        pressure: row.get::<_, i64>(7).map_err(backend)? != 0,
+        cooling_until: cooling_until.as_deref().map(read_timestamp).transpose()?,
+    })
+}
+
+fn read_capacity_configuration(row: &Row<'_>) -> RepositoryResult<StoredCapacityConfiguration> {
+    Ok(StoredCapacityConfiguration {
+        ceilings: stored_payload(
+            &row.get::<_, String>(0).map_err(backend)?,
+            &row.get::<_, String>(1).map_err(backend)?,
+        )?,
+        revision: revision_of(row.get::<_, i64>(2).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
+    })
+}
+
+fn read_availability_override(row: &Row<'_>) -> RepositoryResult<AvailabilityOverride> {
+    let expires_at: Option<String> = row.get(4).map_err(backend)?;
+    Ok(AvailabilityOverride {
+        project_id: ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        account_profile_id: AccountProfileId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        available: row.get::<_, i64>(2).map_err(backend)? != 0,
+        reason: ExternalName::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+        expires_at: expires_at.as_deref().map(read_timestamp).transpose()?,
+        revision: revision_of(row.get::<_, i64>(5).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(6).map_err(backend)?)?,
+    })
+}
+
+impl CapacityRepository for SqliteStore {
+    fn record_capacity_observation(
+        &self,
+        request: &NewCapacityObservation,
+    ) -> RepositoryResult<CapacityObservation> {
+        let transaction = self.begin()?;
+        // The account is proved to exist here rather than left to the foreign
+        // key, so a collector that read an account this project does not own is
+        // told which thing was wrong instead of getting a generic constraint
+        // refusal.
+        if read_account_profile_in(&transaction, request.project_id, request.account_profile_id)?
+            .is_none()
+        {
+            return Err(RepositoryError::NotFound {
+                subject: "account profile",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO capacity_observations
+                     (id, project_id, account_profile_id, observed_at, reading, reading_hash,
+                      available, pressure, cooling_until)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    request.id.to_string(),
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    text(request.observed_at),
+                    request.reading.json(),
+                    request.reading.hash().as_str(),
+                    i64::from(request.available),
+                    i64::from(request.pressure),
+                    request.cooling_until.map(text),
+                ],
+            )
+            .map_err(backend)?;
+        let observation = transaction
+            .query_row(
+                &format!(
+                    "SELECT {CAPACITY_OBSERVATION_COLUMNS} FROM capacity_observations
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![request.project_id.to_string(), request.id.to_string()],
+                |row| Ok(read_capacity_observation(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(observation)
+    }
+
+    fn get_capacity_observation(
+        &self,
+        project_id: ProjectId,
+        id: CapacityObservationId,
+    ) -> RepositoryResult<Option<CapacityObservation>> {
+        let observation: Option<RepositoryResult<CapacityObservation>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {CAPACITY_OBSERVATION_COLUMNS} FROM capacity_observations
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_capacity_observation(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        observation.transpose()
+    }
+
+    fn latest_capacity_observations(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<CapacityObservation>> {
+        // Latest per account by observation instant, with the id as the
+        // tie-break: two readings taken in the same second still have a stable
+        // order, because the id is time-ordered.
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {CAPACITY_OBSERVATION_COLUMNS} FROM capacity_observations AS outer_row
+                 WHERE project_id = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM capacity_observations AS newer
+                       WHERE newer.project_id = outer_row.project_id
+                         AND newer.account_profile_id = outer_row.account_profile_id
+                         AND (newer.observed_at, newer.id) > (outer_row.observed_at, outer_row.id)
+                   )
+                 ORDER BY account_profile_id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut observations = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            observations.push(read_capacity_observation(row)?);
+        }
+        Ok(observations)
+    }
+
+    fn set_availability_override(
+        &self,
+        request: &NewAvailabilityOverride,
+    ) -> RepositoryResult<AvailabilityOverride> {
+        let transaction = self.begin()?;
+        if read_account_profile_in(&transaction, request.project_id, request.account_profile_id)?
+            .is_none()
+        {
+            return Err(RepositoryError::NotFound {
+                subject: "account profile",
+            });
+        }
+        let current: Option<RepositoryResult<AvailabilityOverride>> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {AVAILABILITY_OVERRIDE_COLUMNS} FROM availability_overrides
+                     WHERE project_id = ?1 AND account_profile_id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string()
+                ],
+                |row| Ok(read_availability_override(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let current = current.transpose()?;
+        // The first judgement about an account is written at revision one, and
+        // a caller has to say so. Letting any revision create the first record
+        // would make "I read it as absent" indistinguishable from "I read a
+        // record that has since been replaced".
+        let next = match &current {
+            Some(existing) => {
+                existing
+                    .revision
+                    .expect("availability override", request.expected_revision)?;
+                existing.revision.next()?
+            }
+            None => {
+                AggregateRevision::INITIAL
+                    .expect("availability override", request.expected_revision)?;
+                AggregateRevision::INITIAL
+            }
+        };
+        transaction
+            .execute(
+                "INSERT INTO availability_overrides
+                     (project_id, account_profile_id, available, reason, expires_at, revision,
+                      updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (project_id, account_profile_id) DO UPDATE SET
+                     available = excluded.available,
+                     reason = excluded.reason,
+                     expires_at = excluded.expires_at,
+                     revision = excluded.revision,
+                     updated_at = excluded.updated_at",
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    i64::from(request.available),
+                    request.reason.as_str(),
+                    request.expires_at.map(text),
+                    revision_column(next)?,
+                    text(request.updated_at),
+                ],
+            )
+            .map_err(backend)?;
+        let stored = transaction
+            .query_row(
+                &format!(
+                    "SELECT {AVAILABILITY_OVERRIDE_COLUMNS} FROM availability_overrides
+                     WHERE project_id = ?1 AND account_profile_id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string()
+                ],
+                |row| Ok(read_availability_override(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn list_availability_overrides(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<AvailabilityOverride>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {AVAILABILITY_OVERRIDE_COLUMNS} FROM availability_overrides
+                 WHERE project_id = ?1 ORDER BY account_profile_id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut overrides = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            overrides.push(read_availability_override(row)?);
+        }
+        Ok(overrides)
+    }
+}
+
+/// The Realm's capacity ceilings.
+///
+/// Inherent rather than on [`CapacityRepository`] because the configuration is
+/// realm-scoped: there is no aggregate for a command receipt to name, so a
+/// replay is answered through the realm binding table `0015` built for exactly
+/// this class of operation.
+impl SqliteStore {
+    /// The stored ceilings, if an operator has set any.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn get_capacity_configuration(
+        &self,
+    ) -> RepositoryResult<Option<StoredCapacityConfiguration>> {
+        let stored: Option<RepositoryResult<StoredCapacityConfiguration>> = self
+            .connection
+            .query_row(
+                "SELECT ceilings, ceilings_hash, revision, updated_at FROM capacity_configuration
+                 WHERE id = 1",
+                [],
+                |row| Ok(read_capacity_configuration(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        stored.transpose()
+    }
+
+    /// Replace the ceilings under compare-and-swap, answering a replay from
+    /// what is already durable.
+    ///
+    /// The key is judged before the revision, and that order is the whole
+    /// idempotency story: a retry of a call that already succeeded presents the
+    /// revision it read *before* the write, which as a bare compare-and-swap
+    /// would be stale. Recognising the key first turns that retry into the
+    /// original answer instead of a conflict.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] for a key already bound to
+    /// different content, and a revision conflict for a genuinely stale write.
+    /// On refusal nothing is written.
+    pub fn set_capacity_configuration(
+        &self,
+        ceilings: &CanonicalDocument,
+        binding: &IdempotencyBinding,
+        expected_revision: AggregateRevision,
+    ) -> RepositoryResult<StoredCapacityConfiguration> {
+        let transaction = self.begin()?;
+        let bound: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT operation, fingerprint FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![binding.key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let read_current = |transaction: &Transaction<'_>| {
+            let current: Option<RepositoryResult<StoredCapacityConfiguration>> = transaction
+                .query_row(
+                    "SELECT ceilings, ceilings_hash, revision, updated_at
+                     FROM capacity_configuration WHERE id = 1",
+                    [],
+                    |row| Ok(read_capacity_configuration(row)),
+                )
+                .optional()
+                .map_err(backend)?;
+            current.transpose()
+        };
+        match bound {
+            Some((operation, fingerprint))
+                if operation == binding.operation
+                    && fingerprint == binding.fingerprint.as_str() =>
+            {
+                return read_current(&transaction)?.ok_or(RepositoryError::NotFound {
+                    subject: "capacity configuration",
+                });
+            }
+            Some(_) => {
+                return Err(conflict(
+                    "idempotency key",
+                    "this key is already bound to a different operation",
+                ));
+            }
+            None => {}
+        }
+
+        let next = match read_current(&transaction)? {
+            Some(existing) => {
+                existing
+                    .revision
+                    .expect("capacity configuration", expected_revision)?;
+                existing.revision.next()?
+            }
+            None => {
+                AggregateRevision::INITIAL.expect("capacity configuration", expected_revision)?;
+                AggregateRevision::INITIAL
+            }
+        };
+        transaction
+            .execute(
+                "INSERT INTO realm_idempotency_bindings
+                     (idempotency_key, operation, fingerprint, bound_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    binding.key,
+                    binding.operation,
+                    binding.fingerprint.as_str(),
+                    text(binding.bound_at)
+                ],
+            )
+            .map_err(backend)?;
+        transaction
+            .execute(
+                "INSERT INTO capacity_configuration (id, ceilings, ceilings_hash, revision, updated_at)
+                 VALUES (1, ?1, ?2, ?3, ?4)
+                 ON CONFLICT (id) DO UPDATE SET
+                     ceilings = excluded.ceilings,
+                     ceilings_hash = excluded.ceilings_hash,
+                     revision = excluded.revision,
+                     updated_at = excluded.updated_at",
+                params![
+                    ceilings.json(),
+                    ceilings.hash().as_str(),
+                    revision_column(next)?,
+                    text(binding.bound_at),
+                ],
+            )
+            .map_err(backend)?;
+        let stored = read_current(&transaction)?.ok_or(RepositoryError::NotFound {
+            subject: "capacity configuration",
+        })?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
     }
 }
 
@@ -4059,6 +5231,105 @@ impl RunRepository for SqliteStore {
 
     fn record_observation(&self, request: &NewObservation) -> RepositoryResult<RunProjection> {
         crate::events::append::record_observation(self, request)
+    }
+
+    fn record_abandon_receipt(
+        &self,
+        request: &NewAbandonReceipt,
+    ) -> RepositoryResult<CommandReceiptId> {
+        let transaction = self.begin()?;
+        // A repeat of the same decision cites the first receipt. The comparison
+        // is on what the receipt is *for*, so a key reused for a different run or
+        // a different document is refused rather than silently answered with an
+        // unrelated authorization.
+        let existing: Option<(String, String, String, String)> = transaction
+            .query_row(
+                "SELECT id, kind, target, intent_hash FROM command_receipts
+                 WHERE idempotency_key = ?1",
+                params![request.idempotency_key.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let target = request.target;
+        if let Some((id, kind, stored_target, intent_hash)) = existing {
+            let stored_target: AggregateRef = from_json(&stored_target)?;
+            if kind != CommandKind::AbandonRun.as_str()
+                || stored_target != target
+                || intent_hash != request.intent.hash().as_str()
+            {
+                return Err(DomainError::invalid(
+                    "CommandReceipt",
+                    "an idempotency key may not be reused for a different command",
+                )
+                .into());
+            }
+            return CommandReceiptId::parse(&id).map_err(Into::into);
+        }
+
+        // Born `confirmed`, not `intent_persisted`. Nothing is dispatched here:
+        // the closure is already committed in this same transaction, so there is
+        // no outbox entry and never will be. `intent_persisted` is the one state
+        // that authorizes a launch, and a restart's recovery scan reads it as
+        // "this was queued and never sent" — it then demands the outbox row that
+        // by design does not exist, and the whole startup inventory fails.
+        transaction
+            .execute(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                      intent_hash, state, attempts, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'confirmed', 0, ?9, ?9)",
+                params![
+                    request.receipt_id.to_string(),
+                    request.project_id.to_string(),
+                    request.idempotency_key.as_str(),
+                    CommandKind::AbandonRun.as_str(),
+                    to_json(&target)?,
+                    revision_column(request.target_revision)?,
+                    request.intent.json(),
+                    request.intent.hash().as_str(),
+                    text(request.recorded_at)
+                ],
+            )
+            .map_err(backend)?;
+        let (kind, columns) = target_columns(&target);
+        transaction
+            .execute(
+                "INSERT INTO command_targets
+                     (project_id, receipt_id, target_kind, target_project_id,
+                      target_mini_project_id, target_task_id, target_team_run_id,
+                      target_agent_run_id, target_ticket_link_id, target_work_calendar_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    request.project_id.to_string(),
+                    request.receipt_id.to_string(),
+                    kind,
+                    columns[0],
+                    columns[1],
+                    columns[2],
+                    columns[3],
+                    columns[4],
+                    columns[5],
+                    columns[6]
+                ],
+            )
+            .map_err(backend)?;
+        // The intent document is the evidence: it is what the decision was, and
+        // the transitions table refuses a confirmation that cites none.
+        let evidence = ExternalId::parse(request.intent.hash().as_str())?;
+        crate::commands::receipts::append_transition(
+            &transaction,
+            request.project_id,
+            request.receipt_id,
+            1,
+            kontor_core::receipt::CommandReceiptState::Confirmed,
+            None,
+            None,
+            Some(&evidence),
+            request.recorded_at,
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(request.receipt_id)
     }
 
     fn close_agent_run(&self, request: &RunClosure) -> RepositoryResult<()> {

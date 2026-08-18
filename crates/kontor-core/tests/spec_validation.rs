@@ -915,6 +915,62 @@ fn sensitive_material_is_rejected_from_every_persisted_string_category_without_e
     assert!(validate_open_key("test", "ghp-0123456789abcdefghijklmnopqrstuvwxyz").is_ok());
 }
 
+/// A credential prefix is the start of a token, never the middle of a word.
+///
+/// The regression: `sk-` matched inside `ta`sk-`scoped`, so an ordinary
+/// hyphenated English sentence long enough to clear the tail bound was refused
+/// as an OpenAI key — in a plain-prose brief, with nothing credential-shaped in
+/// it anywhere. The scan has to stay narrow enough to store real text and wide
+/// enough to catch a real key, and the boundary is what separates the two.
+#[test]
+fn a_credential_prefix_must_begin_at_a_token_boundary() {
+    // Ordinary prose. Every one of these embeds a marker inside a word and is
+    // long enough that only the boundary rule saves it.
+    for benign in [
+        "task-scoped placement is derived from the pinned topology revision",
+        "risk-free rollback of the operational topology specification revision",
+        "desk-side review of the epic control plane and its delivery seats",
+        // Not `basic-…` or `bearer-…`: those are deliberate separator variants
+        // of the HTTP auth schemes, they match at a real boundary, and
+        // narrowing them would be a detection change rather than a bug fix.
+        // Recorded as a residual in the OP-03 error-contract inventory.
+        // `akia`/`asia` embedded mid-word. At the *start* of a word they are
+        // indistinguishable from an AWS key by prefix alone and stay refused,
+        // which is the conservative half of the same rule.
+        "the makiavellian fantasia of a delivery vocabulary revision upgrade",
+    ] {
+        kontor_core::id::reject_sensitive_text("probe", benign)
+            .unwrap_or_else(|_| panic!("`{benign}` is ordinary prose, not a credential"));
+        kontor_core::id::BoundedText::parse(benign)
+            .unwrap_or_else(|_| panic!("`{benign}` is storable text"));
+    }
+
+    // And the same markers at a real boundary are still refused, whatever
+    // opens the token: nothing, whitespace, an assignment, a quote or a path.
+    for canary in [
+        "sk-0123456789abcdefghijklmnopqrstuv",
+        "Bearer sk-0123456789abcdefghijklmnopqrstuv",
+        "AWS_KEY=AKIAIOSFODNN7EXAMPLE0000",
+        "\"glpat-0123456789abcdefghij\"",
+        "/tmp/ghp_0123456789abcdefghijklmnopqrst",
+        "value:xoxb-0123456789abcdefghij",
+    ] {
+        let refused = kontor_core::id::reject_sensitive_text("probe", canary)
+            .expect_err("credential-shaped material at a boundary must be refused");
+        assert!(
+            matches!(refused, DomainError::SensitiveMaterial { .. }),
+            "`{}` must be refused as sensitive material",
+            canary.escape_debug()
+        );
+        // And never echoed, whatever opened the token.
+        let rendered = format!("{refused} {refused:?}");
+        assert!(
+            !rendered.contains(canary),
+            "the refusal echoed the canary: {rendered}"
+        );
+    }
+}
+
 #[test]
 fn persona_actor_cannot_evaluate_or_waive_and_prohibited_actions_are_required() {
     let scenario = persona();

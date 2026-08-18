@@ -471,6 +471,24 @@ impl RoleCatalogRevision {
     }
 }
 
+crate::closed_enum! {
+    /// When one Core Team role is present in a concrete epic.
+    ///
+    /// This lives beside the catalog vocabulary rather than inside the
+    /// application layer because it is a fact two layers must agree on: the
+    /// request that states a seat's policy and the revision that persists it.
+    /// A second spelling on the wire would be a policy the caller could state
+    /// and the server could not honour.
+    EpicPresence, "EpicPresence" {
+        /// Every epic must materialize the role.
+        Required => "required",
+        /// New epics materialize the role unless explicitly changed.
+        Default => "default",
+        /// The role remains absent until an authorized request needs it.
+        OnDemand => "on_demand",
+    }
+}
+
 /// The typed role selected for one Operational seat.
 ///
 /// This is deliberately separate from the older [`RoleRef`], which pins the

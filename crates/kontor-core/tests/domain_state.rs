@@ -1539,6 +1539,26 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("submit_intake", "project", "witness", None),
     ("pull_ticket_comments", "task", "witness", None),
     ("claim_ticket", "task", "witness", None),
+    // OP-03 CP3. Capacity is a fact about the project's fleet, and a seat is
+    // not an aggregate a command may name, so all four witness the project.
+    // Spelled out here a second time on purpose: this table is an independent
+    // declaration of the matrix, not a mirror of it.
+    ("refresh_capacity", "project", "witness", None),
+    ("override_availability", "project", "witness", None),
+    ("observe_seat", "project", "witness", None),
+    ("retire_seat", "project", "witness", None),
+    // Publication is authority over the project's vocabulary; an upgrade moves
+    // one epic's pin, so the epic is what it names.
+    ("publish_topology_spec", "project", "witness", None),
+    ("upgrade_topology", "mini_project", "witness", None),
+    // Project configuration, and deliberately nothing else: publishing a roster
+    // seats no epic, so no epic aggregate is a legal target for it.
+    ("apply_core_team", "project", "witness", None),
+    ("ensure_quick_session", "project", "witness", None),
+    // Promotion and the two roster commands are about one epic.
+    ("promote_quick_session", "mini_project", "witness", None),
+    ("materialize_core_team", "mini_project", "witness", None),
+    ("upgrade_epic_roster", "mini_project", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.

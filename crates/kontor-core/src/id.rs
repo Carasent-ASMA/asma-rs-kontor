@@ -224,6 +224,24 @@ entity_ids! {
     SeatBindingId,
     /// Identifies one server-owned role catalog across revisions.
     RoleCatalogId,
+    /// Identifies one Quick session: work that is being done before anyone has
+    /// decided it deserves an epic.
+    ///
+    /// It is a first-class identity rather than a scratch label because a Quick
+    /// session can be *promoted*, and a promotion has to name exactly what it is
+    /// promoting. A label would make that a search.
+    QuickSessionId,
+    /// Identifies one consultation of an Advisor.
+    AdvisorRunId,
+    /// Identifies one consultation of a Committee.
+    CommitteeRunId,
+    /// Identifies one raw provider/account observation.
+    ///
+    /// Raw evidence is addressable in its own right because an operator's
+    /// override must never rewrite what a provider reported: the two are
+    /// separate records, and this is what lets the derived answer cite the
+    /// observation it came from.
+    CapacityObservationId,
 }
 
 fn parse_entity_uuid(subject: &'static str, text: &str) -> DomainResult<Uuid> {
@@ -1466,10 +1484,29 @@ const SECRET_ASSIGNMENTS: &[&str] = &[
     "authorization:",
 ];
 
+/// Whether `lowered` carries `marker` as a credential *prefix* with enough tail
+/// to be one.
+///
+/// The match must begin at a token boundary. A credential prefix is the start
+/// of a token — it follows nothing, whitespace, punctuation or a separator —
+/// and it is *never* in the middle of a word. Without that rule `sk-` matches
+/// inside `ta`sk-`scoped`, `ri`sk-`free` and `de`sk-`side`, and any ordinary
+/// hyphenated English phrase long enough to clear `min_tail` is refused as a
+/// credential. That is not a hypothetical: it rejected a plain-prose brief.
+///
+/// The boundary is "the preceding character is not alphanumeric" rather than a
+/// whitelist of separators, so `=`, `:`, `"`, `/`, `-`, `_` and whitespace all
+/// still open a token — which is where credentials actually appear. Real
+/// credential-shaped material is unaffected: `sk-...`, `Bearer ghp_...`,
+/// `AWS_KEY=AKIA...` and `"glpat-..."` all begin at a boundary.
 fn has_marker(lowered: &str, marker: &str, min_tail: usize) -> bool {
-    lowered
-        .match_indices(marker)
-        .any(|(index, _)| lowered.len() - index - marker.len() >= min_tail)
+    lowered.match_indices(marker).any(|(index, _)| {
+        let at_boundary = lowered[..index]
+            .chars()
+            .next_back()
+            .is_none_or(|preceding| !preceding.is_alphanumeric());
+        at_boundary && lowered.len() - index - marker.len() >= min_tail
+    })
 }
 
 /// Whether the text embeds a password in a URL's userinfo (`scheme://u:p@host`).

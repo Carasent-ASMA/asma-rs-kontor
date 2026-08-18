@@ -68,7 +68,8 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerLabel,
-    ContainerOutcome, ContainerProjection, ContainerRequest,
+    ContainerOutcome, ContainerProjection, ContainerRequest, RetitleContainerOutcome,
+    RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -1951,12 +1952,17 @@ impl PaseoAdapter {
             ));
         }
 
+        // A Paseo project is a *registered checkout*, so registering one needs a
+        // directory — but only Paseo needs it, and Kontor is right not to invent
+        // a tree for a node that edits nothing. An epic root and a project root
+        // are both registered from the checkout this plane serves, which is the
+        // same directory the single-project path has always used, so that is the
+        // fallback rather than a refusal. The request still wins when it names
+        // one: that is the leaf, and a leaf is registered where it works.
         let cwd = request
             .cwd
             .as_ref()
-            .ok_or(RuntimeError::WorkspaceMismatch {
-                rule: "a native_root must say which directory it is registered from",
-            })?;
+            .unwrap_or(&self.config.scope.project_root_cwd);
         let command = PaseoRpc::project_add(self.next_request_id(), cwd.as_str());
         let frame = self.transport.request(&command).await?;
         let added: PaseoProjectAdded = frame.resolve(&command, "PaseoProjectAdded")?;
@@ -1991,6 +1997,10 @@ impl PaseoAdapter {
         generation: u64,
     ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
         let label = request.correlation().to_string();
+        // Resolved before anything is searched for or created, so a task this
+        // plane has no scope for is refused before any native mutation rather
+        // than named after a node id it can never be renamed away from.
+        let display_name = self.child_display_name(request)?;
         let existing = self.fetch_workspaces(project_id.as_str()).await?;
         let mut mine = existing
             .iter()
@@ -2014,7 +2024,7 @@ impl PaseoAdapter {
                         })?
                         .as_str(),
                     project_id.as_str(),
-                    &workspace_label_suffix(request.display_name.as_str(), &label),
+                    &workspace_label_suffix(&display_name, &label),
                 );
                 let output = self.transport.run(&command).await?;
                 let created: PaseoCliWorkspaceCreated = output.parse("PaseoCliWorkspaceCreated")?;
@@ -2050,6 +2060,36 @@ impl PaseoAdapter {
             request.requested_at,
         )?;
         Ok((identity, correlation, created))
+    }
+
+    /// The title one native child must carry.
+    ///
+    /// A child that names a delivery task **is** that task's session workspace,
+    /// so its title comes from the same authoritative scope
+    /// `prepare_workspace` renders from — `TSW · {jira issue} · {short code}`.
+    /// One renderer, so this adapter's two entry points cannot disagree about
+    /// what one workspace is called.
+    ///
+    /// The caller's `display_name` is deliberately not used for one. Topology
+    /// admission builds it from the node kind's template and the topology node
+    /// id, and a node id is an identity: a native title made out of one is
+    /// unreadable to the humans the title exists for, and Paseo has no
+    /// supported rename, so it is unreadable permanently.
+    ///
+    /// A child that names no task keeps the caller's name. Those are the
+    /// project and epic roots, whose titles are structural rather than
+    /// ticket-scoped, and there is no task scope to render them from.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::WorkspaceMismatch`] when the plane holds no
+    /// scope for the named task. Refusing is the whole point: falling back to
+    /// the caller's name would produce exactly the title this rule exists to
+    /// prevent.
+    fn child_display_name(&self, request: &ContainerRequest) -> RuntimeResult<String> {
+        match request.task_id {
+            Some(task_id) => self.config.scope.workspace_display_name_for(task_id),
+            None => Ok(request.display_name.as_str().to_owned()),
+        }
     }
 
     /// Who a child container inside a bound root belongs to.
@@ -2226,7 +2266,7 @@ impl PaseoAdapter {
     /// * [`RuntimeError::Transport`] — Paseo refused, or acknowledged another id.
     /// * [`RuntimeError::CorrelationFailed`] — the fresh readback does not report
     ///   the agent archived, so nothing may cite it as finished.
-    pub async fn retire(
+    async fn retire_session(
         &self,
         binding: &RuntimeBindingSnapshot,
         at: Timestamp,
@@ -2248,13 +2288,17 @@ impl PaseoAdapter {
         if !agent.is_archived() {
             return Err(RuntimeError::CorrelationFailed);
         }
-        self.observation(
+        let observation = self.observation(
             binding.agent_run_id(),
             binding.identity().clone(),
             &agent,
             at,
             ObservationSource::Inspect,
-        )
+        )?;
+        self.lock()
+            .admissions
+            .retire(binding.binding_id(), &binding.identity().native_id);
+        Ok(observation)
     }
 
     /// Link a successor seat to the predecessor it replaced.
@@ -2927,6 +2971,44 @@ impl RuntimeAdapter for PaseoAdapter {
         state.admissions.admit(request, &facts)
     }
 
+    /// Refused, and precisely.
+    ///
+    /// Neither transport this adapter speaks can ask for it. The CLI verbs it
+    /// shells out to are `workspace create` and `workspace archive`; the typed
+    /// RPC envelopes it exchanges are `project.list`, `project.add`,
+    /// `fetch_workspaces`, `fetch_agents`, `fetch_agent`,
+    /// `fetch_agent_timeline` and `send_agent_message`. None of them changes a
+    /// title. `agent update-labels` exists but addresses an agent, not the
+    /// workspace that holds it.
+    ///
+    /// The daemon itself is not the limit: its MCP facade serves
+    /// `rename_workspace(workspace_id, title)`, so Paseo can rename — this
+    /// adapter simply has no route to the operation. The correction is therefore
+    /// named and small: teach this adapter that request, then read the title
+    /// back through `fetch_workspaces` on the same native id. Until that route
+    /// exists, claiming the capability would be a lie, and the two shortcuts
+    /// that would "work" today are both refused on purpose. Archiving and
+    /// recreating destroys the native id every Kontor binding, seat and readback
+    /// resolves by — a rename that loses the identity is not a rename. Writing
+    /// the daemon's own state directly is an undocumented internal surface with
+    /// no contract, no readback and no versioning.
+    ///
+    /// So Kontor holds the correction as pending rather than pretending to have
+    /// made it. That is the honest state, and it is visible: the topology
+    /// projection keeps reporting the title the runtime actually carries.
+    ///
+    /// # Errors
+    /// Always [`RuntimeError::UnsupportedCapability`].
+    async fn retitle_container(
+        &self,
+        request: &RetitleContainerRequest,
+    ) -> RuntimeResult<RetitleContainerOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::RetitleContainer,
+        })
+    }
+
     async fn prepare_container(
         &self,
         request: &ContainerRequest,
@@ -3426,6 +3508,14 @@ impl RuntimeAdapter for PaseoAdapter {
             request.requested_at,
             ObservationSource::CommandAck,
         )
+    }
+
+    async fn retire(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        self.retire_session(binding, at).await
     }
 
     async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation> {

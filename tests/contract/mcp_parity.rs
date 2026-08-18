@@ -9,7 +9,7 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 29 mapped operations and exactly three allowlisted ones. The canary is not a
+//! 29 mapped operations and exactly two allowlisted ones. The canary is not a
 //! claim that 29 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
@@ -438,17 +438,17 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        63,
+        115,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
         NON_AGENT_ROUTES.len(),
-        3,
+        2,
         "the allowlist changed; an omission must be reviewed, not added"
     );
     assert_eq!(
         documented().len(),
-        65,
+        116,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -503,6 +503,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_context_resolve", CallerTier::Operator),
         ("kontor_gate_record", CallerTier::Operator),
         ("kontor_runtime_settle", CallerTier::Operator),
+        // Abandoning an unbound run drives the same seat-shaped aggregate that
+        // settlement does, so it sits at the same tier — no wider, because the
+        // daemon refuses it outright once the seat holds a session.
+        ("kontor_runtime_abandon", CallerTier::Operator),
         ("kontor_ticket_reconcile_plan", CallerTier::Operator),
         ("kontor_ticket_reconcile_apply", CallerTier::Operator),
         ("kontor_session_message_send", CallerTier::Operator),
@@ -554,6 +558,78 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_teams_get", CallerTier::Observer),
         ("kontor_team_draft_save", CallerTier::Operator),
         ("kontor_team_publish", CallerTier::Operator),
+        // KON-OP-03: publishing or reading a topology specification decides what
+        // kinds may ever exist in this project, so the whole specification family
+        // is admin — including the two that persist nothing, because a builder
+        // that hands back a complete candidate is still describing the shape of
+        // the project's sessions. The catalog and code help are the opposite:
+        // they are the server's own dictionary, and a client that cannot read
+        // them has to keep a private one, which is the failure they exist to
+        // prevent.
+        ("kontor_topology_spec_draft", CallerTier::Admin),
+        ("kontor_topology_spec_validate", CallerTier::Admin),
+        ("kontor_topology_spec_publish", CallerTier::Admin),
+        ("kontor_topology_spec_get", CallerTier::Admin),
+        ("kontor_role_catalog_get", CallerTier::Observer),
+        ("kontor_role_get", CallerTier::Observer),
+        ("kontor_code_help_get", CallerTier::Observer),
+        // KON-OP-03: naming a semantic scope is operator work — it is asking
+        // Kontor to place the sessions the work already implies. Moving an
+        // epic's pinned specification is not: it changes what kinds may exist
+        // for work already running, so both halves of the upgrade are admin.
+        ("kontor_topology_inspect", CallerTier::Observer),
+        ("kontor_topology_drift", CallerTier::Operator),
+        ("kontor_topology_ensure", CallerTier::Operator),
+        ("kontor_topology_materialize", CallerTier::Operator),
+        ("kontor_topology_retire", CallerTier::Operator),
+        ("kontor_topology_archive", CallerTier::Operator),
+        ("kontor_topology_upgrade_preview", CallerTier::Admin),
+        ("kontor_topology_upgrade_apply", CallerTier::Admin),
+        // KON-OP-03: the ceilings a realm admits work under are configuration,
+        // so reading and changing them is admin. Collecting evidence, judging
+        // an account and attending or releasing one exact seat are operator
+        // work; the derived picture itself is a read anyone may take.
+        ("kontor_capacity_config_get", CallerTier::Admin),
+        ("kontor_capacity_config_preview", CallerTier::Admin),
+        ("kontor_capacity_config_apply", CallerTier::Admin),
+        ("kontor_capacity_get", CallerTier::Observer),
+        ("kontor_capacity_refresh", CallerTier::Operator),
+        ("kontor_capacity_observation_get", CallerTier::Observer),
+        ("kontor_capacity_override", CallerTier::Operator),
+        ("kontor_seat_attention", CallerTier::Operator),
+        ("kontor_seat_retire", CallerTier::Operator),
+        // KON-OP-03 successor contracts. Configuration — who the Core Team is,
+        // what an Advisor, Committee or Completion profile says, which roster
+        // an epic pins — is admin. Running a consultation, opening or promoting
+        // Quick work and moving a completion are operator acts. The catalogs
+        // themselves are reads.
+        ("kontor_core_team_get", CallerTier::Observer),
+        ("kontor_core_team_preview", CallerTier::Admin),
+        ("kontor_core_team_apply", CallerTier::Admin),
+        ("kontor_core_team_materialize", CallerTier::Operator),
+        ("kontor_quick_roles_list", CallerTier::Observer),
+        ("kontor_quick_session_ensure", CallerTier::Operator),
+        ("kontor_promotion_preview", CallerTier::Operator),
+        ("kontor_promotion_apply", CallerTier::Operator),
+        ("kontor_roster_upgrade_preview", CallerTier::Admin),
+        ("kontor_roster_upgrade_apply", CallerTier::Admin),
+        ("kontor_advisor_profiles_list", CallerTier::Observer),
+        ("kontor_advisor_profile_preview", CallerTier::Admin),
+        ("kontor_advisor_profile_apply", CallerTier::Admin),
+        ("kontor_advisor_run_invoke", CallerTier::Operator),
+        ("kontor_advisor_run_settle", CallerTier::Operator),
+        ("kontor_committee_templates_list", CallerTier::Observer),
+        ("kontor_committee_template_preview", CallerTier::Admin),
+        ("kontor_committee_template_apply", CallerTier::Admin),
+        ("kontor_committee_run_invoke", CallerTier::Operator),
+        ("kontor_committee_findings_record", CallerTier::Operator),
+        ("kontor_committee_run_settle", CallerTier::Operator),
+        ("kontor_completion_profiles_list", CallerTier::Observer),
+        ("kontor_completion_profile_preview", CallerTier::Admin),
+        ("kontor_completion_profile_apply", CallerTier::Admin),
+        ("kontor_completion_get", CallerTier::Observer),
+        ("kontor_completion_advance", CallerTier::Operator),
+        ("kontor_completion_remediate", CallerTier::Operator),
     ]);
     for tool in REGISTRY {
         assert_eq!(

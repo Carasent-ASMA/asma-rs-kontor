@@ -547,6 +547,47 @@ impl SqliteStore {
         read_lease(&transaction, project_id, id)
     }
 
+    /// Every lease one run still holds: neither released, expired nor lapsed.
+    ///
+    /// A run that ends still holds what it claimed, because a lease is given up
+    /// deliberately and not by the row it belonged to changing state. Whoever
+    /// ends the run has to hand them back, or the next admission of the same
+    /// task waits out the expiry for no reason.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn live_leases_of_run(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        now: Timestamp,
+    ) -> RepositoryResult<Vec<ResourceLease>> {
+        let transaction = self.begin()?;
+        let mut statement = transaction
+            .prepare(
+                "SELECT id, project_id, lease_kind, resource_key, worktree_key, agent_run_id,
+                        holder_instance, fencing_token, acquired_at, expires_at, released_at,
+                        expired_at, renewed_from_lease_id, admission_event_id
+                 FROM resource_leases
+                 WHERE project_id = ?1 AND agent_run_id = ?2
+                   AND released_at IS NULL AND expired_at IS NULL AND expires_at > ?3
+                 ORDER BY acquired_at",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![
+                project_id.to_string(),
+                agent_run_id.to_string(),
+                text(now)
+            ])
+            .map_err(backend)?;
+        let mut leases = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            leases.push(read_lease_row(row)?);
+        }
+        Ok(leases)
+    }
+
     /// Read one lease's append-only history, in order.
     ///
     /// # Errors

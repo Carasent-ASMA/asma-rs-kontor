@@ -124,7 +124,6 @@ fn the_contract_document_names_every_route_the_router_exposes() {
         "/v1/realm",
         "/v1/runs/{agent_run_id}",
         "/v1/projects/{project_id}/tasks/{task_id}",
-        "/v1/commands/{kind}",
         "/v1/events",
         "/v1/sessions/{agent_run_id}/timeline",
         "/v1/sessions/{agent_run_id}/stream",

@@ -984,6 +984,9 @@ function blankDraft(catalog: ModelCatalog): TeamDraft {
     name: 'New team template',
     slots: model ? [{
       id: 'implementer',
+      // A new template starts with the plainest implementing role. The operator
+      // narrows it; the realm resolves what the code means.
+      role: { catalog_revision: { id: 'standard-roles', version: 1 }, role_code: 'SWE' },
       capabilities: {
         chain: [{
           provider: model.provider,
