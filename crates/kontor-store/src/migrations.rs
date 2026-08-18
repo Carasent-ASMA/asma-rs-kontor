@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 35;
+pub const SCHEMA_VERSION: i64 = 36;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -165,6 +165,10 @@ const MIGRATIONS: &[&str] = &[
     // consultation, so the state names something a human can act on. No receipt
     // rebuild: v34 already admitted both Advisor run commands.
     include_str!("../migrations/0035_advisor_attention.sql"),
+    // Schema v36. Durable Committee consultations: the run, the frozen
+    // slot-to-seat assignment a finding's attribution is derived from, the
+    // immutable per-round findings, and the server-recomputed outcome per round.
+    include_str!("../migrations/0036_committee_runs.sql"),
 ];
 
 const _: () = assert!(
