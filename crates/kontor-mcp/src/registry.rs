@@ -3296,25 +3296,25 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "seat_binding_id",
                 Place::Body,
                 ArgType::SeatBindingId,
-                "The exact Advisor seat recording its output.",
+                "Omit for normal MCP use. A seat-scoped runtime credential supplies its own exact Advisor SeatBinding.",
             ),
             opt(
                 "output",
                 Place::Body,
                 ArgType::Text,
-                "The immutable Advisor output.",
+                "The immutable Advisor output. Only the Advisor's seat-scoped runtime credential may submit it.",
             ),
             opt(
                 "disposition",
                 Place::Body,
                 ArgType::Enum(&["accepted", "partially_accepted", "rejected", "superseded"]),
-                "What the authorized caller decided about the advice.",
+                "What the Realm operator decided about already-recorded advice.",
             ),
             opt(
                 "rationale",
                 Place::Body,
                 ArgType::Text,
-                "The disposition rationale.",
+                "The Realm operator's disposition rationale.",
             ),
             opt(
                 "receipt_ids",
@@ -3341,7 +3341,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The revision the caller read.",
             ),
         ],
-        about: "Settle one Advisor consultation.",
+        about: "Submit seat-authored Advisor output or disposition already-recorded advice; the credential determines which step is permitted.",
     },
     ToolSpec {
         name: "kontor_advisor_run_get",

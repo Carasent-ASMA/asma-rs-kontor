@@ -87,9 +87,11 @@ impl Caller {
     ///
     /// # Errors
     /// Returns [`ApiErrorCode::Forbidden`] when the caller's tier is lower than
-    /// `required`.
+    /// `required`, or when the bearer is a consultation-seat credential. Seat
+    /// bearers are denied on every ordinary route so independent reviewers
+    /// cannot read peers' findings or reach unrelated mutations.
     pub fn require(self, state: &ApiState, required: CallerCapability) -> Result<(), ApiError> {
-        if self.0.at_least(required) {
+        if self.1.is_none() && self.0.at_least(required) {
             return Ok(());
         }
         Err(state.refuse(
@@ -103,6 +105,25 @@ impl Caller {
     #[must_use]
     pub const fn consultation_seat(self) -> Option<SeatBindingId> {
         self.1
+    }
+
+    /// Require the exact consultation-seat subject carried by a scoped bearer.
+    ///
+    /// This is deliberately separate from [`Self::require`]: a consultation
+    /// seat is read-only everywhere except the submission routes that call this
+    /// method explicitly. It never inherits the Realm operator secret's broad
+    /// authority merely because that secret signs the scoped credential.
+    ///
+    /// # Errors
+    /// Returns [`ApiErrorCode::Forbidden`] for a shared Realm credential or any
+    /// caller that did not authenticate as one consultation seat.
+    pub fn require_consultation_seat(self, state: &ApiState) -> Result<SeatBindingId, ApiError> {
+        self.consultation_seat().ok_or_else(|| {
+            state.refuse(
+                ApiErrorCode::Forbidden,
+                "this route requires the submitting consultation seat's scoped credential",
+            )
+        })
     }
 }
 
@@ -165,7 +186,11 @@ async fn authenticate(
     let caller = if let Some(authority) = state.credentials().authority(presented) {
         Caller(authority, None)
     } else if let Some(seat_binding_id) = state.credentials().consultation_seat(presented) {
-        Caller(CallerCapability::Operator, Some(seat_binding_id))
+        // The capability value is only a storage placeholder: `Caller::require`
+        // denies every seat-scoped caller before checking it. Submission routes
+        // opt in through `require_consultation_seat`, so the bearer cannot read
+        // peers' findings or inherit the signing secret's Realm authority.
+        Caller(CallerCapability::Observer, Some(seat_binding_id))
     } else {
         return Err(state.refuse(
             ApiErrorCode::Unauthenticated,

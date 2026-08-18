@@ -901,6 +901,9 @@ pub struct AdvisorRunDto {
     pub seats: Vec<ConsultationSeatDto>,
     /// Its lifecycle, in the server's own vocabulary.
     pub state: String,
+    /// Immutable output submitted by the Advisor seat, before disposition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advice: Option<serde_json::Value>,
     /// Immutable output and caller disposition once settled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
@@ -1007,16 +1010,18 @@ pub struct RecordFindingsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SettleConsultationRequest {
-    /// Exact seat recording Advisor output/disposition. Absent for Committee
-    /// settlement, whose evidence is already keyed by finding SeatBindings.
+    /// Optional assertion of the Advisor seat. The server always derives the
+    /// identity from the scoped bearer and refuses a mismatch. Absent for the
+    /// later requester/LSA disposition and for Committee settlement.
     #[schema(value_type = Option<String>)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat_binding_id: Option<SeatBindingId>,
-    /// Immutable Advisor output. Required only on the Advisor route.
+    /// Immutable Advisor output. Present only in the seat-authenticated first
+    /// Advisor step.
     #[schema(value_type = Option<String>)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<BoundedText>,
-    /// What the authorized caller decided about the advice.
+    /// What the requester or owning LSA decided about already-durable advice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disposition: Option<AdviceDispositionDto>,
     /// Bounded disposition rationale.
@@ -5646,9 +5651,38 @@ pub async fn settle_advisor_run(
     caller: Caller,
     Path((project_id, advisor_run_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(request): Json<SettleConsultationRequest>,
+    Json(mut request): Json<SettleConsultationRequest>,
 ) -> Result<Json<AdvisorRunDto>, ApiError> {
-    caller.require(&state, CallerCapability::Operator)?;
+    if caller.consultation_seat().is_some() {
+        let seat_binding_id = caller.require_consultation_seat(&state)?;
+        if request
+            .seat_binding_id
+            .is_some_and(|asserted| asserted != seat_binding_id)
+        {
+            return Err(state.refuse(
+                ApiErrorCode::Forbidden,
+                "the Advisor submission cannot assert a different seat binding",
+            ));
+        }
+        if request.disposition.is_some()
+            || request.rationale.is_some()
+            || !request.receipt_ids.is_empty()
+        {
+            return Err(state.refuse(
+                ApiErrorCode::Forbidden,
+                "the Advisor seat may submit output but cannot disposition its own advice",
+            ));
+        }
+        request.seat_binding_id = Some(seat_binding_id);
+    } else {
+        caller.require(&state, CallerCapability::Operator)?;
+        if request.seat_binding_id.is_some() || request.output.is_some() {
+            return Err(state.refuse(
+                ApiErrorCode::Forbidden,
+                "a Realm operator may disposition advice but cannot author Advisor output",
+            ));
+        }
+    }
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let advisor_run_id = parse_id(&state, AdvisorRunId::parse(&advisor_run_id))?;
     let key = idempotency_key(&state, &headers)?;
@@ -5825,13 +5859,7 @@ pub async fn record_committee_findings(
     headers: HeaderMap,
     Json(request): Json<RecordFindingsRequest>,
 ) -> Result<Json<CommitteeRunDto>, ApiError> {
-    caller.require(&state, CallerCapability::Operator)?;
-    let seat_binding_id = caller.consultation_seat().ok_or_else(|| {
-        state.refuse(
-            ApiErrorCode::Forbidden,
-            "Committee findings require the submitting seat's scoped credential",
-        )
-    })?;
+    let seat_binding_id = caller.require_consultation_seat(&state)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
     let key = idempotency_key(&state, &headers)?;

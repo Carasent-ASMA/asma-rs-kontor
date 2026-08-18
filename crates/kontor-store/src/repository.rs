@@ -52,12 +52,13 @@ use kontor_core::repository::{
     RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
     RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
     SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
-    StoredCompletionWake, StoredConsultationProfileRevision, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task, TaskInspection,
-    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
+    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
+    StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
+    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task,
+    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
@@ -350,6 +351,30 @@ fn read_committee_finding(
         document: serde_json::from_str(document.json()).map_err(|error| {
             RepositoryError::Backend {
                 detail: format!("a Committee finding could not be decoded: {error}"),
+            }
+        })?,
+        document_hash,
+        recorded_at: read_timestamp(&recorded_at)?,
+    })
+}
+
+type AdvisorAdviceColumns = (String, String, String, String);
+
+fn read_advisor_advice(
+    project_id: ProjectId,
+    advisor_run_id: AdvisorRunId,
+    columns: AdvisorAdviceColumns,
+) -> RepositoryResult<StoredAdvisorAdvice> {
+    let (seat_binding_id, document, document_hash, recorded_at) = columns;
+    let document_hash = ContentHash::parse(&document_hash)?;
+    let document = CanonicalDocument::from_stored(&document, &document_hash)?;
+    Ok(StoredAdvisorAdvice {
+        advisor_run_id,
+        project_id,
+        seat_binding_id: SeatBindingId::parse(&seat_binding_id)?,
+        document: serde_json::from_str(document.json()).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("Advisor advice could not be decoded: {error}"),
             }
         })?,
         document_hash,
@@ -1864,6 +1889,122 @@ impl SqliteStore {
         }
         transaction.commit().map_err(backend)?;
         Ok(())
+    }
+
+    /// Read the immutable advice artifact one Advisor seat submitted.
+    pub fn get_advisor_advice(
+        &self,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+    ) -> RepositoryResult<Option<StoredAdvisorAdvice>> {
+        let columns = self
+            .connection
+            .query_row(
+                "SELECT seat_binding_id, document, document_hash, recorded_at
+                 FROM advisor_advice_artifacts
+                 WHERE project_id = ?1 AND advisor_run_id = ?2",
+                params![project_id.to_string(), advisor_run_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        columns
+            .map(|columns| read_advisor_advice(project_id, advisor_run_id, columns))
+            .transpose()
+    }
+
+    /// Atomically append one Advisor's immutable output and advance its run.
+    ///
+    /// An exact existing document is a replay. A different document can never
+    /// replace it, and the disposition authority has no operation that writes
+    /// this table.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_advisor_advice(
+        &self,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+        seat_binding_id: SeatBindingId,
+        document: &serde_json::Value,
+        document_hash: &ContentHash,
+        expected_revision: AggregateRevision,
+        recorded_at: Timestamp,
+    ) -> RepositoryResult<(StoredConsultationRun, bool)> {
+        let encoded = canonical_json(document, "Advisor advice")?;
+        let transaction = self.begin()?;
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT document_hash FROM advisor_advice_artifacts
+                 WHERE project_id = ?1 AND advisor_run_id = ?2",
+                params![project_id.to_string(), advisor_run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some(existing_hash) = existing {
+            if existing_hash != document_hash.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "Advisor advice",
+                    rule: "the Advisor already submitted different immutable output",
+                });
+            }
+            transaction.commit().map_err(backend)?;
+            let run = self
+                .get_consultation_run(project_id, ConsultationRunId::Advisor(advisor_run_id))?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "Advisor run",
+                })?;
+            return Ok((run, false));
+        }
+        transaction
+            .execute(
+                "INSERT INTO advisor_advice_artifacts
+                     (advisor_run_id, project_id, seat_binding_id,
+                      document, document_hash, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    advisor_run_id.to_string(),
+                    project_id.to_string(),
+                    seat_binding_id.to_string(),
+                    encoded,
+                    document_hash.as_str(),
+                    text(recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                 SET revision = revision + 1, updated_at = ?4
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = 'advisor'
+                   AND state = 'running' AND result IS NULL AND revision = ?3",
+                params![
+                    project_id.to_string(),
+                    advisor_run_id.to_string(),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    text(recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "Advisor run",
+                rule: "only the current running revision can accept its advice",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        let run = self
+            .get_consultation_run(project_id, ConsultationRunId::Advisor(advisor_run_id))?
+            .ok_or(RepositoryError::NotFound {
+                subject: "Advisor run",
+            })?;
+        Ok((run, true))
     }
 
     /// Append one immutable Committee finding. Returns `true` when inserted and

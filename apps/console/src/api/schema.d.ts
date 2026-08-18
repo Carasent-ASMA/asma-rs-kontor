@@ -2319,6 +2319,8 @@ export interface components {
         AdviceDispositionDto: "accepted" | "partially_accepted" | "rejected" | "superseded";
         /** @description One Advisor consultation. */
         AdvisorRunDto: {
+            /** @description Immutable output submitted by the Advisor seat, before disposition. */
+            advice?: unknown;
             /** @description The consultation. */
             advisor_run_id: string;
             /** @description The epic it advises. */
@@ -5212,7 +5214,10 @@ export interface components {
              * @description The run revision the caller believes is current.
              */
             expected_revision: number;
-            /** @description Immutable Advisor output. Required only on the Advisor route. */
+            /**
+             * @description Immutable Advisor output. Present only in the seat-authenticated first
+             *     Advisor step.
+             */
             output?: string | null;
             /** @description Bounded disposition rationale. */
             rationale?: string | null;
@@ -5221,8 +5226,9 @@ export interface components {
             /** @description LSA recommendation authorizing the single Committee re-review. */
             recommendation?: string | null;
             /**
-             * @description Exact seat recording Advisor output/disposition. Absent for Committee
-             *     settlement, whose evidence is already keyed by finding SeatBindings.
+             * @description Optional assertion of the Advisor seat. The server always derives the
+             *     identity from the scoped bearer and refuses a mismatch. Absent for the
+             *     later requester/LSA disposition and for Committee settlement.
              */
             seat_binding_id?: string | null;
             /** @description The exact remediation path tried before round two, or before escalation. */
