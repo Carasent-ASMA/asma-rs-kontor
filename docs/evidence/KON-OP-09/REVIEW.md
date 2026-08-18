@@ -1,14 +1,111 @@
 # KON-OP-09 code review
 
-Status: **passed** at `47948b6` (round 2). Round 1 rejected `4211bb0`; both
-blocking defects are cleared.
+Status: **passed** at `ffeffc3` (round 3).
 Scope: the OP-09 console surface, reviewed against `ARCHITECTURE.md`
 Seat: inspector (`code` work profile, `code-review` phase)
 
 | Round | Date | Head | Verdict |
 | --- | --- | --- | --- |
 | 1 | 2026-08-18 | `4211bb0` | rejected — 2 blocking |
-| 2 | 2026-08-18 | `47948b6` | **passed** |
+| 2 | 2026-08-18 | `47948b6` | passed |
+| 3 | 2026-08-18 | `ffeffc3` | **passed** — QA gaps closed |
+
+## Round 3 — passed
+
+Re-review of `ffeffc3` "fix(asma-7878): Hold one idempotency key per intent and
+decouple the panels", answering the two blocking acceptance gaps in `QA.md`
+(recorded at `efd4670`). Console only: `ProjectView.tsx` and its test, plus a
+`REMEDIATION.md`. No contract, no `.rs` file, no server route.
+
+The QA seat was right to escalate. Round 2 recorded both of these as required
+architecture proofs but scoped them non-blocking *for the code-review gate*;
+QA correctly held that a required OP-09 acceptance proof cannot be signed off as
+complete while unmet, whatever a sibling gate chose to let through. This review
+adopts that reading: both are now closed on their merits, not waived.
+
+### Gates at `ffeffc3`
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | **pass** |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **pass** |
+| `cargo test --workspace` | **pass** — 1394 passed, 0 failed |
+
+`tests/e2e/pilot.rs` green; bundle records `verdict: accept`, `pass 42 · fail 0`,
+`session.no-direct-runtime` passing. Supplementary: no `openapi-typescript`
+drift, `tsc --noEmit` clean, `vitest run` 290 passed (285 → 290).
+
+### QA finding 1 — idempotency replay — cleared
+
+`useIntentKey` (`ProjectView.tsx:74`) holds one key per intent in a `useRef`,
+derived from `JSON.stringify` of the request: identical fingerprint returns the
+held key, a changed fingerprint mints a new one, and `release()` drops it once a
+receipt confirms. All seven activation sites route through it and
+`crypto.randomUUID()` now appears exactly once in the file, inside the hook.
+Each panel holds a distinct key per command, so advance cannot inherit
+remediate's key. The fingerprint is order-stable because each request object is
+built literally at one site.
+
+The semantics are right for the reason the commit gives: `quick-sessions:ensure`
+carries no `expected_revision`, so it is the one command where a
+freshly-minted retry key is not merely unrecognized but a second durable
+workspace.
+
+### QA finding 2 — sibling suppression — cleared
+
+Core Team renders on `data.coreTeam.value` alone; the role catalog now feeds
+only the editor, passed in as `roles`/`rolesError`, and its absence degrades the
+editor (no options, `Add to preview` disabled) while the roster stays visible
+under the catalog's own refusal text. Completion is split into two independent
+children — `CompletionProfiles` and `CompletionPanel` — each with its own
+ready-or-refused result.
+
+I checked the residual coupling deliberately: Quick Sessions still requires
+`data.roles.value`, which is correct rather than missed. That panel has no valid
+sibling projection to erase — without the quick-roles projection there is no
+eligible role to select, and inventing one is what the architecture forbids.
+
+### The five new tests are effective
+
+I did not take the commit's mutation claim on trust; I re-ran it myself, four
+mutations, each killing exactly the intended test and nothing else:
+
+| Mutation | Result |
+| --- | --- |
+| `apply.keyFor(request)` → `crypto.randomUUID()` | kills `replays one uncertain intent…` only |
+| `keyFor` never replaces (`held.current === null`) | kills `mints a new idempotency key…` only |
+| recouple Core Team to `roles.value` | kills `keeps the Core Team roster…` only |
+| recouple both completion children | kills both completion independence tests |
+
+Every mutation was reverted and `ProjectView.tsx` verified byte-identical to
+`ffeffc3` afterwards.
+
+### Open, non-blocking
+
+**New — `release()` has no test.** Dropping `apply.release()` or
+`ensure.release()` leaves all 290 tests green. The shipped code is correct, so
+this is a coverage gap rather than a defect, but it sits on the most delicate
+edge of this fix. It matters most for `quick-sessions:ensure`: because that
+request carries no `expected_revision`, a second genuinely-new session with the
+same purpose and role has a fingerprint identical to the first, so `release()`
+is the only thing that stops it being replayed into the first session's receipt.
+For the revision-carrying commands the fingerprint advances on its own and the
+release is belt-and-braces. Worth one test, given that making this class of bug
+visible to the suite was the point of the round.
+
+**Observed once — an unidentified vitest flake.** The first full `vitest run` of
+this review failed 1 of 290; the identity was not captured, and 17 subsequent
+full runs plus four-way parallel contention were all green. A background
+`cargo test` was under way during both the failing and the passing runs, so load
+alone does not explain it. Recorded as an observation, not a finding: unverified
+and non-reproducing, but the new tests chain several `waitFor`/`findBy` awaits
+and are the plausible site if it recurs.
+
+**Items 5 and 6 remain open**, confirmed unchanged at `ffeffc3`: no client
+method for `seats:materialize` or the consultation settle contracts, and
+`table-scroll` (`:302`) still without `tabindex`/`role`/label.
+
+---
 
 ## Round 2 — passed
 
@@ -77,6 +174,9 @@ a real test rather than a passing assertion: reintroducing the original defect
 the working tree was left clean.
 
 ### Still open — non-blocking, unchanged
+
+> Superseded by round 3: items 3 and 4 were escalated by the QA gate and closed
+> at `ffeffc3`. The paragraph below records the state at `47948b6`.
 
 Items 3-6 below are untouched and were explicitly deferred by the builder to
 OP-10. Confirmed still present at `47948b6`: seven inline `crypto.randomUUID()`
