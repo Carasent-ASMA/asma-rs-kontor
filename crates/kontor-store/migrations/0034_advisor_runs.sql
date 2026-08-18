@@ -40,9 +40,12 @@ CREATE TABLE advisor_runs (
     question_hash               TEXT    NOT NULL
                                         CHECK (length(question_hash) = 64
                                                AND question_hash NOT GLOB '*[^0-9a-f]*'),
-    -- The caller's proven seat. Authority is resolved server-side from the
-    -- credential; a consultation never accepts a claimed requester.
-    requester_seat_binding_id   TEXT    NOT NULL CHECK (length(requester_seat_binding_id) = 36),
+    -- The epic-owner authority this consultation was requested under: the exact
+    -- ECP LSA seat, resolved server-side from the epic and never accepted from the
+    -- request. It does not identify the caller -- the realm has one bearer secret
+    -- per authority tier, so there is no principal at the boundary to record --
+    -- and it is preserved per run, so replacing the LSA affects only later runs.
+    owner_authority_seat_binding_id   TEXT    NOT NULL CHECK (length(owner_authority_seat_binding_id) = 36),
     -- The canonical resolved context document and its digest, byte-for-byte as
     -- delivered to the seat, plus the provenance of every source it was built
     -- from and every redaction applied.

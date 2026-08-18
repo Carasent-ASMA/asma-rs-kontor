@@ -267,8 +267,18 @@ pub struct StoredAdvisorRun {
     pub question: BoundedText,
     /// Digest of the question bytes.
     pub question_hash: ContentHash,
-    /// The caller's proven seat, resolved server-side.
-    pub requester_seat_binding_id: SeatBindingId,
+    /// The epic-owner authority the consultation was requested under.
+    ///
+    /// The exact ECP LSA `SeatBinding`, resolved server-side from the epic. It
+    /// means "requested under the authority of the epic's owner" — **not** "this
+    /// caller asked". The realm holds one bearer secret per authority tier, so no
+    /// principal exists at the request boundary to record, and nothing here may
+    /// be read as identifying the operator, human or runtime session that
+    /// submitted the call.
+    ///
+    /// Preserved immutably per run: replacing the LSA later affects only runs
+    /// invoked afterwards.
+    pub owner_authority_seat_binding_id: SeatBindingId,
     /// The canonical resolved context document delivered to the seat.
     pub context: String,
     /// Digest of those exact bytes.

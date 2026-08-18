@@ -79,7 +79,7 @@ fn run(world: &World, intent: &str) -> StoredAdvisorRun {
         profile_hash: hash("profile"),
         question: text("Is this change compliant with the plan?"),
         question_hash: hash("question"),
-        requester_seat_binding_id: SeatBindingId::generate(),
+        owner_authority_seat_binding_id: SeatBindingId::generate(),
         context: r#"{"schema_version":1}"#.to_owned(),
         context_hash: hash("context"),
         provenance: serde_json::json!([{"source": "plan", "revision": 1}]),

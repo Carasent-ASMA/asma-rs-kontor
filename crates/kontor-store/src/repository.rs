@@ -1251,7 +1251,7 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO advisor_runs
                      (id, project_id, mini_project_id, task_id, profile_id, profile_version,
-                      profile_hash, question, question_hash, requester_seat_binding_id,
+                      profile_hash, question, question_hash, owner_authority_seat_binding_id,
                       context, context_hash, provenance, topology_node_id, seat_binding_id,
                       role_slot_id, role, esw_topology_node_id, esw_native_id, state,
                       intent_hash, revision, created_at)
@@ -1267,7 +1267,7 @@ impl SqliteStore {
                     run.profile_hash.as_str(),
                     run.question.as_str(),
                     run.question_hash.as_str(),
-                    run.requester_seat_binding_id.to_string(),
+                    run.owner_authority_seat_binding_id.to_string(),
                     run.context.as_str(),
                     run.context_hash.as_str(),
                     run.provenance.to_string(),
@@ -1567,7 +1567,7 @@ impl SqliteStore {
             .query_row(
                 &format!(
                     "SELECT id, mini_project_id, task_id, profile_id, profile_version,
-                            profile_hash, question, question_hash, requester_seat_binding_id,
+                            profile_hash, question, question_hash, owner_authority_seat_binding_id,
                             context, context_hash, provenance, topology_node_id,
                             seat_binding_id, role_slot_id, role, esw_topology_node_id,
                             esw_native_id, state, intent_hash, revision, created_at
@@ -1584,7 +1584,7 @@ impl SqliteStore {
                         profile_hash: row.get(5)?,
                         question: row.get(6)?,
                         question_hash: row.get(7)?,
-                        requester_seat_binding_id: row.get(8)?,
+                        owner_authority_seat_binding_id: row.get(8)?,
                         context: row.get(9)?,
                         context_hash: row.get(10)?,
                         provenance: row.get(11)?,
@@ -2084,7 +2084,7 @@ struct AdvisorRunColumns {
     profile_hash: String,
     question: String,
     question_hash: String,
-    requester_seat_binding_id: String,
+    owner_authority_seat_binding_id: String,
     context: String,
     context_hash: String,
     provenance: String,
@@ -2112,7 +2112,9 @@ impl AdvisorRunColumns {
             profile_hash: ContentHash::parse(&self.profile_hash)?,
             question: BoundedText::parse(&self.question)?,
             question_hash: ContentHash::parse(&self.question_hash)?,
-            requester_seat_binding_id: SeatBindingId::parse(&self.requester_seat_binding_id)?,
+            owner_authority_seat_binding_id: SeatBindingId::parse(
+                &self.owner_authority_seat_binding_id,
+            )?,
             context: self.context,
             context_hash: ContentHash::parse(&self.context_hash)?,
             provenance: serde_json::from_str(&self.provenance).map_err(|error| {
