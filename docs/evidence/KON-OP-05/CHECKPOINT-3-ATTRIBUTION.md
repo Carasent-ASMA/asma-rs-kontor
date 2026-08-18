@@ -2,7 +2,7 @@
 
 Date: 2026-08-18
 Author: builder seat
-Status: **blocked pending TPM/Igor decision** — recorded, not chosen
+Status: **ratified — Option B** (Igor, via TPM, 2026-08-18)
 
 CP3 composes Committee findings. Every finding must be attributable to the exact
 frozen role slot that produced it, because the conjunctive rule measures
@@ -92,3 +92,32 @@ pure function (`conjunctive_outcome`) with its truth table proven.
 Recording rather than choosing, for the same reason as the requester semantic: an
 attribution rule is inherited by every finding ever recorded, and a wrong one is
 not visible in the evidence it produces.
+
+## Ratified disposition (Igor, via TPM, 2026-08-18)
+
+**Option B — bound-seat proof.** Member-slot attribution comes from the durable
+`SeatBinding` ↔ observed native binding: the proof is *where the finding arrived
+from*, never what the request claims. It mints no secrets, reuses evidence OP-02
+already produces, and fails safe — an unattested session blocks a round rather
+than admitting an unattributable verdict.
+
+Recorded with the same care as the requester semantic, and meaning the same kind
+of thing: a finding's slot attribution is **a citation of which seat produced it**,
+not a claim about which human or operator typed it. The realm authenticates by
+tier, so no record here identifies a person, and none may be read as doing so.
+
+Consequences this seat will implement:
+
+- a finding is accepted only through the runtime session bound to the frozen slot's
+  seat, and the slot is derived server-side from that binding;
+- `findings:record` never reads a slot, member identity or principal from the
+  request body — the field does not exist to be sent;
+- a seat whose native binding has not been observed cannot record a finding at all.
+  The round waits, visibly, rather than accepting evidence nobody can attribute;
+- retiring or replacing a seat mid-round therefore ends that seat's ability to
+  submit, which is the intended behaviour: the replacement is a different reader.
+
+Options A (per-slot submission materials) and C (server-driven collection) remain
+recorded above. A is the fallback if bound-seat proof turns out too weak to attest;
+C is the design to reach for if the inbound `findings:record` contract is ever
+reopened.
