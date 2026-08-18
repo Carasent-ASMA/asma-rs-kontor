@@ -51,7 +51,7 @@ use kontor_core::id::{
     RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
 };
 use kontor_core::repository::RuntimeBinding;
-use kontor_core::spec::ModelRung;
+use kontor_core::spec::{ModelRung, SeatAutonomy};
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
@@ -90,7 +90,7 @@ use kontor_runtime::workspace::{
 
 use crate::client::{
     PaseoCommand, PaseoRpc, PaseoTransport, consultation_permission_mode, ensure_frame_bounded,
-    permission_mode,
+    paseo_mode,
 };
 use crate::mcp::{PaseoMcp, RENAME_WORKSPACE_TOOL};
 use crate::wire::{
@@ -1608,6 +1608,7 @@ impl PaseoAdapter {
         agent: &PaseoAgent,
         requested: &ModelRung,
         consultation: bool,
+        autonomy: SeatAutonomy,
     ) -> RuntimeResult<()> {
         if agent.provider != requested.provider.0 || agent.model != requested.model.0 {
             return Err(RuntimeError::CorrelationFailed);
@@ -1620,7 +1621,7 @@ impl PaseoAdapter {
         let expected_mode = if consultation {
             consultation_permission_mode(&requested.provider.0)?
         } else {
-            permission_mode(&requested.provider.0)?
+            paseo_mode(&requested.provider.0, autonomy)?
         };
         if agent.current_mode_id.as_deref() != expected_mode {
             return Err(RuntimeError::PermissionModeMismatch {
@@ -1632,8 +1633,12 @@ impl PaseoAdapter {
         Ok(())
     }
 
-    fn verify_agent_route(agent: &PaseoAgent, requested: &ModelRung) -> RuntimeResult<()> {
-        Self::verify_agent_route_with_mode(agent, requested, false)
+    fn verify_agent_route(
+        agent: &PaseoAgent,
+        requested: &ModelRung,
+        autonomy: SeatAutonomy,
+    ) -> RuntimeResult<()> {
+        Self::verify_agent_route_with_mode(agent, requested, false, autonomy)
     }
 
     // -- Evidence -----------------------------------------------------------
@@ -2894,7 +2899,7 @@ impl PaseoAdapter {
         // trusting the CLI here is a defect the fixtures name explicitly.
         let agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        Self::verify_agent_route(&agent, request.model_rung())?;
+        Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())?;
 
         let snapshot = self.bind(
             request.agent_run_id(),
@@ -3118,7 +3123,12 @@ impl PaseoAdapter {
         };
         let agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        Self::verify_agent_route_with_mode(&agent, &request.model_rung, true)?;
+        Self::verify_agent_route_with_mode(
+            &agent,
+            &request.model_rung,
+            true,
+            SeatAutonomy::Advisory,
+        )?;
         Ok(ConsultationLaunchOutcome {
             identity: self.identity(ExternalId::parse(&agent.id)?, generation),
             provider_session_id: agent
