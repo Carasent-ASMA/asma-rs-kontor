@@ -250,6 +250,13 @@ pub struct AdvisorProfileSpec {
     pub models: ModelChainPolicy,
     /// What the seat may read.
     pub context: ConsultationContextPolicy,
+    /// The Foundation logical role the Advisor seat is held under.
+    ///
+    /// A [`RoleKey`], resolved through `delivery.role_bindings`, exactly as a
+    /// Committee member's is: the ASW seat has to become a real seat binding, so
+    /// its role must be one the bindings can seat. Distinct from
+    /// `allowed_caller_roles`, which is about who may *ask*.
+    pub seat_role: RoleKey,
     /// Standard catalog roles allowed to consult it. Never empty.
     ///
     /// Catalog [`RoleCode`]s, deliberately not Foundation logical [`RoleKey`]s.

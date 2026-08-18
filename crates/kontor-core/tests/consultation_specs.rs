@@ -82,6 +82,7 @@ fn advisor() -> AdvisorProfileSpec {
         output_requirements: text("A recommendation and the evidence it rests on."),
         models: chain(&["anthropic"]),
         context: grant(),
+        seat_role: role("architect"),
         allowed_caller_roles: vec![code("LSA"), code("SA")],
         allowed_scopes: vec![ConsultationScope::Epic],
         budget: budget(),

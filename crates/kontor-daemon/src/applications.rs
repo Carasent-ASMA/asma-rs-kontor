@@ -48,15 +48,15 @@ use kontor_api::applications::{
     ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest, TopologySeatDto,
 };
 use kontor_api::applications::{
-    AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CommitteeRunDto,
-    CompletionOutcomeDto, CompletionStateDto, CoreTeamApplyRequest, CoreTeamDto,
-    CoreTeamMaterializeRequest, CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest,
-    CoreTeamSeatDto, CoreTeamSeatSelectionDto, EnsureQuickSessionRequest,
-    InvokeConsultationRequest, ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto,
-    ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest,
-    PromotionPreviewDto, QuickRolesDto, QuickSessionDto, RecordFindingsRequest,
-    RemediateCompletionRequest, RosterUpgradePreviewDto, RosterUpgradePreviewRequest,
-    SettleAdvisorRunRequest, SettleConsultationRequest,
+    AdvanceCompletionRequest, AdviceDispositionDto, AdvisorRunDto, AppliedProfileDto,
+    CommitteeRunDto, CompletionOutcomeDto, CompletionStateDto, ConsultationScopeDto,
+    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamOutcomeDto,
+    CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamSeatDto, CoreTeamSeatSelectionDto,
+    EnsureQuickSessionRequest, InvokeConsultationRequest, ProfileApplyRequest, ProfileCatalogDto,
+    ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto,
+    PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
+    RecordFindingsRequest, RemediateCompletionRequest, RosterUpgradePreviewDto,
+    RosterUpgradePreviewRequest, SettleAdvisorRunRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
     AppliedTopologyUpgradeDto, CodeHelpEntryDto, DesiredBindingDto, PinnedSpecDto,
@@ -85,9 +85,13 @@ use kontor_api::applications::{
 };
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
+use kontor_context::{ContextLayer, ContextSource, ResolvedContextPack};
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
-use kontor_core::consultation::{AdvisorProfileSpec, CommitteeTemplateSpec, ConsultationFamily};
+use kontor_core::consultation::{
+    AdvisorProfileSpec, AdvisorRunState, CommitteeTemplateSpec, ConsultationFamily,
+    ConsultationScope,
+};
 use kontor_core::id::RoleKey;
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
@@ -108,8 +112,8 @@ use kontor_core::repository::{
     NewMiniProject, NewNativeContainerBinding, NewSeatBinding, NewSessionTopologyNode,
     NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault, RealmRepository,
     RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
-    SpecRepository, StoredConsultationProfileRevision, StoredCoreTeamRevision, StoredEpicRoster,
-    StoredPromotion, StoredQuickSession, TaskTransitionRequest, TicketRepository,
+    SpecRepository, StoredAdvisorRun, StoredConsultationProfileRevision, StoredCoreTeamRevision,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, TaskTransitionRequest, TicketRepository,
     TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
@@ -3102,6 +3106,253 @@ impl Services {
         })
     }
 
+    // -----------------------------------------------------------------------
+    // Advisor consultations
+    // -----------------------------------------------------------------------
+
+    /// The epic-owner authority one consultation is requested under.
+    ///
+    /// Ratified semantic: the exact ECP LSA `SeatBinding` under whose durable
+    /// epic-owner authority the consultation was requested. It does **not**
+    /// identify the operator bearer, the human or the runtime session that
+    /// submitted the request — the realm holds one bearer secret per authority
+    /// tier, so no principal exists at the boundary to identify, and nothing here
+    /// may be read as implying per-principal identity.
+    ///
+    /// Identified by standard role code, exactly as the promotion handoff
+    /// identifies it. Deliberately *not* `control_slot()`: that derives from
+    /// `control_role_code`, which is TPM — the epic's programme seat, not its
+    /// owner.
+    ///
+    /// Fails closed. Absent, released or ambiguous authority refuses before the
+    /// run row and before any native effect, because a consultation attributed to
+    /// no owner, or to whichever of two owners was found first, is worse evidence
+    /// than one that visibly could not be requested.
+    fn epic_owner_authority(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<(SeatBindingId, CatalogRoleRef), ApiError> {
+        let state = self.state()?;
+        let control = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|node| node.kind == self.domain.delivery.control_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this epic has no control plane, so no owner authority can be resolved",
+                )
+            })?;
+        let held: Vec<_> = state
+            .with_store(|store| store.list_seat_bindings(project_id, control.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .filter(|binding| {
+                binding.role.role_code.as_str() == MANDATORY_LEAD_ROLE && binding.is_non_terminal()
+            })
+            .collect();
+        match held.as_slice() {
+            [only] => Ok((only.id, only.role.clone())),
+            [] => Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this epic holds no live owner seat to request a consultation under",
+            )),
+            _ => Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this epic holds more than one live owner seat, so the authority is ambiguous",
+            )),
+        }
+    }
+
+    /// Resolve the closed consultation scope against the epic the route named.
+    ///
+    /// A ticket must belong to *that* epic. Substituting another epic's ticket is
+    /// refused here rather than discovered later as advice filed against evidence
+    /// it was never scoped to.
+    fn advisor_scope(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        scope: &ConsultationScopeDto,
+    ) -> Result<Option<TaskId>, ApiError> {
+        match scope {
+            ConsultationScopeDto::Epic => Ok(None),
+            ConsultationScopeDto::Ticket { task_id } => {
+                let task = self.task_row(project_id, *task_id)?;
+                if task.mini_project_id != Some(epic_id) {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "that ticket belongs to a different epic",
+                    ));
+                }
+                Ok(Some(task.id))
+            }
+        }
+    }
+
+    /// Load one published Advisor profile revision and parse it back.
+    ///
+    /// Read from its canonical bytes rather than from anything the caller sent,
+    /// so a consultation runs under the published policy exactly.
+    fn pinned_advisor_profile(
+        &self,
+        project_id: ProjectId,
+        reference: &RevisionRefDto,
+    ) -> Result<(AdvisorProfileSpec, StoredConsultationProfileRevision), ApiError> {
+        let stored = self
+            .stored_consultation_profiles(project_id, ConsultationFamily::Advisor)?
+            .into_iter()
+            .find(|candidate| {
+                candidate.profile_id == reference.id && candidate.version == reference.version
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no published Advisor profile revision matches that reference",
+                )
+            })?;
+        let document = CanonicalDocument::from_stored(&stored.definition, &stored.definition_hash)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let spec: AdvisorProfileSpec = serde_json::from_str(document.json()).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "a published Advisor profile no longer parses as one",
+            )
+        })?;
+        Ok((spec, stored))
+    }
+
+    /// Freeze one consultation's context, with provenance.
+    ///
+    /// Assembled through `kontor-context` so the pack carries the same canonical
+    /// document, provenance and redaction machinery every other frozen context
+    /// does. Each contributor is a declared source at its own layer, so the pack
+    /// can say which source each leaf came from — and once frozen, a later edit to
+    /// the profile, the epic or the question cannot reach it.
+    fn freeze_consultation_context(
+        &self,
+        profile: &AdvisorProfileSpec,
+        stored: &StoredConsultationProfileRevision,
+        epic_id: MiniProjectId,
+        task_id: Option<TaskId>,
+        question: &BoundedText,
+    ) -> Result<ResolvedContextPack, ApiError> {
+        let realm_id = self.state()?.realm_id();
+        let source = |layer: ContextLayer,
+                      source_id: &str,
+                      revision: SpecVersion,
+                      content: serde_json::Value| ContextSource {
+            schema_version: kontor_core::id::SCHEMA_VERSION,
+            realm_id,
+            layer,
+            source_id: source_id.to_owned(),
+            revision,
+            restricted_references: Vec::new(),
+            redactions: Vec::new(),
+            content,
+        };
+        let sources = vec![
+            source(
+                ContextLayer::ProjectProfile,
+                "advisor_profile",
+                stored.version,
+                serde_json::json!({
+                    "profile": {
+                        "id": stored.profile_id,
+                        "version": stored.version.get(),
+                        "definition_hash": stored.definition_hash.as_str(),
+                        "expertise": profile.expertise.as_str(),
+                        "behavior": profile.behavior.as_str(),
+                        "output_requirements": profile.output_requirements.as_str(),
+                    }
+                }),
+            ),
+            source(
+                ContextLayer::Scope,
+                "consultation_scope",
+                SpecVersion::FIRST,
+                serde_json::json!({
+                    "scope": {
+                        "epic": epic_id.to_string(),
+                        "ticket": task_id.map(|task| task.to_string()),
+                    }
+                }),
+            ),
+            source(
+                ContextLayer::TaskAdditions,
+                "consultation_question",
+                SpecVersion::FIRST,
+                serde_json::json!({ "question": question.as_str() }),
+            ),
+        ];
+        kontor_context::preview(&kontor_context::ResolutionRequest {
+            realm_id,
+            sources: &sources,
+            references: &std::collections::BTreeMap::new(),
+        })
+        .map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Project one durable consultation.
+    fn advisor_run_dto(
+        &self,
+        run: &StoredAdvisorRun,
+        receipt_id: &CommandReceiptId,
+        replayed: bool,
+    ) -> Result<AdvisorRunDto, ApiError> {
+        let state = self.state()?;
+        let advice = state
+            .with_store(|store| store.get_advice(run.id))
+            .map_err(|error| self.refuse(&error))?;
+        let dispositions = state
+            .with_store(|store| store.list_advice_dispositions(run.id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(AdvisorRunDto {
+            realm_id: state.realm_id(),
+            advisor_run_id: run.id,
+            epic_id: run.mini_project_id,
+            scope: match run.task_id {
+                Some(task_id) => ConsultationScopeDto::Ticket { task_id },
+                None => ConsultationScopeDto::Epic,
+            },
+            profile: ProfileRevisionDto {
+                id: run.profile_id.clone(),
+                version: run.profile_version,
+                name: run.role.standard_title.clone(),
+                definition_hash: run.profile_hash.clone(),
+            },
+            state: run.state.as_str().to_owned(),
+            topology_node_id: run.topology_node_id,
+            seat_binding_id: run.seat_binding_id,
+            question_hash: run.question_hash.clone(),
+            context_hash: run.context_hash.clone(),
+            advice_hash: advice.map(|it| it.advice_hash),
+            dispositions: dispositions
+                .into_iter()
+                .map(|it| AdviceDispositionDto {
+                    sequence: it.sequence,
+                    disposition: it.disposition.as_str().to_owned(),
+                    rationale: it.rationale,
+                    cited_receipts: it.cited_receipts,
+                })
+                .collect(),
+            revision: run.revision,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: run.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
     /// One semantic scope, resolved to the chain of nodes that realizes it.
     ///
     /// This is where the semantic boundary is actually enforced. A caller names
@@ -3159,12 +3410,24 @@ impl Services {
             // successor families are OP-05's to open, so the run itself is not
             // resolvable here yet — what *is* resolvable, and what the topology
             // needs, is a consultation node below an epic the caller can name.
-            SemanticTopologyTargetDto::AdvisorConsultation { .. } => {
-                return Err(self.deny(
-                    ApiErrorCode::Unavailable,
-                    "advisor consultations are opened by the service that owns them, \
-                     which is not composed in this build",
-                ));
+            // A consultation is scoped to the epic its run belongs to, read from
+            // the durable run rather than from the caller. A ticket-scoped
+            // consultation carries the ticket in its scope key; the node kind is
+            // the same either way.
+            SemanticTopologyTargetDto::AdvisorConsultation { advisor_run_id } => {
+                let run = self
+                    .state()?
+                    .with_store(|store| store.get_advisor_run(project_id, *advisor_run_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(ApiErrorCode::NotFound, "no such Advisor consultation")
+                    })?;
+                TopologyScope {
+                    kind: Some(delivery.advisor_kind.clone()),
+                    epic_id: Some(run.mini_project_id),
+                    task_id: run.task_id,
+                    key: format!("advisor_consultation:{advisor_run_id}"),
+                }
             }
             SemanticTopologyTargetDto::CommitteeConsultation { .. } => {
                 return Err(self.deny(
@@ -4645,7 +4908,7 @@ impl ConsultationDefinition {
     /// could never be seated.
     fn declared_member_roles(&self) -> Vec<&RoleKey> {
         match self {
-            Self::Advisor(_) => Vec::new(),
+            Self::Advisor(spec) => vec![&spec.seat_role],
             Self::Committee(spec) => spec.slots.iter().map(|slot| &slot.logical_role).collect(),
         }
     }
@@ -7448,15 +7711,280 @@ impl ApplicationOperations for Services {
     }
     async fn invoke_advisor_run(
         &self,
-        _key: &IdempotencyKey,
-        _project_id: ProjectId,
-        _epic_id: MiniProjectId,
-        _request: &InvokeConsultationRequest,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &InvokeConsultationRequest,
     ) -> Result<AdvisorRunDto, ApiError> {
-        Err(self.deny(
-            ApiErrorCode::Unavailable,
-            "the Advisor service is not composed in this build",
-        ))
+        let state = self.state()?;
+        let epic = self.epic_row(project_id, epic_id)?;
+
+        // Everything below is checked before the first native effect, and in this
+        // order: authority, then scope, then policy, then budget. A consultation
+        // that could not be authorized never reaches the topology.
+        let (owner_seat, owner_role) = self.epic_owner_authority(project_id, epic_id)?;
+        let task_id = self.advisor_scope(project_id, epic_id, &request.scope)?;
+        let (profile, stored) = self.pinned_advisor_profile(project_id, &request.profile)?;
+
+        // Invoke authority is LSA-only. The owner authority is always the epic's
+        // LSA, so a profile that does not admit `LSA` cannot be invoked at all —
+        // which is the honest consequence of the derivation rather than a check
+        // that quietly passes. Another code appearing in the allowlist grants no
+        // invoke authority.
+        if owner_role.role_code.as_str() != MANDATORY_LEAD_ROLE
+            || !profile
+                .allowed_caller_roles
+                .iter()
+                .any(|allowed| allowed == &owner_role.role_code)
+        {
+            return Err(self.deny(
+                ApiErrorCode::Forbidden,
+                "this profile does not admit the epic's owner authority as a caller",
+            ));
+        }
+        let scope_kind = if task_id.is_some() {
+            ConsultationScope::Ticket
+        } else {
+            ConsultationScope::Epic
+        };
+        if !profile.allowed_scopes.contains(&scope_kind) {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "this profile may not be consulted at that scope",
+            ));
+        }
+        if epic.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the epic moved since the caller read it",
+                )
+                .with_revision(Some(epic.revision)));
+        }
+
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "advisor_run_invoke",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "ticket": task_id.map(|task| task.to_string()),
+            "profile": stored.definition_hash.as_str(),
+            "question": request.question.as_str(),
+        }))?;
+        self.replayed(
+            key,
+            &intent,
+            Some(&AggregateRef::MiniProject {
+                mini_project_id: epic_id,
+            }),
+        )?;
+
+        // The consultation limit counts durable runs of this profile against this
+        // epic, not receipts: a retry that reconciles an existing run must not
+        // spend a second consultation.
+        let existing = state
+            .with_store(|store| store.get_advisor_run_by_intent(project_id, intent.hash()))
+            .map_err(|error| self.refuse(&error))?;
+        if existing.is_none() {
+            let spent = state
+                .with_store(|store| store.list_advisor_runs(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .filter(|run| run.profile_id == stored.profile_id)
+                .count();
+            if spent >= profile.max_consultations as usize {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "this epic has spent every consultation this profile allows",
+                ));
+            }
+        }
+
+        // The pinned vocabulary is consulted before anything is written: a
+        // topology that does not declare an ASW kind, or declares it as something
+        // that cannot host a seat, is `placement_blocked` and leaves no trace.
+        let topology = self.project_topology(project_id)?;
+        let spec = self.pinned_spec(project_id)?;
+        let kind = self.domain.delivery.advisor_kind.clone();
+        let declared = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the pinned specification declares no Advisor consultation kind",
+                )
+            })?;
+        if !declared
+            .projection_capabilities
+            .contains(&NodeProjectionCapability::SessionHost)
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the pinned specification does not declare the Advisor kind a session host",
+            ));
+        }
+        let esw = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|node| node.kind == self.domain.delivery.epic_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this epic has no workspace for a consultation to be placed inside",
+                )
+            })?;
+
+        let now = kontor_api::now();
+        let seat_role = self
+            .domain
+            .delivery
+            .role_code(&profile.seat_role)
+            .cloned()
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this profile seats a role no delivery binding covers",
+                )
+            })?;
+        let role = self.catalog_role_for_code(&seat_role)?;
+
+        // The row comes first and carries the ids its effects will use. It is the
+        // only thing that can reconcile a retry: two consultations of one epic are
+        // both ASW nodes under the same ESW, so a search cannot tell them apart.
+        let run = match existing.clone() {
+            Some(run) => run,
+            None => {
+                let context = self.freeze_consultation_context(
+                    &profile,
+                    &stored,
+                    epic_id,
+                    task_id,
+                    &request.question,
+                )?;
+                let provenance = serde_json::to_value(context.provenance()).map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the frozen context provenance could not be recorded",
+                    )
+                })?;
+                let planned = StoredAdvisorRun {
+                    id: AdvisorRunId::generate(),
+                    project_id,
+                    mini_project_id: epic_id,
+                    task_id,
+                    profile_id: stored.profile_id.clone(),
+                    profile_version: stored.version,
+                    profile_hash: stored.definition_hash.clone(),
+                    question: request.question.clone(),
+                    question_hash: ContentHash::of(request.question.as_str().as_bytes()),
+                    owner_authority_seat_binding_id: owner_seat,
+                    context: context.document().json().to_owned(),
+                    context_hash: context.document().hash().clone(),
+                    provenance,
+                    topology_node_id: TopologyNodeId::generate(),
+                    seat_binding_id: SeatBindingId::generate(),
+                    role_slot_id: RoleSlotId::parse(&seat_role.as_str().to_ascii_lowercase())
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    role,
+                    esw_topology_node_id: esw.id,
+                    // The observed native project for that ESW, when one has been
+                    // read back. Absent is not disagreement: an ESW nothing has been
+                    // placed under has no observation to disagree with.
+                    esw_native_id: state
+                        .with_store(|store| store.get_topology_node_container(project_id, esw.id))
+                        .map_err(|error| self.refuse(&error))?
+                        .map(|container| container.identity.native_id.clone()),
+                    state: AdvisorRunState::Placed,
+                    intent_hash: intent.hash().clone(),
+                    revision: AggregateRevision::INITIAL,
+                    created_at: now,
+                };
+                match state.with_store(|store| store.create_advisor_run(&planned)) {
+                    Ok(()) => planned,
+                    // Another invocation of the same request won the race. It has
+                    // a consultation and this one has written nothing, so the
+                    // answer is theirs.
+                    Err(RepositoryError::Conflict { .. }) => state
+                        .with_store(|store| {
+                            store.get_advisor_run_by_intent(project_id, intent.hash())
+                        })
+                        .map_err(|error| self.refuse(&error))?
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "a consultation was claimed by another command and then vanished",
+                            )
+                        })?,
+                    Err(error) => return Err(self.refuse(&error)),
+                }
+            }
+        };
+
+        // Everything below reconciles by the ids that row froze, so a resumed
+        // invocation completes whichever suffix is missing.
+        if state
+            .with_store(|store| store.get_topology_node(project_id, run.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_none()
+        {
+            state
+                .with_store(|store| {
+                    store.create_topology_node(&NewSessionTopologyNode {
+                        id: run.topology_node_id,
+                        project_id,
+                        mini_project_id: Some(epic_id),
+                        topology: topology.clone(),
+                        kind: kind.clone(),
+                        parent_id: Some(run.esw_topology_node_id),
+                        task_id: run.task_id,
+                        created_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        let seated = state
+            .with_store(|store| store.list_seat_bindings(project_id, run.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .any(|binding| binding.id == run.seat_binding_id);
+        if !seated {
+            let deadline = now
+                .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
+                .unwrap_or(now);
+            state
+                .with_store(|store| {
+                    store.create_seat_binding(&NewSeatBinding {
+                        id: run.seat_binding_id,
+                        project_id,
+                        topology_node_id: run.topology_node_id,
+                        role_slot_id: run.role_slot_id.clone(),
+                        role: run.role.clone(),
+                        // A consultation is not delivery work: no task, no
+                        // TeamRun, and so no mission slot consumed.
+                        task_id: None,
+                        team_run_id: None,
+                        attach_deadline: deadline,
+                        parent_seat_binding_id: None,
+                        created_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::InvokeAdvisorRun,
+            AggregateRef::MiniProject {
+                mini_project_id: epic_id,
+            },
+            epic.revision,
+            &intent,
+        )?;
+        self.advisor_run_dto(&run, &receipt_id, existing.is_some())
     }
     async fn settle_advisor_run(
         &self,

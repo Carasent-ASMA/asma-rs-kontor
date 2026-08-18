@@ -11455,6 +11455,7 @@ fn advisor_definition(profile_id: &str, version: u32) -> serde_json::Value {
             "rungs": [{"provider": "claude", "model": "claude-opus-5", "effort": "high"}]
         },
         "context": {"skills": [], "files": [], "memory": "none"},
+        "seat_role": "architect",
         "allowed_caller_roles": ["LSA", "SA"],
         "allowed_scopes": ["epic"],
         "budget": {
@@ -11963,15 +11964,6 @@ async fn every_consultation_run_operation_refuses_rather_than_pretending() {
     let run = "01991c00-0000-7000-8000-0000000000f1";
     let writes = [
         (
-            format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
-            serde_json::json!({
-                "profile": {"id": ADVISOR_PROFILE, "version": 1},
-                "scope": {"scope": "epic"},
-                "question": "Is this safe?",
-                "expected_revision": 1,
-            }),
-        ),
-        (
             format!("/v1/projects/{project}/advisor-runs/{run}/settle"),
             serde_json::json!({
                 "action": {"action": "record_advice", "advice": "Do not ship it."},
@@ -12022,6 +12014,51 @@ async fn every_consultation_run_operation_refuses_rather_than_pretending() {
             );
         }
     }
+}
+
+/// Advisor invocation is composed, and refuses an epic that does not exist.
+///
+/// It no longer answers `unavailable`. What it must not do is reach the topology
+/// on the way to finding that out, so the refusal is `not_found` and nothing is
+/// placed.
+#[tokio::test]
+async fn invoking_against_an_unknown_epic_is_refused_before_any_effect() {
+    let world = World::open().await;
+    let answer = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/advisor-runs:invoke",
+            world.project,
+            MiniProjectId::generate()
+        ),
+        &serde_json::json!({
+            "profile": {"id": ADVISOR_PROFILE, "version": 1},
+            "scope": {"scope": "epic"},
+            "question": "Is this safe?",
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("invoke-unknown-epic")
+    .send(&world)
+    .await;
+    assert_eq!(answer.status, 404, "{}", answer.body);
+    assert_eq!(answer.code(), "not_found");
+    assert!(
+        answer.json().get("advisor_run_id").is_none(),
+        "a refusal must not carry a consultation: {}",
+        answer.body
+    );
+
+    let topology = Call::get(format!("/v1/projects/{}/topology:inspect", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        topology.json()["nodes"].as_array().map(Vec::len),
+        Some(0),
+        "a refused invocation materialized a node: {}",
+        topology.body
+    );
 }
 
 /// Publishing a profile seats nobody.
