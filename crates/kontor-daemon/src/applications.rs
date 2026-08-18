@@ -4772,12 +4772,21 @@ impl Services {
             &SemanticTopologyTargetDto::EpicControl { epic_id },
         )?;
         let nodes = self.scope_nodes(project_id, &scope)?;
-        let control = nodes.first().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "this epic has no control plane; promote or materialize it first",
-            )
-        })?;
+        // Matched on the scope's kind, never "the first node this epic has".
+        // `scope_nodes` filters by epic only, and an epic owns at least its own
+        // ESW as well as its ECP — so taking the first would address the delivery
+        // workspace and then truthfully report that it holds none of the
+        // control-plane seats, which live on the ECP.
+        let control = scope
+            .kind
+            .as_ref()
+            .and_then(|kind| nodes.iter().find(|node| &node.kind == kind))
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this epic has no control plane; promote or materialize it first",
+                )
+            })?;
         let seats = self
             .state()?
             .with_store(|store| store.list_seat_bindings(project_id, control.id))
@@ -7896,19 +7905,11 @@ impl ApplicationOperations for Services {
         let state = self.state()?;
         let epic = self.epic_row(project_id, epic_id)?;
         let now = kontor_api::now();
-        // A first advance starts the run and pins its profile; every later one
-        // moves the run that is already there.
-        let (stored, compiled) = match state
+        // Read first, create nothing. A first advance does start the run, but
+        // only once this call has earned the right to: see the guard below.
+        let existing = state
             .with_store(|store| store.get_epic_completion(project_id, epic_id))
-            .map_err(|error| self.refuse(&error))?
-        {
-            Some(stored) => {
-                let compiled = self.pinned_completion(&stored)?;
-                (stored, compiled)
-            }
-            None => self.start_completion(project_id, epic_id, now)?,
-        };
-        let current = self.completion_state(&stored)?;
+            .map_err(|error| self.refuse(&error))?;
         // Keyed by the revision the *caller* named, not by the one standing now:
         // a retry after a lost acknowledgement presents the same key and the same
         // expected revision, and that pair has to reproduce the same canonical
@@ -7923,6 +7924,16 @@ impl ApplicationOperations for Services {
             mini_project_id: epic_id,
         };
         if self.replayed(key, &intent, Some(&target))?.is_some() {
+            // A recorded advance receipt always has a run behind it, because the
+            // receipt is written after the transition commits. An epic that has
+            // one and no run is a corrupt ledger, not a replay to satisfy.
+            let stored = existing.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "an advance receipt stands for an epic that has no completion run",
+                )
+            })?;
+            let compiled = self.pinned_completion(&stored)?;
             let receipt_id = self.record(
                 key,
                 project_id,
@@ -7946,14 +7957,52 @@ impl ApplicationOperations for Services {
                 },
             });
         }
-        if current.revision != request.expected_revision {
-            return Err(self
-                .deny(
-                    ApiErrorCode::RevisionConflict,
-                    "the completion run moved since the caller read it",
-                )
-                .with_revision(Some(current.revision)));
+        // The revision is judged before anything durable exists. Starting the run
+        // first and guarding afterwards would let a refused call pin the epic's
+        // profile and create its run, with no receipt naming the write it had just
+        // performed — the ledger has to stay total over durable state.
+        match &existing {
+            Some(stored) => {
+                let current = self.completion_state(stored)?;
+                if current.revision != request.expected_revision {
+                    return Err(self
+                        .deny(
+                            ApiErrorCode::RevisionConflict,
+                            "the completion run moved since the caller read it",
+                        )
+                        .with_revision(Some(current.revision)));
+                }
+            }
+            None => {
+                // There was nothing to read: the read route answers `404` until
+                // this call creates the row. So the only revision a first advance
+                // may present is the initial one, and saying *that* is honest
+                // where "it moved since you read it" would describe a race that
+                // could not have happened.
+                if request.expected_revision != AggregateRevision::INITIAL {
+                    return Err(self
+                        .deny(
+                            ApiErrorCode::RevisionConflict,
+                            "this epic has no completion run yet, so a first advance must \
+                             present the initial revision",
+                        )
+                        .with_revision(Some(AggregateRevision::INITIAL)));
+                }
+            }
         }
+        // Authorized, so the run may now come into existence. A start that is
+        // followed by a refusing transition leaves the run standing: it is
+        // deterministic initialization of the epic's own declared contract, it is
+        // re-derived identically on the next call, and the command receipt still
+        // covers only the transition that actually committed.
+        let (stored, compiled) = match existing {
+            Some(stored) => {
+                let compiled = self.pinned_completion(&stored)?;
+                (stored, compiled)
+            }
+            None => self.start_completion(project_id, epic_id, now)?,
+        };
+        let current = self.completion_state(&stored)?;
         let observation = self.observe_completion(&stored, &current)?;
         // The signal id is the canonical intent's digest, so the same observation
         // presented twice is the same signal and the pure machine answers
@@ -8007,10 +8056,63 @@ impl ApplicationOperations for Services {
         let stored = self.require_completion(project_id, epic_id)?;
         let compiled = self.pinned_completion(&stored)?;
         let current = self.completion_state(&stored)?;
-        // Not guarded before the key is judged, for the same reason as
-        // `advance_completion`: a replayed route already moved the run, so its
-        // retry necessarily presents a revision that is no longer current.
-        let stale_revision = current.revision != request.expected_revision;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        // The canonical intent describes what the caller asked for, and nothing
+        // the server looked up. That is what lets it be rebuilt on a retry
+        // without first reaching the state the original call has since moved.
+        let intent = match &request.action {
+            RemediationActionDto::LsaProposal {
+                round, proposal, ..
+            } => self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "completion_remediate_propose",
+                "epic": epic_id.to_string(),
+                "round": round,
+                "proposal": proposal.as_str(),
+            }))?,
+            RemediationActionDto::TpmRoute { round, route } => self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "completion_remediate_route",
+                "epic": epic_id.to_string(),
+                "round": round,
+                "route": route.as_str(),
+            }))?,
+        };
+        // Every guard below is judged only when this is not a replay. A route
+        // that already committed left the run in `remediation`, so its retry
+        // presents both a stale revision and a phase that is no longer awaiting
+        // one — and refusing it on either would make a lost acknowledgement
+        // unrecoverable, which is the whole point of the key.
+        if self.replayed(key, &intent, Some(&target))?.is_some() {
+            let receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::RemediateCompletion,
+                target,
+                epic.revision,
+                &intent,
+            )?;
+            return Ok(CompletionOutcomeDto {
+                state: self.completion_dto(&stored, &compiled)?,
+                receipt: MutationReceiptDto {
+                    realm_id: state.realm_id(),
+                    receipt_id: receipt_id.to_string(),
+                    applied: AppliedDto::Unchanged,
+                    revision: stored.revision,
+                    snapshot_cursor: self.cursor()?,
+                },
+            });
+        }
+        if current.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the completion run moved since the caller read it",
+                )
+                .with_revision(Some(current.revision)));
+        }
         let CompletionPhase::AwaitRemediation(awaiting) = current.phase else {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
@@ -8050,40 +8152,19 @@ impl ApplicationOperations for Services {
                     ));
                 }
                 let lsa = self.epic_control_seat(project_id, epic_id, MANDATORY_LEAD_ROLE)?;
-                let intent = self.intent(&serde_json::json!({
-                    "schema_version": 1,
-                    "operation": "completion_remediate_propose",
-                    "epic": epic_id.to_string(),
-                    "round": round,
-                    "proposal": proposal.as_str(),
-                }))?;
-                let target = AggregateRef::MiniProject {
-                    mini_project_id: epic_id,
-                };
-                let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
-                if !replayed {
-                    if stale_revision {
-                        return Err(self
-                            .deny(
-                                ApiErrorCode::RevisionConflict,
-                                "the completion run moved since the caller read it",
-                            )
-                            .with_revision(Some(current.revision)));
-                    }
-                    self.state()?
-                        .with_store(|store| {
-                            store.insert_remediation_proposal(&StoredRemediationProposal {
-                                project_id,
-                                mini_project_id: epic_id,
-                                round: *round,
-                                failed_round_evidence: failed_round_evidence.clone(),
-                                proposal: proposal.clone(),
-                                lsa_seat_binding_id: lsa,
-                                proposed_at: now,
-                            })
+                self.state()?
+                    .with_store(|store| {
+                        store.insert_remediation_proposal(&StoredRemediationProposal {
+                            project_id,
+                            mini_project_id: epic_id,
+                            round: *round,
+                            failed_round_evidence: failed_round_evidence.clone(),
+                            proposal: proposal.clone(),
+                            lsa_seat_binding_id: lsa,
+                            proposed_at: now,
                         })
-                        .map_err(|error| self.refuse(&error))?;
-                }
+                    })
+                    .map_err(|error| self.refuse(&error))?;
                 let receipt_id = self.record(
                     key,
                     project_id,
@@ -8100,14 +8181,7 @@ impl ApplicationOperations for Services {
                     receipt: MutationReceiptDto {
                         realm_id: state.realm_id(),
                         receipt_id: receipt_id.to_string(),
-                        applied: if replayed {
-                            AppliedDto::Unchanged
-                        } else {
-                            AppliedDto::Created
-                        },
-                        // Unmoved on purpose: a proposal alone launches nothing,
-                        // so the completion revision it was filed against is
-                        // still the one a router must present.
+                        applied: AppliedDto::Created,
                         revision: stored.revision,
                         snapshot_cursor: self.cursor()?,
                     },
@@ -8142,26 +8216,6 @@ impl ApplicationOperations for Services {
                     ));
                 }
                 self.epic_control_seat(project_id, epic_id, MANDATORY_PROGRAM_ROLE)?;
-                let intent = self.intent(&serde_json::json!({
-                    "schema_version": 1,
-                    "operation": "completion_remediate_route",
-                    "epic": epic_id.to_string(),
-                    "round": round,
-                    "proposal": proposal.proposal.as_str(),
-                    "route": route.as_str(),
-                }))?;
-                let target = AggregateRef::MiniProject {
-                    mini_project_id: epic_id,
-                };
-                let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
-                if !replayed && stale_revision {
-                    return Err(self
-                        .deny(
-                            ApiErrorCode::RevisionConflict,
-                            "the completion run moved since the caller read it",
-                        )
-                        .with_revision(Some(current.revision)));
-                }
                 let signal = CompletionSignal {
                     id: intent.hash().clone(),
                     expected_revision: current.revision,
@@ -8191,7 +8245,7 @@ impl ApplicationOperations for Services {
                     receipt: MutationReceiptDto {
                         realm_id: state.realm_id(),
                         receipt_id: receipt_id.to_string(),
-                        applied: if replayed || transition.replayed {
+                        applied: if transition.replayed {
                             AppliedDto::Unchanged
                         } else {
                             AppliedDto::Created

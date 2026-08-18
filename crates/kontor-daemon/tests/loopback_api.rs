@@ -43,8 +43,8 @@ use kontor_core::id::{
 };
 use kontor_core::repository::{
     NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunClosure,
-    RunRepository, SourceDisposition, StoredEpicRoster, StoredPromotion, StoredQuickSession,
-    TopologyRepository, WorkflowRepository,
+    RunRepository, SourceDisposition, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
+    StoredQuickSession, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::state::{
     Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
@@ -14278,5 +14278,498 @@ async fn an_ensure_interrupted_after_its_row_completes_the_node_and_seat() {
         seated,
         "the resumed ensure left its session without a seat: {}",
         ensured.body
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Completion: the two operations that carry the state machine (KON-OP-06)
+// ---------------------------------------------------------------------------
+
+/// A refused first advance leaves the epic exactly as it found it.
+///
+/// `:advance` is the one completion write that can bring durable state into
+/// existence, so it is the one where guarding after the write would be invisible:
+/// the caller gets a refusal, the row is there anyway, and no receipt names the
+/// write that happened. The read route answers `404` until the first advance, so
+/// a caller has no revision to have read — which is why the refusal must say that
+/// rather than claim the run moved underneath it.
+#[tokio::test]
+async fn a_refused_first_advance_creates_no_completion_run_and_no_receipt() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "op06-advance", "Kontor", "/tmp/kontor-op06-adv").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Advance epic",
+            &category,
+            serde_json::json!([{"title": "Only task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("op06-advance-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic")
+        .to_owned();
+
+    // Any revision but the initial one is refused, and the refusal names what to
+    // present instead of describing a race that could not have happened.
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 7}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("op06-first-advance")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "revision_conflict");
+    assert_eq!(
+        refused.json()["current_revision"],
+        1,
+        "the refusal must hand back the revision a first advance has to present: {}",
+        refused.body
+    );
+    assert!(
+        refused.json()["rule"]
+            .as_str()
+            .expect("a rule")
+            .contains("no completion run yet"),
+        "the reason must be the honest one, not `moved since the caller read it`: {}",
+        refused.body
+    );
+
+    // Nothing durable was created: the read is still an absence, not an empty
+    // state a caller could mistake for a finished epic.
+    let read = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(read.status, 404, "{}", read.body);
+
+    // And no receipt was recorded for it. Reusing the *same* key with a corrected
+    // revision is therefore a fresh command, not an idempotency conflict — which
+    // is only true if the refused call wrote nothing to the ledger.
+    let corrected = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("op06-first-advance")
+    .send(&world)
+    .await;
+    assert_ne!(
+        corrected.code(),
+        "idempotency_conflict",
+        "the refused call must have recorded no receipt: {}",
+        corrected.body
+    );
+    // `placement_blocked` is also a 409, so the code is what distinguishes
+    // "your revision was wrong" from "the guard passed and the start failed".
+    assert_ne!(
+        corrected.code(),
+        "revision_conflict",
+        "the initial revision must pass the guard: {}",
+        corrected.body
+    );
+    // It gets past the guard and then refuses for the real missing dependency:
+    // this epic has no control plane, so there is no TPM seat for completion to
+    // wake. That refusal is also before any insert.
+    assert!(
+        corrected.status.is_client_error() || corrected.status.is_server_error(),
+        "an epic with no control plane cannot start completion: {}",
+        corrected.body
+    );
+    let still_absent = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        still_absent.status, 404,
+        "a start that could not resolve its seat must leave no run: {}",
+        still_absent.body
+    );
+}
+
+/// Both completion writes judge the idempotency key before the revision.
+///
+/// Driven over a real run on a promoted epic, so the seats the two authorities
+/// are checked against are the ones promotion actually materialized. The run is
+/// seeded with no declared tickets: what is under test here is the handler
+/// composition — replay, revision, authority, phase — and a vacuously satisfied
+/// ticket gate keeps OP-01 evidence plumbing out of the assertions.
+#[tokio::test]
+async fn advance_and_remediate_judge_the_key_before_the_revision() {
+    let composed = compose_realm("/tmp/kontor-op06-machine").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let (session, hash) =
+        quick_session_ready_to_promote(world, project, "Drive completion", "op06-quick").await;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
+        &serde_json::json!({"preview_hash": hash, "expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-promote")
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic")
+        .to_owned();
+
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("op06-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let seats = materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("seats")
+        .clone();
+    let seat_of = |code: &str| -> SeatBindingId {
+        SeatBindingId::parse(
+            seats
+                .iter()
+                .find(|entry| entry["role"]["role_code"] == code)
+                .unwrap_or_else(|| panic!("a {code} seat"))["seat_binding_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a bound {code} seat")),
+        )
+        .expect("a seat binding id")
+    };
+    let tpm = seat_of("TPM");
+
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("it compiles");
+    let seed = |state: &kontor_scheduler::CompletionState| StoredEpicCompletion {
+        project_id,
+        mini_project_id: epic_id,
+        profile_id: compiled.profile.id.clone(),
+        profile_version: compiled.profile.version,
+        definition_hash: compiled.definition_hash.clone(),
+        state: serde_json::to_value(state).expect("the state serializes"),
+        revision: state.revision,
+        updated_at: at("2026-08-18T09:00:00Z"),
+    };
+    let signal = |id: &str,
+                  revision: &kontor_scheduler::CompletionState,
+                  observation: kontor_scheduler::CompletionObservation| {
+        kontor_scheduler::CompletionSignal {
+            id: ContentHash::of(id.as_bytes()),
+            expected_revision: revision.revision,
+            delivery: kontor_scheduler::SignalDelivery::Callback,
+            observation,
+        }
+    };
+
+    // ---- `:advance` over a run standing at the ticket gate ----
+    let ticket_phase = kontor_scheduler::start(&compiled, tpm, Vec::new()).expect("a run starts");
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.create_epic_completion(&seed(&ticket_phase)))
+        .expect("the run seeds");
+
+    let advanced = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-advance-once")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+    assert_eq!(advanced.json()["state"]["phase"]["phase"], "integration");
+    assert_eq!(advanced.json()["receipt"]["applied"], "created");
+    assert_eq!(advanced.json()["receipt"]["revision"], 2);
+    // The transition woke the epic's existing TPM seat exactly once, and named it.
+    let wakes = advanced.json()["state"]["wakes"]
+        .as_array()
+        .expect("wakes")
+        .clone();
+    assert_eq!(
+        wakes.len(),
+        1,
+        "one observation, one wake: {}",
+        advanced.body
+    );
+    assert_eq!(wakes[0]["seat_binding_id"], tpm.to_string());
+    assert_eq!(wakes[0]["completion_revision"], 2);
+
+    // The same key and the same expected revision replay to the same receipt and
+    // move nothing, even though the run is no longer at that revision.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-advance-once")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["receipt"]["revision"],
+        2,
+        "a replay commits no second transition: {}",
+        replayed.body
+    );
+    assert_eq!(replayed.json()["state"]["phase"]["phase"], "integration");
+
+    // A *different* key presenting that now-stale revision is a genuine conflict.
+    let stale = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-advance-stale")
+    .send(world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(stale.code(), "revision_conflict");
+    assert_eq!(stale.json()["current_revision"], 2);
+
+    // ---- `:remediate` over a run whose first round failed ----
+    let integration = kontor_scheduler::IntegrationRecord {
+        receipt: ContentHash::of(b"integration-1"),
+        repositories: vec![kontor_scheduler::RepositoryOutcome {
+            repository: name("asma-rs-kontor"),
+            pull_request: name("PR-1"),
+            module_revision: name("abc1234"),
+            root_pointer_revision: Some(name("def5678")),
+        }],
+    };
+    let findings = ContentHash::of(b"round-1-findings");
+    let after_tickets = kontor_scheduler::advance(
+        &compiled,
+        &ticket_phase,
+        &signal(
+            "tickets",
+            &ticket_phase,
+            kontor_scheduler::CompletionObservation::TicketsClosed(Vec::new()),
+        ),
+    )
+    .expect("the gate opens")
+    .state;
+    let after_integration = kontor_scheduler::advance(
+        &compiled,
+        &after_tickets,
+        &signal(
+            "integration",
+            &after_tickets,
+            kontor_scheduler::CompletionObservation::IntegrationCompleted(integration),
+        ),
+    )
+    .expect("integration lands")
+    .state;
+    let awaiting = kontor_scheduler::advance(
+        &compiled,
+        &after_integration,
+        &signal(
+            "verdict-1",
+            &after_integration,
+            kontor_scheduler::CompletionObservation::VerdictRecorded {
+                round: 1,
+                verdict: kontor_scheduler::CommitteeVerdict::Fail,
+                evidence: findings.clone(),
+                deliberation: vec![kontor_policy::DeliberationStep {
+                    role: name("Committee"),
+                    consultation: name("independent_review"),
+                    round: 1,
+                    outcome: name("fail"),
+                }],
+            },
+        ),
+    )
+    .expect("a failed round is appended")
+    .state;
+    let awaiting_revision = awaiting.revision.get();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.update_epic_completion(
+                &seed(&awaiting),
+                AggregateRevision::parse(2).expect("a revision"),
+            )
+        })
+        .expect("the failed round seeds");
+
+    let remediate = |body: serde_json::Value, key: &'static str| {
+        Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
+            &body,
+        )
+        .signed_as(world, "operator")
+        .with_key(key)
+    };
+
+    // Routing before anything was proposed launches nothing: both receipts have
+    // to be durable, and only one authority has acted.
+    let unproposed = remediate(
+        serde_json::json!({
+            "expected_revision": awaiting_revision,
+            "action": {"action": "tpm_route", "round": 1, "route": ContentHash::of(b"route-1").as_str()}
+        }),
+        "op06-route-unproposed",
+    )
+    .send(world)
+    .await;
+    assert_eq!(unproposed.status, 400, "{}", unproposed.body);
+    assert!(
+        unproposed.json()["rule"]
+            .as_str()
+            .expect("a rule")
+            .contains("no LSA proposal"),
+        "{}",
+        unproposed.body
+    );
+
+    // A proposal must answer the failed round's own immutable evidence.
+    let wrong_evidence = remediate(
+        serde_json::json!({
+            "expected_revision": awaiting_revision,
+            "action": {
+                "action": "lsa_proposal", "round": 1,
+                "failed_round_evidence": ContentHash::of(b"some-other-round").as_str(),
+                "proposal": ContentHash::of(b"narrow-the-change").as_str()
+            }
+        }),
+        "op06-propose-wrong",
+    )
+    .send(world)
+    .await;
+    assert_eq!(wrong_evidence.status, 400, "{}", wrong_evidence.body);
+
+    let proposal_body = serde_json::json!({
+        "expected_revision": awaiting_revision,
+        "action": {
+            "action": "lsa_proposal", "round": 1,
+            "failed_round_evidence": findings.as_str(),
+            "proposal": ContentHash::of(b"narrow-the-change").as_str()
+        }
+    });
+    let proposed = remediate(proposal_body.clone(), "op06-propose")
+        .send(world)
+        .await;
+    assert_eq!(proposed.status, 200, "{}", proposed.body);
+    assert_eq!(proposed.json()["receipt"]["applied"], "created");
+    assert_eq!(
+        proposed.json()["state"]["phase"]["phase"],
+        "awaiting_lsa",
+        "a proposal alone launches nothing: {}",
+        proposed.body
+    );
+    assert_eq!(
+        proposed.json()["receipt"]["revision"],
+        awaiting_revision,
+        "the run must not move on a proposal: {}",
+        proposed.body
+    );
+
+    // Replay is the same receipt, and still no second proposal.
+    let proposed_again = remediate(proposal_body, "op06-propose").send(world).await;
+    assert_eq!(proposed_again.status, 200, "{}", proposed_again.body);
+    assert_eq!(proposed_again.json()["receipt"]["applied"], "unchanged");
+
+    // The route completes the authority and moves the run.
+    let route_body = serde_json::json!({
+        "expected_revision": awaiting_revision,
+        "action": {"action": "tpm_route", "round": 1, "route": ContentHash::of(b"route-1").as_str()}
+    });
+    let routed = remediate(route_body.clone(), "op06-route")
+        .send(world)
+        .await;
+    assert_eq!(routed.status, 200, "{}", routed.body);
+    assert_eq!(routed.json()["state"]["phase"]["phase"], "remediation");
+    assert_eq!(routed.json()["state"]["phase"]["round"], 1);
+    assert_eq!(routed.json()["receipt"]["applied"], "created");
+    assert_eq!(
+        routed.json()["receipt"]["revision"],
+        awaiting_revision + 1,
+        "{}",
+        routed.body
+    );
+
+    // Replay after the move: same key, same body, same receipt, no second round.
+    let routed_again = remediate(route_body, "op06-route").send(world).await;
+    assert_eq!(routed_again.status, 200, "{}", routed_again.body);
+    assert_eq!(routed_again.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        routed_again.json()["state"]["phase"]["phase"],
+        "remediation"
+    );
+
+    // And a different key presenting the pre-route revision now conflicts.
+    let stale_route = remediate(
+        serde_json::json!({
+            "expected_revision": awaiting_revision,
+            "action": {"action": "tpm_route", "round": 1, "route": ContentHash::of(b"route-2").as_str()}
+        }),
+        "op06-route-stale",
+    )
+    .send(world)
+    .await;
+    assert_eq!(stale_route.status, 409, "{}", stale_route.body);
+    assert_eq!(stale_route.code(), "revision_conflict");
+    assert_eq!(
+        stale_route.json()["current_revision"],
+        awaiting_revision + 1
+    );
+}
+
+/// `:remediate` on an epic that never started completion is an absence.
+#[tokio::test]
+async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {
+    let world = World::open().await;
+    let project = world.project;
+    let epic = MiniProjectId::generate();
+
+    let answer = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "action": {"action": "tpm_route", "round": 1,
+                       "route": ContentHash::of(b"route").as_str()}
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("op06-remediate-nothing")
+    .send(&world)
+    .await;
+    assert_eq!(answer.status, 404, "{}", answer.body);
+    assert!(
+        answer.json().get("receipt_id").is_none(),
+        "a refusal must not carry a receipt: {}",
+        answer.body
     );
 }
