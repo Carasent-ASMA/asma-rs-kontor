@@ -4706,6 +4706,9 @@ impl Services {
                 ));
             }
         };
+        let advice = state
+            .with_store(|store| store.get_advisor_advice(run.project_id, advisor_run_id))
+            .map_err(|error| self.refuse(&error))?;
         let receipt = receipt_id
             .map(|receipt_id| {
                 Ok(MutationReceiptDto {
@@ -4739,6 +4742,7 @@ impl Services {
                 })
                 .collect(),
             state: run.state.as_str().to_owned(),
+            advice: advice.map(|advice| advice.document),
             result: run.result.clone(),
             receipt,
         })
@@ -9567,53 +9571,171 @@ impl ApplicationOperations for Services {
         advisor_run_id: AdvisorRunId,
         request: &SettleConsultationRequest,
     ) -> Result<AdvisorRunDto, ApiError> {
-        let run = self.consultation_run(project_id, ConsultationRunId::Advisor(advisor_run_id))?;
         if request.recommendation.is_some() || request.tried_path.is_some() {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
                 "Committee remediation fields are not accepted on the Advisor route",
             ));
         }
+        if request.seat_binding_id.is_some() {
+            if request.disposition.is_some()
+                || request.rationale.is_some()
+                || !request.receipt_ids.is_empty()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the Advisor output step cannot record its requester's disposition",
+                ));
+            }
+            let run =
+                self.consultation_run(project_id, ConsultationRunId::Advisor(advisor_run_id))?;
+            let target = AggregateRef::MiniProject {
+                mini_project_id: run.mini_project_id,
+            };
+            let seat_binding_id = request.seat_binding_id.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "Advisor output requires its authenticated seat binding",
+                )
+            })?;
+            let output = request.output.as_ref().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the Advisor output step requires immutable output",
+                )
+            })?;
+            let intent = self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "record_advisor_advice",
+                "project": project_id.to_string(),
+                "advisor_run": advisor_run_id.to_string(),
+                "seat_binding_id": seat_binding_id.to_string(),
+                "output": output.as_str(),
+            }))?;
+            if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+                return self.advisor_run_dto(&run, Some(receipt.id), AppliedDto::Unchanged);
+            }
+            if run.state == ConsultationRunState::Settled {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "this Advisor was settled under another idempotency key",
+                ));
+            }
+            if run.revision != request.expected_revision {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the Advisor run moved since the caller read it",
+                    )
+                    .with_revision(Some(run.revision)));
+            }
+            let seats = self
+                .state()?
+                .with_store(|store| store.list_consultation_seats(project_id, run.id))
+                .map_err(|error| self.refuse(&error))?;
+            let seat = seats
+                .iter()
+                .find(|seat| seat.seat_binding_id == seat_binding_id)
+                .filter(|seat| seat.native_identity.is_some())
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the Advisor output does not come from its attested seat",
+                    )
+                })?;
+            let advice_document = self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "seat_binding_id": seat.seat_binding_id.to_string(),
+                "output": output.as_str(),
+            }))?;
+            let advice: serde_json::Value =
+                serde_json::from_str(advice_document.json()).map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the Advisor output could not be frozen",
+                    )
+                })?;
+            let now = kontor_api::now();
+            let (recorded, inserted) = self
+                .state()?
+                .with_store(|store| {
+                    store.record_advisor_advice(
+                        project_id,
+                        advisor_run_id,
+                        seat.seat_binding_id,
+                        &advice,
+                        advice_document.hash(),
+                        run.revision,
+                        now,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            let receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::SettleAdvisorRun,
+                target,
+                recorded.revision,
+                &intent,
+            )?;
+            return self.advisor_run_dto(
+                &recorded,
+                Some(receipt_id),
+                if inserted {
+                    AppliedDto::Created
+                } else {
+                    AppliedDto::Unchanged
+                },
+            );
+        }
+
+        if request.output.is_some() || request.seat_binding_id.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the Advisor disposition step cannot author or identify the advice",
+            ));
+        }
+        let run = self.consultation_run(project_id, ConsultationRunId::Advisor(advisor_run_id))?;
         let target = AggregateRef::MiniProject {
             mini_project_id: run.mini_project_id,
         };
-        let seat_binding_id = request.seat_binding_id.ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::InvalidRequest,
-                "Advisor settlement requires its exact seat binding",
-            )
-        })?;
-        let output = request.output.as_ref().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::InvalidRequest,
-                "Advisor settlement requires immutable output",
-            )
-        })?;
+        let advice = self
+            .state()?
+            .with_store(|store| store.get_advisor_advice(project_id, advisor_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the Advisor seat has not submitted immutable advice yet",
+                )
+            })?;
         let disposition = request.disposition.ok_or_else(|| {
             self.deny(
                 ApiErrorCode::InvalidRequest,
-                "Advisor settlement requires a disposition",
+                "Advisor disposition requires a typed decision",
             )
         })?;
         let rationale = request.rationale.as_ref().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::InvalidRequest,
-                "Advisor settlement requires a disposition rationale",
+                "Advisor disposition requires bounded rationale",
             )
         })?;
+        let disposition_text = match disposition {
+            kontor_api::applications::AdviceDispositionDto::Accepted => "accepted",
+            kontor_api::applications::AdviceDispositionDto::PartiallyAccepted => {
+                "partially_accepted"
+            }
+            kontor_api::applications::AdviceDispositionDto::Rejected => "rejected",
+            kontor_api::applications::AdviceDispositionDto::Superseded => "superseded",
+        };
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
-            "operation": "settle_advisor_run",
+            "operation": "disposition_advisor_advice",
             "project": project_id.to_string(),
             "advisor_run": advisor_run_id.to_string(),
-            "seat_binding_id": seat_binding_id.to_string(),
-            "output": output.as_str(),
-            "disposition": match disposition {
-                kontor_api::applications::AdviceDispositionDto::Accepted => "accepted",
-                kontor_api::applications::AdviceDispositionDto::PartiallyAccepted => "partially_accepted",
-                kontor_api::applications::AdviceDispositionDto::Rejected => "rejected",
-                kontor_api::applications::AdviceDispositionDto::Superseded => "superseded",
-            },
+            "advice_hash": advice.document_hash.as_str(),
+            "disposition": disposition_text,
             "rationale": rationale.as_str(),
             "receipt_ids": request.receipt_ids,
         }))?;
@@ -9623,35 +9745,28 @@ impl ApplicationOperations for Services {
         if run.state == ConsultationRunState::Settled {
             return Err(self.deny(
                 ApiErrorCode::IdempotencyConflict,
-                "this Advisor was settled under another idempotency key",
+                "this Advisor was dispositioned under another idempotency key",
             ));
         }
         if run.revision != request.expected_revision {
             return Err(self
                 .deny(
                     ApiErrorCode::RevisionConflict,
-                    "the Advisor run moved since the caller read it",
+                    "the Advisor run moved since the caller read its advice",
                 )
                 .with_revision(Some(run.revision)));
         }
-        let seats = self
-            .state()?
-            .with_store(|store| store.list_consultation_seats(project_id, run.id))
-            .map_err(|error| self.refuse(&error))?;
-        let seat = seats
-            .iter()
-            .find(|seat| seat.seat_binding_id == seat_binding_id)
-            .filter(|seat| seat.native_identity.is_some())
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::StaleBinding,
-                    "the Advisor output does not come from its attested seat",
-                )
-            })?;
+        let output = advice.document["output"].as_str().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the stored Advisor advice has no bounded output",
+            )
+        })?;
         let result_document = self.intent(&serde_json::json!({
             "schema_version": 1,
-            "seat_binding_id": seat.seat_binding_id.to_string(),
-            "output": output.as_str(),
+            "seat_binding_id": advice.seat_binding_id.to_string(),
+            "advice_hash": advice.document_hash.as_str(),
+            "output": output,
             "disposition": match disposition {
                 kontor_api::applications::AdviceDispositionDto::Accepted => "accepted",
                 kontor_api::applications::AdviceDispositionDto::PartiallyAccepted => "partially_accepted",

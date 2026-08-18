@@ -16266,17 +16266,61 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         unscoped_advisor_settlement.body
     );
 
-    let advisor_settled = Call::post(
+    let self_disposition = Call::post(
         format!("/v1/projects/{project}/advisor-runs/{advisor_run}/settle"),
         &serde_json::json!({
-            "output": "Use the bounded control-plane path and preserve identities.",
+            "output": "the advice bytes are seat-authored",
             "disposition": "accepted",
-            "rationale": "It matches the operational policy.",
+            "rationale": "but the seat cannot accept itself",
             "expected_revision": advisor_invoked.json()["receipt"]["revision"],
         }),
     )
-    .with_token(advisor_token)
-    .with_key("advisor-settle")
+    .with_token(advisor_token.clone())
+    .with_key("advisor-self-disposition")
+    .send(world)
+    .await;
+    assert_eq!(self_disposition.status, 403, "{}", self_disposition.body);
+
+    let advisor_output = Call::post(
+        format!("/v1/projects/{project}/advisor-runs/{advisor_run}/settle"),
+        &serde_json::json!({
+            "output": "Use the bounded control-plane path and preserve identities.",
+            "expected_revision": advisor_invoked.json()["receipt"]["revision"],
+        }),
+    )
+    .with_token(advisor_token.clone())
+    .with_key("advisor-output")
+    .send(world)
+    .await;
+    assert_eq!(advisor_output.status, 200, "{}", advisor_output.body);
+    assert_eq!(advisor_output.json()["state"], "running");
+    assert_eq!(
+        advisor_output.json()["advice"]["output"],
+        "Use the bounded control-plane path and preserve identities."
+    );
+    assert!(advisor_output.json()["result"].is_null());
+
+    let advisor_cannot_read_realm =
+        Call::get(format!("/v1/projects/{project}/advisor-runs/{advisor_run}"))
+            .with_token(advisor_token)
+            .send(world)
+            .await;
+    assert_eq!(
+        advisor_cannot_read_realm.status, 403,
+        "a consultation seat inherited an Observer route: {}",
+        advisor_cannot_read_realm.body
+    );
+
+    let advisor_settled = Call::post(
+        format!("/v1/projects/{project}/advisor-runs/{advisor_run}/settle"),
+        &serde_json::json!({
+            "disposition": "accepted",
+            "rationale": "It matches the operational policy.",
+            "expected_revision": advisor_output.json()["receipt"]["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("advisor-disposition")
     .send(world)
     .await;
     assert_eq!(advisor_settled.status, 200, "{}", advisor_settled.body);
@@ -16286,6 +16330,10 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .send(world)
         .await;
     assert_eq!(advisor_read.status, 200, "{}", advisor_read.body);
+    assert_eq!(
+        advisor_read.json()["advice"]["output"],
+        "Use the bounded control-plane path and preserve identities."
+    );
     assert_eq!(advisor_read.json()["result"]["disposition"], "accepted");
     let invoke_body = serde_json::json!({
         "profile": {
@@ -16331,6 +16379,23 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         })
         .collect();
     assert_eq!(reviewer_ids.len(), 2, "{}", invoked.body);
+    let reviewer_read = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .consultation_seat_credential(
+                    SeatBindingId::parse(&reviewer_ids[0]).expect("a reviewer SeatBinding"),
+                ),
+        )
+        .send(world)
+        .await;
+    assert_eq!(
+        reviewer_read.status, 403,
+        "an independent reviewer could read the Committee projection: {}",
+        reviewer_read.body
+    );
     let judge = seats
         .iter()
         .find(|seat| seat["role_slot_id"] == "judge")

@@ -141,9 +141,9 @@ impl RealmCredentials {
     ///
     /// The credential is derived from the Realm's operator secret and the
     /// durable SeatBinding id, but it does not inherit that secret's Realm-wide
-    /// authority. Authentication projects it as a read-only caller plus the
-    /// exact seat subject; only routes that explicitly require that subject may
-    /// accept its bounded write. It cannot be retargeted to another seat. The
+    /// authority. Authentication projects it as the exact seat subject with no
+    /// general Realm capability; only routes that explicitly require that
+    /// subject may accept it. It cannot be retargeted to another seat. The
     /// raw Realm secret never leaves this type; only the scoped credential is
     /// handed to the native seat.
     #[must_use]

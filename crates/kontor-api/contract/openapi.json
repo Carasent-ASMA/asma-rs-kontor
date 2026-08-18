@@ -7062,6 +7062,9 @@
           "state"
         ],
         "properties": {
+          "advice": {
+            "description": "Immutable output submitted by the Advisor seat, before disposition."
+          },
           "advisor_run_id": {
             "type": "string",
             "description": "The consultation."
@@ -13047,7 +13050,7 @@
               },
               {
                 "$ref": "#/components/schemas/AdviceDispositionDto",
-                "description": "What the authorized caller decided about the advice."
+                "description": "What the requester or owning LSA decided about already-durable advice."
               }
             ]
           },
@@ -13062,7 +13065,7 @@
               "string",
               "null"
             ],
-            "description": "Immutable Advisor output. Required only on the Advisor route."
+            "description": "Immutable Advisor output. Present only in the seat-authenticated first\nAdvisor step."
           },
           "rationale": {
             "type": [
@@ -13090,7 +13093,7 @@
               "string",
               "null"
             ],
-            "description": "Exact seat recording Advisor output/disposition. Absent for Committee\nsettlement, whose evidence is already keyed by finding SeatBindings."
+            "description": "Optional assertion of the Advisor seat. The server always derives the\nidentity from the scoped bearer and refuses a mismatch. Absent for the\nlater requester/LSA disposition and for Committee settlement."
           },
           "tried_path": {
             "type": [

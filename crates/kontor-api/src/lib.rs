@@ -87,9 +87,11 @@ impl Caller {
     ///
     /// # Errors
     /// Returns [`ApiErrorCode::Forbidden`] when the caller's tier is lower than
-    /// `required`.
+    /// `required`, or when the bearer is a consultation-seat credential. Seat
+    /// bearers are denied on every ordinary route so independent reviewers
+    /// cannot read peers' findings or reach unrelated mutations.
     pub fn require(self, state: &ApiState, required: CallerCapability) -> Result<(), ApiError> {
-        if self.0.at_least(required) {
+        if self.1.is_none() && self.0.at_least(required) {
             return Ok(());
         }
         Err(state.refuse(
@@ -184,9 +186,10 @@ async fn authenticate(
     let caller = if let Some(authority) = state.credentials().authority(presented) {
         Caller(authority, None)
     } else if let Some(seat_binding_id) = state.credentials().consultation_seat(presented) {
-        // A seat token may inspect evidence and submit only on routes that
-        // explicitly require its seat subject. Signing with the operator secret
-        // does not promote the native consultation process to Realm operator.
+        // The capability value is only a storage placeholder: `Caller::require`
+        // denies every seat-scoped caller before checking it. Submission routes
+        // opt in through `require_consultation_seat`, so the bearer cannot read
+        // peers' findings or inherit the signing secret's Realm authority.
         Caller(CallerCapability::Observer, Some(seat_binding_id))
     } else {
         return Err(state.refuse(

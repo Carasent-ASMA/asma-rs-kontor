@@ -22,16 +22,16 @@ use crate::consultation::{
     CommitteeRole, CommitteeVerdict, ConsultationFamily, ConsultationRunId, ConsultationRunState,
 };
 use crate::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ConnectorKey,
-    ContentHash, CredentialAlias, EventCursor, ExecutionAuthorizationId, ExternalId,
-    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, GuardrailEvaluationId,
-    IdempotencyKey, IntakeDecisionId, IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId,
-    PhaseKey, ProjectId, QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId,
-    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
-    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
-    WorkProfileKey,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
+    CalendarExceptionId, CalendarProfileId, CanonicalDocument, CapacityObservationId,
+    CommandReceiptId, ConnectorKey, ContentHash, CredentialAlias, EventCursor,
+    ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
+    GateKey, GuardrailEvaluationId, IdempotencyKey, IntakeDecisionId, IntakeReceiptId,
+    MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey, ProjectId, QuickSessionId, RealmId,
+    RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId,
+    SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
+    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
+    TriggerKey, WorkCalendarId, WorkProfileKey,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -288,6 +288,28 @@ pub struct StoredConsultationRun {
     pub updated_at: Timestamp,
     /// Settlement instant.
     pub settled_at: Option<Timestamp>,
+}
+
+/// The immutable evidence authored by one Advisor seat before disposition.
+///
+/// This is deliberately not the consultation result: the requester or owning
+/// LSA records that later, after considering these frozen bytes. Keeping the
+/// artifact separate makes it impossible for the disposition authority to
+/// rewrite the Advisor's output in the same command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAdvisorAdvice {
+    /// Advisor invocation the evidence belongs to.
+    pub advisor_run_id: AdvisorRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Exact attested Advisor SeatBinding that submitted it.
+    pub seat_binding_id: SeatBindingId,
+    /// Canonical evidence document.
+    pub document: serde_json::Value,
+    /// Digest of the canonical evidence bytes.
+    pub document_hash: ContentHash,
+    /// Append instant.
+    pub recorded_at: Timestamp,
 }
 
 /// One template-declared native consultation seat.
