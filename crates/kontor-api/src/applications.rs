@@ -1320,6 +1320,71 @@ pub struct TopologyUpgradePreviewDto {
     pub snapshot_cursor: kontor_core::id::EventCursor,
 }
 
+/// What repairing one bound container's title is asked for.
+///
+/// The revision the caller read the project at, and nothing else. There is no
+/// field for a title, a native id, a parent or a directory — not because they are
+/// validated away, but because the type has nowhere to put them. The title is
+/// derived from the node's pinned topology and the plane's typed scope, and the
+/// container is addressed by the binding Kontor already holds.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRetitleRequest {
+    /// The project revision the caller believes is current.
+    ///
+    /// The project, not the node: a repair is authority over the project's own
+    /// rendering, and the project's revision is the one a caller can read before
+    /// presenting it.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What one bound container's title is, and what it should be.
+///
+/// A preview is a read: it takes no idempotency key, reaches nothing that writes,
+/// and answers the two titles a human needs to compare. The runtime is asked, so
+/// `observed_title` is what the container actually carries rather than what Kontor
+/// once recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ContainerRetitlePreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The node whose container it is.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The native container that would be renamed.
+    #[schema(value_type = String)]
+    pub bound_native_id: ExternalId,
+    /// The title the server derived, which an apply would set.
+    #[schema(value_type = String)]
+    pub desired_title: ExternalName,
+    /// The title the runtime reports it carries now.
+    pub observed_title: String,
+    /// Whether an apply would change anything.
+    pub would_change: bool,
+    /// The position this preview was computed at.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// What a container retitle produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedContainerRetitleDto {
+    /// The node whose container it is.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The native container, read back after the change. The same one.
+    #[schema(value_type = String)]
+    pub bound_native_id: ExternalId,
+    /// The title the runtime reported afterwards, read back rather than assumed.
+    pub observed_title: String,
+    /// Whether this call changed anything, or found it already correct.
+    pub changed: bool,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
 /// What applying a named upgrade preview is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -3257,6 +3322,23 @@ pub trait ApplicationOperations: Send + Sync {
         request: &TopologyUpgradePreviewRequest,
     ) -> Result<TopologyUpgradePreviewDto, ApiError>;
 
+    /// What repairing one bound container's title would do. Commits nothing.
+    async fn preview_container_retitle(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRetitleRequest,
+    ) -> Result<ContainerRetitlePreviewDto, ApiError>;
+
+    /// Repair one bound container's title, idempotently, and read it back.
+    async fn apply_container_retitle(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRetitleRequest,
+    ) -> Result<AppliedContainerRetitleDto, ApiError>;
+
     /// Apply the named preview and return the new immutable pin.
     async fn apply_topology_upgrade(
         &self,
@@ -4372,6 +4454,67 @@ pub async fn apply_topology_upgrade(
         state
             .applications()
             .apply_topology_upgrade(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// What repairing one bound container's title would do.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose container it is")
+    ),
+    request_body = ContainerRetitleRequest,
+    responses((status = 200, body = ContainerRetitlePreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 501))
+)]
+pub async fn preview_container_retitle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    Json(request): Json<ContainerRetitleRequest>,
+) -> Result<Json<ContainerRetitlePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_container_retitle(project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Repair one bound container's title.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose container it is"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ContainerRetitleRequest,
+    responses((status = 200, body = AppliedContainerRetitleDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 501))
+)]
+pub async fn apply_container_retitle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ContainerRetitleRequest>,
+) -> Result<Json<AppliedContainerRetitleDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_container_retitle(&key, project_id, topology_node_id, &request)
             .await?,
     ))
 }

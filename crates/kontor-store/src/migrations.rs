@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 31;
+pub const SCHEMA_VERSION: i64 = 33;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -140,14 +140,22 @@ const MIGRATIONS: &[&str] = &[
     // explicit epic upgrade that moves a pin — which is why the pin row becomes
     // writable by that one operation, and why the closed kind list grows by two.
     include_str!("../migrations/0029_topology_publication.sql"),
-    // Schema v30. Immutable Project Core Team revisions, and the one command
+    // Schema v30. The container retitle command. One kind, and no title column:
+    // what a container is called is the runtime's fact, read back rather than
+    // mirrored.
+    include_str!("../migrations/0030_retitle_container_command.sql"),
+    // Schema v31. The bounded task reopen: `done -> ready` and nothing else, so
+    // the lifecycle action the surface advertises can reach the domain rule
+    // written for it.
+    include_str!("../migrations/0031_bounded_task_reopen.sql"),
+    // Schema v32. Immutable Project Core Team revisions, and the one command
     // that publishes them. Kept as whole revisions because promotion freezes
     // the exact one an epic was staffed from.
-    include_str!("../migrations/0030_core_team_revisions.sql"),
-    // Schema v31. Quick sessions, their one promotion, and the roster an epic
+    include_str!("../migrations/0032_core_team_revisions.sql"),
+    // Schema v33. Quick sessions, their one promotion, and the roster an epic
     // freezes at that moment -- plus the four OP-04 commands. The promotion row
     // carries its ids so a resumed apply reconciles rather than rebuilds.
-    include_str!("../migrations/0031_quick_sessions_and_promotion.sql"),
+    include_str!("../migrations/0033_quick_sessions_and_promotion.sql"),
 ];
 
 const _: () = assert!(

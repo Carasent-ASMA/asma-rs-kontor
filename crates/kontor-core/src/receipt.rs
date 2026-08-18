@@ -136,6 +136,14 @@ closed_enum! {
         /// The epic is the aggregate: the pin is the epic's, and the revision it
         /// moves to is immutable and shared.
         UpgradeTopology => "upgrade_topology",
+        /// Correct the visible title of one bound native container.
+        ///
+        /// It carries no title, because the title is not the caller's: the
+        /// operation derives it from the node's pinned topology and the plane's
+        /// typed scope. What is being recorded is the authority to repair a
+        /// display that Kontor itself rendered wrongly, and the container it
+        /// repairs is addressed by its durable binding rather than by its name.
+        RetitleContainer => "retitle_container",
         /// Publish the next immutable Project Core Team revision.
         ///
         /// The project is the aggregate. This changes project configuration and
@@ -406,6 +414,11 @@ impl CommandKind {
             Self::ObserveSeat | Self::RetireSeat => witness(matches!(target, A::Project)),
             Self::PublishTopologySpec => witness(matches!(target, A::Project)),
             Self::UpgradeTopology => witness(matches!(target, A::MiniProject)),
+            // Neither a native container nor the topology node holding it is an
+            // aggregate a command may name, and the epic is too wide: a retitle
+            // touches one node's container. The project is the one aggregate it
+            // certainly has, exactly as for `ObserveSeat`.
+            Self::RetitleContainer => witness(matches!(target, A::Project)),
             // The project, and only the project. A Core Team is project
             // configuration: allowing an epic here would let a receipt claim
             // that publishing a roster changed one running epic, which is the

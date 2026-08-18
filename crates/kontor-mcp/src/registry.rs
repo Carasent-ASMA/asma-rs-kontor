@@ -2481,6 +2481,65 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Apply the named upgrade preview and return the new immutable pin.",
     },
+    ToolSpec {
+        name: "kontor_container_retitle_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "topology_node_id",
+                Place::Path,
+                ArgType::TopologyNodeId,
+                "The node whose container it is.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+        ],
+        // No title argument, and there will never be one: the title is derived
+        // from the node's pinned topology and the runtime plane's typed scope.
+        about: "What repairing one bound container's title would do. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_container_retitle_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "topology_node_id",
+                Place::Path,
+                ArgType::TopologyNodeId,
+                "The node whose container it is.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+        ],
+        about: "Repair one bound container's title, idempotently, and read it back.",
+    },
     // ---- Native capacity: evidence is collected, never asserted ------------
     ToolSpec {
         name: "kontor_capacity_config_get",

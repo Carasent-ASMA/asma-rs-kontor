@@ -5594,6 +5594,147 @@
         }
       }
     },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Repair one bound container's title.",
+        "operationId": "apply_container_retitle",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node whose container it is",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContainerRetitleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedContainerRetitleDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "501": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "What repairing one bound container's title would do.",
+        "operationId": "preview_container_retitle",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node whose container it is",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContainerRetitleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContainerRetitlePreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "501": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire": {
       "post": {
         "tags": [
@@ -6840,6 +6981,39 @@
           }
         }
       },
+      "AppliedContainerRetitleDto": {
+        "type": "object",
+        "description": "What a container retitle produced.",
+        "required": [
+          "topology_node_id",
+          "bound_native_id",
+          "observed_title",
+          "changed",
+          "receipt"
+        ],
+        "properties": {
+          "bound_native_id": {
+            "type": "string",
+            "description": "The native container, read back after the change. The same one."
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "Whether this call changed anything, or found it already correct."
+          },
+          "observed_title": {
+            "type": "string",
+            "description": "The title the runtime reported afterwards, read back rather than assumed."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt it was committed under."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The node whose container it is."
+          }
+        }
+      },
       "AppliedDto": {
         "type": "string",
         "description": "Whether an ensure/apply wrote the row or found it already matching.\n\nIt is on every item of every declarative answer, because \"it worked\" and \"it\nwas already like that\" are different facts and a caller reconciling a plan\nneeds to tell them apart without diffing.",
@@ -8029,6 +8203,66 @@
             "minimum": 0
           }
         }
+      },
+      "ContainerRetitlePreviewDto": {
+        "type": "object",
+        "description": "What one bound container's title is, and what it should be.\n\nA preview is a read: it takes no idempotency key, reaches nothing that writes,\nand answers the two titles a human needs to compare. The runtime is asked, so\n`observed_title` is what the container actually carries rather than what Kontor\nonce recorded.",
+        "required": [
+          "realm_id",
+          "topology_node_id",
+          "bound_native_id",
+          "desired_title",
+          "observed_title",
+          "would_change",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "bound_native_id": {
+            "type": "string",
+            "description": "The native container that would be renamed."
+          },
+          "desired_title": {
+            "type": "string",
+            "description": "The title the server derived, which an apply would set."
+          },
+          "observed_title": {
+            "type": "string",
+            "description": "The title the runtime reports it carries now."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that computed it."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this preview was computed at."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The node whose container it is."
+          },
+          "would_change": {
+            "type": "boolean",
+            "description": "Whether an apply would change anything."
+          }
+        }
+      },
+      "ContainerRetitleRequest": {
+        "type": "object",
+        "description": "What repairing one bound container's title is asked for.\n\nThe revision the caller read the project at, and nothing else. There is no\nfield for a title, a native id, a parent or a directory — not because they are\nvalidated away, but because the type has nowhere to put them. The title is\nderived from the node's pinned topology and the plane's typed scope, and the\ncontainer is addressed by the binding Kontor already holds.",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller believes is current.\n\nThe project, not the node: a repair is authority over the project's own\nrendering, and the project's revision is the one a caller can read before\npresenting it.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "ContextPolicyDto": {
         "type": "object",

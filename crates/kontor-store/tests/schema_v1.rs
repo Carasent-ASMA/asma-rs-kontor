@@ -185,6 +185,21 @@ const MIGRATIONS_THROUGH_V24: &[&str] = &[
     include_str!("../migrations/0024_replace_seat_command.sql"),
 ];
 
+/// The suffix deployed by OP-03 before the OP-04 migrations were integrated.
+///
+/// Both delivery branches called their second migration `v31`. This exact
+/// historical chain builds the live shape the converging v32/v33 upgrade must
+/// recognize without relabeling or rebuilding the database out of band.
+const OP03_MIGRATIONS_V25_THROUGH_V31: &[&str] = &[
+    include_str!("../migrations/0025_document_shareability.sql"),
+    include_str!("../migrations/0026_operational_liveness.sql"),
+    include_str!("../migrations/0027_task_topology_node.sql"),
+    include_str!("../migrations/0028_native_capacity.sql"),
+    include_str!("../migrations/0029_topology_publication.sql"),
+    include_str!("../migrations/0030_retitle_container_command.sql"),
+    include_str!("../migrations/0031_bounded_task_reopen.sql"),
+];
+
 /// A minimal project → task → workflow → team run → agent run chain, inserted
 /// with direct SQL so the schema's own constraints are what is under test.
 const RUN_FIXTURE: &str = "\
@@ -264,7 +279,102 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 31);
+    assert_eq!(SCHEMA_VERSION, 33);
+}
+
+/// The two Wave-3 branches independently occupied schema numbers 30 and 31.
+///
+/// The live OP-03 lineage therefore has `retitle_container` receipts and the
+/// bounded task-reopen trigger, but no Core Team or Quick-session tables. A
+/// daemon built from OP-04 used to see the matching number, skip migration, and
+/// then fail its startup inventory because its enum could not decode that
+/// durable receipt. The forward-only convergence preserves the receipt, keeps
+/// the Realm identity and adds the missing OP-04 schema.
+#[test]
+fn the_deployed_op03_v31_lineage_converges_without_losing_its_receipts() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000e1";
+    const PROJECT: &str = "0193f000-0000-7000-8000-0000000000e2";
+    const RECEIPT: &str = "0193f000-0000-7000-8000-0000000000e3";
+    const HASH: &str = "a9d5f6d002d956b8af5787a05e0ca000d45c03977ffa54ee8fbed719fed5fd23";
+
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        for migration in MIGRATIONS_THROUGH_V24
+            .iter()
+            .chain(OP03_MIGRATIONS_V25_THROUGH_V31)
+        {
+            connection
+                .execute_batch(migration)
+                .expect("the deployed OP-03 migration chain runs");
+        }
+        connection
+            .execute(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, ?1, 1, '2026-08-17T06:00:00Z', NULL)",
+                [REALM],
+            )
+            .expect("the deployed Realm identity is written");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, root_path, revision, created_at)
+                 VALUES (?1, 'P', '/tmp/op03-v31', 1, '2026-08-17T06:00:00Z')",
+                [PROJECT],
+            )
+            .expect("the deployed project is written");
+        connection
+            .execute(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision,
+                      intent, intent_hash, state, attempts, created_at, updated_at)
+                 VALUES (?1, ?2, 'op03-retitle', 'retitle_container',
+                         json_object('kind', 'project', 'project_id', ?2), 1,
+                         json_object('schema_version', 1), ?3, 'intent_persisted', 0,
+                         '2026-08-17T06:00:00Z', '2026-08-17T06:00:00Z')",
+                rusqlite::params![RECEIPT, PROJECT, HASH],
+            )
+            .expect("the historical retitle receipt is written");
+    }
+
+    let store = SqliteStore::open(&path).expect("the deployed v31 lineage converges");
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
+    assert_eq!(store.realm_id().to_string(), REALM);
+    store
+        .foreign_key_check()
+        .expect("the receipt rebuild keeps every reference sound");
+    store
+        .integrity_check()
+        .expect("the converged file is sound");
+
+    let project = ProjectId::parse(PROJECT).expect("a project id");
+    let receipt = kontor_core::id::CommandReceiptId::parse(RECEIPT).expect("a receipt id");
+    let kept = store
+        .get_receipt(project, receipt)
+        .expect("the historical receipt decodes")
+        .expect("the historical receipt survives");
+    assert_eq!(
+        kept.kind,
+        kontor_core::receipt::CommandKind::RetitleContainer
+    );
+
+    let connection = raw(&directory);
+    for table in [
+        "core_team_revisions",
+        "quick_sessions",
+        "quick_session_promotions",
+        "epic_rosters",
+    ] {
+        let exists: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .expect("the catalogue is readable");
+        assert_eq!(exists, 1, "the OP-04 table `{table}` was not added");
+    }
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
@@ -2060,18 +2170,67 @@ fn a_terminal_task_cannot_be_changed_by_direct_sql() {
         .expect("a task may close");
 
     for statement in [
-        "UPDATE tasks SET state = 'ready' WHERE id = ?1",
         "UPDATE tasks SET state = 'in_progress' WHERE id = ?1",
         "UPDATE tasks SET state = 'cancelled' WHERE id = ?1",
         "UPDATE tasks SET title = 'renamed' WHERE id = ?1",
         "UPDATE tasks SET revision = revision + 1 WHERE id = ?1",
         "DELETE FROM tasks WHERE id = ?1",
+        // The reopen exception is `done -> ready` and *only* the state: an update
+        // that also renamed the task or moved it to another epic is a rewrite.
+        "UPDATE tasks SET state = 'ready', title = 'renamed' WHERE id = ?1",
+        "UPDATE tasks SET state = 'ready', created_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
     ] {
         assert!(
             connection
                 .execute(statement, rusqlite::params![TASK])
                 .is_err(),
             "a terminal task must refuse: {statement}"
+        );
+    }
+
+    // The one exception the schema allows, because the domain has a rule for it:
+    // a completed task returns to `ready`.
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'ready', revision = revision + 1 WHERE id = ?1",
+            rusqlite::params![TASK],
+        )
+        .expect("a completed task may be reopened to ready");
+
+    // The exception is not one-shot: a reopened task that completes again reopens
+    // again, because the rule is about the pair of states and not about a count.
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'done', revision = revision + 1 WHERE id = ?1",
+            rusqlite::params![TASK],
+        )
+        .expect("a reopened task may complete again");
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'ready', revision = revision + 1 WHERE id = ?1",
+            rusqlite::params![TASK],
+        )
+        .expect("and be reopened again");
+
+    // A failed task has a successor, not a second life. `cancelled` is the same
+    // clause of the same trigger, and `TaskState::is_reopenable` is asserted over
+    // both in the domain oracle — this row can only be closed one way, because
+    // once it is closed as `failed` nothing moves it again, which is the point.
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'failed', revision = revision + 1 WHERE id = ?1",
+            rusqlite::params![TASK],
+        )
+        .expect("an open task may fail");
+    for statement in [
+        "UPDATE tasks SET state = 'ready', revision = revision + 1 WHERE id = ?1",
+        "UPDATE tasks SET state = 'done', revision = revision + 1 WHERE id = ?1",
+    ] {
+        assert!(
+            connection
+                .execute(statement, rusqlite::params![TASK])
+                .is_err(),
+            "a failed task must refuse: {statement}"
         );
     }
 }

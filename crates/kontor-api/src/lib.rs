@@ -312,6 +312,16 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive",
             post(applications::archive_topology_node),
         )
+        // The verb hangs on a literal segment, because a path parameter and a
+        // literal cannot share one segment in this router.
+        .route(
+            "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview",
+            post(applications::preview_container_retitle),
+        )
+        .route(
+            "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply",
+            post(applications::apply_container_retitle),
+        )
         .route(
             "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
             post(applications::preview_topology_upgrade),

@@ -70,6 +70,25 @@ impl TaskState {
         matches!(self, Self::Blocked | Self::Parked | Self::NeedsHuman)
     }
 
+    /// Whether a terminal task in this state may be explicitly reopened.
+    ///
+    /// Only [`TaskState::Done`], and the asymmetry is the point. A completed task
+    /// carries a *claim* — that its declared work is finished — and new evidence
+    /// can falsify that claim without contradicting anything else it recorded:
+    /// the gates that passed still passed, and reopening says the completion no
+    /// longer covers the work, not that the history was wrong.
+    ///
+    /// A `failed` or `cancelled` task carries an *outcome* instead. Reopening one
+    /// would mean deciding that a run which closed failed did not, or that work
+    /// somebody withdrew is live again — neither of which is a claim later
+    /// evidence can settle, and both of which have a successor task as the honest
+    /// answer. So they stay refused, and the refusal names the transition rather
+    /// than the terminality.
+    #[must_use]
+    pub const fn is_reopenable(self) -> bool {
+        matches!(self, Self::Done)
+    }
+
     /// Whether `next` is structurally reachable from `self`.
     ///
     /// Structural legality is necessary but not sufficient: see
@@ -102,6 +121,13 @@ impl TaskState {
                     Blocked | Parked | NeedsHuman | Done | Failed | Cancelled | Ready
                 )
                 | (Blocked | Parked | NeedsHuman, Ready | Cancelled)
+                // `Done -> Ready` is legal *structurally* and reachable only with
+                // an explicit reopen authority — see
+                // [`apply_task_transition`], which refuses every terminal source
+                // that does not present one. The pair is in the table because a
+                // reopen is a real transition of this aggregate rather than a
+                // special case bolted beside it.
+                | (Done, Ready)
         )
     }
 }
@@ -342,6 +368,32 @@ pub enum TaskTeamClosure {
     },
 }
 
+/// Authority to reopen one terminal task.
+///
+/// Carries the receipt it was granted by, so the intent to reopen cannot be
+/// expressed without the durable command that authorizes it: there is no way to
+/// build one from nothing, and the receipt inside it is what an audit reads.
+///
+/// It is deliberately *not* the same thing as a resume receipt. A resume lets a
+/// held task continue; this reopens something the Realm already concluded, which
+/// is a different decision and is recorded as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskReopenAuthority(CommandReceiptId);
+
+impl TaskReopenAuthority {
+    /// Grant the authority the receipt `receipt` recorded.
+    #[must_use]
+    pub const fn granted_by(receipt: CommandReceiptId) -> Self {
+        Self(receipt)
+    }
+
+    /// The receipt this authority was granted by.
+    #[must_use]
+    pub const fn receipt(self) -> CommandReceiptId {
+        self.0
+    }
+}
+
 /// A requested task transition together with the evidence it requires.
 #[derive(Debug, Clone, Copy)]
 pub struct TaskTransition<'a> {
@@ -349,6 +401,11 @@ pub struct TaskTransition<'a> {
     pub to: TaskState,
     /// Receipt of the command that resumes a blocked, parked or human-held task.
     pub resume_receipt: Option<CommandReceiptId>,
+    /// Authority to reopen a terminal task, when that is what this is.
+    ///
+    /// Absent on every ordinary transition, which is why a terminal task stays
+    /// immutable unless something explicitly reopens it.
+    pub reopen: Option<TaskReopenAuthority>,
     /// How the task's current run closed, if it closed.
     pub run_outcome: Option<TerminalOutcome>,
     /// Proof of profile closure, required for [`TaskState::Done`].
@@ -364,6 +421,7 @@ impl TaskTransition<'_> {
         Self {
             to: state,
             resume_receipt: None,
+            reopen: None,
             run_outcome: None,
             closure: None,
             progress: None,
@@ -374,9 +432,23 @@ impl TaskTransition<'_> {
 /// Apply a task transition, enforcing terminality, resume receipts, run closure
 /// and profile closure.
 ///
+/// A terminal task is immutable, with exactly one bounded exception: a `done`
+/// task presenting a [`TaskReopenAuthority`] may return to
+/// [`TaskState::Ready`]. Everything about that exception is narrow on purpose —
+/// one source state, one target state, and a durable receipt — because the
+/// alternative to a bounded reopen is an unbounded one, and the alternative to
+/// *any* reopen is an advertised operation that cannot work.
+///
+/// Reopening changes the task's state and nothing else. It closes no run, opens
+/// none, and touches no gate: the history a completion was granted on stays
+/// exactly as it was recorded, which is what makes the reopen auditable rather
+/// than a rewrite.
+///
 /// # Errors
-/// * [`DomainError::Terminal`] when `from` is already terminal.
-/// * [`DomainError::IllegalTransition`] when the pair is not in the table.
+/// * [`DomainError::Terminal`] when `from` is terminal and nothing reopens it.
+/// * [`DomainError::IllegalTransition`] when the pair is not in the table, and
+///   when a reopen names a terminal state that may not be reopened or a target
+///   other than [`TaskState::Ready`].
 /// * [`DomainError::MissingAuthority`] when a resume has no command receipt.
 /// * [`DomainError::MissingEvidence`] when closure or run-failure evidence is
 ///   absent.
@@ -385,7 +457,36 @@ pub fn apply_task_transition(
     transition: &TaskTransition<'_>,
 ) -> DomainResult<TaskState> {
     if from.is_terminal() {
-        return Err(DomainError::Terminal { subject: "task" });
+        // The authority is consulted *before* terminality is enforced, which is
+        // the whole correction: the previous order refused every terminal source
+        // without ever looking at what was being asked for, so an operation the
+        // surface advertises could not reach the domain rule written for it.
+        let Some(_authority) = transition.reopen else {
+            return Err(DomainError::Terminal { subject: "task" });
+        };
+        if !from.is_reopenable() {
+            return Err(DomainError::IllegalTransition {
+                subject: "task reopen",
+                from: from.as_str(),
+                to: transition.to.as_str(),
+            });
+        }
+        if transition.to != TaskState::Ready {
+            return Err(DomainError::IllegalTransition {
+                subject: "task reopen",
+                from: from.as_str(),
+                to: transition.to.as_str(),
+            });
+        }
+    } else if transition.reopen.is_some() {
+        // Nothing to reopen. Answering "done" for a task that is still open would
+        // let a reopen stand in for a resume and skip the receipt rule that
+        // governs one.
+        return Err(DomainError::IllegalTransition {
+            subject: "task reopen",
+            from: from.as_str(),
+            to: transition.to.as_str(),
+        });
     }
     if !from.can_transition_to(transition.to) {
         return Err(DomainError::IllegalTransition {

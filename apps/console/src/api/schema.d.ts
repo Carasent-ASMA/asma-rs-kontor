@@ -1756,6 +1756,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Repair one bound container's title. */
+        post: operations["apply_container_retitle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** What repairing one bound container's title would do. */
+        post: operations["preview_container_retitle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire": {
         parameters: {
             query?: never;
@@ -2287,6 +2321,19 @@ export interface components {
              *     name or an operation name — so it can never be a stored value.
              */
             subject?: string | null;
+        };
+        /** @description What a container retitle produced. */
+        AppliedContainerRetitleDto: {
+            /** @description The native container, read back after the change. The same one. */
+            bound_native_id: string;
+            /** @description Whether this call changed anything, or found it already correct. */
+            changed: boolean;
+            /** @description The title the runtime reported afterwards, read back rather than assumed. */
+            observed_title: string;
+            /** @description The receipt it was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The node whose container it is. */
+            topology_node_id: string;
         };
         /**
          * @description Whether an ensure/apply wrote the row or found it already matching.
@@ -2913,6 +2960,53 @@ export interface components {
              * @description The pinned revision.
              */
             version: number;
+        };
+        /**
+         * @description What one bound container's title is, and what it should be.
+         *
+         *     A preview is a read: it takes no idempotency key, reaches nothing that writes,
+         *     and answers the two titles a human needs to compare. The runtime is asked, so
+         *     `observed_title` is what the container actually carries rather than what Kontor
+         *     once recorded.
+         */
+        ContainerRetitlePreviewDto: {
+            /** @description The native container that would be renamed. */
+            bound_native_id: string;
+            /** @description The title the server derived, which an apply would set. */
+            desired_title: string;
+            /** @description The title the runtime reports it carries now. */
+            observed_title: string;
+            /** @description The Realm that computed it. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The position this preview was computed at.
+             */
+            snapshot_cursor: number;
+            /** @description The node whose container it is. */
+            topology_node_id: string;
+            /** @description Whether an apply would change anything. */
+            would_change: boolean;
+        };
+        /**
+         * @description What repairing one bound container's title is asked for.
+         *
+         *     The revision the caller read the project at, and nothing else. There is no
+         *     field for a title, a native id, a parent or a directory — not because they are
+         *     validated away, but because the type has nowhere to put them. The title is
+         *     derived from the node's pinned topology and the plane's typed scope, and the
+         *     container is addressed by the binding Kontor already holds.
+         */
+        ContainerRetitleRequest: {
+            /**
+             * Format: int64
+             * @description The project revision the caller believes is current.
+             *
+             *     The project, not the node: a repair is authority over the project's own
+             *     rendering, and the project's revision is the one a caller can read before
+             *     presenting it.
+             */
+            expected_revision: number;
         };
         /**
          * @description One seat's context-window policy and the latest attempt to compact it.
@@ -10254,6 +10348,125 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_container_retitle: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The node whose container it is */
+                topology_node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContainerRetitleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedContainerRetitleDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_container_retitle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The node whose container it is */
+                topology_node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContainerRetitleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContainerRetitlePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

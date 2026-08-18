@@ -58,7 +58,8 @@ use kontor_api::applications::{
     RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
-    AppliedTopologyUpgradeDto, CodeHelpEntryDto, DesiredBindingDto, PinnedSpecDto,
+    AppliedContainerRetitleDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
+    ContainerRetitlePreviewDto, ContainerRetitleRequest, DesiredBindingDto, PinnedSpecDto,
     SemanticTopologyRequest, SemanticTopologyTargetDto, ShareabilityDto, TopologyMutationDto,
     TopologyNodeDto, TopologyNodeRequest, TopologyProjectionDto, TopologyUpgradeApplyRequest,
     TopologyUpgradeEffectDto, TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
@@ -130,7 +131,7 @@ use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
-    ContainerRequest,
+    ContainerRequest, RetitleContainerRequest,
 };
 use kontor_runtime::request::{LaunchParts, LaunchPlacement};
 use kontor_runtime::workspace::WorkspaceRoot;
@@ -3117,6 +3118,91 @@ impl Services {
     }
 
     /// Move one already-returned node along its one-way lifecycle.
+    /// Everything a container retitle needs, derived from what Kontor holds.
+    ///
+    /// Shared by the preview and the apply, so a preview cannot describe a
+    /// different container, a different title or a different refusal than the
+    /// apply would.
+    ///
+    /// Nothing here comes from the caller except the node and the revision it was
+    /// read at. The container is the one this node is *bound* to, the structural
+    /// name comes from the node kind's template in the pinned specification, and
+    /// the task scope that completes it is the plane's — which is why the finished
+    /// title is the runtime's to render and not this function's.
+    ///
+    /// # Errors
+    /// * [`ApiErrorCode::NotFound`] — no such project, no such node, or a node
+    ///   holding no native container to repair.
+    /// * [`ApiErrorCode::RevisionConflict`] — the project moved since the caller
+    ///   read it.
+    /// * [`ApiErrorCode::Unavailable`] — this daemon is not configured with the
+    ///   runtime family the container was bound by.
+    fn retitle_request(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRetitleRequest,
+    ) -> Result<(RetitleContainerRequest, Arc<dyn RuntimeAdapter>), ApiError> {
+        let state = self.state()?;
+        // The project's revision, like every other semantic topology write: it is
+        // the aggregate this authority is over, and the one revision a caller can
+        // actually read before presenting it.
+        self.project_at(project_id, request.expected_revision)?;
+        let node = state
+            .with_store(|store| store.get_topology_node(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such topology node exists in this project",
+                )
+            })?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the node's pinned topology revision is not published in this project",
+                )
+            })?;
+        let binding = state
+            .with_store(|store| store.get_topology_node_container(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this topology node holds no native container to retitle",
+                )
+            })?;
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this daemon is not configured with the runtime that holds this container",
+                )
+            })?;
+        Ok((
+            RetitleContainerRequest {
+                topology_node_id,
+                container_binding_id: ContainerBindingId::parse(
+                    binding.container_binding_id.as_str(),
+                )
+                .map_err(|error| self.refuse_domain(&error))?,
+                bound_native_id: binding.identity.native_id.clone(),
+                generation: binding.identity.generation,
+                task_id: node.task_id,
+                structural_name: self.container_name(&spec, &node)?,
+                requested_at: kontor_api::now(),
+            },
+            adapter,
+        ))
+    }
+
     fn move_node_lifecycle(
         &self,
         key: &IdempotencyKey,
@@ -5817,6 +5903,99 @@ impl ApplicationOperations for Services {
                     AppliedDto::Created
                 },
                 revision: epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    async fn preview_container_retitle(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRetitleRequest,
+    ) -> Result<ContainerRetitlePreviewDto, ApiError> {
+        let state = self.state()?;
+        let (retitle, adapter) = self.retitle_request(project_id, topology_node_id, request)?;
+        // A read all the way down: the adapter's preview reaches nothing that
+        // writes, and this operation records no receipt for it.
+        let outcome = adapter
+            .preview_retitle_container(&retitle)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        Ok(ContainerRetitlePreviewDto {
+            realm_id: state.realm_id(),
+            topology_node_id,
+            bound_native_id: retitle.bound_native_id,
+            desired_title: outcome.desired_title,
+            observed_title: outcome.observed_title,
+            would_change: outcome.changed,
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    async fn apply_container_retitle(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRetitleRequest,
+    ) -> Result<AppliedContainerRetitleDto, ApiError> {
+        let state = self.state()?;
+        let (retitle, adapter) = self.retitle_request(project_id, topology_node_id, request)?;
+        let project = self.project_at(project_id, request.expected_revision)?;
+
+        // The intent names the node and the container, and not the title. What
+        // the caller authorized is "make this container's title what the pinned
+        // topology and the plane's scope say it is" — a title in the key would
+        // make a second repair under a corrected specification look like a replay
+        // of the first one.
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "container_retitle",
+            "project": project_id.to_string(),
+            "node": topology_node_id.to_string(),
+            "native": retitle.bound_native_id.as_str(),
+        }))?;
+        let replayed = self
+            .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
+            .is_some();
+        // A replay still reads the container back, through the preview that
+        // changes nothing. Answering `changed: false` from the ledger alone would
+        // be reporting a title nobody looked at.
+        let outcome = if replayed {
+            adapter.preview_retitle_container(&retitle).await
+        } else {
+            adapter.retitle_container(&retitle).await
+        }
+        .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::RetitleContainer,
+            AggregateRef::Project { project_id },
+            project.revision,
+            &intent,
+        )?;
+
+        Ok(AppliedContainerRetitleDto {
+            topology_node_id,
+            // Read back from the runtime rather than echoed from the request:
+            // this is the id the container still has after being renamed.
+            bound_native_id: ExternalId::parse(
+                outcome.snapshot.binding.identity.native_id.as_str(),
+            )
+            .map_err(|error| self.refuse_domain(&error))?,
+            observed_title: outcome.observed_title,
+            changed: !replayed && outcome.changed,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: project.revision,
                 snapshot_cursor: self.cursor()?,
             },
         })
@@ -10839,6 +11018,7 @@ impl Services {
                         expected_revision: task.revision,
                         to: TaskState::InProgress,
                         resume_receipt: None,
+                        reopen: false,
                         run_outcome: None,
                         produced_artifacts: BTreeSet::new(),
                         completed_phases: BTreeSet::new(),
@@ -12327,6 +12507,11 @@ impl Services {
                         LifecycleAction::Resume | LifecycleAction::ReopenTask
                     )
                     .then_some(receipt),
+                    // Only `reopen_task` may pass a terminal task's immutability,
+                    // and it says so here rather than letting the store infer it
+                    // from the receipt: a plain `resume` carries the same kind of
+                    // receipt and must keep being refused.
+                    reopen: matches!(request.action, LifecycleAction::ReopenTask),
                     run_outcome: None,
                     produced_artifacts: artifacts.clone(),
                     completed_phases: if to == TaskState::Done {

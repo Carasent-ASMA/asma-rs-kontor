@@ -27,7 +27,8 @@
 //!   the parent is only ever the [`label::PARENT_AGENT`] label — so that check
 //!   has one source now instead of two, and [`PaseoAgent::parent_agent_id`]
 //!   says so at its definition.
-//! * A workspace carries **no labels at all**. See [`workspace_label_suffix`].
+//! * A workspace carries **no labels at all**. Kontor keeps native bindings in
+//!   its own durable store and leaves the title human-readable.
 //! * The lifecycle enum is `initializing | idle | running | error | closed`;
 //!   retirement is the `archivedAt` stamp rather than a status.
 //! * A timeline entry spans `seqStart..=seqEnd` over explicit
@@ -392,13 +393,12 @@ impl PaseoWorkspace {
             .is_some_and(|git| git.is_paseo_owned_worktree)
     }
 
-    /// The Kontor workspace label this workspace reports back, if any.
+    /// The title a human sees for this workspace.
     ///
-    /// See [`workspace_label_suffix`] for why a display string is carrying it.
+    /// The raw override when it has one, and the resolved name otherwise.
     #[must_use]
-    pub fn reported_label(&self) -> Option<&str> {
-        let titled = self.title.as_deref().unwrap_or(&self.name);
-        extract_workspace_label(titled)
+    pub fn visible_title(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.name)
     }
 }
 
@@ -1032,40 +1032,6 @@ impl PaseoStreamFrame {
 }
 
 // ---------------------------------------------------------------------------
-// Workspace labels, which 0.3.1 does not have
-// ---------------------------------------------------------------------------
-
-/// The Kontor workspace label, wrapped so it survives in a display title.
-///
-/// **Paseo 0.3.1 has no workspace labels.** `workspace create` takes a title and
-/// nothing else, `WorkspaceDescriptorPayload` has no label map, and no request
-/// in the protocol sets one — labels exist for agents only. The 0.2.5 adapter
-/// inferred a `--label` flag from the agent surface; the live 0.3.1 CLI refutes
-/// it.
-///
-/// A title is therefore the only string Kontor can write to a workspace and
-/// read back verbatim, so the correlation label rides in a bracketed suffix of
-/// it. This is a genuine round trip and not a fabricated one:
-/// [`PaseoWorkspace::reported_label`] extracts what Paseo *returned*, and if
-/// Paseo dropped or rewrote the title the extraction fails and correlation
-/// fails with it. Handing
-/// [`kontor_runtime::workspace::WorkspaceCorrelationEvidence::establish`] a
-/// label computed on this side instead would make workspace evidence prove
-/// nothing while looking exactly like this.
-#[must_use]
-pub fn workspace_label_suffix(display_name: &str, label: &str) -> String {
-    format!("{display_name} [{label}]")
-}
-
-/// The Kontor workspace label inside a title, if it carries one.
-#[must_use]
-pub fn extract_workspace_label(title: &str) -> Option<&str> {
-    let start = title.rfind('[')?;
-    let inner = title.get(start + 1..)?.strip_suffix(']')?;
-    (!inner.is_empty()).then_some(inner)
-}
-
-// ---------------------------------------------------------------------------
 // Normalization
 // ---------------------------------------------------------------------------
 
@@ -1444,19 +1410,6 @@ mod tests {
             !unversioned.is_pinned_baseline(),
             "a daemon that will not say which build it is has not agreed with the pin"
         );
-    }
-
-    #[test]
-    fn a_workspace_reports_the_label_kontor_wrote_into_its_title() {
-        // 0.3.1 has no workspace labels, so the round trip is through the one
-        // string a create can set and a readback returns.
-        let titled = workspace_label_suffix("TSW · ASMA-7755 · KON-11", "kontor-team-abc");
-        assert_eq!(titled, "TSW · ASMA-7755 · KON-11 [kontor-team-abc]");
-        assert_eq!(extract_workspace_label(&titled), Some("kontor-team-abc"));
-        // A title Paseo rewrote, or one an operator typed, reports nothing —
-        // which fails correlation rather than inventing it.
-        assert_eq!(extract_workspace_label("TSW · ASMA-7755 · KON-11"), None);
-        assert_eq!(extract_workspace_label("something []"), None);
     }
 
     #[test]

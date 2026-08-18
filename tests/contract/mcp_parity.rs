@@ -438,7 +438,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        115,
+        117,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +448,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        116,
+        118,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -630,6 +630,11 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_completion_get", CallerTier::Observer),
         ("kontor_completion_advance", CallerTier::Operator),
         ("kontor_completion_remediate", CallerTier::Operator),
+        // Repairing a container's visible title is admin: what it corrects is a
+        // rendering decision the control plane made, and the operation derives the
+        // title rather than accepting one.
+        ("kontor_container_retitle_preview", CallerTier::Admin),
+        ("kontor_container_retitle_apply", CallerTier::Admin),
     ]);
     for tool in REGISTRY {
         assert_eq!(

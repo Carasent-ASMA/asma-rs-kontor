@@ -39,6 +39,7 @@ use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoCheckpoint, PaseoConfig, PaseoExecutionScope, PaseoTaskScope,
 };
 use kontor_runtime_paseo::client::PaseoLiveTransport;
+use kontor_runtime_paseo::mcp::PaseoMcpHttp;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
@@ -469,7 +470,11 @@ fn compose_paseo(
         Box::new(transport),
         PaseoCheckpoint::fresh(INITIAL_GENERATION, host_key),
     )
-    .map_err(|_| refuse("execution plane"))?;
+    .map_err(|_| refuse("execution plane"))?
+    .with_mcp(Box::new(
+        PaseoMcpHttp::new(&setting.endpoint, setting.timeout_seconds)
+            .map_err(|_| refuse("MCP facade"))?,
+    ));
     Ok((runtime_kind, Arc::new(adapter)))
 }
 
@@ -533,8 +538,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_configured_family_is_composed_into_the_registry() {
+    #[tokio::test]
+    async fn a_configured_family_is_composed_into_the_registry() {
         let settings = RuntimeSettings {
             schema_version: RUNTIMES_SCHEMA,
             runtimes: vec![paseo("paseo.agent")],
@@ -547,6 +552,15 @@ mod tests {
                 .get(&RuntimeKindKey::parse("paseo.agent").expect("a valid key"))
                 .is_some(),
             "the composed adapter answers under the family its own configuration declares"
+        );
+        let capabilities = registry
+            .get(&RuntimeKindKey::parse("paseo.agent").expect("a valid key"))
+            .expect("the configured adapter")
+            .discover_capabilities()
+            .await
+            .expect("a capability read");
+        assert!(
+            capabilities.supports(kontor_runtime::capability::RuntimeCapability::RetitleContainer)
         );
     }
 

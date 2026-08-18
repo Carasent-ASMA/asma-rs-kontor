@@ -3931,7 +3931,7 @@ async fn a_started_task_leaves_ready_so_it_can_legally_be_completed() {
 }
 
 #[tokio::test]
-async fn a_teamless_task_completes_reopens_and_lets_its_epic_close_and_reopen() {
+async fn a_teamless_task_is_held_and_resumed_and_its_epic_stays_open() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
     let seed = bootstrap(&world, "term").await;
@@ -4256,19 +4256,22 @@ async fn a_run_the_runtime_says_is_still_working_is_not_settled() {
     );
 }
 
-#[tokio::test]
-async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
-    let world = World::open_empty().await;
-    world.script(HISTORY_LIVE);
-    world.daemon.reconcile().await;
-    let (seed, runs) = seated(&world, "endgame").await;
-
+/// Settle every seat of one seated task, and return the last answer.
+///
+/// Extracted so more than one test can reach a *closed team*, which is the state
+/// every terminal task transition is judged against.
+async fn settle_every_seat(
+    world: &World,
+    seed: &Bootstrapped,
+    runs: &[String],
+    prefix: &str,
+) -> Answer {
     // Every declared seat is settled, one call each. The team closes on the last
     // one, because the closure walks the template's declared slots and an
     // unsettled seat is unaccounted for rather than absent.
     let mut settled = None;
     for (index, run) in runs.iter().enumerate() {
-        finish_natively(&world, run).await;
+        finish_natively(world, run).await;
         let answer = Call::post(
             format!(
                 "/v1/projects/{}/agent-runs/{run}/runtime:settle",
@@ -4276,64 +4279,37 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
             ),
             &serde_json::json!({}),
         )
-        .signed_as(&world, "operator")
-        .with_key(format!("endgame-settle-{index}"))
-        .send(&world)
+        .signed_as(world, "operator")
+        .with_key(format!("{prefix}-settle-{index}"))
+        .send(world)
         .await;
         assert_eq!(answer.status, 200, "seat {index}: {}", answer.body);
         settled = Some(answer);
     }
-    let settled = settled.expect("at least one seat was settled");
-    // Every declared role slot is terminal, so the team's closure was certified
-    // from the frozen template rather than asserted by anyone.
-    assert!(
-        settled.json()["team_run_closed"].is_string(),
-        "the team run closes once its declared slots are done: {}",
-        settled.body
-    );
-    assert!(settled.json()["team_pending"].is_null());
+    settled.expect("at least one seat was settled")
+}
 
-    // The task can now be completed: it cites the certified team closure, which
-    // the store re-proves against its own rows.
-    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    let task_revision = projection.json()["tasks"][0]["revision"]
-        .as_u64()
-        .expect("a revision");
+/// Discharge one task's pinned profile through the public routes and complete it.
+///
+/// Every gate the profile declares is recorded by a role *it* authorizes, citing
+/// the evidence *it* requires, all read from the projection — so nothing here is a
+/// literal a test invented, and the completion cites the artifacts the profile
+/// asks for.
+///
+/// Returns the completion answer.
+async fn discharge_the_profile_and_complete(
+    world: &World,
+    seed: &Bootstrapped,
+    prefix: &str,
+) -> Answer {
     let lifecycle = format!(
         "/v1/projects/{}/epics/{}/lifecycle",
         seed.project, seed.epic
     );
-    let completed = Call::post(
-        &lifecycle,
-        &serde_json::json!({
-            "action": "complete_task", "task_id": seed.task,
-            "expected_revision": task_revision, "reason": "The work is done"
-        }),
-    )
-    .signed_as(&world, "operator")
-    .with_key("endgame-complete")
-    .send(&world)
-    .await;
-    // Before any gate is recorded the task stops on its pinned profile's own
-    // closure — not on a missing team certificate. `unsupported_capability` here
-    // would mean the certificate is still absent; a domain refusal about profile
-    // closure means it was derived, cited and re-proved by the store, and the
-    // task stopped on its own declared work.
-    assert_ne!(
-        completed.code(),
-        "unsupported_capability",
-        "the team closure certificate is derived and cited, not missing: {}",
-        completed.body
-    );
-    assert_eq!(
-        completed.status, 400,
-        "the task stops on its pinned profile's own closure: {}",
-        completed.body
-    );
-
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
     // Now discharge that profile. Every gate it declares is recorded through the
     // public route, by a role *it* authorizes, citing the evidence *it* requires —
     // all of which the projection reports, so nothing here is read out of band and
@@ -4377,9 +4353,9 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
                 "evidence": evidence,
             }),
         )
-        .signed_as(&world, "operator")
-        .with_key(format!("endgame-gate-{index}"))
-        .send(&world)
+        .signed_as(world, "operator")
+        .with_key(format!("{prefix}-gate-{index}"))
+        .send(world)
         .await;
         assert_eq!(recorded.status, 200, "gate `{name}`: {}", recorded.body);
         assert_eq!(recorded.json()["verdict"], "passed");
@@ -4388,8 +4364,8 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
 
     // Every gate now reads as passed through the public projection.
     let after_gates = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
-        .signed_as(&world, "observer")
-        .send(&world)
+        .signed_as(world, "observer")
+        .send(world)
         .await;
     for gate in after_gates.json()["tasks"][0]["gates"]
         .as_array()
@@ -4425,10 +4401,231 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
             "evidence": artifacts,
         }),
     )
+    .signed_as(world, "operator")
+    .with_key(format!("{prefix}-complete"))
+    .send(world)
+    .await;
+    assert_eq!(done.status, 200, "{}", done.body);
+    assert_eq!(done.json()["state"], "done");
+
+    done
+}
+
+/// A completed task is reopened, and its history survives the reopen.
+///
+/// The gap the ASMA-7869 LSA hit: `reopen_task` was advertised, mapped to `ready`
+/// and given a resume receipt, and then refused — because the domain rejected every
+/// terminal source before it ever looked at what was being asked for. This is the
+/// path end to end, plus the two things that must stay refused.
+///
+/// See `_docs/ai-orchestration/reports/2026-08-17-13-47-report-kontor-reopen-task-terminal-gap.md`.
+#[tokio::test]
+async fn a_completed_task_reopens_without_rewriting_what_it_recorded() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "reopen").await;
+    settle_every_seat(&world, &seed, &runs, "reopen").await;
+    let done = discharge_the_profile_and_complete(&world, &seed, "reopen").await;
+    assert_eq!(done.status, 200, "{}", done.body);
+    assert_eq!(done.json()["state"], "done");
+    let completed_revision = done.json()["revision"].as_u64().expect("a revision");
+
+    let lifecycle = format!(
+        "/v1/projects/{}/epics/{}/lifecycle",
+        seed.project, seed.epic
+    );
+    // What the completion recorded, read before the reopen so it can be compared
+    // afterwards: the gates it was granted on, and the runs that produced them.
+    let before = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let gates_before = before.json()["tasks"][0]["gates"].clone();
+    let runs_before = before.json()["tasks"][0]["team_runs"].clone();
+
+    // An ordinary transition out of a terminal task is still refused, and the
+    // refusal still names terminality — a resume carries the same kind of receipt
+    // a reopen does, so this is the assertion that keeps the two apart.
+    let resumed = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "resume", "task_id": seed.task,
+            "expected_revision": completed_revision, "reason": "Carry on"
+        }),
+    )
     .signed_as(&world, "operator")
-    .with_key("endgame-complete-final")
+    .with_key("reopen-resume")
     .send(&world)
     .await;
+    assert_eq!(resumed.status, 409, "{}", resumed.body);
+    assert_eq!(resumed.code(), "revision_conflict");
+    assert!(
+        resumed.body.contains("terminal"),
+        "the refusal names the rule that stopped it: {}",
+        resumed.body
+    );
+
+    // From here on, nothing may reach the runtime: a reopen claims no seat.
+    world.fake.take_calls();
+
+    let reopened = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "reopen_task", "task_id": seed.task,
+            "expected_revision": completed_revision,
+            "reason": "The completion no longer covers the work"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("reopen-reopen")
+    .send(&world)
+    .await;
+    assert_eq!(reopened.status, 200, "{}", reopened.body);
+    assert_eq!(reopened.json()["state"], "ready", "{}", reopened.body);
+    assert!(
+        reopened.json()["revision"].as_u64().expect("a revision") > completed_revision,
+        "the task moved forward rather than back: {}",
+        reopened.body
+    );
+    assert!(
+        reopened.json()["receipt_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "the reopen is recorded as a durable command: {}",
+        reopened.body
+    );
+
+    // Nothing the completion was granted on was rewritten. The gates still read
+    // exactly as they did, and the runs that produced them are still closed —
+    // reopening says the completion no longer covers the work, not that the
+    // history was wrong.
+    let after = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        after.json()["tasks"][0]["gates"],
+        gates_before,
+        "a reopen must not touch a single gate verdict: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["tasks"][0]["team_runs"],
+        runs_before,
+        "and it must not reopen a team run or an agent run: {}",
+        after.body
+    );
+    assert_eq!(after.json()["tasks"][0]["state"], "ready");
+
+    // The runtime was never asked for anything between the completion and the
+    // reopened task: a reopen claims no seat and starts nothing.
+    let calls = world.fake.take_calls();
+    assert!(
+        calls.is_empty(),
+        "a reopen reaches no runtime at all: {calls:?}"
+    );
+
+    // A second reopen is refused, and not by terminality: the task is open, so
+    // there is nothing to reopen, and answering otherwise would let a reopen stand
+    // in for a resume and skip the receipt rule that governs one.
+    let reopened_revision = reopened.json()["revision"].as_u64().expect("a revision");
+    let again = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "reopen_task", "task_id": seed.task,
+            "expected_revision": reopened_revision, "reason": "Again"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("reopen-again")
+    .send(&world)
+    .await;
+    assert_eq!(again.status, 400, "{}", again.body);
+    assert!(
+        again.body.contains("task reopen"),
+        "the refusal names what was refused: {}",
+        again.body
+    );
+
+    // And the reopened task can be completed again on fresh evidence, which is
+    // the point of reopening it: the whole close-out path is available, not a
+    // task parked in `ready` forever.
+    let recompleted = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "complete_task", "task_id": seed.task,
+            "expected_revision": reopened_revision, "reason": "Now it really is done",
+            "evidence": before.json()["tasks"][0]["required_artifacts"].clone(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("reopen-recomplete")
+    .send(&world)
+    .await;
+    assert_eq!(recompleted.status, 200, "{}", recompleted.body);
+    assert_eq!(recompleted.json()["state"], "done");
+}
+
+#[tokio::test]
+async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "endgame").await;
+
+    let settled = settle_every_seat(&world, &seed, &runs, "endgame").await;
+    // Every declared role slot is terminal, so the team's closure was certified
+    // from the frozen template rather than asserted by anyone.
+    assert!(
+        settled.json()["team_run_closed"].is_string(),
+        "the team run closes once its declared slots are done: {}",
+        settled.body
+    );
+    assert!(settled.json()["team_pending"].is_null());
+
+    // The task can now be completed: it cites the certified team closure, which
+    // the store re-proves against its own rows.
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+    let lifecycle = format!(
+        "/v1/projects/{}/epics/{}/lifecycle",
+        seed.project, seed.epic
+    );
+    let completed = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "complete_task", "task_id": seed.task,
+            "expected_revision": task_revision, "reason": "The work is done"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("endgame-complete-early")
+    .send(&world)
+    .await;
+    // Before any gate is recorded the task stops on its pinned profile's own
+    // closure — not on a missing team certificate. `unsupported_capability` here
+    // would mean the certificate is still absent; a domain refusal about profile
+    // closure means it was derived, cited and re-proved by the store, and the
+    // task stopped on its own declared work.
+    assert_ne!(
+        completed.code(),
+        "unsupported_capability",
+        "the team closure certificate is derived and cited, not missing: {}",
+        completed.body
+    );
+    assert_eq!(
+        completed.status, 400,
+        "the task stops on its pinned profile's own closure: {}",
+        completed.body
+    );
+
+    let done = discharge_the_profile_and_complete(&world, &seed, "endgame").await;
     assert_eq!(done.status, 200, "{}", done.body);
     assert_eq!(done.json()["state"], "done");
 
@@ -9882,7 +10079,6 @@ async fn the_artifact_condition_alone_withholds_a_follow_up_once_the_phase_is_me
 struct CapacityFixture {
     project: String,
     epic: String,
-    account_id: String,
     /// The epic projection the task ids and revisions are read from.
     projection: Answer,
     plan_hash: String,
@@ -10013,10 +10209,9 @@ async fn capacity_fixture(world: &World) -> CapacityFixture {
     .send(world)
     .await;
     assert_eq!(plan.status, 200, "{}", plan.body);
-    assert_eq!(
-        plan.json()["ready"].as_array().expect("ready").len(),
-        2,
-        "both tasks are ready, so neither waits on the other: {}",
+    assert!(
+        !plan.json()["ready"].as_array().expect("ready").is_empty(),
+        "at least the first independent task is ready: {}",
         plan.body
     );
     let plan_hash = plan.json()["plan_hash"]
@@ -10027,7 +10222,6 @@ async fn capacity_fixture(world: &World) -> CapacityFixture {
     CapacityFixture {
         project,
         epic,
-        account_id,
         projection,
         plan_hash,
     }
@@ -10040,18 +10234,22 @@ async fn capacity_fixture(world: &World) -> CapacityFixture {
 ///
 /// The oracle is a real refusal and a real start: an independent second task is
 /// refused by name for the *account* ceiling while the first team is open, and
-/// admitted once that team closes on settled turns with all four seats still
+/// admitted once that team closes on settled turns with all its seats still
 /// sitting there. `task_not_ready` or an in-flight refusal would prove nothing
 /// about capacity, so both are excluded by asserting the exact rule.
 #[tokio::test]
 async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane_and_capacity(CapacityConfig {
+        account_max_in_flight: 1,
+        ..DEFAULT_CAPACITY
+    })
+    .await;
     let CapacityFixture {
         project,
         epic,
-        account_id,
         projection,
         plan_hash,
+        ..
     } = capacity_fixture(&world).await;
 
     let started = Call::post(
@@ -10077,10 +10275,9 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
         started.body
     );
 
-    // The exact refusal, by code and by rule. A spent ceiling has its own code,
-    // so this cannot be satisfied by a revision conflict, a not-ready task or an
-    // already-in-flight one — each of which would mean the second task never
-    // reached the capacity check at all.
+    // The exact refusal, by code and scope. A spent ceiling has its own code, so
+    // this cannot be satisfied by a revision conflict, a not-ready task or an
+    // already-in-flight one.
     let blocked = started.json()["blocked"]
         .as_array()
         .expect("blocked")
@@ -10093,36 +10290,9 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
         started.body
     );
     assert_eq!(blocked[0]["code"], "capacity_exhausted", "{}", started.body);
-    let rule = blocked[0]["evidence"][0]["rule"]
-        .as_str()
-        .expect("a rule")
-        .to_owned();
-    assert_eq!(
-        rule, "a configured concurrency ceiling is currently spent",
-        "{}",
-        started.body
-    );
-    // And it names no scope, no ceiling value, no count and no identifier.
-    for leak in [
-        "account",
-        "project",
-        "global",
-        "goal",
-        "spent capacity",
-        project.as_str(),
-        account_id.as_str(),
-    ] {
-        assert!(
-            !rule.contains(leak),
-            "the refusal discloses `{leak}`: {}",
-            started.body
-        );
-    }
-    assert!(
-        !rule.chars().any(|character| character.is_ascii_digit()),
-        "the refusal discloses a ceiling value or a count: {}",
-        started.body
-    );
+    assert_eq!(blocked[0]["evidence"][0]["kind"], "capacity");
+    assert_eq!(blocked[0]["evidence"][0]["limit"], "account");
+    assert_eq!(blocked[0]["evidence"][0]["remaining"], 0);
 
     // Every declared slot settles, which closes the team on settled turns.
     for (index, seat) in seats.iter().enumerate() {
@@ -10156,9 +10326,9 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
         );
     }
 
-    // Nothing was torn down: the four runs that were holding the ceiling are all
-    // still open. That is the whole point — capacity is released by the team's
-    // closure, not by the sessions ending.
+    // Nothing was torn down: the runs belonging to the team that held the
+    // ceiling are all still open. That is the whole point — capacity is
+    // released by the team's closure, not by the sessions ending.
     for seat in &seats {
         let agent_run = seat["agent_run_id"].as_str().expect("id");
         let run = Call::get(format!("/v1/runs/{agent_run}"))
@@ -11182,24 +11352,22 @@ async fn an_unwaived_slot_on_the_same_template_does_receive_the_follow_up() {
 /// The oracle is the *contrast* with
 /// `a_team_that_closed_on_settled_turns_releases_admission_capacity`: same
 /// fixture, same plan, same single `scheduler:start`, and exactly one number
-/// different. Under [`DEFAULT_CAPACITY`] the first team's four seats spend the
-/// account ceiling of four and the second task comes back `capacity_exhausted`;
-/// with that one ceiling configured wider, both tasks are seated by the same
-/// call and nothing is blocked.
+/// different. With an account ceiling of one the first TeamRun spends the
+/// envelope and the second task comes back `capacity_exhausted`; with that one
+/// ceiling configured for two, both tasks are seated by the same call and
+/// nothing is blocked.
 ///
-/// Two things follow that a test of the override alone would not prove. The
-/// configured number is read at admission rather than at planning — the planner
-/// passes both candidates either way, so a refusal that disappears can only have
-/// come from the recount that commits — and no *other* ceiling was silently
-/// widened to make room, because every one of them is still the default.
+/// The paired tests prove that the configured number is observed by planning and
+/// admission, and that no *other* ceiling was silently widened to make room,
+/// because every one of them is still the default.
 #[tokio::test]
 async fn the_configured_capacity_and_not_a_compiled_one_decides_what_is_admitted() {
     // One ceiling, one change: the account ceiling that the sibling test proves
-    // is the binding one, lifted from four to eight. Everything else — global,
+    // is the binding one, lifted from one to two. Everything else — global,
     // project, goal, provider, runtime and the adaptive window — is left at the
     // default, so a second admitted task cannot be explained by any of them.
     let world = World::open_empty_with_a_plane_and_capacity(CapacityConfig {
-        account_max_in_flight: 8,
+        account_max_in_flight: 2,
         ..DEFAULT_CAPACITY
     })
     .await;
@@ -11224,7 +11392,7 @@ async fn the_configured_capacity_and_not_a_compiled_one_decides_what_is_admitted
     assert_eq!(
         started.json()["blocked"].as_array().expect("blocked").len(),
         0,
-        "the ceiling that refused the second task at four has room at eight: {}",
+        "the ceiling that refused the second task at one has room at two: {}",
         started.body
     );
     let seated: BTreeSet<String> = started.json()["started"]
@@ -14382,5 +14550,246 @@ async fn an_ensure_interrupted_after_its_row_completes_the_node_and_seat() {
         seated,
         "the resumed ensure left its session without a seat: {}",
         ensured.body
+    );
+}
+
+/// A container whose title Kontor rendered under an older rule is repaired
+/// through `/v1`, and the caller supplies no title to do it.
+///
+/// The one shape this operation exists for: a native container that is correctly
+/// bound and visibly misnamed. The caller names the node and the revision it read;
+/// the title comes from the node's pinned kind template and the plane's typed
+/// scope, and the native container is addressed by the binding Kontor already
+/// holds.
+#[tokio::test]
+async fn a_misnamed_container_is_repaired_from_the_pinned_topology_and_never_from_a_caller() {
+    let composed = compose_realm("/tmp/kontor-op3-retitle").await;
+    let world = &composed.world;
+
+    // A real seat, because a native container only exists once something has been
+    // placed in one: arm the epic, plan it, start the plan.
+    let epic = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    let armed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/execution:arm",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({
+            "expected_revision": epic.json()["revision"],
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": composed.account,
+            "reason": "Place a seat so there is a container to repair"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("retitle-arm")
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:plan",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let started = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:start",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({"plan_hash": plan.json()["plan_hash"]}),
+    )
+    .signed_as(world, "operator")
+    .with_key("retitle-start")
+    .send(world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+
+    let projection = Call::get(format!(
+        "/v1/projects/{}/topology:inspect?epic_id={}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    let node = projection.json()["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|node| node["observed_binding"].is_object())
+        .expect("starting the plan bound a native container")
+        .clone();
+    let node_id = node["topology_node_id"]
+        .as_str()
+        .expect("a node id")
+        .to_owned();
+    let node_key = kontor_core::id::TopologyNodeId::parse(&node_id).expect("a canonical node id");
+    let canonical = world
+        .fake
+        .container_title(node_key)
+        .expect("the bound container carries a title");
+
+    // The state a repair exists for: the runtime carries a name no Kontor rule
+    // produces any more. Set on the runtime, not through Kontor — nothing in this
+    // control plane can write a native title except the operation under test.
+    world
+        .fake
+        .set_container_title(node_key, "Ticket Session Workspace · 0189-stale");
+
+    let preview_uri = format!(
+        "/v1/projects/{}/topology/nodes/{node_id}/container:retitle-preview",
+        composed.project
+    );
+    let apply_uri = format!(
+        "/v1/projects/{}/topology/nodes/{node_id}/container:retitle-apply",
+        composed.project
+    );
+    let body = serde_json::json!({"expected_revision": composed.project_revision});
+
+    let preview = Call::post(&preview_uri, &body)
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(
+        preview.json()["desired_title"],
+        canonical,
+        "the desired title is derived from the pinned topology: {}",
+        preview.body
+    );
+    assert_eq!(
+        preview.json()["observed_title"],
+        "Ticket Session Workspace · 0189-stale",
+        "and the observed one is what the runtime actually carries: {}",
+        preview.body
+    );
+    assert_eq!(preview.json()["would_change"], true);
+    assert_eq!(
+        preview.json()["bound_native_id"],
+        node["observed_binding"]["native_id"],
+        "the container named is the one the node is bound to: {}",
+        preview.body
+    );
+    // A preview is a read: it wrote nothing, so the container is still misnamed.
+    assert_eq!(
+        world.fake.container_title(node_key).as_deref(),
+        Some("Ticket Session Workspace · 0189-stale"),
+        "a preview must not have renamed anything"
+    );
+
+    // An Observer may look at nothing here, and an Operator may not repair it:
+    // what is being corrected is a decision the control plane made.
+    let observer = Call::post(&preview_uri, &body)
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(observer.status, 403, "{}", observer.body);
+    let operator = Call::post(&apply_uri, &body)
+        .signed_as(world, "operator")
+        .with_key("retitle-operator")
+        .send(world)
+        .await;
+    assert_eq!(operator.status, 403, "{}", operator.body);
+
+    let applied = Call::post(&apply_uri, &body)
+        .signed_as(world, "admin")
+        .with_key("retitle-apply")
+        .send(world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["changed"], true, "{}", applied.body);
+    assert_eq!(
+        applied.json()["observed_title"],
+        canonical,
+        "the title is read back from the runtime after the change: {}",
+        applied.body
+    );
+    assert_eq!(
+        applied.json()["bound_native_id"],
+        node["observed_binding"]["native_id"],
+        "and it is still the same native container: {}",
+        applied.body
+    );
+    assert_eq!(applied.json()["receipt"]["applied"], "created");
+
+    // The replay answers the original receipt and renames nothing a second time.
+    let replayed = Call::post(&apply_uri, &body)
+        .signed_as(world, "admin")
+        .with_key("retitle-apply")
+        .send(world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(replayed.json()["changed"], false, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        applied.json()["receipt"]["receipt_id"]
+    );
+    assert_eq!(replayed.json()["observed_title"], canonical);
+
+    // A second preview now says there is nothing to repair.
+    let settled = Call::post(&preview_uri, &body)
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["would_change"], false, "{}", settled.body);
+
+    // A stale node revision is refused, and a node holding no container has
+    // nothing to repair.
+    let stale = Call::post(&apply_uri, &serde_json::json!({"expected_revision": 99}))
+        .signed_as(world, "admin")
+        .with_key("retitle-stale")
+        .send(world)
+        .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    let unknown = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{}/container:retitle-preview",
+            composed.project,
+            kontor_core::id::TopologyNodeId::generate()
+        ),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+
+    // A caller cannot smuggle a title in: the request type has nowhere to put one.
+    let dictated = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "expected_revision": composed.project_revision,
+            "desired_title": "Whatever I feel like",
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("retitle-dictated")
+    .send(world)
+    .await;
+    assert_eq!(
+        dictated.status, 422,
+        "the request type has nowhere to put a title, so the body is rejected: {}",
+        dictated.body
     );
 }

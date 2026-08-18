@@ -472,6 +472,7 @@ impl World {
             expected_revision,
             to,
             resume_receipt: None,
+            reopen: false,
             run_outcome: None,
             produced_artifacts: artifacts.clone(),
             completed_phases: phases.clone(),

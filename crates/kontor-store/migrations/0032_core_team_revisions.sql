@@ -54,7 +54,7 @@ END;
 --
 -- Same rebuild shape as v24, v28 and v29, and for the same reason: `kind` is a
 -- CHECK, so a new command is a migration rather than a code change.
-CREATE TABLE command_receipts_v30 (
+CREATE TABLE command_receipts_v32 (
     id               TEXT    NOT NULL PRIMARY KEY
                              CHECK (length(id) = 36 AND id NOT GLOB '*[^0-9a-f-]*'),
     project_id       TEXT    NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
@@ -77,6 +77,7 @@ CREATE TABLE command_receipts_v30 (
                                  'refresh_capacity', 'override_availability',
                                  'observe_seat', 'retire_seat',
                                  'publish_topology_spec', 'upgrade_topology',
+                                 'retitle_container',
                                  'apply_core_team')),
     target           TEXT    NOT NULL CHECK (json_valid(target)),
     target_revision  INTEGER NOT NULL CHECK (target_revision >= 1),
@@ -97,15 +98,15 @@ CREATE TABLE command_receipts_v30 (
     UNIQUE (project_id, id)
 ) STRICT;
 
-INSERT INTO command_receipts_v30
+INSERT INTO command_receipts_v32
 SELECT id, project_id, idempotency_key, kind, target, target_revision, intent,
        intent_hash, state, correlation, native_identity, result_ref, attempts,
        created_at, updated_at
 FROM command_receipts;
 
 DROP TABLE command_receipts;
-ALTER TABLE command_receipts_v30 RENAME TO command_receipts;
+ALTER TABLE command_receipts_v32 RENAME TO command_receipts;
 
 CREATE INDEX ix_command_receipts_state ON command_receipts (project_id, state);
 
-PRAGMA user_version = 30;
+PRAGMA user_version = 32;

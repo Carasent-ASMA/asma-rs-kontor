@@ -7,14 +7,16 @@
 
 use std::collections::BTreeSet;
 
-use kontor_core::id::{ContentHash, ExternalName, SpecVersion, TopologyNodeId, TopologySpecId};
+use kontor_core::id::{
+    ContentHash, ExternalName, SpecVersion, TaskId, TopologyNodeId, TopologySpecId,
+};
 use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_runtime::adapter::{RuntimeAdapter, RuntimeError};
 use kontor_runtime::capability::{
     RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade,
 };
 use kontor_runtime::container::{ContainerBindingId, ContainerRequest, RetitleContainerRequest};
-use kontor_runtime::fake::ScriptedFakeRuntime;
+use kontor_runtime::fake::{AdapterCall, ScriptedFakeRuntime};
 
 fn at(text: &str) -> kontor_core::id::Timestamp {
     kontor_core::id::parse_utc_timestamp(text).expect("a canonical instant")
@@ -71,14 +73,30 @@ fn retitle(
     node_id: TopologyNodeId,
     native_id: &str,
     generation: u64,
-    title: &str,
+    structural_name: &str,
 ) -> RetitleContainerRequest {
     RetitleContainerRequest {
         topology_node_id: node_id,
+        container_binding_id: ContainerBindingId::generate(),
         bound_native_id: kontor_core::id::ExternalId::parse(native_id).expect("a native id"),
         generation,
-        desired_title: name(title),
+        task_id: None,
+        structural_name: name(structural_name),
         requested_at: at("2026-08-17T09:05:00Z"),
+    }
+}
+
+/// The same request, for a container that belongs to a delivery task.
+fn retitle_for_task(
+    node_id: TopologyNodeId,
+    native_id: &str,
+    generation: u64,
+    structural_name: &str,
+    task_id: TaskId,
+) -> RetitleContainerRequest {
+    RetitleContainerRequest {
+        task_id: Some(task_id),
+        ..retitle(node_id, native_id, generation, structural_name)
     }
 }
 
@@ -108,6 +126,11 @@ async fn a_retitle_keeps_the_identity_and_reports_what_it_read_back() {
         .expect("the container is retitled");
 
     assert!(outcome.changed, "the title actually differed");
+    assert_eq!(
+        outcome.desired_title.as_str(),
+        "PSW · Kontor",
+        "the runtime answers with the title it derived"
+    );
     assert_eq!(
         outcome.observed_title, "PSW · Kontor",
         "the title is read back, not echoed"
@@ -217,6 +240,194 @@ async fn a_runtime_that_does_not_declare_the_capability_refuses_by_name() {
             })
         ),
         "the refusal must name the capability that is missing: {refused:?}"
+    );
+}
+
+/// A task-scoped container is titled from the plane's own scope, over the
+/// structural name the control plane could render alone.
+#[tokio::test]
+async fn a_task_scoped_container_is_titled_from_the_planes_scope() {
+    let runtime = ScriptedFakeRuntime::new(every_capability());
+    let node_id = TopologyNodeId::generate();
+    let task_id = TaskId::generate();
+    runtime.scope_task_title(task_id, "ASMA-7872 · OP-03");
+    let prepared = runtime
+        .prepare_container(&container_request(node_id, "before"))
+        .await
+        .expect("the container is prepared");
+    let native = prepared.snapshot.binding.identity.clone();
+
+    let outcome = runtime
+        .retitle_container(&retitle_for_task(
+            node_id,
+            native.native_id.as_str(),
+            native.generation,
+            "TSW",
+            task_id,
+        ))
+        .await
+        .expect("the container is retitled");
+
+    assert_eq!(
+        outcome.desired_title.as_str(),
+        "TSW · ASMA-7872 · OP-03",
+        "the structural name is the floor and the plane's scope completes it"
+    );
+    assert_eq!(outcome.observed_title, "TSW · ASMA-7872 · OP-03");
+    assert_eq!(outcome.snapshot.binding.identity, native);
+}
+
+/// A plane holding no scope for the task refuses, rather than titling the
+/// container after half of what it should say.
+#[tokio::test]
+async fn a_task_with_no_scope_on_this_plane_is_refused() {
+    let runtime = ScriptedFakeRuntime::new(every_capability());
+    let node_id = TopologyNodeId::generate();
+    let prepared = runtime
+        .prepare_container(&container_request(node_id, "before"))
+        .await
+        .expect("the container is prepared");
+    let native = prepared.snapshot.binding.identity.clone();
+
+    let refused = runtime
+        .retitle_container(&retitle_for_task(
+            node_id,
+            native.native_id.as_str(),
+            native.generation,
+            "TSW",
+            TaskId::generate(),
+        ))
+        .await;
+
+    assert!(
+        matches!(refused, Err(RuntimeError::LaunchNotAdmitted { .. })),
+        "an unscoped task must be refused, not partially titled: {refused:?}"
+    );
+    assert_eq!(
+        runtime.container_title(node_id).as_deref(),
+        Some("before"),
+        "the refusal must leave the title exactly where it was"
+    );
+}
+
+/// A preview answers what an apply would do and writes nothing.
+#[tokio::test]
+async fn a_preview_answers_the_same_thing_and_changes_nothing() {
+    let runtime = ScriptedFakeRuntime::new(every_capability());
+    let node_id = TopologyNodeId::generate();
+    let task_id = TaskId::generate();
+    runtime.scope_task_title(task_id, "ASMA-7872 · OP-03");
+    let prepared = runtime
+        .prepare_container(&container_request(
+            node_id,
+            "Ticket Session Workspace · 0189",
+        ))
+        .await
+        .expect("the container is prepared");
+    let native = prepared.snapshot.binding.identity.clone();
+    let request = retitle_for_task(
+        node_id,
+        native.native_id.as_str(),
+        native.generation,
+        "TSW",
+        task_id,
+    );
+
+    let preview = runtime
+        .preview_retitle_container(&request)
+        .await
+        .expect("the preview is answered");
+    assert!(preview.changed, "the container is not correct yet");
+    assert_eq!(preview.desired_title.as_str(), "TSW · ASMA-7872 · OP-03");
+    assert_eq!(
+        preview.observed_title, "Ticket Session Workspace · 0189",
+        "a preview reports what the container carries now"
+    );
+    assert_eq!(
+        runtime.container_title(node_id).as_deref(),
+        Some("Ticket Session Workspace · 0189"),
+        "a preview must not have written anything"
+    );
+    assert!(
+        runtime
+            .calls()
+            .contains(&AdapterCall::PreviewRetitleContainer(node_id)),
+        "the preview is recorded as a preview"
+    );
+    assert!(
+        !runtime
+            .calls()
+            .contains(&AdapterCall::RetitleContainer(node_id)),
+        "a preview is not an apply"
+    );
+
+    let applied = runtime
+        .retitle_container(&request)
+        .await
+        .expect("the apply is answered");
+    assert_eq!(applied.desired_title, preview.desired_title);
+    assert_eq!(applied.observed_title, preview.desired_title.as_str());
+
+    // And now the preview says so, which is what makes it worth reading twice.
+    let settled = runtime
+        .preview_retitle_container(&request)
+        .await
+        .expect("the second preview is answered");
+    assert!(!settled.changed, "the container is already correct");
+    assert_eq!(settled.observed_title, "TSW · ASMA-7872 · OP-03");
+}
+
+/// A preview refuses for every reason an apply refuses, including a runtime that
+/// cannot rename at all.
+#[tokio::test]
+async fn a_preview_refuses_what_an_apply_would_refuse() {
+    let declared: Vec<RuntimeCapability> = RuntimeCapability::ALL
+        .iter()
+        .copied()
+        .filter(|capability| *capability != RuntimeCapability::RetitleContainer)
+        .collect();
+    let runtime = ScriptedFakeRuntime::new(capabilities(&declared));
+    let node_id = TopologyNodeId::generate();
+    let prepared = runtime
+        .prepare_container(&container_request(node_id, "before"))
+        .await
+        .expect("the container is prepared");
+    let native = prepared.snapshot.binding.identity.clone();
+
+    let refused = runtime
+        .preview_retitle_container(&retitle(
+            node_id,
+            native.native_id.as_str(),
+            native.generation,
+            "after",
+        ))
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::RetitleContainer
+            })
+        ),
+        "a preview against a runtime that cannot rename promises nothing: {refused:?}"
+    );
+
+    let stale = ScriptedFakeRuntime::new(every_capability());
+    stale
+        .prepare_container(&container_request(node_id, "before"))
+        .await
+        .expect("the container is prepared");
+    let wrong_generation = stale
+        .preview_retitle_container(&retitle(
+            node_id,
+            native.native_id.as_str(),
+            native.generation + 1,
+            "after",
+        ))
+        .await;
+    assert!(
+        matches!(wrong_generation, Err(RuntimeError::StaleBinding { .. })),
+        "a preview addresses the container the same way an apply does: {wrong_generation:?}"
     );
 }
 
