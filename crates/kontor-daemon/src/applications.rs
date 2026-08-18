@@ -84,7 +84,7 @@ use kontor_api::applications::{
 };
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
-use kontor_core::authority::AuthoritySubject;
+use kontor_core::authority::{AuthoritySubject, SubjectOrigin};
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::id::{
@@ -4653,6 +4653,18 @@ impl ApplicationOperations for Services {
         request: &EnsureProjectRequest,
     ) -> Result<ProjectDto, ApiError> {
         let state = self.state()?;
+        // A `legacy_pending` backlog would be a project nothing can ever write: the
+        // backlog import, readback and switch do not exist yet, so there is no
+        // operation that could clear it. Refusing the declaration is the honest
+        // answer until that path lands — advertising a state with no exit is how a
+        // caller ends up with an unusable project and no way to tell why.
+        if request.backlog_origin == SubjectOrigin::LegacyPending {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a legacy backlog cannot be imported yet, so a project may not declare \
+                 `backlog_origin: legacy_pending`",
+            ));
+        }
         // The origins are part of the intent, so replaying one key with different
         // declared origins is an idempotency conflict rather than a silent
         // agreement with whichever call arrived first. The envelope version stays

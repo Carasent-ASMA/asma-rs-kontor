@@ -4375,6 +4375,9 @@ impl WorkflowRepository for SqliteStore {
 
     fn transition_task(&self, request: &TaskTransitionRequest) -> RepositoryResult<Task> {
         let transaction = self.begin()?;
+        // Lifecycle is backlog state, so it answers to the same authority the graph
+        // does.
+        crate::authority::require_backlog_authority(&transaction, request.project_id)?;
         let row: Option<(String, i64)> = transaction
             .query_row(
                 "SELECT state, revision FROM tasks WHERE project_id = ?1 AND id = ?2",

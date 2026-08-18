@@ -662,8 +662,9 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "backlog_origin",
                 Place::Body,
-                ArgType::Enum(SUBJECT_ORIGINS),
-                "Where this project's backlog comes from.",
+                ArgType::Enum(BACKLOG_ORIGINS),
+                "Where this project's backlog comes from. Only `kontor_native` \
+                 until a legacy backlog can be imported.",
             ),
         ],
         about: "Create a project, or return the existing one unchanged.",
@@ -3578,6 +3579,13 @@ pub static PERMISSION_DECISIONS: &[&str] = &["allow", "deny"];
 
 /// Where a project's memory or backlog facts come from, in the daemon's spelling.
 pub static SUBJECT_ORIGINS: &[&str] = &["kontor_native", "legacy_pending"];
+
+/// The backlog origins a project may declare today.
+///
+/// Deliberately narrower than [`SUBJECT_ORIGINS`]: the backlog import, readback
+/// and switch do not exist yet, so `legacy_pending` names a state no operation
+/// could clear. The daemon refuses it; this keeps a model from naming it at all.
+pub static BACKLOG_ORIGINS: &[&str] = &["kontor_native"];
 
 /// The two facts write authority is tracked for.
 pub static AUTHORITY_SUBJECTS: &[&str] = &["memory", "backlog"];

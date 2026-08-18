@@ -342,12 +342,17 @@ pub async fn import_apply(
 /// replacement rather than a 404 it might read as "not deployed yet" — and it
 /// can no longer write anything: the v32 trigger refuses the singleton it used
 /// to update.
+///
+/// The declared status is the one it returns. `invalid_request` is 400, and 400 is
+/// what this is: the request names a realm-wide operation that no longer exists,
+/// which no amount of re-reading or retrying makes valid. A 409 would say the
+/// caller's state had moved and invite exactly the retry that can never work.
 #[utoipa::path(
     post,
     path = "/v1/memory/cutover:freeze",
     tag = "memory",
     params(("Idempotency-Key" = String, Header)),
-    responses((status = 409))
+    responses((status = 400, description = "always: replaced by per-project attestation"))
 )]
 pub async fn freeze(
     State(state): State<ApiState>,

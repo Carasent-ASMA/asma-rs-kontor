@@ -92,6 +92,18 @@ pub enum RepositoryError {
         /// Which ceiling bound. Never disclosed.
         scope: &'static str,
     },
+    /// A legacy system still owns the subject this write belongs to.
+    ///
+    /// Deliberately *not* a [`RepositoryError::Conflict`], for the same reason
+    /// [`RepositoryError::CapacityExhausted`] is not one: a conflict says the
+    /// caller worked from a state that has moved, and its way out is to re-read
+    /// and retry. Withheld authority is not moved state — re-reading returns the
+    /// same answer, and it clears only when that subject is imported and switched.
+    #[error("{subject} authority for this project is not Kontor's yet")]
+    AuthorityWithheld {
+        /// Which subject withheld the write: `memory` or `backlog`.
+        subject: &'static str,
+    },
     /// A reference pointed at a row owned by a different project.
     #[error("{subject} references another project")]
     CrossProject {

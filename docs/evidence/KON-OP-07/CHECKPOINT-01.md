@@ -55,8 +55,8 @@ contract before it are the same commit or neither.
   refuses UPDATE; authority never returns to the legacy system; a native row
   cannot carry switch evidence; three partial-switch shapes abort; no delete.
 - `cutover_is_attested_hashed_transactional_and_idempotent` — pending subject
-  refuses native writes; injected failure rolls back items, revisions and the
-  manifest together; re-import is idempotent; switch refuses without the
+  refuses native writes; a failure *inside* the item loop rolls its items back;
+  re-import is idempotent; switch refuses without the
   attestation and against a readback that does not describe stored state;
   authority moves exactly once; a sibling project in the same realm is
   unaffected; the memory switch leaves that project's backlog untouched.
@@ -85,6 +85,15 @@ contract before it are the same commit or neither.
    table is not told the same export is pending and does not import it twice.
 5. **Receipts cover `import`, `attest`, `switch` only.** A preview writes nothing,
    so it earns no receipt and the closed operation list has no unreachable value.
+
+## Corrected by REMEDIATION-01
+
+The atomicity this document originally claimed was not delivered: the import
+committed its items and its manifest in two transactions, so a failure between
+them left items behind with no manifest, and the retry — which derives
+`already_imported` from the manifest — re-ran the item loop and died on their
+primary key. The reviewer found it; `REMEDIATION-01.md` records the fix and the
+test that now fails without it.
 
 ## Not started
 

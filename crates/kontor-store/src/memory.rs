@@ -11,7 +11,8 @@ use uuid::Uuid;
 
 use crate::SqliteStore;
 use crate::authority::{
-    AuthorityError, SubjectAuthorityReceipt, SubjectImportRecord, require_subject_authority,
+    AuthorityError, SubjectAuthorityReceipt, SubjectImportRecord, record_subject_import_in,
+    require_subject_authority, subject_authority_in,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -527,31 +528,7 @@ impl SqliteStore {
     /// # Errors
     /// Propagates SQLite and parse failures.
     pub fn memory_readback_hash(&self, project_id: ProjectId) -> Result<ContentHash, MemoryError> {
-        let mut statement = self.connection.prepare(
-            "SELECT i.id, r.content_hash
-             FROM memory_items i
-             JOIN memory_revisions r
-               ON r.project_id = i.project_id AND r.id = i.current_revision_id
-             JOIN memory_approvals a
-               ON a.project_id = r.project_id AND a.revision_id = r.id
-             LEFT JOIN memory_tombstones t
-               ON t.project_id = i.project_id AND t.item_id = i.id
-             WHERE i.project_id = ?1 AND t.item_id IS NULL
-             ORDER BY i.id",
-        )?;
-        let items = statement
-            .query_map([project_id.to_string()], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(ContentHash::of(
-            serde_json::to_string(&serde_json::json!({
-                "project_id": project_id,
-                "subject": "memory",
-                "items": items,
-            }))?
-            .as_bytes(),
-        ))
+        memory_readback_hash(&self.connection, project_id)
     }
 
     pub fn preview_agentsroom_import(
@@ -604,7 +581,10 @@ impl SqliteStore {
         if preview.already_imported {
             return Ok(preview);
         }
-        let authority = self.subject_authority(export.project_id, AuthoritySubject::Memory)?;
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        // Read inside the transaction that acts on the answer. A check taken from
+        // another transaction is a check of what was true before this one began.
+        let authority = subject_authority_in(&tx, export.project_id, AuthoritySubject::Memory)?;
         if !authority.origin.permits_cutover() {
             return Err(MemoryError::Rule(
                 "this project's memory was created in Kontor and has nothing to import",
@@ -615,7 +595,6 @@ impl SqliteStore {
                 "this project's memory has already been switched to Kontor",
             ));
         }
-        let tx = self.connection.unchecked_transaction()?;
         for entry in &export.entries {
             tx.execute(
                 "INSERT INTO memory_items(project_id,id,aggregate_revision) VALUES (?1,?2,2)",
@@ -635,21 +614,29 @@ impl SqliteStore {
                 params![export.project_id.to_string(), entry.item_id, id],
             )?;
         }
+        // The manifest and its readback join the same transaction as the items.
+        // `already_imported` is derived from the manifest, so a commit between the
+        // two would let a retry re-run the item loop against rows that are already
+        // there: it dies on their primary key and the subject can never be
+        // switched. One transaction means a failure anywhere leaves nothing, and
+        // the retry is a first attempt again.
+        let readback = memory_readback_hash(&tx, export.project_id)?;
+        record_subject_import_in(
+            &tx,
+            &SubjectImportRecord {
+                project_id: export.project_id,
+                subject: AuthoritySubject::Memory,
+                source: &export.source,
+                import_hash: &export.export_hash,
+                canonical_manifest: &serde_json::to_string(export)?,
+                imported_count: u64::try_from(export.entries.len())
+                    .map_err(|_| MemoryError::Rule("too many import entries"))?,
+                readback_hash: &readback,
+            },
+        )?;
         tx.commit()?;
-        // The manifest and its readback are recorded after the items are durably
-        // here, so the stored readback describes committed state rather than what
-        // the transaction intended to write.
-        let readback = self.memory_readback_hash(export.project_id)?;
-        self.record_subject_import(&SubjectImportRecord {
-            project_id: export.project_id,
-            subject: AuthoritySubject::Memory,
-            source: &export.source,
-            import_hash: &export.export_hash,
-            canonical_manifest: &serde_json::to_string(export)?,
-            imported_count: u64::try_from(export.entries.len())
-                .map_err(|_| MemoryError::Rule("too many import entries"))?,
-            readback_hash: &readback,
-        })?;
+        // Derived and rebuildable, so it is outside the transaction on purpose: a
+        // failure here costs an index rebuild, not the import.
         self.rebuild_memory_fts()?;
         Ok(preview)
     }
@@ -684,6 +671,42 @@ impl SqliteStore {
         self.rebuild_memory_fts()?;
         Ok(receipt)
     }
+}
+
+/// The canonical digest of one project's stored memory, over any connection.
+///
+/// Taken over a `&Connection` rather than `&self` so an import can compute it
+/// inside the transaction that wrote the rows. Computing it after a separate
+/// commit would describe a state that is no longer only this import's work.
+fn memory_readback_hash(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+) -> Result<ContentHash, MemoryError> {
+    let mut statement = connection.prepare(
+        "SELECT i.id, r.content_hash
+         FROM memory_items i
+         JOIN memory_revisions r
+           ON r.project_id = i.project_id AND r.id = i.current_revision_id
+         JOIN memory_approvals a
+           ON a.project_id = r.project_id AND a.revision_id = r.id
+         LEFT JOIN memory_tombstones t
+           ON t.project_id = i.project_id AND t.item_id = i.id
+         WHERE i.project_id = ?1 AND t.item_id IS NULL
+         ORDER BY i.id",
+    )?;
+    let items = statement
+        .query_map([project_id.to_string()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ContentHash::of(
+        serde_json::to_string(&serde_json::json!({
+            "project_id": project_id,
+            "subject": "memory",
+            "items": items,
+        }))?
+        .as_bytes(),
+    ))
 }
 
 fn aggregate_revision(
@@ -1153,6 +1176,115 @@ mod tests {
             )
             .unwrap();
         assert_eq!(receipt_count, 2, "hashed operation receipts survive purge");
+    }
+
+    /// An import that fails *after* its items, while writing the manifest, leaves
+    /// nothing — and the retry is a first attempt again.
+    ///
+    /// This is the failure the old two-transaction shape could not survive.
+    /// `already_imported` is derived from the manifest, so items committed without
+    /// one are invisible to the retry: it re-ran the item loop, died on the
+    /// existing primary key, and the subject could never reach its switch. The
+    /// existing cutover test injects its failure *inside* the item loop, which is
+    /// why it passed either way. The mutants this kills are committing the items
+    /// before the manifest, and reading the readback hash on the store's
+    /// connection after that commit.
+    #[test]
+    fn an_import_that_fails_while_recording_its_manifest_leaves_nothing_and_resumes() {
+        let (_dir, store, project, _) = legacy_fixture();
+        let mut export = AgentsRoomExport {
+            schema_version: 1,
+            source: "agentsroom".into(),
+            project_id: project,
+            entries: vec![
+                LegacyMemoryEntry {
+                    item_id: "first".into(),
+                    document: document("first legacy value"),
+                    source_id: Some("old-1".into()),
+                },
+                LegacyMemoryEntry {
+                    item_id: "second".into(),
+                    document: document("second legacy value"),
+                    source_id: Some("old-2".into()),
+                },
+            ],
+            export_hash: ContentHash::of(b"placeholder"),
+        };
+        export.export_hash = export.calculate_hash().unwrap();
+
+        // Fail the manifest insert only — every item has already been written by
+        // the time this fires.
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER fail_manifest BEFORE INSERT ON subject_import_manifests
+                 BEGIN SELECT RAISE(ABORT, 'injected manifest failure'); END;",
+            )
+            .unwrap();
+        assert!(matches!(
+            store.apply_agentsroom_import(&export),
+            Err(MemoryError::Sqlite(_))
+        ));
+        for table in [
+            "memory_items",
+            "memory_revisions",
+            "memory_approvals",
+            "subject_import_manifests",
+        ] {
+            let count: i64 = store
+                .connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE project_id=?1"),
+                    [project.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "the failed manifest rolls back {table} with it");
+        }
+        assert!(
+            !store
+                .preview_agentsroom_import(&export)
+                .unwrap()
+                .already_imported,
+            "a rolled-back import is still pending, not half done"
+        );
+
+        store
+            .connection
+            .execute("DROP TRIGGER fail_manifest", [])
+            .unwrap();
+        store.apply_agentsroom_import(&export).unwrap();
+        assert_eq!(
+            store.list_memory(project).unwrap().len(),
+            2,
+            "the retry imports every item exactly once"
+        );
+
+        // And the subject can still reach its switch, which is what the stuck state
+        // took away.
+        let (attested, _) = store
+            .attest_subject_source_frozen(
+                project,
+                AuthoritySubject::Memory,
+                AggregateRevision::INITIAL,
+                "agentsroom-cursor-1",
+                &ContentHash::of(b"frozen source"),
+            )
+            .unwrap();
+        store
+            .switch_project_memory_authority(
+                project,
+                "agentsroom",
+                &export.export_hash,
+                attested.revision,
+            )
+            .unwrap();
+        assert!(
+            store
+                .subject_authority(project, AuthoritySubject::Memory)
+                .unwrap()
+                .writable_by_kontor()
+        );
     }
 
     #[test]

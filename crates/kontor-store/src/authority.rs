@@ -443,61 +443,10 @@ impl SqliteStore {
         &self,
         record: &SubjectImportRecord<'_>,
     ) -> Result<(SubjectImportManifest, SubjectAuthorityReceipt), AuthorityError> {
-        let &SubjectImportRecord {
-            project_id,
-            subject,
-            source,
-            import_hash,
-            canonical_manifest,
-            imported_count,
-            readback_hash,
-        } = record;
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
-        let row = read_row(&tx, project_id, subject)?;
-        if !row.origin.permits_cutover() {
-            return Err(AuthorityError::Rule(
-                "this subject was created in Kontor and has nothing to import",
-            ));
-        }
-        let count = i64::try_from(imported_count)
-            .map_err(|_| AuthorityError::Rule("too many imported items"))?;
-        let imported_at = Timestamp::now();
-        let inserted = tx.execute(
-            "INSERT INTO subject_import_manifests
-                 (project_id, subject, source, import_hash, canonical_manifest,
-                  imported_count, readback_hash, imported_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT DO NOTHING",
-            params![
-                project_id.to_string(),
-                subject.as_str(),
-                source,
-                import_hash.as_str(),
-                canonical_manifest,
-                count,
-                readback_hash.as_str(),
-                imported_at.to_string(),
-            ],
-        )?;
-        if inserted != 1 {
-            return Err(AuthorityError::Rule(
-                "this export has already been imported for this project and subject",
-            ));
-        }
-        let receipt = record_receipt(&tx, &row, "import", import_hash, readback_hash)?;
+        let recorded = record_subject_import_in(&tx, record)?;
         tx.commit()?;
-        Ok((
-            SubjectImportManifest {
-                project_id,
-                subject,
-                source: source.to_owned(),
-                import_hash: import_hash.clone(),
-                imported_count,
-                readback_hash: readback_hash.clone(),
-                imported_at,
-            },
-            receipt,
-        ))
+        Ok(recorded)
     }
 
     /// The manifest one import produced, if it was recorded.
@@ -642,6 +591,116 @@ impl SqliteStore {
         })
         .collect()
     }
+}
+
+/// Record one subject's manifest and receipt **inside the caller's transaction**.
+///
+/// Split out from [`SqliteStore::record_subject_import`] because an import has to
+/// be one transaction with the items it imported. Two transactions — items, then
+/// manifest — can stop between them, and since `already_imported` is derived from
+/// the manifest, the retry re-runs the item loop against rows that are already
+/// there, fails on their primary key, and leaves a subject that can never be
+/// switched. Joining the caller's transaction makes the manifest and the state it
+/// describes commit or roll back together.
+///
+/// # Errors
+/// [`AuthorityError::Rule`] for a native subject or a duplicate manifest.
+pub(crate) fn record_subject_import_in(
+    tx: &Transaction<'_>,
+    record: &SubjectImportRecord<'_>,
+) -> Result<(SubjectImportManifest, SubjectAuthorityReceipt), AuthorityError> {
+    let &SubjectImportRecord {
+        project_id,
+        subject,
+        source,
+        import_hash,
+        canonical_manifest,
+        imported_count,
+        readback_hash,
+    } = record;
+    let row = read_row(tx, project_id, subject)?;
+    if !row.origin.permits_cutover() {
+        return Err(AuthorityError::Rule(
+            "this subject was created in Kontor and has nothing to import",
+        ));
+    }
+    let count = i64::try_from(imported_count)
+        .map_err(|_| AuthorityError::Rule("too many imported items"))?;
+    let imported_at = Timestamp::now();
+    let inserted = tx.execute(
+        "INSERT INTO subject_import_manifests
+             (project_id, subject, source, import_hash, canonical_manifest,
+              imported_count, readback_hash, imported_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT DO NOTHING",
+        params![
+            project_id.to_string(),
+            subject.as_str(),
+            source,
+            import_hash.as_str(),
+            canonical_manifest,
+            count,
+            readback_hash.as_str(),
+            imported_at.to_string(),
+        ],
+    )?;
+    if inserted != 1 {
+        return Err(AuthorityError::Rule(
+            "this export has already been imported for this project and subject",
+        ));
+    }
+    let receipt = record_receipt(tx, &row, "import", import_hash, readback_hash)?;
+    Ok((
+        SubjectImportManifest {
+            project_id,
+            subject,
+            source: source.to_owned(),
+            import_hash: import_hash.clone(),
+            imported_count,
+            readback_hash: readback_hash.clone(),
+            imported_at,
+        },
+        receipt,
+    ))
+}
+
+/// Refuse a backlog write unless Kontor holds this project's backlog.
+///
+/// The backlog subject is the mini-project/task graph and its lifecycle, so this
+/// guards the two seams that write it: applying an epic and transitioning a task.
+/// It speaks [`RepositoryError`] because those are repository operations, and it
+/// takes the caller's transaction so the check and the write it guards commit or
+/// roll back together.
+///
+/// # Errors
+/// [`RepositoryError::AuthorityWithheld`] while a legacy system owns the backlog,
+/// and [`RepositoryError::Backend`] if the row cannot be read at all.
+pub(crate) fn require_backlog_authority(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+) -> Result<(), kontor_core::repository::RepositoryError> {
+    match require_subject_authority(tx, project_id, AuthoritySubject::Backlog) {
+        Ok(()) => Ok(()),
+        Err(AuthorityError::Denied { .. } | AuthorityError::NotFound) => {
+            Err(kontor_core::repository::RepositoryError::AuthorityWithheld { subject: "backlog" })
+        }
+        Err(other) => Err(kontor_core::repository::RepositoryError::Backend {
+            detail: other.to_string(),
+        }),
+    }
+}
+
+/// Read one authority row inside the caller's transaction.
+///
+/// The same reason as above: an import checks origin and authority and then acts
+/// on them, and a check taken from another transaction is a check of what was
+/// true before this one started.
+pub(crate) fn subject_authority_in(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+    subject: AuthoritySubject,
+) -> Result<ProjectSubjectAuthority, AuthorityError> {
+    read_row(tx, project_id, subject)
 }
 
 fn read_manifest(

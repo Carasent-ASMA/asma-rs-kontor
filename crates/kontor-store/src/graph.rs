@@ -46,7 +46,7 @@ use kontor_core::ticket::StatusConflictKind;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
-use crate::authority::{SubjectOrigins, create_subject_authorities};
+use crate::authority::{SubjectOrigins, create_subject_authorities, require_backlog_authority};
 use crate::query::column_text;
 use crate::repository::{
     TASK_COLUMNS, backend, conflict, from_json, read_project, read_scope, read_task,
@@ -537,6 +537,9 @@ impl SqliteStore {
 
         let transaction = self.begin()?;
         ensure_project_exists(&transaction, request.project_id)?;
+        // The graph is the backlog. A project whose backlog a legacy system still
+        // owns is read and previewed, never written.
+        require_backlog_authority(&transaction, request.project_id)?;
         store_specifications(&transaction, request)?;
 
         let (mini_project, epic_applied) = ensure_mini_project(&transaction, request)?;

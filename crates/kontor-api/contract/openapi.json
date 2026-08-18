@@ -594,7 +594,7 @@
           "memory"
         ],
         "summary": "The realm-wide freeze, kept only to refuse.",
-        "description": "It is still routed so an existing caller gets a typed answer naming its\nreplacement rather than a 404 it might read as \"not deployed yet\" — and it\ncan no longer write anything: the v32 trigger refuses the singleton it used\nto update.",
+        "description": "It is still routed so an existing caller gets a typed answer naming its\nreplacement rather than a 404 it might read as \"not deployed yet\" — and it\ncan no longer write anything: the v32 trigger refuses the singleton it used\nto update.\n\nThe declared status is the one it returns. `invalid_request` is 400, and 400 is\nwhat this is: the request names a realm-wide operation that no longer exists,\nwhich no amount of re-reading or retrying makes valid. A 409 would say the\ncaller's state had moved and invite exactly the retry that can never work.",
         "operationId": "freeze",
         "parameters": [
           {
@@ -607,8 +607,8 @@
           }
         ],
         "responses": {
-          "409": {
-            "description": ""
+          "400": {
+            "description": "always: replaced by per-project attestation"
           }
         }
       }

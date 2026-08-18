@@ -322,6 +322,11 @@ export interface paths {
          *     replacement rather than a 404 it might read as "not deployed yet" — and it
          *     can no longer write anything: the v32 trigger refuses the singleton it used
          *     to update.
+         *
+         *     The declared status is the one it returns. `invalid_request` is 400, and 400 is
+         *     what this is: the request names a realm-wide operation that no longer exists,
+         *     which no amount of re-reading or retrying makes valid. A 409 would say the
+         *     caller's state had moved and invite exactly the retry that can never work.
          */
         post: operations["freeze"];
         delete?: never;
@@ -6288,7 +6293,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            409: {
+            /** @description always: replaced by per-project attestation */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
