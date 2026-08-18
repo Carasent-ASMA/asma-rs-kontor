@@ -480,10 +480,20 @@ pub enum TransportFailure {
     /// A body that is not JSON, or an event stream whose frames are not JSON.
     /// Either means the thing on the other end is not a Kontor Realm of this
     /// generation, which is a different problem from being refused by one.
-    #[error("the answer from {path} was not this contract: {detail}")]
+    ///
+    /// The status travels because it is the one fact that separates the two
+    /// realistic causes, and reading it costs nothing. A `404` means something
+    /// that is not this daemon is on the port; a `4xx` on a route that exists
+    /// means a daemon *older than the typed body extractor*, still answering its
+    /// own rejections with `text/plain`. Without the status those are one
+    /// indistinguishable "not this contract", and the second one — an operator
+    /// running a stale binary — reads as a dead realm.
+    #[error("the answer from {path} was not this contract{}: {detail}", status.map_or_else(String::new, |status| format!(" (HTTP {status})")))]
     Protocol {
         /// The route that answered.
         path: String,
+        /// The status it answered with, when there was a response at all.
+        status: Option<u16>,
         /// What was wrong with it. Never the body itself.
         detail: &'static str,
     },
@@ -632,6 +642,7 @@ impl HttpTransport {
         let mut url = self.endpoint.base_url().join(&request.path).map_err(|_| {
             TransportFailure::Protocol {
                 path: request.path.clone(),
+                status: None,
                 detail: "the route is not a path this client can address",
             }
         })?;
@@ -642,6 +653,7 @@ impl HttpTransport {
         if !url.host_str().is_some_and(is_loopback_host) {
             return Err(TransportFailure::Protocol {
                 path: request.path.clone(),
+                status: None,
                 detail: "the route resolved off loopback",
             });
         }
@@ -705,6 +717,7 @@ impl Transport for HttpTransport {
         let body: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| TransportFailure::Protocol {
                 path: request.path.clone(),
+                status: Some(status),
                 detail: "the body was not JSON",
             })?;
         Ok(Reply { status, body })
@@ -736,6 +749,7 @@ impl Transport for HttpTransport {
             let body: serde_json::Value =
                 serde_json::from_slice(&bytes).map_err(|_| TransportFailure::Protocol {
                     path: request.path.clone(),
+                    status: Some(status),
                     detail: "the refusal body was not JSON",
                 })?;
             return Ok(Reply { status, body });
@@ -801,8 +815,11 @@ fn parse_frame(block: &str, path: &str) -> Result<Option<Frame>, TransportFailur
     if data.is_empty() {
         return Ok(None);
     }
+    // A frame arrives inside an already-accepted `200` stream, so there is no
+    // per-frame status to report.
     let parsed = serde_json::from_str(&data).map_err(|_| TransportFailure::Protocol {
         path: path.to_owned(),
+        status: None,
         detail: "an event frame did not carry JSON",
     })?;
     Ok(Some(Frame {

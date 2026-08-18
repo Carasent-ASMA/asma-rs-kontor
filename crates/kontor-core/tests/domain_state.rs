@@ -1679,6 +1679,10 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     // The two completion writes are about one epic's own frozen run.
     ("advance_completion", "mini_project", "witness", None),
     ("remediate_completion", "mini_project", "witness", None),
+    // Publishing installs an immutable document into the project and names no
+    // row inside it: the revision it creates is addressed by `(id, version)`,
+    // not by an aggregate carrying a revision of its own.
+    ("publish_trigger", "project", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.

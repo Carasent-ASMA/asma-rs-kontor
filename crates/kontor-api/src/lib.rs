@@ -37,6 +37,7 @@
 
 pub mod applications;
 pub mod auth;
+pub mod body;
 pub mod control;
 pub mod dto;
 pub mod error;
@@ -595,6 +596,10 @@ pub fn router(state: ApiState) -> Router {
             post(applications::validate_work_profile),
         )
         // Triggers and intake.
+        .route(
+            "/v1/projects/{project_id}/triggers:publish",
+            post(applications::publish_trigger),
+        )
         .route(
             "/v1/projects/{project_id}/triggers/{trigger}/{version}",
             get(applications::trigger),

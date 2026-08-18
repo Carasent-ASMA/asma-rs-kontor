@@ -169,7 +169,7 @@ CREATE TABLE command_receipts_v36 (
                                  'advance_completion', 'remediate_completion',
                                  'invoke_advisor_run', 'settle_advisor_run',
                                  'invoke_committee_run', 'record_committee_findings',
-                                 'settle_committee_run')),
+                                 'settle_committee_run', 'publish_trigger')),
     target           TEXT    NOT NULL CHECK (json_valid(target)),
     target_revision  INTEGER NOT NULL CHECK (target_revision >= 1),
     intent           TEXT    NOT NULL CHECK (json_valid(intent)),

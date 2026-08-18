@@ -1669,6 +1669,7 @@ impl Realm {
                 at("2026-08-12T09:00:00Z"),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-12T09:00:00Z"),
         };
         let authority = self
@@ -2002,6 +2003,7 @@ impl Transport for RouterTransport {
         let answer = self.dispatch(request).await;
         let body = serde_json::from_str(&answer.body).map_err(|_| TransportFailure::Protocol {
             path: request.path.clone(),
+            status: Some(answer.status),
             detail: "the answer was not a JSON document",
         })?;
         Ok(Reply {
@@ -2022,6 +2024,7 @@ impl Transport for RouterTransport {
             let body =
                 serde_json::from_str(&answer.body).map_err(|_| TransportFailure::Protocol {
                     path: request.path.clone(),
+                    status: Some(answer.status),
                     detail: "the refusal was not a JSON document",
                 })?;
             return Ok(Reply {

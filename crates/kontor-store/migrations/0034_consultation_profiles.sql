@@ -95,7 +95,7 @@ CREATE TABLE command_receipts_v34 (
                                  'apply_core_team', 'ensure_quick_session',
                                  'promote_quick_session', 'materialize_core_team',
                                  'upgrade_epic_roster', 'apply_advisor_profile',
-                                 'apply_committee_template')),
+                                 'apply_committee_template', 'publish_trigger')),
     target           TEXT    NOT NULL CHECK (json_valid(target)),
     target_revision  INTEGER NOT NULL CHECK (target_revision >= 1),
     intent           TEXT    NOT NULL CHECK (json_valid(intent)),

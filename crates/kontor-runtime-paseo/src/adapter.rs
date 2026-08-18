@@ -2854,6 +2854,7 @@ impl PaseoAdapter {
             &workspace_id,
             task_scope.canonical_worktree_cwd.as_str(),
             request.model_rung(),
+            request.autonomy(),
             &agent_display_name,
             &labels,
             self.config.scope.orchestrator_agent_id.as_str(),

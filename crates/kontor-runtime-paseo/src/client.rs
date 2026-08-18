@@ -57,7 +57,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use kontor_core::DomainError;
-use kontor_core::spec::ModelRung;
+use kontor_core::spec::{ModelRung, SeatAutonomy};
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::net::TcpStream;
@@ -77,10 +77,36 @@ const JSON_FLAG: &str = "--json";
 /// The environment variable Paseo reads the parent agent from.
 pub const PARENT_AGENT_ENV: &str = "PASEO_AGENT_ID";
 
+/// Paseo 0.3.1's spelling of one [`SeatAutonomy`].
+///
+/// `paseo agent run --mode` documents itself as "provider-specific mode (e.g.
+/// plan, default, bypass)", so this is the translation and the only place it
+/// happens. Kontor's three intents map onto those three spellings:
+///
+/// * `supervised` -> `default`: the provider asks before each guarded action;
+/// * `bounded` -> `bypass`: the provider does not ask again for authority Kontor
+///   already granted and bounded;
+/// * `advisory` -> `plan`: the seat may read and propose and may not act.
+///
+/// Exhaustive on purpose. A fourth [`SeatAutonomy`] must be given a spelling
+/// here rather than falling through to whichever of these looked closest, since
+/// guessing wrong in either direction is a seat running under the wrong
+/// authority.
+const fn paseo_mode(autonomy: SeatAutonomy) -> &'static str {
+    match autonomy {
+        SeatAutonomy::Supervised => "default",
+        SeatAutonomy::Bounded => "bypass",
+        SeatAutonomy::Advisory => "plan",
+    }
+}
+
 /// The unattended, approval-aware mode Paseo 0.3.1 exposes for each provider.
 ///
 /// Kontor pins this explicitly because an omitted mode delegates authority to
-/// a mutable provider default (including Claude's `default` / Always Ask).
+/// a mutable provider default (including Claude's `default` / Always Ask). The
+/// launch path spells the mode from the seat's [`SeatAutonomy`] via
+/// [`paseo_mode`]; this function remains the read path's expected-mode source,
+/// checked against a live agent's `current_mode_id`.
 pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
     match provider {
         "claude" => Ok(Some("auto")),
@@ -179,16 +205,28 @@ impl PaseoCommand {
     /// shape (`paseo agent run [options] <prompt>`); there is no `--prompt`.
     ///
     /// `--provider` is mandatory on this release.
+    ///
+    /// `--mode` carries the seat's declared [`SeatAutonomy`]. It is always sent,
+    /// never omitted for the supervised case: omitting it would leave the
+    /// authority a seat runs under to whatever the runtime happens to default to,
+    /// which is how every seat came to ask about every tool call in the first
+    /// place. Kontor declaring `default` and Paseo choosing `default` look the
+    /// same on the wire and are not the same thing — only one of them is a
+    /// decision.
+    // The arity is the CLI's own: each parameter is one flag `paseo agent run`
+    // takes, in the order it takes them. Bundling them into a struct would hide
+    // exactly the mapping this function exists to make checkable.
+    #[allow(clippy::too_many_arguments)]
     pub fn agent_run(
         workspace_id: &str,
         canonical_cwd: &str,
         model_rung: &ModelRung,
+        autonomy: SeatAutonomy,
         title: &str,
         labels: &BTreeMap<String, String>,
         parent_agent_id: &str,
         prompt: &str,
     ) -> RuntimeResult<Self> {
-        let permission_mode = permission_mode(&model_rung.provider.0)?;
         Self::agent_run_with_mode(
             workspace_id,
             canonical_cwd,
@@ -197,7 +235,7 @@ impl PaseoCommand {
             labels,
             parent_agent_id,
             prompt,
-            permission_mode,
+            Some(paseo_mode(autonomy)),
         )
     }
 
@@ -244,8 +282,8 @@ impl PaseoCommand {
             .option("--cwd", canonical_cwd)
             .option("--provider", &model_rung.provider.0)
             .option("--model", &model_rung.model.0);
-        if let Some(mode) = permission_mode {
-            argv = argv.option("--mode", mode);
+        if let Some(permission_mode) = permission_mode {
+            argv = argv.option("--mode", permission_mode);
         }
         if let Some(effort) = model_rung.effort {
             argv = argv.option("--thinking", effort.as_str());
@@ -265,6 +303,11 @@ impl PaseoCommand {
     }
 
     /// `paseo agent update {id} --label …` — the adoption write, and nothing else.
+    ///
+    /// Note there is no `--mode` here: 0.3.1's `agent update` takes a name, a
+    /// thinking option and labels, and nothing that changes authority. A seat's
+    /// autonomy is therefore fixed at launch, which is the honest shape — it is
+    /// part of what the launch was admitted as, not a dial to turn afterwards.
     #[must_use]
     pub fn agent_update_labels(agent_id: &str, labels: &BTreeMap<String, String>) -> Self {
         let mut argv = Argv::new(&["agent", "update"]).value(agent_id);
@@ -1429,6 +1472,7 @@ mod tests {
                 "wks_1",
                 "/w/task-1",
                 &route("codex", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+                SeatAutonomy::Supervised,
                 "KON-MVP-11 Implement",
                 &labels(),
                 "agt_orchestrator",
@@ -1463,6 +1507,7 @@ mod tests {
             "wks_1",
             "/w/task-1",
             &route("codex", "gpt-5.6-sol", None),
+            SeatAutonomy::Supervised,
             "t",
             &labels(),
             "agt_p",
@@ -1489,6 +1534,7 @@ mod tests {
             "wks_1",
             "/w/task-1",
             &route("claude", "claude-opus-5", Some(EffortLevel::Xhigh)),
+            SeatAutonomy::Supervised,
             "t",
             &labels(),
             "agt_p",
@@ -1502,7 +1548,7 @@ mod tests {
                 .any(|pair| pair == ["--model", "claude-opus-5"])
         );
         assert!(argv.windows(2).any(|pair| pair == ["--thinking", "xhigh"]));
-        assert!(argv.windows(2).any(|pair| pair == ["--mode", "auto"]));
+        assert!(argv.windows(2).any(|pair| pair == ["--mode", "default"]));
     }
 
     #[test]
@@ -1530,12 +1576,63 @@ mod tests {
         ));
     }
 
+    /// Every launch states the authority it runs under, and the three intents
+    /// reach Paseo as three different modes.
+    ///
+    /// This is the whole of the "hundreds of permission prompts" fix. Before it,
+    /// `agent run` carried no `--mode` at all, so every seat inherited whatever
+    /// the provider defaulted to and asked the operator about every guarded tool
+    /// call — a question Kontor had already answered by arming the work. The
+    /// mutant this kills is the tempting one: omitting the flag for `supervised`
+    /// because "that is the default anyway". It is only the default until it
+    /// isn't, and a seat's authority may not depend on a provider's release
+    /// notes.
+    #[test]
+    fn every_launch_declares_the_authority_it_runs_under() {
+        let mode_of = |autonomy| {
+            let command = PaseoCommand::agent_run(
+                "wks_1",
+                "/w/task-1",
+                &route("claude", "claude-opus-5", None),
+                autonomy,
+                "t",
+                &labels(),
+                "agt_p",
+                "p",
+            )
+            .expect("the autonomy maps to a Paseo mode");
+            let argv = command.argv().to_vec();
+            let index = argv
+                .iter()
+                .position(|arg| arg == "--mode")
+                .unwrap_or_else(|| panic!("{autonomy} declared no mode: {argv:?}"));
+            argv[index + 1].clone()
+        };
+
+        assert_eq!(mode_of(SeatAutonomy::Supervised), "default");
+        assert_eq!(mode_of(SeatAutonomy::Bounded), "bypass");
+        assert_eq!(mode_of(SeatAutonomy::Advisory), "plan");
+
+        // Three intents, three spellings: a mapping that collapsed two of them
+        // would silently give one seat another's authority.
+        let modes: std::collections::BTreeSet<String> = [
+            SeatAutonomy::Supervised,
+            SeatAutonomy::Bounded,
+            SeatAutonomy::Advisory,
+        ]
+        .into_iter()
+        .map(mode_of)
+        .collect();
+        assert_eq!(modes.len(), 3, "two autonomy levels share one Paseo mode");
+    }
+
     #[test]
     fn the_ledger_route_never_quotes_the_operators_work() {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/private/worktrees/secret-project",
             &route("codex", "gpt-5.6-sol", None),
+            SeatAutonomy::Supervised,
             "KON-MVP-11 Implement",
             &labels(),
             "agt_orchestrator",
@@ -1561,6 +1658,7 @@ mod tests {
             "wks_1",
             "/w/task-1",
             &route("codex", "gpt-5.6-sol", None),
+            SeatAutonomy::Supervised,
             "t",
             &labels(),
             "agt_orchestrator",
@@ -1593,6 +1691,7 @@ mod tests {
             "wks_1",
             "/w/task-1",
             &route("codex", "gpt-5.6-sol", None),
+            SeatAutonomy::Supervised,
             "t",
             &labels(),
             "agt_p",
@@ -1614,6 +1713,7 @@ mod tests {
                 "w",
                 "/w/t",
                 &route("codex", "gpt-5.6-sol", None),
+                SeatAutonomy::Supervised,
                 "t",
                 &labels(),
                 "agt_p",
