@@ -2495,6 +2495,286 @@ async fn arming_disarming_and_planning_are_scoped_authority_decisions() {
     );
 }
 
+/// A body of the wrong shape is refused as a *request* problem, in this Realm's
+/// own envelope.
+///
+/// The incident this is a fixture for: `execution:arm` was called three times
+/// with a guessed `budget` shape, and each attempt came back as a transport-level
+/// "the body was not JSON" because axum answers its own extractor's rejection
+/// with `text/plain`. The operator read that as a dead route and the epic sat
+/// unarmed. The distinction the test defends is the one that was lost — a
+/// malformed request is `invalid_request`, never an unreachable realm — and it
+/// holds for every route that takes a body, because they all take it through the
+/// same extractor.
+#[tokio::test]
+async fn a_malformed_body_is_refused_as_a_request_and_never_as_a_broken_realm() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "arm-shape", "Kontor", "/tmp/kontor-arm-shape").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Shape epic",
+            &category,
+            serde_json::json!([{"title": "First"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("shape-epic-1")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    // The exact budget shape the incident guessed: plausible, and not the one
+    // `BudgetBoundsRequest` declares.
+    let guessed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 2,
+            "budget": {"tokens": 1, "commands": 1, "duration": 1, "cost": 1},
+            "granted_by": "01a00751-5be9-7281-bba5-75d8c0c101e7",
+            "reason": "Bootstrap the epic"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("shape-guessed")
+    .send(&world)
+    .await;
+    assert_eq!(guessed.status, 400, "{}", guessed.body);
+    assert_eq!(guessed.code(), "invalid_request");
+    assert_eq!(
+        guessed.realm(),
+        world.realm_id(),
+        "a refusal names its realm like every other answer"
+    );
+
+    // Not JSON at all is a different mistake and says so, so a caller cannot
+    // conflate "my body is malformed" with "my body is the wrong shape".
+    let syntax = Call::post_raw(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        "{not json",
+    )
+    .signed_as(&world, "admin")
+    .with_key("shape-syntax")
+    .send(&world)
+    .await;
+    assert_eq!(syntax.status, 400, "{}", syntax.body);
+    assert_eq!(syntax.code(), "invalid_request");
+    assert_ne!(
+        syntax.json()["rule"],
+        guessed.json()["rule"],
+        "a syntax error and a schema mismatch are different problems: {}",
+        syntax.body
+    );
+
+    // The request carried a plausible-looking credential in a field that does
+    // not exist. Nothing in the refusal may repeat it.
+    let leaky = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "budget": {"cost_currency": "sk-live-do-not-log"}
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("shape-leak")
+    .send(&world)
+    .await;
+    assert_eq!(leaky.status, 400, "{}", leaky.body);
+    assert!(
+        !leaky.body.contains("sk-live-do-not-log"),
+        "a refusal must never echo the request body: {}",
+        leaky.body
+    );
+}
+
+/// A bounded auto-arm can be declared through a supported path, and only by an
+/// admin.
+///
+/// `AutoArmPolicy::BoundedAutoArm` and `TriggerSpec::authorize_auto_arm` were
+/// implemented and tested and could not be *reached*: the only caller of
+/// `insert_trigger_spec` was a backup import, so no operator could declare one.
+/// The consequence was not a missing feature but a silently different policy —
+/// every arm had to be a human calling `execution:arm`, which is exactly the
+/// standing instruction nobody chose.
+///
+/// The tier is half the test. Publishing a bounded auto-arm grants the capability
+/// to start work with no human in the loop, so an operator credential must not
+/// reach it.
+#[tokio::test]
+async fn a_bounded_auto_arm_is_declarable_by_an_admin_and_by_nobody_else() {
+    // The seeded world, because a trigger pins a work profile and a team template
+    // and both must actually be installed: a trigger that references revisions
+    // nobody published is not a trigger this realm could ever fire.
+    let world = World::open().await;
+    world.daemon.reconcile().await;
+    let project = world.project.to_string();
+    let pack = kontor_profiles::seeds::bundled_pack().expect("the bundled pack loads");
+    let entry = pack
+        .manifest
+        .iter()
+        .find(|entry| entry.availability == kontor_profiles::pack::PackAvailability::Seeded)
+        .expect("the bundled pack seeds at least one category");
+    let bundle =
+        kontor_profiles::pack::resolve_profile(&pack, &entry.category, at("2026-08-10T09:00:00Z"))
+            .expect("the seeded category resolves");
+    let team = bundle.team.clone().expect("the profile pinned a team");
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Auto arm",
+            "harness": "fake.runtime",
+            "credential_alias": "auto-arm",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("trg-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let spec = serde_json::json!({
+        "schema_version": 1,
+        "id": "trigger.inbound-request",
+        "version": 1,
+        "source_kind": "webhook",
+        "source_connection": "conn.alpha",
+        "event_schema": "schema.request-created",
+        "event_schema_version": 4,
+        "filter": [{"pointer": "/kind", "equals": "request.created"}],
+        "dedup": {"pointers": ["/kind", "/external_id"]},
+        "work_profile": bundle.profile.definition.id.as_str(),
+        "work_profile_version": bundle.profile.definition.version.get(),
+        "team_template": {
+            "template_id": team.template_id.to_string(),
+            "version": team.version.get()
+        },
+        "context_template": {"template": "context.default", "version": 1},
+        "approval": {
+            "kind": "bounded_auto_arm",
+            "capability": {
+                "granted_to": account_id,
+                "execution_authorization": "0193f000-0000-7000-8000-00000000c001"
+            },
+            "max_concurrency": 2,
+            "budget": {
+                "max_tokens": 100_000,
+                "max_commands": 40,
+                "max_duration_seconds": 1800,
+                "max_cost": {"minor_units": 1500, "currency": "NOK"}
+            }
+        },
+        "limits": {
+            "priority": 50,
+            "max_concurrency": 2,
+            "budget": {
+                "max_tokens": 100_000,
+                "max_commands": 40,
+                "max_duration_seconds": 1800,
+                "max_cost": {"minor_units": 1500, "currency": "NOK"}
+            }
+        },
+        "calendar_policy": null
+    });
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/triggers:publish"),
+        &serde_json::json!({"spec": spec}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("trg-operator")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert_eq!(refused.code(), "forbidden");
+
+    let published = Call::post(
+        format!("/v1/projects/{project}/triggers:publish"),
+        &serde_json::json!({"spec": spec}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("trg-admin")
+    .send(&world)
+    .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    assert_eq!(
+        published.json()["auto_arm"],
+        serde_json::Value::Bool(true),
+        "the published revision reports the capability it carries: {}",
+        published.body
+    );
+
+    // It is durable and readable, so the capability is a stored fact rather than
+    // an answer this one call computed.
+    let read = Call::get(format!(
+        "/v1/projects/{project}/triggers/trigger.inbound-request/1"
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    assert_eq!(read.json()["auto_arm"], serde_json::Value::Bool(true));
+
+    // A published revision is immutable. The same bytes replay; different bytes
+    // under a new key are refused rather than quietly rewriting what a running
+    // realm is already acting under.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/triggers:publish"),
+        &serde_json::json!({"spec": spec}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("trg-admin-again")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+
+    let mut widened = spec.clone();
+    widened["approval"]["max_concurrency"] = serde_json::json!(64);
+    let conflict = Call::post(
+        format!("/v1/projects/{project}/triggers:publish"),
+        &serde_json::json!({"spec": widened}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("trg-widened")
+    .send(&world)
+    .await;
+    assert_eq!(conflict.status, 409, "{}", conflict.body);
+    assert_eq!(conflict.code(), "idempotency_conflict");
+
+    // And a document this build does not understand is refused as a request
+    // problem, not stored and puzzled over later.
+    let nonsense = Call::post(
+        format!("/v1/projects/{project}/triggers:publish"),
+        &serde_json::json!({"spec": {"schema_version": 1, "id": "trigger.bad"}}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("trg-nonsense")
+    .send(&world)
+    .await;
+    assert_eq!(nonsense.status, 400, "{}", nonsense.body);
+    assert_eq!(nonsense.code(), "invalid_request");
+}
+
 /// A body that parses for whichever operation `uri` names.
 ///
 /// The authority tests need the extractor to succeed so that the refusal they
@@ -11586,7 +11866,7 @@ async fn a_team_slot_cannot_carry_a_raw_role_or_a_caller_supplied_title() {
     )
     .await;
     assert_eq!(
-        raw.status, 422,
+        raw.status, 400,
         "a bare role string must not be accepted: {}",
         raw.body
     );
@@ -11606,7 +11886,7 @@ async fn a_team_slot_cannot_carry_a_raw_role_or_a_caller_supplied_title() {
     )
     .await;
     assert_eq!(
-        unknown.status, 422,
+        unknown.status, 400,
         "a malformed role code must not be accepted: {}",
         unknown.body
     );
@@ -11628,7 +11908,7 @@ async fn a_team_slot_cannot_carry_a_raw_role_or_a_caller_supplied_title() {
     )
     .await;
     assert_eq!(
-        titled.status, 422,
+        titled.status, 400,
         "a caller-supplied standard title must be refused, not dropped: {}",
         titled.body
     );
@@ -11699,7 +11979,7 @@ async fn a_topology_request_cannot_carry_a_kind_a_parent_or_a_native_shape() {
             .send(&world)
             .await;
         assert_eq!(
-            answer.status, 422,
+            answer.status, 400,
             "`{field}` must be refused by the request type, not interpreted: {}",
             answer.body
         );
@@ -11735,7 +12015,7 @@ async fn an_invented_topology_scope_is_refused() {
     .send(&world)
     .await;
     assert_eq!(
-        answer.status, 422,
+        answer.status, 400,
         "a scope outside the closed union must be refused: {}",
         answer.body
     );
@@ -14788,7 +15068,7 @@ async fn a_misnamed_container_is_repaired_from_the_pinned_topology_and_never_fro
     .send(world)
     .await;
     assert_eq!(
-        dictated.status, 422,
+        dictated.status, 400,
         "the request type has nowhere to put a title, so the body is rejected: {}",
         dictated.body
     );

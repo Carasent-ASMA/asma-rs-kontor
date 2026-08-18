@@ -45,7 +45,8 @@ use kontor_api::applications::{
     AvailabilityOverrideRequest, CapacityCeilingsDto, CapacityConfigurationDto,
     CapacityConfigurationPreviewDto, CapacityConfigurationRequest, CapacityObservationDto,
     CapacityRefreshRequest, MutationReceiptDto, ObservedBindingDto, ProjectCapacityDto,
-    ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest, TopologySeatDto,
+    PublishTriggerRequest, ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest,
+    TopologySeatDto,
 };
 use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CommitteeRunDto,
@@ -113,8 +114,8 @@ use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
     ContextPolicySnapshot, EffectiveContextPolicy, EpicPresence, IntakeReceipt, IntakeResult,
     ModelRung, NodeProjectionCapability, ProjectSessionTopologySpec, RequestedContextPolicy,
-    RoleCatalogRevision, Shareability, ShareabilityTier, SourceIdentity, SourceProcessingState,
-    TeamRunSnapshot, TopologySnapshot, TriggerSpec,
+    RoleCatalogRevision, SeatAutonomy, Shareability, ShareabilityTier, SourceIdentity,
+    SourceProcessingState, TeamRunSnapshot, TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
     GateVerdict, ObservedContainerKind, RuntimeContact, SessionTopologyNode, TaskState,
@@ -4123,6 +4124,25 @@ async fn freeze_seat_context_policy(
         capabilities.supports(RuntimeCapability::ContextPolicy),
     )?;
     Ok(ContextPolicySnapshot::freeze(requested, effective, now)?)
+}
+
+/// Freeze how much one seat may do before it has to ask a human.
+///
+/// Read from the team run's *own frozen* template for the same reason the
+/// context policy and the model rung are: a later edit to a template must not
+/// change the authority a running seat was launched under. A seat that declares
+/// nothing is [`SeatAutonomy::standard`] — supervised — so a template written
+/// before this policy existed keeps behaving exactly as it did.
+fn freeze_seat_autonomy(
+    snapshot: &TeamRunSnapshot,
+    slot: &RoleSlotId,
+) -> kontor_core::DomainResult<SeatAutonomy> {
+    Ok(
+        kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
+            .slot(slot)
+            .and_then(|seat| seat.autonomy)
+            .unwrap_or_else(SeatAutonomy::standard),
+    )
 }
 
 /// Select the primary model rung from the team run's immutable template.
@@ -9637,6 +9657,8 @@ impl ApplicationOperations for Services {
             model_rung: freeze_seat_model_rung(&team.snapshot, &role_slot)
                 .map_err(|error| self.refuse_domain(&error))?,
             context_policy: context_policy.clone(),
+            autonomy: freeze_seat_autonomy(&team.snapshot, &role_slot)
+                .map_err(|error| self.refuse_domain(&error))?,
             requested_at: now,
         };
         let admission = permit.admission_request(&launch);
@@ -10390,6 +10412,121 @@ impl ApplicationOperations for Services {
         version: SpecVersion,
     ) -> Result<TriggerSpecDto, ApiError> {
         let spec = self.trigger_spec(project_id, trigger, version)?;
+        Ok(trigger_dto(&spec))
+    }
+
+    /// Install one immutable trigger revision into a project.
+    ///
+    /// Until this existed, `TriggerSpec` could be validated, canonicalized,
+    /// hashed and stored — and reached only by a backup import. That made
+    /// [`kontor_core::spec::AutoArmPolicy::BoundedAutoArm`] unreachable in
+    /// practice: the rule that lets a trigger arm its own work was implemented
+    /// and tested, and no supported path could declare one. Every arm was
+    /// therefore a human calling `execution:arm`, which is a policy nobody chose.
+    ///
+    /// It is `Admin` at the route, because publishing a bounded auto-arm is
+    /// granting a capability to act without a human, and that is exactly the
+    /// class of decision the admin tier exists for.
+    fn publish_trigger(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublishTriggerRequest,
+    ) -> Result<TriggerSpecDto, ApiError> {
+        let state = self.state()?;
+        let project = self.project_row(project_id)?;
+
+        // The document is parsed from the caller's JSON by the domain type, so a
+        // field this build does not know is refused here rather than stored and
+        // silently ignored by a later reader.
+        let spec: TriggerSpec = serde_json::from_value(request.spec.clone()).map_err(|_| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the trigger document is not a trigger specification of this generation",
+            )
+        })?;
+        spec.validate()
+            .map_err(|error| self.refuse_domain(&error))?;
+
+        // A published revision is immutable, so re-publishing one is either an
+        // idempotent replay or an attempt to change history. The digest tells the
+        // two apart: the same bytes replay, different bytes are refused.
+        let canonical = spec
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?;
+        if let Some(existing) = state
+            .with_store(|store| store.get_trigger_spec(project_id, &spec.id, spec.version))
+            .map_err(|error| self.refuse(&error))?
+        {
+            let existing_hash = existing
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?;
+            if existing_hash.hash() != canonical.hash() {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "this trigger revision is already installed with different bytes; \
+                     a published revision is immutable, so publish a new version instead",
+                ));
+            }
+            return Ok(trigger_dto(&existing));
+        }
+
+        // The pinned profile and team revisions are proved to exist *here*, by
+        // name. Both are foreign keys, so letting the insert discover it would
+        // surface a missing revision as a `revision_conflict` against "the
+        // presented state" — which names neither the reference nor the fix, and
+        // reads as a concurrency problem the caller might retry forever.
+        if state
+            .with_store(|store| {
+                store.get_work_profile(project_id, &spec.work_profile, spec.work_profile_version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .is_none()
+        {
+            return Err(self.deny(
+                ApiErrorCode::NotFound,
+                "the work profile revision this trigger pins is not installed in this project",
+            ));
+        }
+        if state
+            .with_store(|store| {
+                store.get_team_template(
+                    project_id,
+                    spec.team_template.template_id,
+                    spec.team_template.version,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .is_none()
+        {
+            return Err(self.deny(
+                ApiErrorCode::NotFound,
+                "the team template revision this trigger pins is not installed in this project",
+            ));
+        }
+
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "publish_trigger",
+            "trigger": spec.id.to_string(),
+            "version": spec.version.get(),
+            "document_hash": canonical.hash().as_str(),
+        }))?;
+        let target = AggregateRef::Project { project_id };
+        if self.replayed(key, &intent, Some(&target))?.is_some() {
+            return Ok(trigger_dto(&spec));
+        }
+        self.record(
+            key,
+            project_id,
+            CommandKind::PublishTrigger,
+            target,
+            project.revision,
+            &intent,
+        )?;
+        state
+            .with_store(|store| store.insert_trigger_spec(project_id, &spec))
+            .map_err(|error| self.refuse(&error))?;
         Ok(trigger_dto(&spec))
     }
 
@@ -11318,6 +11455,8 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let model_rung = freeze_seat_model_rung(&team_snapshot, &slot)
                 .map_err(|error| self.refuse_domain(&error))?;
+            let autonomy = freeze_seat_autonomy(&team_snapshot, &slot)
+                .map_err(|error| self.refuse_domain(&error))?;
             let outcome = adapter
                 .launch(&authority.into_request(LaunchParts {
                     agent_run_id,
@@ -11332,6 +11471,7 @@ impl Services {
                         slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
                     model_rung,
                     context_policy: context_policy.clone(),
+                    autonomy,
                     requested_at: now,
                 }))
                 .await
@@ -12334,6 +12474,8 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let model_rung = freeze_seat_model_rung(&team_snapshot, slot)
             .map_err(|error| self.refuse_domain(&error))?;
+        let autonomy = freeze_seat_autonomy(&team_snapshot, slot)
+            .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter
             .launch(&authority.into_request(LaunchParts {
                 agent_run_id,
@@ -12347,6 +12489,7 @@ impl Services {
                 prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
                 model_rung,
                 context_policy: context_policy.clone(),
+                autonomy,
                 requested_at: now,
             }))
             .await

@@ -337,6 +337,7 @@ fn any_agent_run() -> PaseoCommand {
         WORKSPACE_ID,
         CWD,
         &model_rung(),
+        kontor_core::spec::SeatAutonomy::standard(),
         "t",
         &BTreeMap::new(),
         ORCHESTRATOR,
@@ -469,6 +470,7 @@ impl Plane {
             prompt: text("bootstrap the role"),
             model_rung,
             context_policy: standard_context_policy(),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         }))
     }
@@ -1235,6 +1237,7 @@ async fn role_slot_a_same_slot_race_yields_one_permit_and_one_agent() {
             prompt: text("bootstrap"),
             model_rung: model_rung(),
             context_policy: standard_context_policy(),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         });
     // The parts name a different binding than the reservation does, so even the

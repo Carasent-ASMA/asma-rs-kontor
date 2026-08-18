@@ -1892,6 +1892,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/triggers:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Install one immutable trigger revision. */
+        post: operations["publish_trigger"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects:ensure": {
         parameters: {
             query?: never;
@@ -3101,7 +3118,7 @@ export interface components {
             /** @description The hash the preview answered with. */
             preview_hash: string;
             /** @description The roles the Core Team should seat, in order. */
-            seats: components["schemas"]["RoleSelectionDto"][];
+            seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
         };
         /** @description One project's Core Team. */
         CoreTeamDto: {
@@ -3149,14 +3166,47 @@ export interface components {
         /** @description A proposed Core Team composition. */
         CoreTeamPreviewRequest: {
             /** @description The roles the Core Team should seat, in order. */
-            seats: components["schemas"]["RoleSelectionDto"][];
+            seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
         };
-        /** @description One Core Team seat: the standard role, and the seat filling it if any. */
+        /**
+         * @description One Core Team seat: the standard role, the policy it is held under, and the
+         *     seat filling it if any.
+         *
+         *     Presence and ad-hoc eligibility are reported, not just accepted. A Core Team
+         *     edit states the whole roster, so a caller that could not read the policy of
+         *     the seats it is not changing would have to invent one for each of them — and
+         *     the first such edit would silently rewrite every other seat's presence.
+         */
         CoreTeamSeatDto: {
+            /** @description Whether the role may open a Quick session. */
+            ad_hoc_allowed: boolean;
+            /** @description When a concrete epic materializes it. */
+            presence: string;
             /** @description The role, as the server resolved it. */
             role: components["schemas"]["ResolvedRoleRefDto"];
             /** @description The binding filling it, once one has been materialized. */
             seat_binding_id?: string | null;
+        };
+        /**
+         * @description One Core Team seat as a caller states it: the role, and the policy the
+         *     project holds that role under.
+         *
+         *     [`RoleSelectionDto`] carries the catalog revision, the code and an optional
+         *     label — every fact about *which* role. It deliberately carries no policy,
+         *     because the same role is selected in places that have no epic presence to
+         *     state. A Core Team entry does have one, and it cannot be derived: presence
+         *     is not a function of the role code or of display order, and
+         *     `GET /quick-roles` answers from `ad_hoc_allowed` specifically. Inferring
+         *     either would hard-code project policy into the server and make that
+         *     projection dishonest, so both are stated once, here.
+         */
+        CoreTeamSeatSelectionDto: {
+            /** @description Whether the role may open a Quick session. */
+            ad_hoc_allowed: boolean;
+            /** @description When a concrete epic materializes it. */
+            presence: string;
+            /** @description The role this seat fills. */
+            role: components["schemas"]["RoleSelectionDto"];
         };
         /**
          * @description The native shape the server derived for one node.
@@ -4065,6 +4115,20 @@ export interface components {
             expected_revision: number;
             /** @description The hash the validation answered with. */
             validation_hash: string;
+        };
+        /**
+         * @description What `triggers:publish` is asked for.
+         *
+         *     The body carries the trigger document itself rather than a field-by-field
+         *     mirror of it. A `TriggerSpec` is already a validated, canonicalizable,
+         *     versioned document with its own rules, and restating its twenty-odd fields as
+         *     a second type would create exactly one thing: somewhere for the two to
+         *     disagree. The daemon deserializes it with the domain's own parser, so an
+         *     unknown or malformed field is refused rather than dropped.
+         */
+        PublishTriggerRequest: {
+            /** @description The complete trigger specification, as the domain spells it. */
+            spec: unknown;
         };
         /** @description One immutable published team-template revision. */
         PublishedTeamRevisionDto: {
@@ -10775,6 +10839,61 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_trigger: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishTriggerRequest"];
+            };
+        };
+        responses: {
+            /** @description Installed, or the identical revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriggerSpecDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description That revision is installed with different bytes */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

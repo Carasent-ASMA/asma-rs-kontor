@@ -49,7 +49,9 @@ pub use client::{
     Request, Transport, TransportFailure,
 };
 pub use dispatch::{Dispatcher, Envelope, Failure};
-pub use registry::{ArgSpec, ArgType, NON_AGENT_ROUTES, OpKind, Place, REGISTRY, ToolSpec};
+pub use registry::{
+    ArgSpec, ArgType, FieldSpec, NON_AGENT_ROUTES, OpKind, Place, REGISTRY, ToolSpec,
+};
 pub use server::{KontorMcp, serve, serve_stdio};
 
 /// Build the dispatcher one seat is configured with.

@@ -213,6 +213,7 @@ impl Team {
                 at("2026-08-10T09:00:00Z"),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         }
     }
@@ -356,6 +357,7 @@ async fn grade_c_cannot_autonomously_dispatch() {
                 at("2026-08-10T09:00:00Z"),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         },
     )
@@ -696,6 +698,7 @@ async fn team_run_roles_share_one_verified_workspace_binding() {
                 at("2026-08-10T09:00:00Z"),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         },
     )

@@ -192,6 +192,14 @@ closed_enum! {
         /// assignee the connector accepts. A claim can name only the principal,
         /// so a claim receipt must not be citable as an arbitrary assignment.
         ClaimTicket => "claim_ticket",
+        /// Install one immutable trigger revision into a project.
+        ///
+        /// Distinct from [`CommandKind::SubmitIntake`], which *acts under* a
+        /// pinned trigger: publishing declares what a trigger may do — including,
+        /// under [`crate::spec::AutoArmPolicy::BoundedAutoArm`], the capability
+        /// to arm work without a human. A submission receipt must never be
+        /// citable as the authority that granted that.
+        PublishTrigger => "publish_trigger",
     }
 }
 
@@ -378,9 +386,14 @@ impl CommandKind {
             // intake decision that creates no work graph has no narrower
             // aggregate to name, and naming one it did not create would be a
             // claim about work that does not exist.
-            Self::EnsureProject | Self::EnsureAccountProfile | Self::SubmitIntake => {
-                witness(matches!(target, A::Project))
-            }
+            // Publishing a trigger installs a document into the project and
+            // names no row inside it: the trigger revision it creates is
+            // immutable and is addressed by `(id, version)`, not by an aggregate
+            // with a revision of its own.
+            Self::EnsureProject
+            | Self::EnsureAccountProfile
+            | Self::SubmitIntake
+            | Self::PublishTrigger => witness(matches!(target, A::Project)),
             Self::ApplyEpicGraph | Self::TransitionEpic | Self::StartScheduledWork => {
                 witness(matches!(target, A::MiniProject))
             }

@@ -24,8 +24,8 @@ use kontor_core::id::{
     SpecVersion, TeamTemplateId,
 };
 use kontor_core::spec::{
-    ContextTemplateRef, ContextWindowPolicy, ModelChainPolicy, RoleAuthority, RoleRef, SkillRef,
-    TeamRunSnapshot, TeamTemplateRevision,
+    ContextTemplateRef, ContextWindowPolicy, ModelChainPolicy, RoleAuthority, RoleRef,
+    SeatAutonomy, SkillRef, TeamRunSnapshot, TeamTemplateRevision,
 };
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,14 @@ pub struct RoleSlotSpec {
     /// Ordered provider/model/effort fallbacks for this seat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_chain: Option<ModelChainPolicy>,
+    /// How much this seat may do before it has to ask a human.
+    ///
+    /// Defaulted for the same reason as `context_window`: a template revision
+    /// written before the policy existed still parses. Omission means
+    /// [`SeatAutonomy::standard`] — supervised — so an existing template cannot
+    /// gain authority by being read by a newer build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomy: Option<SeatAutonomy>,
 }
 
 /// One declared handoff between two slots of the same team.

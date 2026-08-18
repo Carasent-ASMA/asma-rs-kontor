@@ -37,9 +37,8 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::body::Json;
 use async_trait::async_trait;
-use axum::Json;
-use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use kontor_core::id::{
@@ -59,7 +58,7 @@ use utoipa::ToSchema;
 use crate::Caller;
 use crate::auth::CallerCapability;
 use crate::control::{idempotency_key, parse_id};
-use crate::error::{ApiError, ApiErrorCode};
+use crate::error::ApiError;
 use crate::state::ApiState;
 
 // ---------------------------------------------------------------------------
@@ -2962,6 +2961,20 @@ pub struct TriggerSpecDto {
     pub auto_arm: bool,
 }
 
+/// What `triggers:publish` is asked for.
+///
+/// The body carries the trigger document itself rather than a field-by-field
+/// mirror of it. A `TriggerSpec` is already a validated, canonicalizable,
+/// versioned document with its own rules, and restating its twenty-odd fields as
+/// a second type would create exactly one thing: somewhere for the two to
+/// disagree. The daemon deserializes it with the domain's own parser, so an
+/// unknown or malformed field is refused rather than dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct PublishTriggerRequest {
+    /// The complete trigger specification, as the domain spells it.
+    pub spec: serde_json::Value,
+}
+
 /// What `intake:submit` is asked for.
 ///
 /// The envelope is the *canonical* event, already redacted by whoever holds the
@@ -3795,6 +3808,14 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         trigger: &str,
         version: SpecVersion,
+    ) -> Result<TriggerSpecDto, ApiError>;
+
+    /// Install one immutable trigger revision.
+    fn publish_trigger(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublishTriggerRequest,
     ) -> Result<TriggerSpecDto, ApiError>;
 
     /// Evaluate one canonical source event and record the decision.
@@ -5616,15 +5637,10 @@ pub async fn arm(
     caller: Caller,
     Path((project_id, epic_id)): Path<(String, String)>,
     headers: HeaderMap,
-    request: Result<Json<ArmRequest>, JsonRejection>,
+    request: Json<ArmRequest>,
 ) -> Result<Json<AuthorizationProjectionDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
-    let Json(request) = request.map_err(|_| {
-        state.refuse(
-            ApiErrorCode::InvalidRequest,
-            "execution:arm requires a JSON body matching the documented budget contract",
-        )
-    })?;
+    let Json(request) = request;
     let (project_id, epic_id, key) = scope(&state, &project_id, &epic_id, &headers)?;
     Ok(Json(
         state
@@ -6392,6 +6408,40 @@ pub async fn trigger(
         state
             .applications()
             .trigger(project_id, &trigger, version)?,
+    ))
+}
+
+/// Install one immutable trigger revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/triggers:publish", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = PublishTriggerRequest,
+    responses(
+        (status = 200, body = TriggerSpecDto, description = "Installed, or the identical revision"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "That revision is installed with different bytes")
+    )
+)]
+pub async fn publish_trigger(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<PublishTriggerRequest>,
+) -> Result<Json<TriggerSpecDto>, ApiError> {
+    // Admin, because a published trigger may carry a bounded auto-arm — the
+    // capability to start work with no human in the loop. Granting that is an
+    // authority decision, not an ordinary control-plane write.
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .publish_trigger(&key, project_id, &request)?,
     ))
 }
 

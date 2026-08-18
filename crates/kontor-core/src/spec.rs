@@ -1147,6 +1147,76 @@ impl fmt::Display for ContextEnforcement {
     }
 }
 
+/// How much a seat may do before it has to ask a human.
+///
+/// This is Kontor's *own* statement of intent, not a runtime's spelling of it.
+/// Every agent runtime has some notion of "ask before acting", and each spells it
+/// differently; an adapter maps these three onto whatever its runtime calls them,
+/// and a runtime that cannot express one refuses the launch rather than silently
+/// running under a wider authority than was declared.
+///
+/// The distinction that matters is between *this* control and Kontor's own. A
+/// seat running [`SeatAutonomy::Bounded`] is not unsupervised: it is already
+/// inside an execution authorization with a window, a concurrency ceiling and a
+/// budget, and every gate, artifact contract and completion rule still applies.
+/// What it stops doing is asking a second time, per tool call, for permission
+/// Kontor already granted — which is a question the operator cannot answer from
+/// any evidence the seat has not already been given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeatAutonomy {
+    /// The runtime asks a human before each guarded action.
+    ///
+    /// The default, because it is what every seat does today: a launch that
+    /// declares nothing must not quietly gain authority it did not have before
+    /// this policy existed.
+    Supervised,
+    /// The runtime acts within the bounds Kontor already granted, without asking
+    /// again per action.
+    Bounded,
+    /// The seat may read and propose, never act.
+    ///
+    /// What an Advisor or a Committee member is for: a consultation that could
+    /// edit the tree is not a consultation.
+    Advisory,
+}
+
+impl SeatAutonomy {
+    /// The policy a seat gets when nothing declared one.
+    #[must_use]
+    pub const fn standard() -> Self {
+        Self::Supervised
+    }
+
+    /// The stable spelling used in JSON, errors and logs.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Supervised => "supervised",
+            Self::Bounded => "bounded",
+            Self::Advisory => "advisory",
+        }
+    }
+
+    /// Whether a seat under this policy may change anything at all.
+    #[must_use]
+    pub const fn may_act(self) -> bool {
+        matches!(self, Self::Supervised | Self::Bounded)
+    }
+}
+
+impl Default for SeatAutonomy {
+    fn default() -> Self {
+        Self::standard()
+    }
+}
+
+impl fmt::Display for SeatAutonomy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// What the trigger target is measured against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

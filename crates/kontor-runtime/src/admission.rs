@@ -928,6 +928,7 @@ mod tests {
                 parse_utc_timestamp("2026-08-10T09:00:00Z").expect("a canonical time"),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: parse_utc_timestamp("2026-08-10T09:00:00Z").expect("a canonical time"),
         })
     }
