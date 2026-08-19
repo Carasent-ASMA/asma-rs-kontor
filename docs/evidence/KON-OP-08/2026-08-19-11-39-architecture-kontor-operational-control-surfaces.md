@@ -4,8 +4,9 @@
 > **Status:** 🟢 Approved for implementation  
 > **Author:** Architect · KON-OP-08  
 > **Category:** architecture  
-> **Amended:** 2026-08-19 19:12 CEST — OP-09 integration baseline, LSA schema
-> serialization and three owned operational gaps  
+> **Amended:** 2026-08-19 19:37 CEST — OP-12 lineage merge resolution, OP-09
+> integration baseline, LSA schema serialization and three owned operational
+> gaps  
 > **Scope:** ASMA-7877 / KON-OP-08 — complete `/v1`/CLI/MCP parity, native
 > operational ownership, replay-safe bootstrap/update and bounded ASMA
 > compatibility  
@@ -162,6 +163,65 @@ Until step 2 is true, the OP-08 migration is a hard builder stop. Do not make
 the tree appear serial by reserving a placeholder `0042`, registering an
 unapplied `0043`, dropping OP-12's migration, or temporarily weakening fresh
 database tests.
+
+### OP-12 inspector flag — accepted lineage fix, superseded generation
+
+The KON-OP-12 inspector correctly identified a second merge hazard in
+`crates/kontor-store/src/migrations.rs`. OP-12's merged implementation repairs
+the operational-hardening v35 lineage by enumerating migrations through
+`MIGRATIONS[40]`. OP-08 already replaced that pointwise list with the stronger
+self-extending rule:
+
+```rust
+for (index, migration) in MIGRATIONS
+    .iter()
+    .enumerate()
+    .skip(CONSULTATION_GENERATION)
+{
+    if index == ESCALATION_GENERATION {
+        continue;
+    }
+    transaction.execute_batch(migration)?;
+}
+```
+
+That loop is the authoritative conflict resolution. Keep it when the exact
+post-OP-14 master is integrated; do not restore master's hardcoded list or add
+another hand-maintained index. The skip is semantic: the historical lineage
+already has `0037_escalation_brief.sql`; every other migration from the first
+missing consultation generation through the end of `MIGRATIONS` must run.
+
+The inspector's accompanying `0042` / `MIGRATIONS[41]` arithmetic is not
+authoritative because it reflects the earlier PR #45 ordering. The later LSA
+serialization in this document supersedes it:
+
+| Migration | Array index | Owner |
+| --- | ---: | --- |
+| `0041_open_questions.sql` | `MIGRATIONS[40]` | OP-12 |
+| `0042` | `MIGRATIONS[41]` | OP-14 / ASMA-7941 |
+| `0043_project_subject_authority.sql` | `MIGRATIONS[42]` | OP-08 / ASMA-7877 |
+
+The merged `schema_v1.rs` inventory must be a union, never an either-side
+resolution. Start with the exact post-OP-14 master list, which must already
+contain OP-12's `open_questions`, `open_question_rounds`,
+`open_question_dispositions` and `open_question_trigger_firings` plus OP-14's
+tables. Then add OP-08's `project_subject_authority`,
+`subject_import_manifests` and `subject_authority_receipts`, and assert
+`SCHEMA_VERSION == 43`.
+
+A fresh database is insufficient evidence. Run the exact historical-lineage
+test after the integration and record that it reaches schema 43 without losing
+the receipt:
+
+```text
+cargo test -p kontor-store --test schema_v1 \
+  the_operational_hardening_v35_lineage_converges_without_losing_its_receipt \
+  -- --exact
+```
+
+This gate must fail if the self-extending loop is replaced by OP-12's
+hardcoded-through-40 list or any later pointwise list that stops before index
+42.
 
 ### Owned gap 1 — project discovery parity
 
@@ -675,7 +735,12 @@ smallest behavior-level red test and keep the workspace green before moving on.
   `0f62c51`.
 - Move `project_subject_authority` directly from its local `0041` to `0043` and
   update every lineage, version, fixture, generated type and inventory pin.
-- Prove fresh and populated `v42 -> v43` migration plus restart/replay.
+- Keep OP-08's self-extending operational-hardening convergence loop; drop the
+  merged hardcoded list ending at `MIGRATIONS[40]`.
+- Build the schema table inventory as OP-12 + OP-14 + OP-08, with OP-08 at
+  `MIGRATIONS[42]` and `SCHEMA_VERSION == 43`.
+- Prove fresh and populated `v42 -> v43` migration plus restart/replay, then run
+  the exact operational-hardening v35 lineage regression through schema 43.
 - Commit no OP-08 migration as `0042`, no placeholder for OP-14, and no OP-08
   `0043` before OP-14 is present.
 
