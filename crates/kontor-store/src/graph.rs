@@ -1620,13 +1620,12 @@ fn ensure_task(
                     "already exists in this epic contending for a different module",
                 ));
             }
-            let requested_state = plan.imported_state.task_state();
-            if task.state != requested_state {
-                return Err(conflict(
-                    "epic task import state",
-                    "the task already exists in this epic with a different lifecycle state",
-                ));
-            }
+            // What a reapply is judged against is the *declaration*, never the
+            // progress made since. The current state is deliberately not
+            // compared: the first native transition clears the provenance and
+            // moves the state, and an identical manifest has to stay replayable
+            // after work has started — which is the oldest promise this contract
+            // makes.
             if task
                 .imported_state
                 .is_some_and(|state| state != plan.imported_state)
@@ -1636,10 +1635,11 @@ fn ensure_task(
                     "the task already exists with a contradictory historical lifecycle fact",
                 ));
             }
-            // A pre-v42 ready task has no provenance column. Treating that one
-            // legacy shape as imported-ready preserves compatible reapply; a
-            // legacy `done` row is not accepted as historical completion,
-            // because that would relabel native closure after the fact.
+            // No provenance means one of two shapes: a task imported before v42,
+            // or one this Realm has since transitioned itself. Reapplying the
+            // compatibility default over either is idempotent. Declaring it
+            // historically `completed` is not, because that relabels work Kontor
+            // owns as work it merely inherited.
             if task.imported_state.is_none() && plan.imported_state != ImportedTaskState::Ready {
                 return Err(conflict(
                     "epic task import state",
