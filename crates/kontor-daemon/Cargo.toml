@@ -20,33 +20,33 @@ name = "kontor-daemon"
 path = "src/main.rs"
 
 [dependencies]
-kontor-api = { path = "../kontor-api", version = "=0.1.0" }
-kontor-core = { path = "../kontor-core", version = "=0.1.0" }
-kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
+kontor-api = { path = "../kontor-api", version = "=0.2.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.0" }
+kontor-runtime = { path = "../kontor-runtime", version = "=0.2.0" }
 # The composition root is where a configured runtime family becomes a live
 # adapter, so it is the one crate that depends on the provider adapters. Nothing
 # below it does: `kontor-api` is stated against the port.
-kontor-runtime-paseo = { path = "../kontor-runtime-paseo", version = "=0.1.0" }
-kontor-store = { path = "../kontor-store", version = "=0.1.0" }
+kontor-runtime-paseo = { path = "../kontor-runtime-paseo", version = "=0.2.0" }
+kontor-store = { path = "../kontor-store", version = "=0.2.0" }
 # The application services are composed here and nowhere else: this is the one
 # crate allowed to hold the profile pack, the team layer and the scheduler in the
 # same hand as the store and the adapters.
-kontor-profiles = { path = "../kontor-profiles", version = "=0.1.0" }
-kontor-teams = { path = "../kontor-teams", version = "=0.1.0" }
+kontor-profiles = { path = "../kontor-profiles", version = "=0.2.0" }
+kontor-teams = { path = "../kontor-teams", version = "=0.2.0" }
 # KON-OP-06: the completion ticket-gate/closeout vocabulary and the mandatory
 # `NEEDS_HUMAN` payload are decided in `kontor-policy`; this crate composes them
 # and never re-implements a rule. Same split as `kontor-scheduler` above.
-kontor-policy = { path = "../kontor-policy", version = "=0.1.0" }
-kontor-scheduler = { path = "../kontor-scheduler", version = "=0.1.0" }
+kontor-policy = { path = "../kontor-policy", version = "=0.2.0" }
+kontor-scheduler = { path = "../kontor-scheduler", version = "=0.2.0" }
 # Admission policy — which observation moves the adaptive window, and what a
 # cooldown means — is the account layer's. The composition root is where that
 # policy meets the store that persists it and the scheduler that reads it.
-kontor-accounts = { path = "../kontor-accounts", version = "=0.1.0" }
-kontor-context = { path = "../kontor-context", version = "=0.1.0" }
+kontor-accounts = { path = "../kontor-accounts", version = "=0.2.0" }
+kontor-context = { path = "../kontor-context", version = "=0.2.0" }
 # The connector specification catalogue KON-MVP-14 compiled and validated. The
 # daemon reads it and never re-derives one: a second mapping of the same ticket
 # fields is a second answer to the same question.
-kontor-integrations-asma = { path = "../kontor-integrations-asma", version = "=0.1.0" }
+kontor-integrations-asma = { path = "../kontor-integrations-asma", version = "=0.2.0" }
 async-trait = { workspace = true }
 axum = { workspace = true }
 jiff = { workspace = true }
@@ -68,20 +68,20 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-kontor-store = { path = "../kontor-store", version = "=0.1.0" }
+kontor-store = { path = "../kontor-store", version = "=0.2.0" }
 # KON-MVP-16: the wired-api suite seeds a work-calendar assignment directly to
 # prove the scheduling route refuses a project it cannot resolve a window for.
 rusqlite = { workspace = true }
 # The black-box suite drives the real router through `tower::ServiceExt::oneshot`
 # and never binds a socket, launches this binary or spawns a child process
 # (TST-001). The runtime under test is always the scripted fake.
-kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
+kontor-runtime = { path = "../kontor-runtime", version = "=0.2.0" }
 # KON-MVP-16: the MCP journey drives the real router through the same registry,
 # gate and dispatch path the stdio server uses. A dev dependency only — nothing
 # in the daemon links the tool surface, and `kontor-mcp` does not link back.
 # `async-trait` is already a normal dependency above, so the journey's transport
 # impl needs no second edge for it.
-kontor-mcp = { path = "../kontor-mcp", version = "=0.1.0" }
+kontor-mcp = { path = "../kontor-mcp", version = "=0.2.0" }
 futures = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

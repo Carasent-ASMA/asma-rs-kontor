@@ -19,7 +19,7 @@ workspace = true
 # evaluation is a pure function of the domain contract. No store, no runtime, no
 # adapter — a rule that needed one of those would be reaching for authority it is
 # not allowed to have.
-kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

@@ -14,8 +14,8 @@ workspace = true
 [dependencies]
 # The exact version is the workspace's own package version. A bare path
 # dependency is a wildcard requirement, which `deny.toml` refuses.
-kontor-core = { path = "../kontor-core", version = "=0.1.0" }
-kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.0" }
+kontor-runtime = { path = "../kontor-runtime", version = "=0.2.0" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -36,4 +36,4 @@ tokio = { workspace = true }
 # assertions as the scripted fake rather than by a copy of them. The dependency
 # runs test-crate -> adapter only in this direction: `kontor-tests-contract` is
 # stated against `RuntimeAdapter` and never depends on AO.
-kontor-tests-contract = { path = "../../tests/contract", version = "=0.1.0" }
+kontor-tests-contract = { path = "../../tests/contract", version = "=0.2.0" }

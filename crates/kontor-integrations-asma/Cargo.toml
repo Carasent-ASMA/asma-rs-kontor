@@ -19,7 +19,7 @@ workspace = true
 # from `kontor-core`. This crate adds no DTO of its own for anything the core
 # already models, and it deliberately has no HTTP client and no filesystem
 # edge: every live effect crosses the `asma` executable boundary.
-kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.0" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
