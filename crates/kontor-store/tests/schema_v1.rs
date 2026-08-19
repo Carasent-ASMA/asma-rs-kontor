@@ -16,6 +16,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use kontor_core::authority::{AuthoritySubject, SubjectOrigin};
 use kontor_core::id::{AccountProfileId, ProjectId};
 use kontor_core::repository::{ProjectRepository, RepositoryError};
 use kontor_store::{SCHEMA_VERSION, SqliteStore, StoreError};
@@ -100,6 +101,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "persona_scenarios",
     "policy_evaluations",
     "projects",
+    "project_subject_authority",
     "project_topology_defaults",
     "quick_session_promotions",
     "quick_sessions",
@@ -128,6 +130,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "source_events",
     "status_conflicts",
     "status_transition_receipts",
+    "subject_authority_receipts",
+    "subject_import_manifests",
     "seat_bindings",
     "task_account_selections",
     "task_dependencies",
@@ -290,6 +294,23 @@ fn migrate_through_v33(connection: &Connection) {
     }
 }
 
+fn migrate_through_v40(connection: &Connection) {
+    migrate_through_v33(connection);
+    for migration in [
+        include_str!("../migrations/0034_consultation_profiles.sql"),
+        include_str!("../migrations/0035_epic_completion.sql"),
+        include_str!("../migrations/0036_consultation_runs.sql"),
+        include_str!("../migrations/0037_escalation_brief.sql"),
+        include_str!("../migrations/0038_publish_trigger_command.sql"),
+        include_str!("../migrations/0039_committee_remediation.sql"),
+        include_str!("../migrations/0040_advisor_advice.sql"),
+    ] {
+        connection
+            .execute_batch(migration)
+            .expect("the canonical migrations through v40 run");
+    }
+}
+
 fn table_names(connection: &Connection) -> BTreeSet<String> {
     let mut statement = connection
         .prepare(
@@ -315,7 +336,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 40);
+    assert_eq!(SCHEMA_VERSION, 41);
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.
@@ -608,6 +629,195 @@ fn a_schema_v1_database_is_upgraded_in_place_and_keeps_its_realm() {
         )
         .expect("readable");
     assert_eq!(triggers, 3, "the v2 triggers are re-created by the upgrade");
+}
+
+/// Migration 0032 seeds every project that already existed, and makes the states
+/// a second writer would need unrepresentable.
+///
+/// The seeding rule is the interesting half: a project's *backlog* graph already
+/// lived in Kontor, so it is seeded native, while its *memory* inherits whatever
+/// the realm singleton actually claimed. Seeding both from the singleton would
+/// hand an already-native backlog back to AgentsRoom.
+#[test]
+fn migration_0041_seeds_existing_projects_and_guards_the_ledger() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    connection
+        .execute_batch(
+            "INSERT INTO projects (id, name, root_path, revision, created_at)
+             VALUES ('0193f000-0000-7000-8000-0000000000a1', 'P', '/tmp/a1', 1,
+                     '2026-08-09T10:00:00Z');
+             INSERT INTO project_subject_authority
+                 (project_id, subject, origin, authority, revision)
+             VALUES ('0193f000-0000-7000-8000-0000000000a1', 'memory',
+                     'legacy_pending', 'agentsroom', 1),
+                    ('0193f000-0000-7000-8000-0000000000a1', 'backlog',
+                     'kontor_native', 'kontor', 1);",
+        )
+        .expect("a pending project inserts");
+
+    // The realm-wide row the old route wrote is frozen.
+    assert!(
+        connection
+            .execute(
+                "UPDATE memory_authority SET authority = 'kontor' WHERE singleton = 1",
+                [],
+            )
+            .is_err(),
+        "the realm-wide switch must be unreachable, not merely unused"
+    );
+
+    // A native subject cannot be handed cutover evidence, and cannot be demoted.
+    assert!(
+        connection
+            .execute(
+                "UPDATE project_subject_authority SET authority = 'agentsroom'
+                 WHERE project_id = '0193f000-0000-7000-8000-0000000000a1'
+                   AND subject = 'backlog'",
+                [],
+            )
+            .is_err(),
+        "authority never moves back to the legacy system"
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO project_subject_authority
+                     (project_id, subject, origin, authority, revision, switched_at)
+                 VALUES ('0193f000-0000-7000-8000-0000000000a1', 'memory',
+                         'kontor_native', 'kontor', 1, '2026-08-09T10:00:00Z')",
+                [],
+            )
+            .is_err(),
+        "a native row carries no switch evidence"
+    );
+
+    // A switch without the full evidence set aborts, whichever field is missing.
+    for setter in [
+        "authority = 'kontor', revision = 2",
+        "authority = 'kontor', revision = 2, source_frozen_at = '2026-08-09T10:00:00Z'",
+        "authority = 'kontor', revision = 2, source_frozen_at = '2026-08-09T10:00:00Z',
+         final_import_hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+    ] {
+        assert!(
+            connection
+                .execute(
+                    &format!(
+                        "UPDATE project_subject_authority SET {setter}
+                         WHERE project_id = '0193f000-0000-7000-8000-0000000000a1'
+                           AND subject = 'memory'"
+                    ),
+                    [],
+                )
+                .is_err(),
+            "a partial switch is not a state: {setter}"
+        );
+    }
+
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM project_subject_authority
+                 WHERE project_id = '0193f000-0000-7000-8000-0000000000a1'",
+                [],
+            )
+            .is_err(),
+        "an authority row is never deleted"
+    );
+}
+
+/// Migration 0041 seeds the projects a real realm already has, from what the
+/// realm-wide row actually claimed.
+///
+/// This is the half of the seeding rule that matters and the hand-inserted rows
+/// of the guard test cannot reach: a *populated* pre-authority file. Backlog is seeded
+/// native because these projects' graphs already lived in Kontor and have no
+/// legacy original to import; memory inherits the singleton's claim. The mutants
+/// this kills are seeding both subjects from the singleton — which would hand an
+/// already-native backlog back to the legacy system — and seeding memory as
+/// native regardless, which would silently claim authority over a project whose
+/// legacy memory had never been imported.
+#[test]
+fn migration_0041_seeds_a_populated_v40_realm_from_what_the_singleton_claimed() {
+    const FIRST: &str = "0193f000-0000-7000-8000-0000000000d1";
+    const SECOND: &str = "0193f000-0000-7000-8000-0000000000d2";
+    const HASH: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+    for (claimed, expected_origin, expected_authority) in [
+        ("agentsroom", "legacy_pending", "agentsroom"),
+        ("kontor", "kontor_native", "kontor"),
+    ] {
+        let directory = temp();
+        let path = directory.path().join("kontor.db");
+        {
+            let connection = Connection::open(&path).expect("a raw connection opens");
+            migrate_through_v40(&connection);
+            connection
+                .execute(
+                    "INSERT INTO realm_metadata
+                         (singleton, realm_id, schema_version, created_at, display_label)
+                     VALUES (1, '0193f000-0000-7000-8000-0000000000d0', 1,
+                             '2026-08-17T01:00:00Z', NULL)",
+                    [],
+                )
+                .expect("the pre-authority realm row is written");
+            for (id, name, root) in [(FIRST, "First", "/tmp/d1"), (SECOND, "Second", "/tmp/d2")] {
+                connection
+                    .execute(
+                        "INSERT INTO projects (id, name, root_path, revision, created_at)
+                         VALUES (?1, ?2, ?3, 1, '2026-08-17T01:00:00Z')",
+                        [id, name, root],
+                    )
+                    .expect("a pre-authority project is written");
+            }
+            if claimed == "kontor" {
+                // The v21 row only reaches `kontor` with its whole cutover set, so
+                // the claim this seeds from is the one that schema could hold.
+                connection
+                    .execute(
+                        "UPDATE memory_authority
+                         SET authority = 'kontor',
+                             agentsroom_writes_frozen_at = '2026-08-17T00:00:00Z',
+                             final_export_hash = ?1,
+                             switched_at = '2026-08-17T00:30:00Z'
+                         WHERE singleton = 1",
+                        [HASH],
+                    )
+                    .expect("the realm-wide claim is set");
+            }
+        }
+
+        let store = SqliteStore::open(&path).expect("a populated pre-authority realm upgrades");
+        assert_eq!(
+            store.schema_version().expect("the version is readable"),
+            SCHEMA_VERSION
+        );
+        for id in [FIRST, SECOND] {
+            let project = ProjectId::parse(id).expect("a canonical project id");
+            let memory = store
+                .subject_authority(project, AuthoritySubject::Memory)
+                .expect("every pre-existing project is seeded");
+            assert_eq!(
+                (memory.origin.as_str(), memory.authority.as_str()),
+                (expected_origin, expected_authority),
+                "memory inherits the realm-wide claim `{claimed}`"
+            );
+            assert!(
+                memory.final_import_hash.is_none() && memory.switched_at.is_none(),
+                "seeding invents no cutover evidence for a claim it did not witness"
+            );
+
+            let backlog = store
+                .subject_authority(project, AuthoritySubject::Backlog)
+                .expect("every pre-existing project is seeded");
+            assert_eq!(backlog.origin, SubjectOrigin::KontorNative);
+            assert!(
+                backlog.writable_by_kontor(),
+                "a graph that already lived in Kontor is not handed back to the legacy system"
+            );
+        }
+    }
 }
 
 /// Migration 0002 adds no default to *any* column, so a row it did not write

@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 40;
+pub const SCHEMA_VERSION: i64 = 41;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -183,12 +183,24 @@ const MIGRATIONS: &[&str] = &[
     // Schema v40. One immutable Advisor advice artifact, authored by the exact
     // attested seat before a Realm operator records the requester's disposition.
     include_str!("../migrations/0040_advisor_advice.sql"),
+    // Schema v41. Authority per `(project, subject)` instead of per Realm, the
+    // import manifests and receipts a legacy cutover is granted against, and the
+    // trigger that freezes the singleton the old global route used to write.
+    include_str!("../migrations/0041_project_subject_authority.sql"),
 ];
 
 const _: () = assert!(
     MIGRATIONS.len() == SCHEMA_VERSION as usize,
     "every schema version needs exactly one migration script"
 );
+
+/// `MIGRATIONS` index of `0034_consultation_profiles.sql`, the first generation
+/// the operational-hardening lineage is missing.
+const CONSULTATION_GENERATION: usize = 33;
+
+/// `MIGRATIONS` index of `0037_escalation_brief.sql`, the one generation that
+/// lineage already has.
+const ESCALATION_GENERATION: usize = 36;
 
 /// Apply and verify the connection-level pragmas.
 ///
@@ -343,14 +355,18 @@ fn apply_pending(
     let operational_hardening_lineage = matches!(version, 34 | 35)
         && !table_exists(&transaction, "consultation_profile_revisions")?;
     if operational_hardening_lineage {
-        for migration in [
-            MIGRATIONS[33],
-            MIGRATIONS[34],
-            MIGRATIONS[35],
-            MIGRATIONS[37],
-            MIGRATIONS[38],
-            MIGRATIONS[39],
-        ] {
+        // Everything from the first consultation generation onward, so this
+        // convergence extends itself when a migration is appended instead of
+        // stopping at whatever the list was written against and leaving
+        // `user_version` behind `SCHEMA_VERSION`.
+        for (index, migration) in MIGRATIONS.iter().enumerate().skip(CONSULTATION_GENERATION) {
+            // `0037_escalation_brief.sql`. This lineage is *defined* by already
+            // having those objects, so re-running it would fail on the first
+            // duplicate. Every later script still sets its own `user_version`, so
+            // skipping it costs the chain nothing.
+            if index == ESCALATION_GENERATION {
+                continue;
+            }
             transaction.execute_batch(migration)?;
         }
     } else {

@@ -22,8 +22,9 @@
 //! edited to agree with the other without the edit being visible.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
-use kontor_mcp::{ArgType, NON_AGENT_ROUTES, Place, REGISTRY, ToolSpec};
+use kontor_mcp::{ArgType, CallerTier, NON_AGENT_ROUTES, OpKind, Place, REGISTRY, ToolSpec};
 
 /// One documented operation, read out of the generated contract.
 #[derive(Debug)]
@@ -510,25 +511,124 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
     );
 }
 
+/// Where the committed operation inventory lives.
+fn inventory_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/v1-operation-inventory.txt")
+}
+
+/// The public surface as one reviewable list: every documented `/v1` operation,
+/// joined to the tool that reaches it or the allowlist entry that excuses it.
+///
+/// Generated from the same two sides the oracle compares, so it cannot be edited
+/// into agreement with either.
+fn rendered_inventory() -> String {
+    let mut mapped: BTreeMap<(String, String), &ToolSpec> = BTreeMap::new();
+    for tool in REGISTRY {
+        mapped.insert(route_of(tool), tool);
+    }
+    let excused: BTreeMap<(String, String), &str> = NON_AGENT_ROUTES
+        .iter()
+        .map(|route| {
+            (
+                (route.method.as_str().to_owned(), route.path.to_owned()),
+                route.reason,
+            )
+        })
+        .collect();
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut operations: Vec<(String, String)> = documented()
+        .into_iter()
+        .map(|operation| (operation.path, operation.method))
+        .collect();
+    operations.sort();
+    for (path, method) in operations {
+        let route = (method.clone(), path.clone());
+        let rendered = match (mapped.get(&route), excused.get(&route)) {
+            (Some(tool), _) => format!(
+                "{method} {path} -> {} [{}, {}]",
+                tool.name,
+                tier_name(tool.tier),
+                kind_name(tool.kind)
+            ),
+            (None, Some(reason)) => format!("{method} {path} -> ALLOWLISTED: {reason}"),
+            // Unreachable while the completeness tests above pass. Rendered rather
+            // than panicked so this artefact still regenerates while a gap is being
+            // closed, and so the gap is what the diff shows.
+            (None, None) => format!("{method} {path} -> UNMAPPED"),
+        };
+        lines.push(rendered);
+    }
+
+    // An allowlisted route need not appear in the contract document — the
+    // document endpoint itself does not describe itself — so the union is what
+    // makes this a complete inventory rather than a view of one side.
+    for ((method, path), reason) in &excused {
+        if !mapped.contains_key(&(method.clone(), path.clone())) {
+            let line = format!("{method} {path} -> ALLOWLISTED: {reason}");
+            if !lines.contains(&line) {
+                lines.push(line);
+            }
+        }
+    }
+    lines.sort();
+
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
+/// The declared tier, in the contract's own spelling.
+fn tier_name(tier: CallerTier) -> &'static str {
+    match tier {
+        CallerTier::Observer => "observer",
+        CallerTier::Operator => "operator",
+        CallerTier::Admin => "admin",
+    }
+}
+
+/// What the operation does to the Realm.
+fn kind_name(kind: OpKind) -> &'static str {
+    match kind {
+        OpKind::Read => "read",
+        OpKind::Write => "write",
+        OpKind::Stream => "stream",
+    }
+}
+
 #[test]
-fn the_snapshot_canary_holds_at_this_base() {
-    // Not "29 forever": this is what makes a later contract change fail here, so a
-    // new operation gets a deliberate tool or a recorded deferral instead of
-    // slipping past unreviewed.
+fn the_committed_inventory_is_the_surface_this_workspace_serves() {
+    // This replaces a pair of hand-maintained counts. A count says only that
+    // *something* moved and has to be re-guessed on every change; the inventory
+    // says which operation appeared, changed tier or lost its tool, and a reviewer
+    // reads that from the diff. Regenerate with KONTOR_UPDATE_CONTRACT=1.
+    let rendered = rendered_inventory();
+    let path = inventory_path();
+    if std::env::var_os("KONTOR_UPDATE_CONTRACT").is_some() {
+        std::fs::write(&path, &rendered).expect("the inventory can be written");
+        return;
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        panic!(
+            "{} is missing; regenerate it with KONTOR_UPDATE_CONTRACT=1",
+            path.display()
+        )
+    });
     assert_eq!(
-        REGISTRY.len(),
-        120,
-        "the mapped-operation count changed; map the new operation or record a deferral"
+        committed, rendered,
+        "the public operation inventory changed; regenerate it with \
+         KONTOR_UPDATE_CONTRACT=1 and review every moved line"
     );
+}
+
+#[test]
+fn the_allowlist_stays_the_reviewed_pair() {
+    // The inventory above would show a third omission, but this states the rule the
+    // omission has to survive: an unmapped route is reviewed, never accumulated.
     assert_eq!(
         NON_AGENT_ROUTES.len(),
         2,
         "the allowlist changed; an omission must be reviewed, not added"
-    );
-    assert_eq!(
-        documented().len(),
-        121,
-        "the contract's operation count changed; parity must be re-decided"
     );
 }
 
@@ -630,6 +730,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_memory_ingest_preview", CallerTier::Admin),
         ("kontor_memory_ingest_apply", CallerTier::Admin),
         ("kontor_memory_cutover_freeze", CallerTier::Admin),
+        // Who may write a project's subjects is an ordinary read; moving it is an
+        // admin act, like the switch it is spent on.
+        ("kontor_subject_authority_get", CallerTier::Observer),
+        ("kontor_subject_authority_attest", CallerTier::Admin),
         ("kontor_memory_cutover_switch", CallerTier::Admin),
         // KON-25: the Realm catalogue and Teams projection are reads; saving a
         // draft and publishing its next immutable revision are operator acts.

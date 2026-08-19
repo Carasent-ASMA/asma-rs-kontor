@@ -28,6 +28,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::DomainError;
+use kontor_core::authority::AuthoritySubject;
 use kontor_core::calendar::ExecutionAuthorization;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CommandReceiptId, ConnectorKey,
@@ -45,6 +46,7 @@ use kontor_core::ticket::StatusConflictKind;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
+use crate::authority::{SubjectOrigins, create_subject_authorities, require_backlog_authority};
 use crate::query::column_text;
 use crate::repository::{
     TASK_COLUMNS, backend, conflict, from_json, read_project, read_scope, read_task,
@@ -64,6 +66,10 @@ pub struct ProjectEnsure {
     pub name: ExternalName,
     /// Absolute root path. The natural identity.
     pub root_path: ExternalName,
+    /// Where this project's memory and backlog facts come from. Immutable, and
+    /// written in the same transaction as the project: a project never exists
+    /// without an answer to who may write each of its subjects.
+    pub origins: SubjectOrigins,
     /// Creation instant, used only when the project is created.
     pub created_at: Timestamp,
 }
@@ -460,6 +466,26 @@ impl SqliteStore {
                     "a project already stands at that root under a different name",
                 ));
             }
+            // Origins are part of what the project *is*, so a re-ensure that
+            // states different ones is drift rather than a no-op. Silently
+            // returning the existing project would let a caller believe it had
+            // just declared a subject native when the row still says otherwise.
+            for subject in AuthoritySubject::ALL.iter().copied() {
+                let stored: String = transaction
+                    .query_row(
+                        "SELECT origin FROM project_subject_authority
+                         WHERE project_id = ?1 AND subject = ?2",
+                        params![project.id.to_string(), subject.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(backend)?;
+                if stored != request.origins.for_subject(subject).as_str() {
+                    return Err(conflict(
+                        "project",
+                        "the project exists with a different declared subject origin",
+                    ));
+                }
+            }
             return Ok((project, Applied::Unchanged));
         }
         transaction
@@ -474,6 +500,7 @@ impl SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        create_subject_authorities(&transaction, request.id, request.origins).map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok((
             Project {
@@ -510,6 +537,9 @@ impl SqliteStore {
 
         let transaction = self.begin()?;
         ensure_project_exists(&transaction, request.project_id)?;
+        // The graph is the backlog. A project whose backlog a legacy system still
+        // owns is read and previewed, never written.
+        require_backlog_authority(&transaction, request.project_id)?;
         store_specifications(&transaction, request)?;
 
         let (mini_project, epic_applied) = ensure_mini_project(&transaction, request)?;

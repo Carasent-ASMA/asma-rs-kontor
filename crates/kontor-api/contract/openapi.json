@@ -593,6 +593,8 @@
         "tags": [
           "memory"
         ],
+        "summary": "The realm-wide freeze, kept only to refuse.",
+        "description": "It is still routed so an existing caller gets a typed answer naming its\nreplacement rather than a 404 it might read as \"not deployed yet\" — and it\ncan no longer write anything: the v32 trigger refuses the singleton it used\nto update.\n\nThe declared status is the one it returns. `invalid_request` is 400, and 400 is\nwhat this is: the request names a realm-wide operation that no longer exists,\nwhich no amount of re-reading or retrying makes valid. A 409 would say the\ncaller's state had moved and invite exactly the retry that can never work.",
         "operationId": "freeze",
         "parameters": [
           {
@@ -605,8 +607,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": ""
+          "400": {
+            "description": "always: replaced by per-project attestation"
           }
         }
       }
@@ -4469,6 +4471,72 @@
         }
       }
     },
+    "/v1/projects/{project_id}/subjects/authority": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "Read one project's authority for both subjects.",
+        "operationId": "authority",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/subjects/authority:attest": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "Attest one project's legacy source frozen, for one subject.",
+        "operationId": "attest_authority",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Attest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/tasks/{task_id}": {
       "get": {
         "tags": [
@@ -7603,6 +7671,36 @@
           }
         }
       },
+      "Attest": {
+        "type": "object",
+        "description": "The operator's statement that this project's legacy source is frozen.\n\nKontor cannot observe AgentsRoom, so what it records is that the attestation\nwas made, against the source position it names. The switch refuses without it.",
+        "required": [
+          "subject",
+          "source_cursor",
+          "source_hash",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The authority revision the caller read.",
+            "minimum": 0
+          },
+          "source_cursor": {
+            "type": "string",
+            "description": "The source position the operator froze at."
+          },
+          "source_hash": {
+            "type": "string",
+            "description": "The hash of the source at that position."
+          },
+          "subject": {
+            "type": "string",
+            "description": "Which subject's source was frozen."
+          }
+        }
+      },
       "AttestLateHandoffRequest": {
         "type": "object",
         "description": "What the Admin-only late-handoff reconciliation is asked for.",
@@ -9636,9 +9734,19 @@
         "description": "What `projects:ensure` is asked for.\n\n`root_path` is the stable caller key: it is unique across the database and\nimmutable once the project exists, so the same request always resolves to the\nsame project without a second identity that could disagree with it.",
         "required": [
           "name",
-          "root_path"
+          "root_path",
+          "memory_origin",
+          "backlog_origin"
         ],
         "properties": {
+          "backlog_origin": {
+            "type": "string",
+            "description": "Where this project's backlog comes from. Immutable once the project exists."
+          },
+          "memory_origin": {
+            "type": "string",
+            "description": "Where this project's memory comes from. Immutable once the project exists.\n\nStated explicitly, per subject, because it is the one fact nothing else can\nsupply: whether a project's memory has an AgentsRoom original waiting to be\nimported is knowledge the operator has and Kontor cannot observe. A default\nwould either make every legacy project silently writable or demand a\ncutover ceremony from every fresh one."
+          },
           "name": {
             "type": "string",
             "description": "Human name. Immutable once the project exists."
@@ -11159,6 +11267,8 @@
           "root_path",
           "revision",
           "applied",
+          "memory",
+          "backlog",
           "created_at"
         ],
         "properties": {
@@ -11166,10 +11276,18 @@
             "$ref": "#/components/schemas/AppliedDto",
             "description": "Whether this call created it."
           },
+          "backlog": {
+            "$ref": "#/components/schemas/SubjectAuthorityDto",
+            "description": "Where its backlog comes from, and who may write it now."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
             "description": "When it was created."
+          },
+          "memory": {
+            "$ref": "#/components/schemas/SubjectAuthorityDto",
+            "description": "Where its memory comes from, and who may write it now."
           },
           "name": {
             "type": "string",
@@ -13555,6 +13673,31 @@
           }
         }
       },
+      "SubjectAuthorityDto": {
+        "type": "object",
+        "description": "One subject's declared origin and current authority.\n\nReported on the project itself so a caller learns from `projects:ensure`\nwhether it may write yet, rather than discovering it from the first refused\nmemory or backlog write.",
+        "required": [
+          "origin",
+          "authority",
+          "revision"
+        ],
+        "properties": {
+          "authority": {
+            "type": "string",
+            "description": "Who may write it now."
+          },
+          "origin": {
+            "type": "string",
+            "description": "How this subject's facts entered. Immutable."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision an attestation or switch must present.",
+            "minimum": 0
+          }
+        }
+      },
       "SubmitIntakeRequest": {
         "type": "object",
         "description": "What `intake:submit` is asked for.\n\nThe envelope is the *canonical* event, already redacted by whoever holds the\nconnection: this operation evaluates it and records the decision, and there is\nno field here for a verdict, an approval or a work graph. What a matched event\nbecomes is the trigger's decision, not the submitter's.",
@@ -13594,9 +13737,16 @@
         "type": "object",
         "required": [
           "source",
-          "snapshot_hash"
+          "snapshot_hash",
+          "expected_revision"
         ],
         "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The authority revision the caller read. The switch refuses a stale one.",
+            "minimum": 0
+          },
           "snapshot_hash": {
             "type": "string"
           },

@@ -50,6 +50,8 @@ impl Modify for RealmBearer {
         crate::memory::import_preview,
         crate::memory::import_apply,
         crate::memory::freeze,
+        crate::memory::authority,
+        crate::memory::attest_authority,
         crate::memory::switch,
         crate::control::health,
         crate::control::realm,

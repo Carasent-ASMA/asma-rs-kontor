@@ -27,6 +27,7 @@
 //! The rule they share is the one uncertainty always breaks: an absence, a
 //! timeout, a closed stream or a missing session is never a completion.
 
+pub mod authority;
 pub mod backup;
 mod commands;
 mod events;

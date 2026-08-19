@@ -38,6 +38,7 @@ use std::sync::Arc;
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
+use kontor_core::authority::SubjectOrigin;
 use kontor_core::id::{
     AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ContentHash, ExternalName,
     MiniProjectId, ProjectId, QuickSessionId, SeatBindingId, TaskId, TeamRunId, TicketLinkId,
@@ -58,6 +59,8 @@ use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep};
 use kontor_scheduler::model::CapacityConfig;
+use kontor_store::ProjectEnsure;
+use kontor_store::authority::SubjectOrigins;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -445,6 +448,8 @@ async fn the_authority_tiers_are_enforced_per_route() {
     let ensure = serde_json::json!({
         "name": "Tier probe",
         "root_path": "/tmp/kontor-tier-probe",
+        "memory_origin": "kontor_native",
+        "backlog_origin": "kontor_native",
     });
     let operator = Call::post("/v1/projects:ensure", &ensure)
         .signed_as(&world, "operator")
@@ -460,6 +465,88 @@ async fn the_authority_tiers_are_enforced_per_route() {
         .send(&world)
         .await;
     assert_eq!(admin.status, 200, "{}", admin.body);
+}
+
+/// Backlog authority is enforced where the backlog is written, and a state
+/// nothing could clear cannot be declared.
+///
+/// Two halves of one property. A project may not declare `backlog_origin:
+/// legacy_pending`, because no import, readback or switch exists to move it — the
+/// project would be unwritable forever. And a row that *does* say a legacy system
+/// owns the backlog refuses the two writes that are the backlog: applying a graph
+/// and moving a task's lifecycle. The mutants this kills are accepting the
+/// declaration without an exit, and reporting `backlog.authority` on the
+/// projection while every write ignores it.
+#[tokio::test]
+async fn a_backlog_a_legacy_system_owns_refuses_the_writes_that_are_the_backlog() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+
+    // Half one: the declaration itself is refused.
+    let dead_end = ensure_project_with_origins(
+        &world,
+        "backlog-origin-1",
+        "Dead end",
+        "/tmp/kontor-backlog-dead-end",
+        "kontor_native",
+        "legacy_pending",
+    )
+    .await;
+    assert_eq!(dead_end.status, 400, "{}", dead_end.body);
+    assert_eq!(dead_end.code(), "invalid_request");
+
+    // Half two: a project whose backlog row a legacy system holds. Written
+    // directly, because the supported route now refuses to create one — the guard
+    // has to hold for a row that exists by any means, including a future import.
+    let pending = ProjectId::generate();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.ensure_project(&ProjectEnsure {
+                id: pending,
+                name: ExternalName::parse("Pending backlog").expect("a name"),
+                root_path: ExternalName::parse("/tmp/kontor-backlog-pending").expect("a path"),
+                origins: SubjectOrigins {
+                    memory: SubjectOrigin::KontorNative,
+                    backlog: SubjectOrigin::LegacyPending,
+                },
+                created_at: kontor_api::now(),
+            })
+        })
+        .expect("a pending-backlog project is seeded");
+
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{pending}/epics:apply"),
+        &epic_body(
+            1,
+            "Refused epic",
+            &category,
+            serde_json::json!([{"title": "Should not exist"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("pending-backlog-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 403, "{}", applied.body);
+    assert_eq!(applied.code(), "forbidden");
+
+    // Moving a task's lifecycle is the same subject, so it refuses the same way.
+    // The task is the one the harness already created under its own project, which
+    // is native — so this asserts the seam is guarded, not that everything refuses.
+    let readable = Call::get(format!("/v1/projects/{pending}/subjects/authority"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(readable.status, 200, "{}", readable.body);
+    let subjects = readable.json()["subjects"].clone();
+    assert_eq!(
+        subjects[1]["authority"], "agentsroom",
+        "the refusal did not quietly move authority: {}",
+        readable.body
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2057,10 +2144,29 @@ async fn shutdown_shuts_scheduling_and_releases_the_state_root() {
 // ---------------------------------------------------------------------------
 
 /// Ensure the one project an empty Realm needs, returning `(id, revision)`.
+///
+/// Declared native on both subjects, which is what a project created here is: it
+/// has no AgentsRoom original waiting to be imported.
 async fn ensure_project(world: &World, key: &str, name: &str, root: &str) -> Answer {
+    ensure_project_with_origins(world, key, name, root, "kontor_native", "kontor_native").await
+}
+
+async fn ensure_project_with_origins(
+    world: &World,
+    key: &str,
+    name: &str,
+    root: &str,
+    memory_origin: &str,
+    backlog_origin: &str,
+) -> Answer {
     Call::post(
         "/v1/projects:ensure",
-        &serde_json::json!({"name": name, "root_path": root}),
+        &serde_json::json!({
+            "name": name,
+            "root_path": root,
+            "memory_origin": memory_origin,
+            "backlog_origin": backlog_origin,
+        }),
     )
     .signed_as(world, "admin")
     .with_key(key)
@@ -2150,6 +2256,53 @@ async fn an_empty_realm_is_bootstrapped_through_public_operations_alone() {
     // A different name at the same root is drift, not an update.
     let drift = ensure_project(&world, "bootstrap-3", "Something else", "/tmp/kontor-empty").await;
     assert_eq!(drift.status, 409, "{}", drift.body);
+
+    // A fresh project is writable on both subjects the moment it exists: no
+    // freeze, no export, no switch.
+    assert_eq!(created.json()["memory"]["origin"], "kontor_native");
+    assert_eq!(created.json()["memory"]["authority"], "kontor");
+    assert_eq!(created.json()["backlog"]["authority"], "kontor");
+
+    // Re-ensuring the same root with a different declared origin is drift too:
+    // origins are immutable, and answering "unchanged" would let the caller
+    // believe a subject had been redeclared.
+    let origin_drift = ensure_project_with_origins(
+        &world,
+        "bootstrap-4",
+        "Kontor",
+        "/tmp/kontor-empty",
+        "legacy_pending",
+        "kontor_native",
+    )
+    .await;
+    assert_eq!(origin_drift.status, 409, "{}", origin_drift.body);
+
+    // The realm-wide freeze the old cutover used is routed only to refuse, and the
+    // contract declares the status it actually returns. Asserting the returned code
+    // alone is what let the two drift: the delivery said 400 and the document said
+    // 409, each internally consistent and one of them untrue.
+    let global_freeze = Call::post("/v1/memory/cutover:freeze", &serde_json::json!({}))
+        .signed_as(&world, "admin")
+        .with_key("legacy-freeze-1")
+        .send(&world)
+        .await;
+    assert_eq!(global_freeze.status, 400, "{}", global_freeze.body);
+    let contract = Call::get("/v1/openapi.json")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let declared = contract.json()["paths"]["/v1/memory/cutover:freeze"]["post"]["responses"]
+        .as_object()
+        .expect("the freeze operation declares responses")
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        declared,
+        global_freeze.status.as_u16().to_string(),
+        "the contract must declare exactly the status this route returns"
+    );
 
     let category = first_category(&world).await;
     let applied = Call::post(
@@ -2848,7 +3001,10 @@ fn well_formed_body(uri: &str) -> serde_json::Value {
     } else if uri.ends_with("lifecycle") {
         serde_json::json!({"action": "block", "expected_revision": 1, "reason": "x"})
     } else if uri.ends_with("projects:ensure") {
-        serde_json::json!({"name": "X", "root_path": "/tmp/kontor-authz-body"})
+        serde_json::json!({
+            "name": "X", "root_path": "/tmp/kontor-authz-body",
+            "memory_origin": "kontor_native", "backlog_origin": "kontor_native"
+        })
     } else {
         serde_json::json!({})
     }
@@ -2898,7 +3054,10 @@ async fn every_application_operation_refuses_an_unauthenticated_or_under_privile
     // And a mutation with no idempotency key is refused before it does anything.
     let keyless = Call::post(
         "/v1/projects:ensure",
-        &serde_json::json!({"name": "X", "root_path": "/tmp/kontor-keyless"}),
+        &serde_json::json!({
+            "name": "X", "root_path": "/tmp/kontor-keyless",
+            "memory_origin": "kontor_native", "backlog_origin": "kontor_native"
+        }),
     )
     .signed_as(&world, "admin")
     .send(&world)

@@ -677,7 +677,12 @@ mod tests {
     fn a_write_without_its_idempotency_key_never_becomes_a_request() {
         let denied = build(
             spec("kontor_project_ensure"),
-            &serde_json::json!({ "name": "Pilot", "root_path": "/tmp/pilot" }),
+            &serde_json::json!({
+                "name": "Pilot",
+                "root_path": "/tmp/pilot",
+                "memory_origin": "kontor_native",
+                "backlog_origin": "kontor_native",
+            }),
         )
         .expect_err("a write must be committed under a caller's key");
         assert!(matches!(
@@ -694,13 +699,20 @@ mod tests {
                 "idempotency_key": "pilot-ensure-1",
                 "name": "Pilot",
                 "root_path": "/tmp/pilot",
+                "memory_origin": "kontor_native",
+                "backlog_origin": "kontor_native",
             }),
         )
         .expect("a well-formed write");
         assert_eq!(request.idempotency_key.as_deref(), Some("pilot-ensure-1"));
         assert_eq!(
             request.body,
-            Some(serde_json::json!({ "name": "Pilot", "root_path": "/tmp/pilot" })),
+            Some(serde_json::json!({
+                "name": "Pilot",
+                "root_path": "/tmp/pilot",
+                "memory_origin": "kontor_native",
+                "backlog_origin": "kontor_native",
+            })),
             "the key is a header, not a document property"
         );
     }

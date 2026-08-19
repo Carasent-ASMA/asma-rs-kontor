@@ -258,6 +258,14 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/v1/memory/cutover:freeze", post(memory::freeze))
         .route(
+            "/v1/projects/{project_id}/subjects/authority",
+            get(memory::authority),
+        )
+        .route(
+            "/v1/projects/{project_id}/subjects/authority:attest",
+            post(memory::attest_authority),
+        )
+        .route(
             "/v1/projects/{project_id}/memory/cutover:switch",
             post(memory::switch),
         )
