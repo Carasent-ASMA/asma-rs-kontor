@@ -42,8 +42,8 @@ use kontor_accounts::{
 };
 use kontor_core::id::{
     AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ContentHash, CredentialAlias,
-    EnvironmentVariableName, ExternalId, ExternalName, ProjectId, RealmId, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TeamRunId,
+    EnvironmentVariableName, ExternalId, ExternalName, MiniProjectId, ProjectId, RealmId,
+    RoleSlotId, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TeamRunId,
 };
 use kontor_core::repository::{AccountProfile, CredentialReference, CredentialReferenceKind};
 use kontor_core::state::ObservedRunState;
@@ -51,6 +51,7 @@ use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{OperationContext, RuntimeCapability, preflight};
 use kontor_runtime::request::{CancelRequest, InspectRequest, LaunchParts, LaunchPlacement};
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_runtime_codex::adapter::{
     CodexAccountAdmission, CodexAccountAuthority, CodexAccountRequest, CodexAdapter,
@@ -62,6 +63,22 @@ use kontor_tests_contract::{at, closes};
 
 /// A bounded, read-only instruction that any authenticated Codex answers at once.
 const PROMPT: &str = "Reply with the single word OK and stop. Do not read or modify any files.";
+
+fn execution_scope(task_id: TaskId, root: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-LIVE").expect("epic key"),
+            short_title: ExternalName::parse("Codex live").expect("epic title"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: ExternalId::parse("ASMA-LIVE-1").expect("issue key"),
+            short_code: ExternalId::parse("LIVE-1").expect("short code"),
+            worktree: root,
+        },
+    )
+}
 
 /// Why a live run could not happen, stated precisely rather than as a silent
 /// pass.
@@ -260,6 +277,7 @@ async fn run_one(
     let task_id = TaskId::generate();
     let workspace = adapter
         .prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(task_id, adapter.config().task_worktree.clone()),
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
@@ -285,6 +303,7 @@ async fn run_one(
         .into_authority()
         .expect("the seat was free")
         .into_request(LaunchParts {
+            scope: execution_scope(task_id, adapter.config().task_worktree.clone()),
             agent_run_id,
             team_run_id,
             role_slot_id,

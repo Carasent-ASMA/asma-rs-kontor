@@ -25,9 +25,9 @@ use kontor_core::calendar::WorkScope;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
     CommandReceiptId, ContentHash, ContextPackId, CredentialAlias, EnvironmentVariableName,
-    ExecutionAuthorizationId, ExternalId, ExternalName, HandoffId, ModuleKey, ProjectId, RealmId,
-    RoleSlotId, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TaskWorkflowId,
-    TeamRunId,
+    ExecutionAuthorizationId, ExternalId, ExternalName, HandoffId, MiniProjectId, ModuleKey,
+    ProjectId, RealmId, RoleSlotId, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId,
+    TaskWorkflowId, TeamRunId,
 };
 use kontor_core::repository::{AccountProfile, CredentialReference, CredentialReferenceKind};
 use kontor_core::state::TaskState;
@@ -47,6 +47,7 @@ use kontor_runtime::request::{
     AdoptRequest, CorrelationLabel, LaunchParts, LaunchPlacement, LiveSubscribeRequest, MessageId,
     SendMessageRequest,
 };
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{HistoryCursor, TimelineBreak, TimelinePosition};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
@@ -68,6 +69,22 @@ use crate::at;
 const PREPARED_AT: &str = "2026-08-12T08:59:00Z";
 /// When every pilot seat in this section was launched.
 const LAUNCHED_AT: &str = "2026-08-12T09:00:00Z";
+
+fn execution_scope(task_id: TaskId, worktree: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-PILOT").expect("epic key"),
+            short_title: ExternalName::parse("Pilot runtime").expect("epic title"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: ExternalId::parse("ASMA-PILOT-1").expect("issue key"),
+            short_code: ExternalId::parse("PILOT-1").expect("short code"),
+            worktree,
+        },
+    )
+}
 /// The instant every later runtime call in this section declares.
 const ACTED_AT: &str = "2026-08-12T09:01:00Z";
 
@@ -1726,6 +1743,10 @@ impl Engine {
         let team_run_id = TeamRunId::generate();
         let workspace = fake
             .prepare_workspace(&WorkspacePrepareRequest {
+                scope: execution_scope(
+                    task_id,
+                    WorkspaceRoot::parse(root).expect("an absolute pilot workspace root"),
+                ),
                 team_run_id,
                 task_id,
                 workspace_binding_id: WorkspaceBindingId::generate(),
@@ -1755,6 +1776,7 @@ impl Engine {
         account_profile_id: Option<AccountProfileId>,
     ) -> RuntimeResult<LaunchOutcome> {
         let parts = LaunchParts {
+            scope: execution_scope(self.task_id, self.workspace.root().clone()),
             agent_run_id,
             team_run_id: self.team_run_id,
             role_slot_id: slot(role_slot),

@@ -30,8 +30,8 @@ use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
     CommandReceiptId, CredentialAlias, CurrencyCode, ExecutionAuthorizationId, ExternalId,
-    ExternalName, IdempotencyKey, ModuleKey, Money, ProjectId, ResourceLeaseId, RuntimeBindingId,
-    RuntimeKindKey, SCHEMA_VERSION, TaskId, TaskWorkflowId, TeamRunId, Timestamp,
+    ExternalName, IdempotencyKey, MiniProjectId, ModuleKey, Money, ProjectId, ResourceLeaseId,
+    RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TaskWorkflowId, TeamRunId, Timestamp,
     parse_utc_timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
@@ -52,6 +52,7 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep, ScriptedFakeRuntime};
 use kontor_runtime::request::LaunchPlacement;
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -89,6 +90,22 @@ fn document(marker: &str) -> CanonicalDocument {
         "marker": marker,
     }))
     .expect("a canonical document")
+}
+
+fn execution_scope(task_id: TaskId, worktree: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-TEST").expect("an epic key"),
+            short_title: name("Scheduling Contract"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: ExternalId::parse("ASMA-TEST-1").expect("an issue key"),
+            short_code: ExternalId::parse("TEST-1").expect("a short code"),
+            worktree,
+        },
+    )
 }
 
 fn capabilities() -> RuntimeCapabilities {
@@ -257,12 +274,14 @@ impl World {
             .expect("the authorization is stored");
 
         let fake = ScriptedFakeRuntime::new(capabilities());
+        let workspace_root = WorkspaceRoot::parse("/w/scheduling-task").expect("an absolute path");
         let workspace = fake
             .prepare_workspace(&WorkspacePrepareRequest {
                 team_run_id: TeamRunId::generate(),
                 task_id: task,
                 workspace_binding_id: WorkspaceBindingId::generate(),
-                root: WorkspaceRoot::parse("/w/scheduling-task").expect("an absolute path"),
+                scope: execution_scope(task, workspace_root.clone()),
+                root: workspace_root,
                 requested_at: at("2026-08-12T08:59:00Z"),
             })
             .await
@@ -577,6 +596,7 @@ async fn a_lost_launch_and_a_restart_still_leave_exactly_one_durable_admission()
         .expect("a vacant seat reserves");
     let launch = SlotLaunch {
         task_id: world.task,
+        scope: execution_scope(world.task, world.workspace.root().clone()),
         binding_id: RuntimeBindingId::generate(),
         placement: Some(LaunchPlacement::Workspace(world.workspace.clone())),
         cwd: world.workspace.root().clone(),

@@ -26,6 +26,7 @@ use crate::adapter::{RuntimeError, RuntimeResult};
 use crate::admission::{LaunchAuthority, RoleSlotKey};
 use crate::capability::{RuntimeBindingSnapshot, RuntimeCapabilities};
 use crate::container::{ContainerBindingSnapshot, ContainerClaim};
+use crate::scope::ExecutionScope;
 use crate::timeline::{HistoryCursor, SessionEventKind, TimelinePosition};
 use crate::workspace::{WorkspaceBindingSnapshot, WorkspaceClaim, WorkspaceRoot};
 
@@ -243,6 +244,13 @@ pub struct LaunchParts {
     pub placement: Option<LaunchPlacement>,
     /// Where this role says it will work. It must be the bound placement root.
     pub cwd: WorkspaceRoot,
+    /// The epic and ticket this seat is launched under, from durable Kontor
+    /// state.
+    ///
+    /// Every visible name and every correlation label a seat carries is rendered
+    /// from this and from nothing else. Reading them from plane configuration is
+    /// what stamped one epic's tracker key onto another epic's seats.
+    pub scope: ExecutionScope,
     /// The coding account this run is pinned to, if any.
     pub account_profile_id: Option<AccountProfileId>,
     /// What the session starts with.
@@ -381,6 +389,12 @@ impl LaunchRequest {
     #[must_use]
     pub const fn cwd(&self) -> &WorkspaceRoot {
         &self.parts.cwd
+    }
+
+    /// The epic and ticket this launch is performed under.
+    #[must_use]
+    pub const fn scope(&self) -> &ExecutionScope {
+        &self.parts.scope
     }
 
     /// The coding account this run is pinned to, if any.

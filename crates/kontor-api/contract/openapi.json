@@ -7300,6 +7300,17 @@
             "type": "string",
             "description": "The goal that carries the epic."
           },
+          "execution_scope": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EpicExecutionScopeDto",
+                "description": "The durable runtime-facing identity, once declared."
+              }
+            ]
+          },
           "project_id": {
             "type": "string",
             "description": "The project."
@@ -7541,6 +7552,17 @@
               "null"
             ],
             "description": "The provider-account profile to pin, if any."
+          },
+          "execution_scope": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EpicExecutionScopeDto",
+                "description": "Durable identity used to place this epic and its tasks in a runtime.\nOmission preserves an existing declaration for wire compatibility."
+              }
+            ]
           },
           "expected_revision": {
             "type": "integer",
@@ -9772,6 +9794,25 @@
         },
         "additionalProperties": false
       },
+      "EpicExecutionScopeDto": {
+        "type": "object",
+        "description": "The runtime-facing identity an epic declares independently of its display\nname and of any process-wide runtime configuration.",
+        "required": [
+          "external_epic_key",
+          "short_title"
+        ],
+        "properties": {
+          "external_epic_key": {
+            "type": "string",
+            "description": "The external tracker key, e.g. `ASMA-7869`."
+          },
+          "short_title": {
+            "type": "string",
+            "description": "The compact title used when a runtime renders the epic container."
+          }
+        },
+        "additionalProperties": false
+      },
       "EpicImportStateDto": {
         "type": "string",
         "description": "The deliberately narrow source lifecycle accepted by an epic import.\n\nThis is not the native task lifecycle. In particular, `completed` is a\nhistorical fact from the source system and carries no Kontor gate, artifact,\nrun, team or epic-closure evidence.",
@@ -9805,6 +9846,17 @@
           "epic_id": {
             "type": "string",
             "description": "The goal that carries the epic."
+          },
+          "execution_scope": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EpicExecutionScopeDto",
+                "description": "The durable runtime-facing identity, once declared."
+              }
+            ]
           },
           "name": {
             "type": "string",
@@ -10882,6 +10934,17 @@
               "null"
             ],
             "description": "The durable epic id when this preview matched an existing epic."
+          },
+          "execution_scope": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EpicExecutionScopeDto",
+                "description": "The runtime-facing identity apply would preserve or create."
+              }
+            ]
           },
           "project_id": {
             "type": "string",

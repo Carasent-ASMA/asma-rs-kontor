@@ -2270,6 +2270,275 @@ async fn reapplying_the_identical_epic_writes_nothing_and_drift_is_refused() {
     assert_eq!(reused.status, 409, "{}", reused.body);
 }
 
+/// GAP-06. A runtime plane serves a host, not one epic. Each epic therefore
+/// carries its runtime-facing identity in durable Kontor state so a second epic
+/// in the same project neither inherits the first epic's labels nor depends on
+/// a daemon restart and a new static scope entry.
+#[tokio::test]
+async fn two_epics_in_one_project_keep_distinct_execution_scopes_across_replay_and_readback() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "multi-epic-project",
+        "Shared project",
+        "/tmp/kontor-multi-epic",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let category = first_category(&world).await;
+
+    let mut first_body = epic_body(
+        revision,
+        "First epic",
+        &category,
+        serde_json::json!([{
+            "title": "First task",
+            "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-8001"}]
+        }]),
+    );
+    first_body["execution_scope"] = serde_json::json!({
+        "external_epic_key": "ASMA-8000",
+        "short_title": "First"
+    });
+    let first = Call::post(format!("/v1/projects/{project}/epics:apply"), &first_body)
+        .signed_as(&world, "admin")
+        .with_key("multi-epic-first")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(
+        first.json()["execution_scope"],
+        first_body["execution_scope"]
+    );
+    let first_epic = first.json()["epic_id"]
+        .as_str()
+        .expect("the first epic id")
+        .to_owned();
+
+    let replay = Call::post(format!("/v1/projects/{project}/epics:apply"), &first_body)
+        .signed_as(&world, "admin")
+        .with_key("multi-epic-first-replay")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    assert_eq!(replay.json()["epic_id"], first_epic);
+    assert_eq!(
+        replay.json()["execution_scope"],
+        first_body["execution_scope"]
+    );
+
+    let first_read = Call::get(format!("/v1/projects/{project}/epics/{first_epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(first_read.status, 200, "{}", first_read.body);
+    assert_eq!(
+        first_read.json()["execution_scope"],
+        first_body["execution_scope"]
+    );
+
+    let mut second_body = epic_body(
+        revision,
+        "Second epic",
+        &category,
+        serde_json::json!([{
+            "title": "Second task",
+            "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-9001"}]
+        }]),
+    );
+    second_body["execution_scope"] = serde_json::json!({
+        "external_epic_key": "ASMA-9000",
+        "short_title": "Second"
+    });
+    let second = Call::post(format!("/v1/projects/{project}/epics:apply"), &second_body)
+        .signed_as(&world, "admin")
+        .with_key("multi-epic-second")
+        .send(&world)
+        .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_ne!(second.json()["epic_id"], first_epic);
+    assert_eq!(
+        second.json()["execution_scope"],
+        second_body["execution_scope"]
+    );
+
+    let mut drift = first_body.clone();
+    drift["execution_scope"]["short_title"] = serde_json::json!("Renamed");
+    let refused = Call::post(format!("/v1/projects/{project}/epics:apply"), &drift)
+        .signed_as(&world, "admin")
+        .with_key("multi-epic-first-drift")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+
+    let after_drift = Call::get(format!("/v1/projects/{project}/epics/{first_epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        after_drift.json()["execution_scope"],
+        first_body["execution_scope"],
+        "a refused rename cannot change the durable runtime identity"
+    );
+}
+
+/// Durable placement resolution is an admission preflight. A malformed imported
+/// task must not leave the queued, unbound TeamRun that originally made the QNR
+/// replay impossible to recover honestly.
+#[tokio::test]
+async fn an_unplaceable_dynamic_task_is_refused_before_a_team_run_is_committed() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project(
+        &world,
+        "dynamic-preflight-project",
+        "Dynamic preflight",
+        "/tmp/kontor-dynamic-preflight",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Dynamic preflight",
+            "harness": "fake.runtime",
+            "credential_alias": "dynamic-preflight",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("dynamic-preflight-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+
+    let mut body = epic_body(
+        revision,
+        "Dynamic epic",
+        &category,
+        serde_json::json!([{
+            "title": "Task with no worktree",
+            "worktree": null,
+            "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-9991"}]
+        }]),
+    );
+    body["execution_scope"] = serde_json::json!({
+        "external_epic_key": "ASMA-9990",
+        "short_title": "Dynamic epic"
+    });
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("dynamic-preflight-epic")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": applied.json()["revision"],
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {
+                "max_tokens": 1000,
+                "max_commands": 10,
+                "max_duration_seconds": 600,
+                "max_cost_minor_units": 100,
+                "cost_currency": "NOK"
+            },
+            "granted_by": account.json()["account_profile_id"],
+            "reason": "Prove placement preflight"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("dynamic-preflight-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert_eq!(plan.json()["ready"].as_array().expect("ready").len(), 1);
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan.json()["plan_hash"]}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("dynamic-preflight-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert!(
+        started.json()["started"]
+            .as_array()
+            .expect("started")
+            .is_empty()
+    );
+    assert_eq!(started.json()["blocked"][0]["code"], "not_found");
+    assert!(
+        started.json()["blocked"][0]["evidence"][0]["rule"]
+            .as_str()
+            .expect("a rule")
+            .contains("worktree"),
+        "{}",
+        started.body
+    );
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .list_team_runs_for_task(project_id, task_id)
+                .expect("the TeamRun census reads")
+                .is_empty(),
+            "placement refusal must precede the durable admission commit"
+        );
+    });
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .all(|call| !matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+        "a logical placement refusal reaches no native container operation"
+    );
+}
+
 /// GAP-1. Importing a historical backlog used to flatten every task to `ready`,
 /// so a cutover could bring over either the unfinished tasks or the whole task
 /// graph, but not both. The import vocabulary is deliberately smaller than the

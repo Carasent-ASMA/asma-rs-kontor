@@ -18,9 +18,9 @@
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CanonicalDocument,
     CommandReceiptId, ContentHash, CredentialAlias, CurrencyCode, ExternalId, ExternalName,
-    GateKey, GuardrailEvaluationId, IdempotencyKey, Money, PhaseKey, ProjectId, RoleKey,
-    RuntimeKindKey, SCHEMA_VERSION, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, Timestamp,
-    WorkProfileKey, parse_utc_timestamp,
+    GateKey, GuardrailEvaluationId, IdempotencyKey, MiniProjectId, Money, PhaseKey, ProjectId,
+    RoleKey, RuntimeKindKey, SCHEMA_VERSION, SpecVersion, TaskId, TaskWorkflowId, TeamRunId,
+    Timestamp, WorkProfileKey, parse_utc_timestamp,
 };
 use kontor_core::repository::{
     CredentialReference, CredentialReferenceKind, NewAccountProfile, NewAgentRun, NewProject,
@@ -44,6 +44,7 @@ use kontor_policy::{Decision, decide};
 use kontor_runtime::capability::{
     RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade,
 };
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_runtime::{RuntimeAdapter, ScriptedFakeRuntime};
 use kontor_store::{GateRejection, ParkPlan, SqliteStore};
@@ -87,6 +88,22 @@ fn document(marker: &str) -> CanonicalDocument {
         "marker": marker,
     }))
     .expect("a canonical document")
+}
+
+fn execution_scope(task_id: TaskId, worktree: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: external("ASMA-TEST"),
+            short_title: name("Guardrails Contract"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: external("ASMA-TEST-1"),
+            short_code: external("TEST-1"),
+            worktree,
+        },
+    )
 }
 
 fn capabilities() -> RuntimeCapabilities {
@@ -445,12 +462,15 @@ impl Fixture {
                 return Err(decision);
             }
         }
+        let workspace_root =
+            WorkspaceRoot::parse(self.worktree.as_str()).expect("an absolute path");
         self.fake
             .prepare_workspace(&WorkspacePrepareRequest {
                 team_run_id: self.team_run,
                 task_id: self.task,
                 workspace_binding_id: WorkspaceBindingId::generate(),
-                root: WorkspaceRoot::parse(self.worktree.as_str()).expect("an absolute path"),
+                scope: execution_scope(self.task, workspace_root.clone()),
+                root: workspace_root,
                 requested_at: now(),
             })
             .await

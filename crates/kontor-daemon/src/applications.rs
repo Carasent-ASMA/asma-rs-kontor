@@ -25,6 +25,7 @@
 //! session any other way.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
@@ -33,12 +34,12 @@ use kontor_api::applications::{
     AbandonRunRequest, AbandonedRunDto, AccountProfileDto, ApplicationOperations, AppliedDto,
     AppliedEpicDto, AppliedLinkDto, AppliedTaskDto, ApplyEpicRequest, ArmRequest,
     AuthorizationProjectionDto, BlockedTaskDto, DisarmRequest, EnsureAccountProfileRequest,
-    EnsureProjectRequest, EpicImportStateDto, EpicProjectionDto, EpicTaskProjectionDto,
-    LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto,
-    PreviewEpicTaskDto, ProjectDto, PublishedTeamRevisionDto, ReadyTaskDto, RevisionRefDto,
-    RuntimeCapabilityDto, SchedulerPlanDto, SchedulerStartDto, SeatProjectionDto, StartRequest,
-    StartedSeatDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto,
-    TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
+    EnsureProjectRequest, EpicExecutionScopeDto, EpicImportStateDto, EpicProjectionDto,
+    EpicTaskProjectionDto, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto,
+    PreviewEpicDto, PreviewEpicTaskDto, ProjectDto, PublishedTeamRevisionDto, ReadyTaskDto,
+    RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerStartDto, SeatProjectionDto,
+    StartRequest, StartedSeatDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto,
+    TeamRunProjectionDto, TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -161,6 +162,7 @@ use kontor_runtime::container::{
     ContainerRequest, RetitleContainerRequest,
 };
 use kontor_runtime::request::{LaunchParts, LaunchPlacement, MessageId};
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
@@ -175,9 +177,10 @@ use kontor_scheduler::{
     CompletionTransition, RemediationApproval, RemediationAuthorization, SignalDelivery,
 };
 use kontor_store::{
-    AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication, EpicTask, EpicTicketLink,
-    IdempotencyBinding, NewRoleTurn, ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore,
-    StoredConflict, StoredTeamDraft, StoredTeamsProjection, TurnDispatch,
+    AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication,
+    EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, NewRoleTurn,
+    ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore, StoredConflict, StoredTeamDraft,
+    StoredTeamsProjection, TurnDispatch,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 use kontor_teams::{
@@ -235,6 +238,7 @@ struct PreparedTicketPlan {
 /// One validated epic request, ready for preview or apply under the same rules.
 struct PreparedEpic {
     bundle: ResolvedProfileBundle,
+    execution_scope: Option<EpicExecutionScopeDeclaration>,
     tasks: Vec<EpicTask>,
 }
 
@@ -285,6 +289,8 @@ pub struct Services {
     /// ceilings mid-flight could refuse a candidate the plan it is executing had
     /// already admitted.
     capacity: CapacityConfig,
+    /// Stable native-root marker directories, derived by project and epic id.
+    runtime_roots: PathBuf,
 }
 
 impl std::fmt::Debug for Services {
@@ -318,6 +324,7 @@ impl Services {
         realm_id: kontor_core::id::RealmId,
         capacity: CapacityConfig,
         asma: Option<AsmaExecutable>,
+        runtime_roots: PathBuf,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
@@ -327,6 +334,7 @@ impl Services {
             connectors: OnceLock::new(),
             asma,
             capacity,
+            runtime_roots,
         }))
     }
 
@@ -344,6 +352,103 @@ impl Services {
                 "the realm's application services are not composed yet",
             )
         })
+    }
+
+    /// Build the runtime-neutral scope for one epic or task from durable state.
+    ///
+    /// A legacy adapter may supply its exact configured scope only while the
+    /// epic has no durable declaration. If neither exists, old and
+    /// promotion-created epics receive an identity made from their durable ids
+    /// and whole stored title. Nothing is parsed out of a display name, and an
+    /// explicit declaration always wins.
+    fn execution_scope(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        task_id: Option<TaskId>,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<ExecutionScope, ApiError> {
+        let state = self.state()?;
+        let stored = state
+            .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?;
+        if stored.is_none()
+            && let Some(configured) = adapter.configured_execution_scope(epic_id, task_id)
+        {
+            return Ok(configured);
+        }
+        let epic = match stored {
+            Some(stored) => EpicScope {
+                mini_project_id: epic_id,
+                external_epic_key: stored.external_epic_key,
+                short_title: stored.short_title,
+            },
+            None => {
+                let epic = state
+                    .with_store(|store| store.get_mini_project(project_id, epic_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the runtime execution scope names no durable epic",
+                        )
+                    })?;
+                EpicScope {
+                    mini_project_id: epic_id,
+                    external_epic_key: ExternalId::parse(&epic_id.to_string())
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    short_title: epic.name,
+                }
+            }
+        };
+        let Some(task_id) = task_id else {
+            return Ok(ExecutionScope::for_epic(epic));
+        };
+        let task = state
+            .with_store(|store| store.get_task(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|task| task.mini_project_id == Some(epic_id))
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task does not belong to the epic execution scope",
+                )
+            })?;
+        let worktree = state
+            .with_store(|store| store.task_worktree(project_id, task.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no declared canonical worktree",
+                )
+            })?;
+        let worktree =
+            WorkspaceRoot::parse(worktree.as_str()).map_err(|error| self.refuse_domain(&error))?;
+        let mut jira = state
+            .with_store(|store| store.list_task_ticket_links(project_id, task.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .filter(|link| link.connector.as_str() == "jira")
+            .map(|link| link.external_issue_key);
+        let external_issue_key = jira.next().unwrap_or(
+            ExternalId::parse(&task.id.to_string()).map_err(|error| self.refuse_domain(&error))?,
+        );
+        if jira.next().is_some() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the task has more than one Jira link for its runtime execution scope",
+            ));
+        }
+        Ok(ExecutionScope::for_task(
+            epic,
+            TaskScope {
+                task_id,
+                short_code: external_issue_key.clone(),
+                external_issue_key,
+                worktree,
+            },
+        ))
     }
 
     /// Turn a repository refusal into the one the caller is owed.
@@ -597,7 +702,20 @@ impl Services {
             });
         }
 
-        Ok(PreparedEpic { bundle, tasks })
+        let execution_scope =
+            request
+                .execution_scope
+                .as_ref()
+                .map(|scope| EpicExecutionScopeDeclaration {
+                    external_epic_key: scope.external_epic_key.clone(),
+                    short_title: scope.short_title.clone(),
+                });
+
+        Ok(PreparedEpic {
+            bundle,
+            execution_scope,
+            tasks,
+        })
     }
 
     /// The profile carrying `label` in this project, if there is one.
@@ -631,6 +749,9 @@ impl Services {
     ) -> Result<AppliedEpicDto, ApiError> {
         let state = self.state()?;
         let epic = self.epic_row(project_id, epic_id)?;
+        let execution_scope = state
+            .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?;
         let tasks = state
             .with_store(|store| store.list_epic_tasks(project_id, epic_id))
             .map_err(|error| self.refuse(&error))?;
@@ -679,6 +800,10 @@ impl Services {
             epic_id,
             applied: AppliedDto::Unchanged,
             revision: epic.revision,
+            execution_scope: execution_scope.map(|scope| EpicExecutionScopeDto {
+                external_epic_key: scope.external_epic_key,
+                short_title: scope.short_title,
+            }),
             work_profile: RevisionRefDto {
                 id: bundle.profile.definition.id.as_str().to_owned(),
                 version: bundle.profile.definition.version,
@@ -4959,6 +5084,12 @@ impl Services {
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
+        let scope = self.execution_scope(
+            run.project_id,
+            run.mini_project_id,
+            node.task_id,
+            adapter.as_ref(),
+        )?;
         let capabilities = adapter
             .discover_capabilities()
             .await
@@ -4998,6 +5129,7 @@ impl Services {
             .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter
             .launch_consultation(&ConsultationLaunchRequest {
+                scope,
                 run_id: run.id,
                 seat_binding_id: seat.seat_binding_id,
                 role_slot_id: seat.role_slot_id.clone(),
@@ -5266,6 +5398,12 @@ impl Services {
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
+        let scope = self.execution_scope(
+            run.project_id,
+            run.mini_project_id,
+            node.task_id,
+            adapter.as_ref(),
+        )?;
         let capabilities = adapter
             .discover_capabilities()
             .await
@@ -5350,6 +5488,7 @@ impl Services {
                     .map_err(|error| self.refuse_domain(&error))?;
             let outcome = adapter
                 .launch_consultation(&ConsultationLaunchRequest {
+                    scope: scope.clone(),
                     run_id: run.id,
                     seat_binding_id: seat.seat_binding_id,
                     role_slot_id: seat.role_slot_id.clone(),
@@ -5721,6 +5860,8 @@ struct Seating<'a> {
     project_id: ProjectId,
     /// The admitted task the team is working.
     admitted: &'a AdmittedCandidate,
+    /// Durable epic/task identity used for placement, labels and titles.
+    scope: &'a ExecutionScope,
     /// The team run every seat joins.
     team_run_id: TeamRunId,
     /// The slots the frozen handoff DAG starts at.
@@ -11316,12 +11457,16 @@ impl ApplicationOperations for Services {
     ) -> Result<AppliedEpicDto, ApiError> {
         let state = self.state()?;
         let now = kontor_api::now();
-        let PreparedEpic { bundle, tasks } = self.prepare_epic(project_id, request, now)?;
+        let PreparedEpic {
+            bundle,
+            execution_scope,
+            tasks,
+        } = self.prepare_epic(project_id, request, now)?;
 
         // The key is judged before the graph is written. `apply_epic` is atomic,
         // so a conflict discovered afterwards would have to be reported against a
         // graph this call had already created.
-        let intent = self.intent(&serde_json::json!({
+        let mut intent_document = serde_json::json!({
             "schema_version": 1,
             "operation": "epics_apply",
             "epic": request.name.as_str(),
@@ -11366,7 +11511,22 @@ impl ApplicationOperations for Services {
                     intent
                 })
                 .collect::<Vec<_>>(),
-        }))?;
+        });
+        // Preserve old receipt bytes when the new declaration is omitted. A
+        // replay created before schema 43 must remain the same operation.
+        if let Some(scope) = &request.execution_scope {
+            intent_document
+                .as_object_mut()
+                .expect("an epic intent is an object")
+                .insert(
+                    "execution_scope".to_owned(),
+                    serde_json::json!({
+                        "external_epic_key": scope.external_epic_key.as_str(),
+                        "short_title": scope.short_title.as_str(),
+                    }),
+                );
+        }
+        let intent = self.intent(&intent_document)?;
         if let Some(receipt) = self.replayed(key, &intent, None)? {
             let AggregateRef::MiniProject { mini_project_id } = receipt.target else {
                 return Err(self.deny(
@@ -11388,6 +11548,7 @@ impl ApplicationOperations for Services {
                 let applied = store.apply_epic(&EpicApplication {
                     project_id,
                     name: request.name.clone(),
+                    execution_scope: execution_scope.as_ref(),
                     tasks: &tasks,
                     profile: &bundle.profile,
                     definition: &bundle.profile.definition,
@@ -11438,6 +11599,10 @@ impl ApplicationOperations for Services {
             epic_id: applied.mini_project_id,
             applied: applied_dto(applied.applied),
             revision: applied.revision,
+            execution_scope: applied.execution_scope.map(|scope| EpicExecutionScopeDto {
+                external_epic_key: scope.external_epic_key,
+                short_title: scope.short_title,
+            }),
             work_profile: RevisionRefDto {
                 id: applied.profile.0.as_str().to_owned(),
                 version: applied.profile.1,
@@ -11481,12 +11646,17 @@ impl ApplicationOperations for Services {
     ) -> Result<PreviewEpicDto, ApiError> {
         let state = self.state()?;
         let now = kontor_api::now();
-        let PreparedEpic { bundle, tasks } = self.prepare_epic(project_id, request, now)?;
+        let PreparedEpic {
+            bundle,
+            execution_scope,
+            tasks,
+        } = self.prepare_epic(project_id, request, now)?;
         let preview = state
             .with_store(|store| {
                 store.preview_epic(&EpicApplication {
                     project_id,
                     name: request.name.clone(),
+                    execution_scope: execution_scope.as_ref(),
                     tasks: &tasks,
                     profile: &bundle.profile,
                     definition: &bundle.profile.definition,
@@ -11501,6 +11671,10 @@ impl ApplicationOperations for Services {
             project_id,
             epic_id: (preview.applied == Applied::Unchanged).then_some(preview.mini_project_id),
             applied: applied_dto(preview.applied),
+            execution_scope: preview.execution_scope.map(|scope| EpicExecutionScopeDto {
+                external_epic_key: scope.external_epic_key,
+                short_title: scope.short_title,
+            }),
             work_profile: RevisionRefDto {
                 id: preview.profile.0.as_str().to_owned(),
                 version: preview.profile.1,
@@ -11529,6 +11703,9 @@ impl ApplicationOperations for Services {
     ) -> Result<EpicProjectionDto, ApiError> {
         let state = self.state()?;
         let epic = self.epic_row(project_id, epic_id)?;
+        let execution_scope = state
+            .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?;
         let tasks = state
             .with_store(|store| store.list_epic_tasks(project_id, epic_id))
             .map_err(|error| self.refuse(&error))?;
@@ -11712,6 +11889,10 @@ impl ApplicationOperations for Services {
             epic_id,
             name: epic.name,
             revision: epic.revision,
+            execution_scope: execution_scope.map(|scope| EpicExecutionScopeDto {
+                external_epic_key: scope.external_epic_key,
+                short_title: scope.short_title,
+            }),
             work_profile: profile,
             team_template: team,
             tasks: projected,
@@ -13611,10 +13792,18 @@ impl ApplicationOperations for Services {
         let workspace = self
             .ensure_container(project_id, &node, &task_root, adapter.as_ref())
             .await?;
+        let epic_id = task.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the replacement task is not scoped to an epic",
+            )
+        })?;
+        let scope = self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let launch = SlotLaunch {
+            scope,
             task_id,
             binding_id,
             placement: Some(LaunchPlacement::Container(workspace.clone())),
@@ -15271,6 +15460,30 @@ impl Services {
                     "this daemon is not configured with the runtime the plan admitted",
                 )
             })?;
+        // Resolve every durable placement fact before committing a TeamRun. A
+        // missing epic/task scope is an admission refusal, not a queued run that
+        // can never acquire a native seat.
+        let task = self.task_row(project_id, admitted.task_id)?;
+        let epic_id = task.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the admitted task is not scoped to an epic",
+            )
+        })?;
+        let task_root = self.task_root(project_id, admitted.task_id)?;
+        let placement = self.resolve_placement(
+            project_id,
+            admitted.task_id,
+            team_run_id,
+            &ordered,
+            &task_root,
+        )?;
+        let scope = self.execution_scope(
+            project_id,
+            epic_id,
+            Some(admitted.task_id),
+            adapter.as_ref(),
+        )?;
 
         let intent = CanonicalDocument::from_value(&serde_json::json!({
             "schema_version": 1,
@@ -15361,15 +15574,6 @@ impl Services {
         // Where this seat belongs is settled before the runtime is touched at
         // all. A placement that cannot be resolved stops here, with nothing
         // dispatched and nothing to undo.
-        let task_root = self.task_root(project_id, admitted.task_id)?;
-        let placement = self.resolve_placement(
-            project_id,
-            admitted.task_id,
-            team_run_id,
-            &ordered,
-            &task_root,
-        )?;
-
         // A container is prepared *inside* the runtime's plane, so the plane has
         // to exist first. This is idempotent and re-attests a binding the
         // adapter already holds, so the cost of asking on every admission is one
@@ -15432,6 +15636,7 @@ impl Services {
                 .map_err(|error| self.refuse_domain(&error))?;
             let outcome = adapter
                 .launch(&authority.into_request(LaunchParts {
+                    scope: scope.clone(),
                     agent_run_id,
                     team_run_id,
                     role_slot_id: slot.clone(),
@@ -15506,6 +15711,7 @@ impl Services {
         let seating = Seating {
             project_id,
             admitted,
+            scope: &scope,
             team_run_id,
             roots: &roots,
             adapter: &adapter,
@@ -16196,6 +16402,13 @@ impl Services {
         adapter: &dyn RuntimeAdapter,
     ) -> Result<ContainerBindingSnapshot, ApiError> {
         let state = self.state()?;
+        let epic_id = node.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the requested container is not scoped to an epic",
+            )
+        })?;
+        let epic_scope = self.execution_scope(project_id, epic_id, None, adapter)?;
         let spec = state
             .with_store(|store| {
                 store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
@@ -16239,6 +16452,12 @@ impl Services {
         let mut parent: Option<ContainerBinding> = None;
         let mut prepared = None;
         for level in &lineage {
+            let level_scope = match level.task_id {
+                Some(task_id) => {
+                    self.execution_scope(project_id, epic_id, Some(task_id), adapter)?
+                }
+                None => epic_scope.clone(),
+            };
             let capabilities = spec
                 .node_kinds
                 .iter()
@@ -16261,21 +16480,52 @@ impl Services {
             // nest something it declared unnestable.
             let projection = ContainerProjection::resolve(&capabilities)
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let level_cwd = match projection {
+                ContainerProjection::LogicalOnly => None,
+                _ => {
+                    if let Some(root) = bound
+                        .as_ref()
+                        .and_then(|binding| binding.canonical_cwd.as_ref())
+                    {
+                        Some(
+                            WorkspaceRoot::parse(root.as_str())
+                                .map_err(|error| self.refuse_domain(&error))?,
+                        )
+                    } else if level.task_id.is_some() {
+                        Some(
+                            level_scope
+                                .require_task()
+                                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+                                .worktree
+                                .clone(),
+                        )
+                    } else if projection == ContainerProjection::NativeRoot {
+                        Some(self.runtime_root(project_id, level.mini_project_id)?)
+                    } else if leaf {
+                        Some(cwd.clone())
+                    } else {
+                        Some(self.runtime_root(project_id, level.mini_project_id)?)
+                    }
+                }
+            };
             let request = ContainerRequest {
                 container_binding_id: ContainerBindingId::generate(),
                 topology_node_id: level.id,
                 topology: level.topology.clone(),
+                scope: level_scope,
                 capabilities,
                 display_name: self.container_name(&spec, level)?,
                 parent: match projection {
                     ContainerProjection::NativeChild => parent.clone(),
                     ContainerProjection::NativeRoot | ContainerProjection::LogicalOnly => None,
                 },
-                // Only the seat's own container needs a working directory. An
-                // epic or a project root is a place to put things, not a tree to
-                // edit in.
-                cwd: leaf.then(|| cwd.clone()),
+                // Every native root has an explicit, stable directory. Existing
+                // roots keep the directory stored with their binding; an
+                // unbound epic gets its own marker rather than the shared repo.
+                cwd: level_cwd,
                 bound_native_id: bound.map(|binding| binding.identity.native_id),
+                epic_container: projection == ContainerProjection::NativeRoot
+                    && level.mini_project_id == Some(epic_scope.epic.mini_project_id),
                 task_id: level.task_id,
                 team_run_id: None,
                 requested_at: kontor_api::now(),
@@ -16302,6 +16552,29 @@ impl Services {
                 "the node has no lineage to prepare a container along",
             )
         })
+    }
+
+    /// The stable registration directory for a project or one of its epics.
+    fn runtime_root(
+        &self,
+        project_id: ProjectId,
+        epic_id: Option<MiniProjectId>,
+    ) -> Result<WorkspaceRoot, ApiError> {
+        let mut root = self.runtime_roots.join(project_id.to_string());
+        root.push(epic_id.map_or_else(|| "project".to_owned(), |id| id.to_string()));
+        std::fs::create_dir_all(&root).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime registration directory could not be created",
+            )
+        })?;
+        let root = root.to_str().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the runtime registration directory is not valid UTF-8",
+            )
+        })?;
+        WorkspaceRoot::parse(root).map_err(|error| self.refuse_domain(&error))
     }
 
     /// The display name one node's container carries, from its kind's template.
@@ -16371,6 +16644,7 @@ impl Services {
         let Seating {
             project_id,
             admitted,
+            scope,
             team_run_id,
             roots,
             adapter,
@@ -16460,6 +16734,7 @@ impl Services {
             .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter
             .launch(&authority.into_request(LaunchParts {
+                scope: scope.clone(),
                 agent_run_id,
                 team_run_id,
                 role_slot_id: slot.clone(),

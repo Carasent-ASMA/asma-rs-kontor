@@ -46,6 +46,20 @@ fn resolve<'a>(
     document: &'a serde_json::Value,
     schema: &'a serde_json::Value,
 ) -> &'a serde_json::Value {
+    if let Some(one_of) = schema.get("oneOf").and_then(serde_json::Value::as_array)
+        && let [nullable, value] = one_of.as_slice()
+    {
+        let value = if nullable.get("type").and_then(serde_json::Value::as_str) == Some("null") {
+            value
+        } else if value.get("type").and_then(serde_json::Value::as_str) == Some("null") {
+            nullable
+        } else {
+            schema
+        };
+        if !std::ptr::eq(value, schema) {
+            return resolve(document, value);
+        }
+    }
     let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) else {
         return schema;
     };

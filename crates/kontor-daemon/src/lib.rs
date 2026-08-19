@@ -345,8 +345,13 @@ impl Daemon {
             .map(kontor_integrations_asma::AsmaExecutable::new)
             .transpose()
             .map_err(|source| StartupError::Connector { source })?;
-        let applications = applications::Services::new(realm_id, config.capacity, asma)
-            .map_err(|source| StartupError::Applications { source })?;
+        let applications = applications::Services::new(
+            realm_id,
+            config.capacity,
+            asma,
+            config.state_root.join("runtime-roots"),
+        )
+        .map_err(|source| StartupError::Applications { source })?;
 
         let state = ApiState::new(ApiParts {
             store,

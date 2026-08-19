@@ -42,8 +42,8 @@ use axum::http::{Method, Request, Response};
 use futures::StreamExt as _;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
-    AgentRunId, BoundedText, ExternalName, ProjectId, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
-    SCHEMA_VERSION, TaskId, TeamRunId,
+    AgentRunId, BoundedText, ExternalId, ExternalName, MiniProjectId, ProjectId, RoleSlotId,
+    RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TeamRunId,
 };
 use kontor_core::repository::{
     NewAgentRun, NewProject, NewTask, NewTeamRun, ProjectRepository, RunRepository, RuntimeBinding,
@@ -68,6 +68,7 @@ use kontor_runtime::fake::{
     AdapterCall, RequestKey, RuntimeScript, ScriptStep, ScriptedFakeRuntime,
 };
 use kontor_runtime::request::{LaunchParts, LaunchPlacement, MessageId};
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{EventSubject, HistoryCursor, SessionEventKind, TimelinePosition};
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_tests_e2e::{Bundle, digest, scan_for_canaries};
@@ -95,6 +96,22 @@ const FAKE_FAMILY: &str = "fake.runtime";
 /// One team run has one task workspace, and the runtime refuses a second root
 /// for the same team run — which is the isolation rule, not a harness quirk.
 const TASK_WORKSPACE: &str = "/w/pilot-session";
+
+fn execution_scope(task_id: TaskId, worktree: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-SESSION").expect("epic key"),
+            short_title: ExternalName::parse("Pilot session").expect("epic title"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: ExternalId::parse("ASMA-SESSION-1").expect("issue key"),
+            short_code: ExternalId::parse("SESSION-1").expect("short code"),
+            worktree,
+        },
+    )
+}
 
 /// The permission request the pilot session raises.
 const PERMISSION_ID: &str = "pilot-permission-1";
@@ -1651,6 +1668,10 @@ impl Realm {
         let workspace = self
             .fake
             .prepare_workspace(&WorkspacePrepareRequest {
+                scope: execution_scope(
+                    self.task,
+                    WorkspaceRoot::parse(TASK_WORKSPACE).expect("an absolute path"),
+                ),
                 team_run_id: self.team_run,
                 task_id: self.task,
                 workspace_binding_id: WorkspaceBindingId::generate(),
@@ -1661,6 +1682,7 @@ impl Realm {
             .expect("the runtime prepares the task workspace")
             .snapshot;
         let parts = LaunchParts {
+            scope: execution_scope(self.task, workspace.root().clone()),
             agent_run_id,
             team_run_id: self.team_run,
             role_slot_id: role_slot_id.clone(),

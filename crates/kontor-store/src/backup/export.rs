@@ -316,6 +316,10 @@ fn redaction_summary() -> RedactionSummary {
             "lease_events",
             "the history of a lease has no meaning without the lease it fenced",
         ),
+        (
+            "epic_execution_scopes",
+            "runtime placement identity is authority local to one Realm; a verified same-Realm snapshot preserves it byte-for-byte",
+        ),
     ];
     let excluded_columns = [
         (

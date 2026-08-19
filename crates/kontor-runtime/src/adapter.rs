@@ -34,6 +34,7 @@ use crate::request::{
     LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
     SendMessageRequest,
 };
+use crate::scope::ExecutionScope;
 use crate::timeline::{HistoryPage, LiveSubscription, TimelineBreak, TimelinePosition};
 use crate::workspace::{WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot};
 
@@ -252,6 +253,9 @@ pub struct ConsultationLaunchRequest {
     pub container: ContainerBindingSnapshot,
     /// Working directory read back on the container.
     pub cwd: WorkspaceRoot,
+    /// The epic — and the ticket, when the consultation is raised at one — this
+    /// seat is placed under, from durable Kontor state.
+    pub scope: ExecutionScope,
     /// Frozen prompt/context for this seat.
     pub prompt: BoundedText,
     /// Opaque seat-scoped API credential delivered as process environment.
@@ -352,6 +356,20 @@ pub struct PermissionAck {
 /// One agent runtime, reduced to what Kontor is willing to depend on.
 #[async_trait]
 pub trait RuntimeAdapter: Send + Sync {
+    /// Recover the compatibility scope a legacy, single-epic adapter was
+    /// configured with.
+    ///
+    /// New epics carry this identity durably and never use this hook. It exists
+    /// only so an already-running epic can survive the schema transition without
+    /// deriving identity from a mutable display name or rewriting live config.
+    fn configured_execution_scope(
+        &self,
+        _epic_id: kontor_core::id::MiniProjectId,
+        _task_id: Option<kontor_core::id::TaskId>,
+    ) -> Option<ExecutionScope> {
+        None
+    }
+
     /// What this runtime can currently prove.
     ///
     /// # Errors

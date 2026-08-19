@@ -99,6 +99,30 @@ pub struct EpicTask {
     pub worktree: Option<ExternalName>,
 }
 
+/// The runtime-facing identity one epic declares at import time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicExecutionScopeDeclaration {
+    /// The external tracker key, e.g. `ASMA-7869`.
+    pub external_epic_key: ExternalId,
+    /// The compact title used when a runtime renders the epic container.
+    pub short_title: ExternalName,
+}
+
+/// One epic's durable runtime-facing identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicExecutionScope {
+    /// The project containing the epic.
+    pub project_id: ProjectId,
+    /// The epic this scope belongs to.
+    pub mini_project_id: MiniProjectId,
+    /// The external tracker key, e.g. `ASMA-7869`.
+    pub external_epic_key: ExternalId,
+    /// The compact title used when a runtime renders the epic container.
+    pub short_title: ExternalName,
+    /// When this immutable scope was declared.
+    pub created_at: Timestamp,
+}
+
 /// One whole epic, stated declaratively.
 ///
 /// The profile is not a name to look up: the caller resolves it first and hands
@@ -111,6 +135,9 @@ pub struct EpicApplication<'a> {
     pub project_id: ProjectId,
     /// The epic's name, which is its natural identity inside the project.
     pub name: ExternalName,
+    /// Runtime-facing epic identity. Omission preserves an existing declaration
+    /// and keeps old apply requests byte-compatible.
+    pub execution_scope: Option<&'a EpicExecutionScopeDeclaration>,
     /// The tasks, in the order they were stated.
     pub tasks: &'a [EpicTask],
     /// The frozen work profile every task in the epic pins.
@@ -202,6 +229,8 @@ pub struct AppliedEpic {
     pub applied: Applied,
     /// The revision a write must present.
     pub revision: AggregateRevision,
+    /// The durable runtime-facing identity, once declared.
+    pub execution_scope: Option<EpicExecutionScope>,
     /// The work profile revision frozen onto every task.
     pub profile: (kontor_core::id::WorkProfileKey, SpecVersion),
     /// The team revision the profile pins, when it prescribes one.
@@ -535,6 +564,13 @@ impl SqliteStore {
         store_specifications(&transaction, request)?;
 
         let (mini_project, epic_applied) = ensure_mini_project(&transaction, request)?;
+        let execution_scope = ensure_epic_execution_scope(
+            &transaction,
+            request.project_id,
+            mini_project.id,
+            request.execution_scope,
+            request.applied_at,
+        )?;
         let mut applied: Vec<AppliedTask> = Vec::with_capacity(request.tasks.len());
         let mut by_title: BTreeMap<&ExternalName, TaskId> = BTreeMap::new();
 
@@ -571,6 +607,7 @@ impl SqliteStore {
             mini_project_id: mini_project.id,
             applied: epic_applied,
             revision: mini_project.revision,
+            execution_scope,
             profile: (request.definition.id.clone(), request.definition.version),
             team: request
                 .team
@@ -603,6 +640,43 @@ impl SqliteStore {
             )
             .optional()
             .map_err(backend)?
+            .transpose()
+    }
+
+    /// Read one epic's durable runtime-facing identity.
+    ///
+    /// # Errors
+    /// Backend failures only; an epic without a declaration is `Ok(None)`.
+    pub fn get_epic_execution_scope(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<EpicExecutionScope>> {
+        self.connection
+            .query_row(
+                "SELECT external_epic_key, short_title, created_at
+                 FROM epic_execution_scopes
+                 WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|(external_epic_key, short_title, created_at)| {
+                Ok(EpicExecutionScope {
+                    project_id,
+                    mini_project_id,
+                    external_epic_key: ExternalId::parse(&external_epic_key)?,
+                    short_title: ExternalName::parse(&short_title)?,
+                    created_at: read_timestamp(&created_at)?,
+                })
+            })
             .transpose()
     }
 
@@ -1004,6 +1078,7 @@ impl SqliteStore {
         let application = EpicApplication {
             project_id,
             name: ExternalName::parse("selection").map_err(RepositoryError::Domain)?,
+            execution_scope: None,
             tasks: &[],
             profile: &request.snapshot,
             definition,
@@ -1440,6 +1515,75 @@ fn ensure_mini_project(
         },
         Applied::Created,
     ))
+}
+
+fn ensure_epic_execution_scope(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    mini_project_id: MiniProjectId,
+    declaration: Option<&EpicExecutionScopeDeclaration>,
+    created_at: Timestamp,
+) -> RepositoryResult<Option<EpicExecutionScope>> {
+    let existing = transaction
+        .query_row(
+            "SELECT external_epic_key, short_title, created_at
+             FROM epic_execution_scopes
+             WHERE project_id = ?1 AND mini_project_id = ?2",
+            params![project_id.to_string(), mini_project_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    if let Some((external_epic_key, short_title, stored_at)) = existing {
+        let stored = EpicExecutionScope {
+            project_id,
+            mini_project_id,
+            external_epic_key: ExternalId::parse(&external_epic_key)?,
+            short_title: ExternalName::parse(&short_title)?,
+            created_at: read_timestamp(&stored_at)?,
+        };
+        if declaration.is_some_and(|declared| {
+            declared.external_epic_key != stored.external_epic_key
+                || declared.short_title != stored.short_title
+        }) {
+            return Err(conflict(
+                "epic execution scope",
+                "the epic already declares a different runtime-facing identity",
+            ));
+        }
+        return Ok(Some(stored));
+    }
+
+    let Some(declaration) = declaration else {
+        return Ok(None);
+    };
+    transaction
+        .execute(
+            "INSERT INTO epic_execution_scopes
+                 (project_id, mini_project_id, external_epic_key, short_title, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                project_id.to_string(),
+                mini_project_id.to_string(),
+                declaration.external_epic_key.as_str(),
+                declaration.short_title.as_str(),
+                text(created_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(Some(EpicExecutionScope {
+        project_id,
+        mini_project_id,
+        external_epic_key: declaration.external_epic_key.clone(),
+        short_title: declaration.short_title.clone(),
+        created_at,
+    }))
 }
 
 fn ensure_task(

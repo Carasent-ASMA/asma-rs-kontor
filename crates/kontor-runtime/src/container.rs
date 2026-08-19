@@ -32,6 +32,7 @@ use uuid::Uuid;
 use crate::adapter::{RuntimeError, RuntimeResult};
 use crate::capability::RuntimeCapabilities;
 use crate::request::parse_kontor_uuid;
+use crate::scope::ExecutionScope;
 use crate::workspace::WorkspaceRoot;
 
 /// The prefix every Kontor container correlation label carries.
@@ -300,6 +301,20 @@ pub struct ContainerRequest {
     pub task_id: Option<TaskId>,
     /// Optional delivery TeamRun reference. Tracker metadata only.
     pub team_run_id: Option<TeamRunId>,
+    /// The epic — and the ticket, where there is one — this container belongs to.
+    ///
+    /// Read from durable Kontor state by the caller, never from a runtime's own
+    /// configuration. It is what lets one plane serve every epic in a project:
+    /// without it an adapter has exactly one epic's keys to name and label
+    /// things with, and a second epic's containers are titled, labelled and
+    /// placed as though they were the first one's.
+    pub scope: ExecutionScope,
+    /// Whether this node is the native project that represents `scope.epic`.
+    ///
+    /// A topology may contain another native root above the epic (the shared
+    /// project/session plane). The adapter must not mistake that ancestor for
+    /// the epic's own project when it keys later workspace and seat operations.
+    pub epic_container: bool,
     /// When preparation was requested.
     pub requested_at: Timestamp,
 }
@@ -363,6 +378,11 @@ impl ContainerRequest {
                     });
                 }
             }
+        }
+        if self.epic_container && projection != ContainerProjection::NativeRoot {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "an epic project container must be a native_root",
+            });
         }
         Ok(projection)
     }
@@ -618,10 +638,11 @@ pub struct ContainerOutcome {
 
 #[cfg(test)]
 mod tests {
-    use kontor_core::id::{ContentHash, SpecVersion, TopologySpecId};
+    use kontor_core::id::{ContentHash, ExternalId, MiniProjectId, SpecVersion, TopologySpecId};
 
     use super::*;
     use crate::capability::{RuntimeCapability, RuntimeLimits, TrustGrade};
+    use crate::scope::{EpicScope, ExecutionScope};
 
     fn snapshot() -> TopologySnapshot {
         TopologySnapshot {
@@ -649,11 +670,17 @@ mod tests {
             container_binding_id: ContainerBindingId::generate(),
             topology_node_id: node,
             topology: snapshot(),
+            scope: ExecutionScope::for_epic(EpicScope {
+                mini_project_id: MiniProjectId::generate(),
+                external_epic_key: ExternalId::parse("ASMA-CONTAINER").expect("epic key"),
+                short_title: ExternalName::parse("Container contract").expect("epic title"),
+            }),
             capabilities,
             display_name: ExternalName::parse("Epic · ASMA-7871").expect("a display name"),
             parent: None,
             cwd: None,
             bound_native_id: None,
+            epic_container: false,
             task_id: None,
             team_run_id: None,
             requested_at: Timestamp::now(),

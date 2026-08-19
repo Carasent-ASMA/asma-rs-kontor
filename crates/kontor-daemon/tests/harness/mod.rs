@@ -24,8 +24,8 @@ use axum::http::{Request, Response, StatusCode};
 use futures::StreamExt as _;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
-    AgentRunId, BoundedText, ExternalId, ExternalName, ProjectId, RealmId, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TeamRunId, Timestamp,
+    AgentRunId, BoundedText, ExternalId, ExternalName, MiniProjectId, ProjectId, RealmId,
+    RoleSlotId, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TeamRunId, Timestamp,
     parse_utc_timestamp,
 };
 use kontor_core::repository::{
@@ -44,6 +44,7 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::fake::{RuntimeScript, ScriptedFakeRuntime};
 use kontor_runtime::request::{LaunchParts, LaunchPlacement};
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_scheduler::model::CapacityConfig;
 use tempfile::TempDir;
@@ -67,6 +68,22 @@ pub(crate) fn at(text: &str) -> Timestamp {
 /// A fixture display name.
 pub(crate) fn name(text: &str) -> ExternalName {
     ExternalName::parse(text).expect("a valid external name")
+}
+
+fn execution_scope(task_id: TaskId, worktree: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-HARNESS").expect("epic key"),
+            short_title: name("Daemon harness"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: ExternalId::parse("ASMA-HARNESS-1").expect("issue key"),
+            short_code: ExternalId::parse("HARNESS-1").expect("short code"),
+            worktree,
+        },
+    )
 }
 
 /// Everything the fake declares by default.
@@ -349,6 +366,10 @@ impl World {
         let workspace = self
             .fake
             .prepare_workspace(&WorkspacePrepareRequest {
+                scope: execution_scope(
+                    self.task,
+                    WorkspaceRoot::parse("/w/loopback-task").expect("an absolute path"),
+                ),
                 team_run_id: self.team_run,
                 task_id: self.task,
                 workspace_binding_id: WorkspaceBindingId::generate(),
@@ -359,6 +380,7 @@ impl World {
             .expect("the runtime prepares the task workspace")
             .snapshot;
         let parts = LaunchParts {
+            scope: execution_scope(self.task, workspace.root().clone()),
             agent_run_id,
             team_run_id: self.team_run,
             role_slot_id: role_slot_id.clone(),

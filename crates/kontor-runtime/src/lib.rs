@@ -43,6 +43,7 @@ pub mod container;
 pub mod fake;
 pub mod observation;
 pub mod request;
+pub mod scope;
 pub mod timeline;
 pub mod workspace;
 
@@ -69,6 +70,7 @@ pub use request::{
     LaunchPlacement, LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision,
     PermissionResponseRequest, PlacementClaim, ResumeRequest, SendMessageRequest,
 };
+pub use scope::{EpicScope, ExecutionScope, TaskScope};
 pub use timeline::{
     HistoryCursor, HistoryPage, HistoryReader, LiveSubscription, SessionEvent, SessionEventKind,
     TimelineBreak, TimelinePosition,

@@ -25,7 +25,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use kontor_core::id::{
-    AgentRunId, BoundedText, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId,
+    AgentRunId, BoundedText, ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeBindingId,
     RuntimeKindKey, TaskId, TeamRunId,
 };
 use kontor_core::repository::RuntimeBinding;
@@ -43,6 +43,7 @@ use kontor_runtime::request::{
     LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
     ResumeRequest, SendMessageRequest,
 };
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{TimelineBreak, TimelinePosition};
 use kontor_runtime::workspace::{
     WorkspaceBinding, WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspaceCorrelationEvidence,
@@ -298,20 +299,39 @@ fn slot_of(agent_run_id: AgentRunId) -> RoleSlotId {
     RoleSlotId::parse(&format!("slot-{agent_run_id}")).expect("a run id is a legal open key")
 }
 
+fn execution_scope(task_id: TaskId, root: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-AO").expect("epic key"),
+            short_title: ExternalName::parse("AO contract").expect("epic title"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: ExternalId::parse("ASMA-AO-1").expect("issue key"),
+            short_code: ExternalId::parse("AO-1").expect("short code"),
+            worktree: root,
+        },
+    )
+}
+
 /// What a launch of `agent_run_id` names: the lane's own AO project, and no
 /// Kontor workspace binding — the only shape AO can accept.
 ///
 /// A plain value that cannot be launched. Pairing it with runtime-issued
 /// authority is what produces a `LaunchRequest`.
 fn launch_parts(agent_run_id: AgentRunId) -> LaunchParts {
+    let task_id = TaskId::generate();
+    let cwd = WorkspaceRoot::parse(PROJECT_PATH).expect("absolute project path");
     LaunchParts {
+        scope: execution_scope(task_id, cwd.clone()),
         agent_run_id,
         team_run_id: TeamRunId::generate(),
         role_slot_id: slot_of(agent_run_id),
-        task_id: TaskId::generate(),
+        task_id,
         binding_id: RuntimeBindingId::generate(),
         placement: None,
-        cwd: WorkspaceRoot::parse(PROJECT_PATH).expect("absolute project path"),
+        cwd,
         account_profile_id: None,
         prompt: text("do the work"),
         model_rung: kontor_core::spec::ModelRung {
@@ -568,13 +588,16 @@ async fn every_unsupported_operation_is_refused_before_the_daemon_is_called() {
         "the launch really did talk to AO, so an unchanged ledger means something"
     );
 
+    let workspace_task_id = TaskId::generate();
+    let workspace_root = WorkspaceRoot::parse("/w/ao-project/task-1").expect("absolute path");
     assert_unsupported(
         RuntimeCapability::PrepareWorkspace,
         ao.prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(workspace_task_id, workspace_root.clone()),
             team_run_id: TeamRunId::generate(),
-            task_id: TaskId::generate(),
+            task_id: workspace_task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
-            root: WorkspaceRoot::parse("/w/ao-project/task-1").expect("absolute path"),
+            root: workspace_root,
             requested_at: at("2026-08-10T08:59:00Z"),
         })
         .await,

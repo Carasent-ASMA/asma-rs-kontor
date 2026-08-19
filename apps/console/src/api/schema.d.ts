@@ -2445,6 +2445,7 @@ export interface components {
             bundle_hash: string;
             /** @description The goal that carries the epic. */
             epic_id: string;
+            execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
             /** @description The project. */
             project_id: string;
             /** @description The Realm it belongs to. */
@@ -2552,6 +2553,7 @@ export interface components {
         ApplyEpicRequest: {
             /** @description The provider-account profile to pin, if any. */
             account_profile_id?: string | null;
+            execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
             /**
              * Format: int64
              * @description The revision the caller read the project at.
@@ -3604,6 +3606,16 @@ export interface components {
             role: components["schemas"]["RoleSelectionDto"];
         };
         /**
+         * @description The runtime-facing identity an epic declares independently of its display
+         *     name and of any process-wide runtime configuration.
+         */
+        EpicExecutionScopeDto: {
+            /** @description The external tracker key, e.g. `ASMA-7869`. */
+            external_epic_key: string;
+            /** @description The compact title used when a runtime renders the epic container. */
+            short_title: string;
+        };
+        /**
          * @description The deliberately narrow source lifecycle accepted by an epic import.
          *
          *     This is not the native task lifecycle. In particular, `completed` is a
@@ -3618,6 +3630,7 @@ export interface components {
             authorizations: components["schemas"]["AuthorizationProjectionDto"][];
             /** @description The goal that carries the epic. */
             epic_id: string;
+            execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
             /** @description Its name. */
             name: string;
             /** @description The project. */
@@ -4165,6 +4178,7 @@ export interface components {
             applied: components["schemas"]["AppliedDto"];
             /** @description The durable epic id when this preview matched an existing epic. */
             epic_id?: string | null;
+            execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
             /** @description The owning project. */
             project_id: string;
             /** @description The Realm that judged the graph. */

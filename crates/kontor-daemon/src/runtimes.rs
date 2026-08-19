@@ -658,7 +658,8 @@ mod tests {
                 }
             })],
         };
-        let error = build_registry(&settings, None).expect_err("a worktree root that is not absolute");
+        let error =
+            build_registry(&settings, None).expect_err("a worktree root that is not absolute");
         let rendered = error.to_string();
         assert!(
             rendered.contains("canonical_worktree_cwd"),
