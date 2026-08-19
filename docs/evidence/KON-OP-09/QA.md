@@ -8,6 +8,34 @@ QA gate verdict: **passed** at `ffeffc3` (round 2)
 | --- | --- | --- |
 | 1 | `47948b6` / `7cf08a4` | rejected — two acceptance proofs missing |
 | 2 | `ffeffc3` / `4f3242b` | **passed** |
+| 3 | `a247587` / PR 44 current-master integration | **passed** |
+
+## Round 3 — current-master integration passed
+
+QA independently verified the current-master integration production source at
+`a24758714244762170da17e7604718086aac4a8b`, after code-review receipt
+`01a019bd-f9b8-71e0-9542-080700d325e9` (sequence `4`). The integration keeps
+the console as a generated-contract client and correctly accepts the merged
+consultation and completion DTO shapes.
+
+| Check | Result |
+| --- | --- |
+| Generated API drift | `pnpm verify:api` — pass |
+| Console type check | `pnpm typecheck` — pass |
+| Console component/contract tests | 16 files, **295 passed** |
+| Browser QA | `pnpm test:e2e` — 4 passed: Project Operations and Teams, desktop and phone |
+| Rust formatting and lint | `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` — pass |
+| Workspace verification | `cargo test --workspace --quiet` — pass, including the 174-test loopback API suite |
+
+The focused consultation invariant is now behavior-pinned: an Advisor result
+without a receipt renders its typed run id but no `Confirmed receipt` status.
+The deliberate mutant that rendered `Confirmed receipt pending` for an absent
+receipt made that test fail, then was reverted. This test-only QA addition does
+not alter the reviewed production source at `a247587`.
+
+The inspector's disclosed retired-seat, stale-read, same-typed-parameter and
+incomplete-completion-panel observations remain non-blocking follow-ups; this
+QA run neither reopens accepted findings nor performs a release action.
 
 ## Round 2 — passed
 

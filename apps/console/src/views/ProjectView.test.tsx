@@ -222,6 +222,21 @@ describe('<ProjectView>', () => {
     )
   })
 
+  it('does not fabricate a consultation confirmation when the receipt is absent', async () => {
+    const invokeAdvisor = vi.fn(async () => ({
+      realm_id: 'realm-1', epic_id: 'epic-1', advisor_run_id: 'advisor-1', state: 'running', profile: PROFILE,
+    }))
+    const client = await open(operationalClient({ invokeAdvisor }))
+    const form = screen.getByRole('form', { name: 'Invoke Advisor' })
+
+    fireEvent.change(within(form).getByLabelText('Question'), { target: { value: 'is the seam right?' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Invoke Advisor' }))
+
+    await waitFor(() => expect(client.invokeAdvisor).toHaveBeenCalledOnce())
+    expect(screen.getByText('advisor-1')).toBeInTheDocument()
+    expect(screen.queryAllByText(/Confirmed receipt/)).toHaveLength(0)
+  })
+
   it('refuses to offer a consultation caller when the topology projected no seat', async () => {
     await open(operationalClient({
       topology: vi.fn(async () => { throw new Error('topology unavailable') }),
