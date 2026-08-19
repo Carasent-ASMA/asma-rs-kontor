@@ -33,6 +33,12 @@ The deliberate mutant that rendered `Confirmed receipt pending` for an absent
 receipt made that test fail, then was reverted. This test-only QA addition does
 not alter the reviewed production source at `a247587`.
 
+Kontor recorded this refreshed `qa-gate` pass as receipt
+`01a019ce-5478-7592-b8d1-bc63e56f0a3c`, sequence `3`, with evaluator role
+`tester` and canonical `qa-report` evidence. The task readback at snapshot
+cursor `205` confirms `code-review-gate=passed`, `qa-gate=passed` and leaves
+`release-gate=rejected` for the architect's next checkpoint.
+
 The inspector's disclosed retired-seat, stale-read, same-typed-parameter and
 incomplete-completion-panel observations remain non-blocking follow-ups; this
 QA run neither reopens accepted findings nor performs a release action.
