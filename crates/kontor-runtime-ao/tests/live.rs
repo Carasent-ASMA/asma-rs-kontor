@@ -39,8 +39,8 @@ use tokio::sync::Barrier;
 use tokio::time::timeout;
 
 use kontor_core::id::{
-    AgentRunId, BoundedText, ExternalName, RoleSlotId, RuntimeBindingId, RuntimeKindKey, TaskId,
-    TeamRunId, parse_utc_timestamp,
+    AgentRunId, BoundedText, ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeBindingId,
+    RuntimeKindKey, TaskId, TeamRunId, parse_utc_timestamp,
 };
 use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
@@ -48,6 +48,7 @@ use kontor_runtime::capability::RuntimeCapability;
 use kontor_runtime::request::{
     CancelRequest, InspectRequest, LaunchParts, LaunchRequest, MessageId, SendMessageRequest,
 };
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_runtime_ao::adapter::{AoAdapter, AoCheckpoint, AoLane};
 use kontor_runtime_ao::client::AoHttpTransport;
@@ -135,12 +136,26 @@ fn lane(config: &LiveEnv, harness: AoHarness) -> AoLane {
 /// launches are four seats and not four attempts at one.
 async fn live_admitted_launch(ao: &AoAdapter, config: &LiveEnv) -> LaunchRequest {
     let agent_run_id = AgentRunId::generate();
+    let task_id = TaskId::generate();
     let parts = LaunchParts {
+        scope: ExecutionScope::for_task(
+            EpicScope {
+                mini_project_id: MiniProjectId::generate(),
+                external_epic_key: ExternalId::parse("ASMA-AO-LIVE").expect("epic key"),
+                short_title: ExternalName::parse("AO live").expect("epic title"),
+            },
+            TaskScope {
+                task_id,
+                external_issue_key: ExternalId::parse("ASMA-AO-LIVE-1").expect("issue key"),
+                short_code: ExternalId::parse("AO-LIVE-1").expect("short code"),
+                worktree: config.project_path.clone(),
+            },
+        ),
         agent_run_id,
         team_run_id: TeamRunId::generate(),
         role_slot_id: RoleSlotId::parse(&format!("slot-{agent_run_id}"))
             .expect("a run id is a legal open key"),
-        task_id: TaskId::generate(),
+        task_id,
         binding_id: RuntimeBindingId::generate(),
         placement: None,
         cwd: config.project_path.clone(),

@@ -59,9 +59,10 @@ pub use events::types::{
 };
 pub use graph::{
     Applied, AppliedEpic, AppliedLink, AppliedTask, AuthorizationRevocation, EpicApplication,
-    EpicTask, EpicTicketLink, IdempotencyBinding, NewRoleSlotWaiver, NewRoleTurn, ProjectEnsure,
-    RegisteredPack, SeatRow, SettledTurn, StoredAuthorization, StoredBindingSnapshot,
-    StoredComment, StoredConflict, StoredWaiver, TurnDispatch,
+    EpicExecutionScope, EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink,
+    IdempotencyBinding, NewRoleSlotWaiver, NewRoleTurn, ProjectEnsure, RegisteredPack, SeatRow,
+    SettledTurn, StoredAuthorization, StoredBindingSnapshot, StoredComment, StoredConflict,
+    StoredWaiver, TurnDispatch,
 };
 pub use migrations::SCHEMA_VERSION;
 pub use policy::{

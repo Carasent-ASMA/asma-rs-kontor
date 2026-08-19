@@ -23,7 +23,8 @@
 use std::collections::BTreeSet;
 
 use kontor_core::id::{
-    AgentRunId, EventCursor, ExternalId, RoleSlotId, RuntimeBindingId, TaskId, TeamRunId,
+    AgentRunId, EventCursor, ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeBindingId,
+    TaskId, TeamRunId,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::state::{
@@ -45,6 +46,7 @@ use kontor_runtime::request::{
     LaunchPlacement, LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision,
     PermissionResponseRequest, ResumeRequest, SendMessageRequest,
 };
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{
     EventSubject, SessionEventKind, TimelineBreak, TimelinePosition, pending_permissions,
 };
@@ -98,6 +100,22 @@ fn capabilities(trust_grade: TrustGrade) -> RuntimeCapabilities {
             context_window: kontor_core::spec::ContextWindowBounds::unknown(),
         },
     }
+}
+
+fn execution_scope(task_id: TaskId, worktree: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-RUNTIME").expect("epic key"),
+            short_title: ExternalName::parse("Runtime contract").expect("epic title"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: ExternalId::parse("ASMA-RUNTIME-1").expect("issue key"),
+            short_code: ExternalId::parse("RUNTIME-1").expect("short code"),
+            worktree,
+        },
+    )
 }
 
 fn root(path: &str) -> WorkspaceRoot {
@@ -192,6 +210,7 @@ impl Team {
     /// What a launch for one role of this team run names, in the verified place.
     fn launch_parts(&self, agent_run_id: AgentRunId) -> LaunchParts {
         LaunchParts {
+            scope: execution_scope(self.task_id, self.workspace.root().clone()),
             agent_run_id,
             team_run_id: self.team_run_id,
             role_slot_id: slot_of(agent_run_id),
@@ -245,6 +264,7 @@ async fn prepare(
 ) -> RuntimeResult<WorkspaceBindingSnapshot> {
     adapter
         .prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(task_id, at_root.clone()),
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
@@ -336,6 +356,7 @@ async fn grade_c_cannot_autonomously_dispatch() {
     let request = admitted(
         &fake,
         LaunchParts {
+            scope: execution_scope(task_id, root("/w/task-1")),
             agent_run_id: advisory_run,
             team_run_id,
             role_slot_id: slot_of(advisory_run),
@@ -524,6 +545,7 @@ async fn workspace_prepare_is_idempotent_for_one_team_run() {
 
     let first = fake
         .prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(task_id, place.clone()),
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
@@ -538,6 +560,7 @@ async fn workspace_prepare_is_idempotent_for_one_team_run() {
     // original workspace rather than a second one.
     let retry = fake
         .prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(task_id, place.clone()),
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
@@ -553,6 +576,7 @@ async fn workspace_prepare_is_idempotent_for_one_team_run() {
 
     let elsewhere = fake
         .prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(task_id, root("/w/somewhere-else")),
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
@@ -577,6 +601,7 @@ async fn workspace_prepare_retry_returns_the_frozen_capability_snapshot() {
     let task_id = TaskId::generate();
     let place = root("/w/task-1");
     let prepare_request = |workspace_binding_id| WorkspacePrepareRequest {
+        scope: execution_scope(task_id, place.clone()),
         team_run_id,
         task_id,
         workspace_binding_id,
@@ -635,12 +660,16 @@ async fn workspace_prepare_retry_returns_the_frozen_capability_snapshot() {
 
     // The freeze is scoped to its own binding: a team run with no workspace yet
     // is judged against what the runtime advertises now, and refused.
+    let new_team_run_id = TeamRunId::generate();
+    let new_task_id = TaskId::generate();
+    let new_root = root("/w/task-2");
     assert_eq!(
         fake.prepare_workspace(&WorkspacePrepareRequest {
-            team_run_id: TeamRunId::generate(),
-            task_id: TaskId::generate(),
+            scope: execution_scope(new_task_id, new_root.clone()),
+            team_run_id: new_team_run_id,
+            task_id: new_task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
-            root: root("/w/task-2"),
+            root: new_root,
             requested_at: at("2026-08-10T09:00:00Z"),
         })
         .await
@@ -677,6 +706,7 @@ async fn team_run_roles_share_one_verified_workspace_binding() {
     let request = admitted(
         &team.fake,
         LaunchParts {
+            scope: execution_scope(team.task_id, team.workspace.root().clone()),
             agent_run_id: other_run,
             team_run_id: other_team,
             role_slot_id: slot_of(other_run),
@@ -787,10 +817,12 @@ async fn task_workspace_must_not_be_the_runtime_root() {
     let runtime_root = fake.runtime_root();
     assert_eq!(runtime_root, root("/kontor-fake-root"));
 
+    let task_id = TaskId::generate();
     let error = fake
         .prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(task_id, runtime_root.clone()),
             team_run_id: TeamRunId::generate(),
-            task_id: TaskId::generate(),
+            task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
             root: runtime_root,
             requested_at: at("2026-08-10T08:59:00Z"),

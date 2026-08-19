@@ -2193,6 +2193,19 @@ pub struct EpicTaskRequest {
     pub worktree: Option<String>,
 }
 
+/// The runtime-facing identity an epic declares independently of its display
+/// name and of any process-wide runtime configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EpicExecutionScopeDto {
+    /// The external tracker key, e.g. `ASMA-7869`.
+    #[schema(value_type = String)]
+    pub external_epic_key: ExternalId,
+    /// The compact title used when a runtime renders the epic container.
+    #[schema(value_type = String)]
+    pub short_title: ExternalName,
+}
+
 /// What `epics:apply` is asked for.
 ///
 /// One request, one epic, all of it. The profile category is resolved and frozen
@@ -2207,6 +2220,10 @@ pub struct ApplyEpicRequest {
     /// The epic's name, which is its identity inside the project.
     #[schema(value_type = String)]
     pub name: ExternalName,
+    /// Durable identity used to place this epic and its tasks in a runtime.
+    /// Omission preserves an existing declaration for wire compatibility.
+    #[serde(default)]
+    pub execution_scope: Option<EpicExecutionScopeDto>,
     /// The work-profile category to resolve, from `GET /v1/catalog/work-profiles`.
     pub work_profile_category: String,
     /// The team template revision the caller believes the profile pins. Checked
@@ -2281,6 +2298,8 @@ pub struct AppliedEpicDto {
     /// The revision a write must present.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
+    /// The durable runtime-facing identity, once declared.
+    pub execution_scope: Option<EpicExecutionScopeDto>,
     /// The work-profile revision frozen onto every task.
     pub work_profile: RevisionRefDto,
     /// The team revision the profile pins, when it prescribes one.
@@ -2334,6 +2353,8 @@ pub struct PreviewEpicDto {
     pub epic_id: Option<MiniProjectId>,
     /// Whether apply would create the epic or find it unchanged.
     pub applied: AppliedDto,
+    /// The runtime-facing identity apply would preserve or create.
+    pub execution_scope: Option<EpicExecutionScopeDto>,
     /// The work-profile revision that would be frozen onto every task.
     pub work_profile: RevisionRefDto,
     /// The team revision the profile pins, when it prescribes one.
@@ -2491,6 +2512,8 @@ pub struct EpicProjectionDto {
     /// The revision a write must present.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
+    /// The durable runtime-facing identity, once declared.
+    pub execution_scope: Option<EpicExecutionScopeDto>,
     /// The work-profile revision every task pins.
     pub work_profile: Option<RevisionRefDto>,
     /// The team revision that profile pins.

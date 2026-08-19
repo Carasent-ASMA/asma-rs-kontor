@@ -8,7 +8,8 @@
 use std::collections::BTreeSet;
 
 use kontor_core::id::{
-    ContentHash, ExternalName, SpecVersion, TaskId, TopologyNodeId, TopologySpecId,
+    ContentHash, ExternalId, ExternalName, MiniProjectId, SpecVersion, TaskId, TopologyNodeId,
+    TopologySpecId,
 };
 use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_runtime::adapter::{RuntimeAdapter, RuntimeError};
@@ -17,6 +18,7 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::container::{ContainerBindingId, ContainerRequest, RetitleContainerRequest};
 use kontor_runtime::fake::{AdapterCall, ScriptedFakeRuntime};
+use kontor_runtime::scope::{EpicScope, ExecutionScope};
 
 fn at(text: &str) -> kontor_core::id::Timestamp {
     kontor_core::id::parse_utc_timestamp(text).expect("a canonical instant")
@@ -58,11 +60,17 @@ fn container_request(node_id: TopologyNodeId, title: &str) -> ContainerRequest {
         container_binding_id: ContainerBindingId::generate(),
         topology_node_id: node_id,
         topology: topology(),
+        scope: ExecutionScope::for_epic(EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-RETITLE").expect("epic key"),
+            short_title: name("Retitle contract"),
+        }),
         capabilities: vec![NodeProjectionCapability::NativeRoot],
         display_name: name(title),
         parent: None,
         cwd: None,
         bound_native_id: None,
+        epic_container: true,
         task_id: None,
         team_run_id: None,
         requested_at: at("2026-08-17T09:00:00Z"),

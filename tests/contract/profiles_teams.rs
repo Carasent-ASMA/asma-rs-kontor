@@ -22,8 +22,8 @@ use std::collections::BTreeSet;
 use kontor_core::id::CanonicalDocument;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, ArtifactKey, BoundedText, ContentHash, CredentialAlias,
-    ExternalName, ProjectId, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, SpecVersion, TaskId,
-    TaskWorkflowId, TeamRunId, Timestamp, parse_utc_timestamp,
+    ExternalId, ExternalName, MiniProjectId, ProjectId, RuntimeBindingId, RuntimeKindKey,
+    SCHEMA_VERSION, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, Timestamp, parse_utc_timestamp,
 };
 use kontor_core::repository::{
     AgentRun, CredentialReference, CredentialReferenceKind, NewAccountProfile, NewGateEvaluation,
@@ -49,6 +49,7 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::fake::{AdapterCall, ScriptedFakeRuntime};
 use kontor_runtime::request::LaunchPlacement;
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -71,6 +72,22 @@ fn now() -> Timestamp {
 
 fn name(text: &str) -> ExternalName {
     ExternalName::parse(text).expect("a valid external name")
+}
+
+fn execution_scope(task_id: TaskId, worktree: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-PROFILES").expect("epic key"),
+            short_title: name("Profiles contract"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: ExternalId::parse("ASMA-PROFILES-1").expect("issue key"),
+            short_code: ExternalId::parse("PROFILES-1").expect("short code"),
+            worktree,
+        },
+    )
 }
 
 fn document(marker: &str) -> CanonicalDocument {
@@ -205,6 +222,10 @@ impl World {
         let fake = ScriptedFakeRuntime::new(capabilities());
         let workspace = fake
             .prepare_workspace(&WorkspacePrepareRequest {
+                scope: execution_scope(
+                    task,
+                    WorkspaceRoot::parse("/w/contract-task").expect("an absolute path"),
+                ),
                 team_run_id,
                 task_id: task,
                 workspace_binding_id: WorkspaceBindingId::generate(),
@@ -249,6 +270,7 @@ impl World {
 
     fn launch_input(&self) -> SlotLaunch {
         SlotLaunch {
+            scope: execution_scope(self.task, self.workspace.root().clone()),
             task_id: self.task,
             binding_id: RuntimeBindingId::generate(),
             placement: Some(LaunchPlacement::Workspace(self.workspace.clone())),

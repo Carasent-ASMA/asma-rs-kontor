@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::adapter::{RuntimeError, RuntimeResult};
 use crate::capability::RuntimeCapabilities;
 use crate::request::parse_kontor_uuid;
+use crate::scope::ExecutionScope;
 
 /// The prefix every Kontor workspace correlation label carries.
 pub const WORKSPACE_CORRELATION_PREFIX: &str = "kontor-team-";
@@ -405,6 +406,11 @@ pub struct WorkspacePrepareRequest {
     pub workspace_binding_id: WorkspaceBindingId,
     /// Where the workspace must be.
     pub root: WorkspaceRoot,
+    /// The epic and ticket this workspace serves, from durable Kontor state.
+    ///
+    /// The ticket half is required here: a task workspace with no ticket scope
+    /// has no canonical worktree and no title to be found again by.
+    pub scope: ExecutionScope,
     /// When preparation was requested.
     pub requested_at: Timestamp,
 }

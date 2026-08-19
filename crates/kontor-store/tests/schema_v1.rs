@@ -57,6 +57,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "epic_completion",
     "epic_completion_remediation_proposals",
     "epic_completion_wakes",
+    "epic_execution_scopes",
     "epic_rosters",
     "execution_authorization_revocations",
     "execution_authorization_tasks",
@@ -319,7 +320,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 42);
+    assert_eq!(SCHEMA_VERSION, 43);
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.
@@ -515,6 +516,15 @@ fn the_operational_hardening_v35_lineage_converges_without_losing_its_receipt() 
         receipt_triggers, 2,
         "the final rebuild restores both invariants"
     );
+    let scopes: i64 = connection
+        .query_row("SELECT count(*) FROM epic_execution_scopes", [], |row| {
+            row.get(0)
+        })
+        .expect("the execution-scope table is readable");
+    assert_eq!(
+        scopes, 0,
+        "the convergence must not invent runtime identity for historical epics"
+    );
 }
 
 /// The currently deployed recovery daemon is schema v36. Its normal append-only
@@ -563,10 +573,12 @@ fn the_deployed_consultation_v36_lineage_upgrades_forward() {
     assert_eq!(escalation_columns, 3);
 }
 
-/// OP-12 owns schema 41. OP-14 must append its provenance column as schema 42
-/// without renumbering or replaying the merged open-question migration.
+/// OP-12 owns schema 41, OP-14 appends imported lifecycle as schema 42, and
+/// OP-17 appends per-epic runtime identity as schema 43. The whole merged chain
+/// must upgrade without renumbering, replaying, or inventing identity for rows
+/// created before the new declaration existed.
 #[test]
-fn the_merged_op12_v41_lineage_upgrades_to_imported_lifecycle_v42() {
+fn the_merged_op12_v41_lineage_upgrades_through_epic_execution_scopes_v43() {
     let directory = temp();
     let path = directory.path().join("kontor.db");
     const REALM: &str = "0193f000-0000-7000-8000-0000000000f5";
@@ -622,7 +634,7 @@ fn the_merged_op12_v41_lineage_upgrades_to_imported_lifecycle_v42() {
     }
 
     let store = SqliteStore::open(&path).expect("the merged v41 lineage upgrades once");
-    assert_eq!(store.schema_version().expect("readable"), 42);
+    assert_eq!(store.schema_version().expect("readable"), 43);
     assert_eq!(store.realm_id().to_string(), REALM);
     let connection = raw(&directory);
     let (state, imported_state): (String, Option<String>) = connection
@@ -636,6 +648,15 @@ fn the_merged_op12_v41_lineage_upgrades_to_imported_lifecycle_v42() {
     assert_eq!(
         imported_state, None,
         "migration 0042 must not invent historical provenance for an existing task"
+    );
+    let scopes: i64 = connection
+        .query_row("SELECT count(*) FROM epic_execution_scopes", [], |row| {
+            row.get(0)
+        })
+        .expect("the schema-43 execution-scope table reads");
+    assert_eq!(
+        scopes, 0,
+        "migration 0043 must not invent runtime identity for an existing epic"
     );
 }
 

@@ -41,8 +41,8 @@ use kontor_accounts::{
 };
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ContentHash,
-    CredentialAlias, EnvironmentVariableName, ExternalId, ExternalName, ProjectId, RealmId,
-    RoleSlotId, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TeamRunId,
+    CredentialAlias, EnvironmentVariableName, ExternalId, ExternalName, MiniProjectId, ProjectId,
+    RealmId, RoleSlotId, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TeamRunId,
 };
 use kontor_core::repository::{
     AccountProfile, CredentialReference, CredentialReferenceKind, RuntimeBinding,
@@ -60,6 +60,7 @@ use kontor_runtime::request::{
     LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
     SendMessageRequest,
 };
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{SessionEventKind, TimelineBreak, TimelinePosition};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
@@ -132,6 +133,22 @@ fn worktree() -> WorkspaceRoot {
         .to_string_lossy()
         .into_owned();
     WorkspaceRoot::parse(&canonical).expect("the fixture worktree is an absolute path")
+}
+
+fn execution_scope(task_id: TaskId, root: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-TEST").expect("epic key"),
+            short_title: ExternalName::parse("Adapter contract").expect("epic title"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: ExternalId::parse("ASMA-TEST-1").expect("issue key"),
+            short_code: ExternalId::parse("TEST-1").expect("short code"),
+            worktree: root,
+        },
+    )
 }
 
 fn alias(text: &str) -> CredentialAlias {
@@ -387,6 +404,7 @@ async fn prepared_workspace(
 ) -> WorkspaceBindingSnapshot {
     adapter
         .prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(task_id, worktree()),
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
@@ -466,6 +484,7 @@ async fn admitted(adapter: &CodexAdapter<'_>, seat: &Seat, parts: &Parts) -> Lau
         .into_authority()
         .expect("the seat was free")
         .into_request(LaunchParts {
+            scope: execution_scope(seat.task_id, parts.cwd.clone()),
             agent_run_id: parts.agent_run_id,
             team_run_id: seat.slot.team_run_id,
             role_slot_id: seat.slot.role_slot_id.clone(),
@@ -810,6 +829,7 @@ async fn preparing_a_workspace_verifies_the_worktree_and_creates_nothing() {
     let first = plane
         .adapter
         .prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(task_id, worktree()),
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
@@ -827,6 +847,7 @@ async fn preparing_a_workspace_verifies_the_worktree_and_creates_nothing() {
     let again = plane
         .adapter
         .prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(task_id, worktree()),
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
@@ -840,12 +861,14 @@ async fn preparing_a_workspace_verifies_the_worktree_and_creates_nothing() {
     // A directory that is not there is refused rather than discovered by the
     // child after it has already been handed an account.
     let missing = WorkspaceRoot::parse("/definitely/not/a/task/worktree").expect("absolute");
+    let missing_task_id = TaskId::generate();
     assert!(matches!(
         plane
             .adapter
             .prepare_workspace(&WorkspacePrepareRequest {
+                scope: execution_scope(missing_task_id, missing.clone()),
                 team_run_id: TeamRunId::generate(),
-                task_id: TaskId::generate(),
+                task_id: missing_task_id,
                 workspace_binding_id: WorkspaceBindingId::generate(),
                 root: missing,
                 requested_at: at("2026-08-10T09:06:00Z"),

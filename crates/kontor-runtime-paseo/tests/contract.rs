@@ -36,8 +36,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use kontor_core::id::{
-    AgentRunId, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId, RuntimeKindKey, TaskId,
-    TeamRunId,
+    AgentRunId, ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeBindingId,
+    RuntimeKindKey, TaskId, TeamRunId,
 };
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
@@ -50,6 +50,7 @@ use kontor_runtime::request::{
     LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
     ResumeRequest, SendMessageRequest,
 };
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{HistoryCursor, TimelineBreak, TimelinePosition};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
@@ -157,7 +158,7 @@ const MESSAGE_ALT: &str = "01890000-0000-7000-8000-000000000012";
 
 const HOST_KEY: &str = "paseo-dev";
 const RUNTIME_KIND: &str = "paseo.agent";
-const MINI_PROJECT: &str = "kon-mini-1";
+const MINI_PROJECT: &str = "01890000-0000-7000-8000-0000000000c1";
 const PROJECT_ID: &str = "prj_epic";
 const WORKSPACE_ID: &str = "wks_task11";
 const AGENT_ID: &str = "agt_implement";
@@ -166,7 +167,12 @@ const CWD: &str = "/w/epic/task-11";
 const EPOCH_RAW: &str = "8f2b1c34-0000-4000-8000-000000000001";
 
 fn v(raw: &str) -> serde_json::Value {
-    serde_json::from_str(raw).expect("a fixture is valid JSON")
+    // The 0.3.1 recordings predate the typed MiniProjectId on execution scope
+    // and used a human placeholder in labels. Keep the recordings immutable
+    // while upgrading that one synthetic value to the canonical id this
+    // contract now exercises.
+    let raw = raw.replace("kon-mini-1", MINI_PROJECT);
+    serde_json::from_str(&raw).expect("a fixture is valid JSON")
 }
 
 fn external(text: &str) -> ExternalId {
@@ -307,6 +313,30 @@ fn scope() -> PaseoExecutionScope {
     }
 }
 
+fn epic_scope() -> EpicScope {
+    EpicScope {
+        mini_project_id: MiniProjectId::parse(MINI_PROJECT).expect("a canonical epic id"),
+        external_epic_key: external("ASMA-7744"),
+        short_title: name("Kontor MVP"),
+    }
+}
+
+fn execution_scope() -> ExecutionScope {
+    ExecutionScope::for_task(
+        epic_scope(),
+        TaskScope {
+            task_id: task(),
+            external_issue_key: external("ASMA-7755"),
+            short_code: external("KON-11"),
+            worktree: root(),
+        },
+    )
+}
+
+fn epic_execution_scope() -> ExecutionScope {
+    ExecutionScope::for_epic(epic_scope())
+}
+
 fn config() -> PaseoConfig {
     PaseoConfig {
         runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("a valid runtime key"),
@@ -421,6 +451,7 @@ impl Plane {
     async fn prepare_workspace(&self) -> RuntimeResult<WorkspaceBindingSnapshot> {
         self.adapter
             .prepare_workspace(&WorkspacePrepareRequest {
+                scope: execution_scope(),
                 team_run_id: team_run(),
                 task_id: task(),
                 workspace_binding_id: WorkspaceBindingId::generate(),
@@ -462,6 +493,7 @@ impl Plane {
             .await?
             .into_authority()?;
         Ok(authority.into_request(LaunchParts {
+            scope: execution_scope(),
             agent_run_id,
             team_run_id: team_run(),
             role_slot_id: slot_id.clone(),
@@ -898,6 +930,7 @@ async fn preparation_refuses_a_second_root_for_one_team_run() {
     let elsewhere = plane
         .adapter
         .prepare_workspace(&WorkspacePrepareRequest {
+            scope: execution_scope(),
             team_run_id: team_run(),
             task_id: task(),
             workspace_binding_id: WorkspaceBindingId::generate(),
@@ -1229,6 +1262,7 @@ async fn role_slot_a_same_slot_race_yields_one_permit_and_one_agent() {
         .into_authority()
         .expect("the first caller holds the authority")
         .into_request(LaunchParts {
+            scope: execution_scope(),
             agent_run_id: run(RUN_IMPLEMENT),
             team_run_id: team_run(),
             role_slot_id: slot("implement-a"),
@@ -1373,6 +1407,7 @@ async fn adoption_preserves_the_native_identity() {
         .daemon
         .queue_answer_rpc("fetch_agent_request", v(AGENT_ADOPTED));
     plane.adapter.authorize_adoption(PaseoAdoptionIntent {
+        scope: execution_scope(),
         native_agent_id: external("agt_foreign"),
         team_run_id: team_run(),
         role_slot_id: slot("implement-a"),
@@ -1431,6 +1466,7 @@ async fn adoption_refuses_a_session_that_already_belongs_to_a_run() {
     // it out from under the run that owns it.
     plane.daemon.set_answer_rpc("fetch_agent_request", v(AGENT));
     plane.adapter.authorize_adoption(PaseoAdoptionIntent {
+        scope: execution_scope(),
         native_agent_id: external("agt_foreign"),
         team_run_id: team_run(),
         role_slot_id: slot("implement-a"),
@@ -1477,6 +1513,7 @@ async fn adoption_refuses_a_readback_whose_identity_changed() {
             cli,
         );
         plane.adapter.authorize_adoption(PaseoAdoptionIntent {
+            scope: execution_scope(),
             native_agent_id: external("agt_foreign"),
             team_run_id: team_run(),
             role_slot_id: slot("implement-a"),
@@ -2832,6 +2869,7 @@ async fn placement_adoption_reproves_the_workspace_before_it_writes_a_label() {
         .daemon
         .set_answer_rpc("fetch_agent_request", v(AGENT_FOREIGN));
     plane.adapter.authorize_adoption(PaseoAdoptionIntent {
+        scope: execution_scope(),
         native_agent_id: external("agt_foreign"),
         team_run_id: team_run(),
         role_slot_id: slot("implement-a"),
@@ -3521,6 +3559,7 @@ fn child_request(node_id: TopologyNodeId, parent: Option<ContainerBinding>) -> C
         container_binding_id: ContainerBindingId::generate(),
         topology_node_id: node_id,
         topology: topology(),
+        scope: execution_scope(),
         capabilities: vec![
             NodeProjectionCapability::NativeChild,
             NodeProjectionCapability::SessionHost,
@@ -3529,6 +3568,7 @@ fn child_request(node_id: TopologyNodeId, parent: Option<ContainerBinding>) -> C
         parent,
         cwd: Some(WorkspaceRoot::parse(CWD).expect("an absolute path")),
         bound_native_id: None,
+        epic_container: false,
         task_id: None,
         team_run_id: None,
         requested_at: at("2026-08-16T09:05:00Z"),
@@ -3811,11 +3851,13 @@ async fn a_configured_root_is_adopted_by_exact_id_and_never_created() {
             container_binding_id: ContainerBindingId::generate(),
             topology_node_id: root_node,
             topology: topology(),
+            scope: epic_execution_scope(),
             capabilities: vec![NodeProjectionCapability::NativeRoot],
             display_name: name("Epic · ASMA-7871"),
             parent: None,
             cwd: Some(WorkspaceRoot::parse("/w/epic").expect("an absolute path")),
             bound_native_id: None,
+            epic_container: true,
             task_id: None,
             team_run_id: None,
             requested_at: at("2026-08-16T09:05:00Z"),
@@ -3835,16 +3877,10 @@ async fn a_configured_root_is_adopted_by_exact_id_and_never_created() {
     );
 }
 
-/// A root above the seat is registered from the plane's checkout, not refused.
-///
-/// Kontor gives a working directory only to the node the seat actually edits
-/// in: an epic root and a project root are places to put things, not trees. That
-/// is right, and it is also everything Paseo needs told to it, because a Paseo
-/// project *is* a registered checkout. Refusing the request instead meant the
-/// whole lineage failed at its first level, and every admission through the
-/// topology path was blocked with `unsupported_capability` before any seat.
+/// A root without its own directory is refused instead of silently becoming the
+/// first epic registered from the plane's shared checkout.
 #[tokio::test]
-async fn a_root_that_names_no_directory_is_registered_from_the_planes_checkout() {
+async fn a_root_that_names_no_directory_is_refused_without_a_shared_checkout_fallback() {
     let recorded = Arc::new(
         RecordedPaseo::new()
             .answering(&PaseoCommand::version(), VERSION)
@@ -3859,34 +3895,254 @@ async fn a_root_that_names_no_directory_is_registered_from_the_planes_checkout()
     )
     .expect("the plane builds");
 
-    let outcome = adapter
+    let refused = adapter
         .prepare_container(&ContainerRequest {
             container_binding_id: ContainerBindingId::generate(),
             topology_node_id: node(NODE_B),
             topology: topology(),
+            scope: epic_execution_scope(),
             capabilities: vec![NodeProjectionCapability::NativeRoot],
             display_name: name("Epic · ASMA-7872"),
             parent: None,
             // The whole point: nothing above the leaf carries one.
             cwd: None,
             bound_native_id: None,
+            epic_container: true,
             task_id: None,
             team_run_id: None,
             requested_at: at("2026-08-16T09:05:00Z"),
         })
         .await
-        .expect("a root with no directory of its own is still registrable");
+        .expect_err("an unscoped root may not reuse the plane checkout");
 
+    assert!(
+        matches!(refused, RuntimeError::WorkspaceMismatch { .. }),
+        "got {refused:?}"
+    );
     assert_eq!(
         recorded.count("rpc project.add.request"),
-        1,
-        "the root was registered rather than refused"
+        0,
+        "a missing explicit root reaches no create surface"
     );
+}
+
+/// GAP-06. One runtime adapter is a host plane, not one epic. A second epic must
+/// therefore get a distinct native root, prepare a task absent from the static
+/// compatibility map, and retain both project identities across restart.
+#[tokio::test]
+async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scope() {
+    let project = |id: &str, display: &str, root: &str| {
+        serde_json::json!({
+            "projectId": id,
+            "projectKey": format!("fixture/{id}"),
+            "projectDisplayName": display,
+            "projectCustomName": null,
+            "projectCustomIconRevision": null,
+            "projectRootPath": root,
+            "projectKind": "git"
+        })
+    };
+    let first_project = project(
+        "prj_epic_a",
+        "Epic · ASMA-7744 · Kontor MVP",
+        "/state/runtime-roots/asma-7744",
+    );
+    let second_project = project(
+        "prj_epic_b",
+        "Epic · ASMA-9000 · QNR V2",
+        "/state/runtime-roots/asma-9000",
+    );
+    let projects = serde_json::json!({
+        "requestId": "req-fixture",
+        "projects": [first_project.clone(), second_project.clone()]
+    });
+    let added = |project: serde_json::Value| {
+        serde_json::json!({
+            "requestId": "req-fixture",
+            "project": project,
+            "error": null,
+            "errorCode": null
+        })
+    };
+
+    let mut second_workspace = v(WORKSPACE_LIST_ONE);
+    let entry = &mut second_workspace["entries"][0];
+    entry["projectId"] = serde_json::json!("prj_epic_b");
+    entry["projectDisplayName"] = serde_json::json!("Epic · ASMA-9000 · QNR V2");
+    entry["projectCustomName"] = serde_json::json!("Epic · ASMA-9000 · QNR V2");
+    entry["projectRootPath"] = serde_json::json!("/w/qnr/task-1");
+    entry["workspaceDirectory"] = serde_json::json!("/w/qnr/task-1");
+    entry["name"] = serde_json::json!("TSW · ASMA-9001 · QNR-01");
+    entry["title"] = serde_json::json!("TSW · ASMA-9001 · QNR-01");
+    entry["project"]["projectName"] = serde_json::json!("Epic · ASMA-9000 · QNR V2");
+    entry["project"]["workspaceName"] = serde_json::json!("TSW · ASMA-9001 · QNR-01");
+    entry["project"]["checkout"]["cwd"] = serde_json::json!("/w/qnr/task-1");
+    entry["project"]["checkout"]["worktreeRoot"] = serde_json::json!("/w/qnr/task-1");
+
+    let recorded = Arc::new(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .then_answering_rpc("project.add.request", added(first_project))
+            .then_answering_rpc("project.add.request", added(second_project))
+            .answering_rpc("project.list.request", projects.clone())
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", second_workspace),
+    );
+    let adapter = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("the host plane builds");
+
+    let first_scope = epic_execution_scope();
+    let second_epic = EpicScope {
+        mini_project_id: MiniProjectId::parse("01890000-0000-7000-8000-0000000000c2")
+            .expect("a second epic id"),
+        external_epic_key: external("ASMA-9000"),
+        short_title: name("QNR V2"),
+    };
+    let second_task =
+        TaskId::parse("01890000-0000-7000-8000-0000000000b9").expect("a second task id");
+    let second_root = WorkspaceRoot::parse("/w/qnr/task-1").expect("an absolute worktree");
+    let second_scope = ExecutionScope::for_task(
+        second_epic.clone(),
+        TaskScope {
+            task_id: second_task,
+            external_issue_key: external("ASMA-9001"),
+            short_code: external("QNR-01"),
+            worktree: second_root.clone(),
+        },
+    );
+
+    let first = adapter
+        .prepare_container(&ContainerRequest {
+            container_binding_id: ContainerBindingId::generate(),
+            topology_node_id: node(NODE_B),
+            topology: topology(),
+            scope: first_scope,
+            capabilities: vec![NodeProjectionCapability::NativeRoot],
+            display_name: name("Epic · ASMA-7744 · Kontor MVP"),
+            parent: None,
+            cwd: Some(
+                WorkspaceRoot::parse("/state/runtime-roots/asma-7744")
+                    .expect("an absolute epic root"),
+            ),
+            bound_native_id: None,
+            epic_container: true,
+            task_id: None,
+            team_run_id: None,
+            requested_at: at("2026-08-19T09:00:00Z"),
+        })
+        .await
+        .expect("the first epic root is prepared");
+    let second_node = TopologyNodeId::generate();
+    let second = adapter
+        .prepare_container(&ContainerRequest {
+            container_binding_id: ContainerBindingId::generate(),
+            topology_node_id: second_node,
+            topology: topology(),
+            scope: ExecutionScope::for_epic(second_epic),
+            capabilities: vec![NodeProjectionCapability::NativeRoot],
+            display_name: name("Epic · ASMA-9000 · QNR V2"),
+            parent: None,
+            cwd: Some(
+                WorkspaceRoot::parse("/state/runtime-roots/asma-9000")
+                    .expect("an absolute epic root"),
+            ),
+            bound_native_id: None,
+            epic_container: true,
+            task_id: None,
+            team_run_id: None,
+            requested_at: at("2026-08-19T09:01:00Z"),
+        })
+        .await
+        .expect("the second epic root is prepared");
+
+    assert_ne!(
+        first.snapshot.binding.identity,
+        second.snapshot.binding.identity
+    );
+    assert_eq!(recorded.count("rpc project.add.request"), 2);
+
+    let workspace = adapter
+        .prepare_workspace(&WorkspacePrepareRequest {
+            scope: second_scope,
+            team_run_id: TeamRunId::generate(),
+            task_id: second_task,
+            workspace_binding_id: WorkspaceBindingId::generate(),
+            root: second_root,
+            requested_at: at("2026-08-19T09:02:00Z"),
+        })
+        .await
+        .expect("a dynamic task absent from runtimes.json is prepared");
     assert_eq!(
-        outcome.snapshot.binding.identity.native_id.as_str(),
-        PROJECT_ID,
-        "and the binding is made from the readback, as every root's is"
+        workspace.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
     );
+
+    let checkpoint = adapter.checkpoint();
+    assert_eq!(
+        checkpoint
+            .project
+            .as_ref()
+            .expect("the legacy epic")
+            .project_id
+            .as_str(),
+        "prj_epic_a"
+    );
+    assert_eq!(checkpoint.projects.len(), 1);
+    assert_eq!(checkpoint.projects[0].project_id.as_str(), "prj_epic_b");
+
+    let restarted_runtime = Arc::new(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", projects),
+    );
+    let restarted = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&restarted_runtime)),
+        checkpoint,
+    )
+    .expect("both epic bindings restore");
+    let mut first_replay = ContainerRequest {
+        container_binding_id: first.snapshot.binding.id,
+        topology_node_id: first.snapshot.binding.topology_node_id,
+        topology: topology(),
+        scope: epic_execution_scope(),
+        capabilities: vec![NodeProjectionCapability::NativeRoot],
+        display_name: name("Epic · ASMA-7744 · Kontor MVP"),
+        parent: None,
+        cwd: first.snapshot.binding.root.clone(),
+        bound_native_id: Some(first.snapshot.binding.identity.native_id.clone()),
+        epic_container: true,
+        task_id: None,
+        team_run_id: None,
+        requested_at: at("2026-08-19T09:03:00Z"),
+    };
+    let first_restored = restarted
+        .prepare_container(&first_replay)
+        .await
+        .expect("the first persisted root re-attests");
+    first_replay.container_binding_id = second.snapshot.binding.id;
+    first_replay.topology_node_id = second.snapshot.binding.topology_node_id;
+    first_replay.scope = ExecutionScope::for_epic(EpicScope {
+        mini_project_id: MiniProjectId::parse("01890000-0000-7000-8000-0000000000c2")
+            .expect("a second epic id"),
+        external_epic_key: external("ASMA-9000"),
+        short_title: name("QNR V2"),
+    });
+    first_replay.cwd = second.snapshot.binding.root.clone();
+    first_replay.bound_native_id = Some(second.snapshot.binding.identity.native_id.clone());
+    let second_restored = restarted
+        .prepare_container(&first_replay)
+        .await
+        .expect("the second persisted root re-attests");
+    assert!(!first_restored.created && !second_restored.created);
+    assert_eq!(restarted_runtime.count("rpc project.add.request"), 0);
 }
 
 /// The shape comes from the pinned capabilities, and an undeclared one produces

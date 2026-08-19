@@ -884,9 +884,12 @@ impl AdmissionLedger {
 
 #[cfg(test)]
 mod tests {
-    use kontor_core::id::{BoundedText, TaskId, parse_utc_timestamp};
+    use kontor_core::id::{
+        BoundedText, ExternalId, ExternalName, MiniProjectId, TaskId, parse_utc_timestamp,
+    };
 
     use super::*;
+    use crate::scope::{EpicScope, ExecutionScope, TaskScope};
     use crate::workspace::WorkspaceRoot;
 
     fn seat() -> RoleSlotKey {
@@ -900,6 +903,8 @@ mod tests {
     fn launch_request(slot: &RoleSlotKey) -> LaunchRequest {
         let agent_run_id = AgentRunId::generate();
         let binding_id = RuntimeBindingId::generate();
+        let task_id = TaskId::generate();
+        let cwd = WorkspaceRoot::parse("/w/task-1").expect("an absolute path");
         let authority = LaunchAuthority::issue(
             AdmissionTicket::mint(),
             slot.clone(),
@@ -907,13 +912,26 @@ mod tests {
             binding_id,
         );
         authority.into_request(LaunchParts {
+            scope: ExecutionScope::for_task(
+                EpicScope {
+                    mini_project_id: MiniProjectId::generate(),
+                    external_epic_key: ExternalId::parse("ASMA-ADMISSION").expect("epic key"),
+                    short_title: ExternalName::parse("Admission contract").expect("epic title"),
+                },
+                TaskScope {
+                    task_id,
+                    external_issue_key: ExternalId::parse("ASMA-ADMISSION-1").expect("issue key"),
+                    short_code: ExternalId::parse("ADMISSION-1").expect("short code"),
+                    worktree: cwd.clone(),
+                },
+            ),
             agent_run_id,
             team_run_id: slot.team_run_id,
             role_slot_id: slot.role_slot_id.clone(),
-            task_id: TaskId::generate(),
+            task_id,
             binding_id,
             placement: None,
-            cwd: WorkspaceRoot::parse("/w/task-1").expect("an absolute path"),
+            cwd,
             account_profile_id: None,
             prompt: BoundedText::parse("do the work").expect("bounded text"),
             model_rung: kontor_core::spec::ModelRung {

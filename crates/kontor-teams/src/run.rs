@@ -75,6 +75,7 @@ use kontor_runtime::capability::RuntimeBindingSnapshot;
 use kontor_runtime::request::{
     LaunchParts, LaunchPlacement, LaunchRequest, MessageId, ResumeRequest, SendMessageRequest,
 };
+use kontor_runtime::scope::ExecutionScope;
 use kontor_runtime::workspace::WorkspaceRoot;
 use serde::Serialize;
 
@@ -365,6 +366,7 @@ impl LaunchPermit {
             binding_id: launch.binding_id,
             placement: launch.placement,
             cwd: launch.cwd,
+            scope: launch.scope,
             account_profile_id: launch.account_profile_id,
             prompt: launch.prompt,
             model_rung: launch.model_rung,
@@ -447,6 +449,8 @@ pub struct SlotLaunch {
     pub placement: Option<LaunchPlacement>,
     /// Where this role says it will work.
     pub cwd: WorkspaceRoot,
+    /// Durable epic/task identity used by the runtime for placement and labels.
+    pub scope: ExecutionScope,
     /// The coding account this attempt is pinned to, if any.
     pub account_profile_id: Option<AccountProfileId>,
     /// What the session starts with.

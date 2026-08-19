@@ -1568,7 +1568,8 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 });
             }
         };
-        if let Some(canonical) = &state.canonical_root
+        if request.task_id.is_some()
+            && let Some(canonical) = &state.canonical_root
             && let Some(requested) = &request.cwd
             && requested != canonical
         {

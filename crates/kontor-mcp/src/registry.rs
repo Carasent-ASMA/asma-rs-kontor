@@ -324,6 +324,20 @@ const BUDGET_BOUNDS: &[FieldSpec] = &[
     ),
 ];
 
+/// The durable runtime-facing identity optionally declared by an epic apply.
+const EPIC_EXECUTION_SCOPE: &[FieldSpec] = &[
+    field(
+        "external_epic_key",
+        ArgType::ExternalId,
+        "The external tracker key, such as `ASMA-7869`.",
+    ),
+    field(
+        "short_title",
+        ArgType::ExternalName,
+        "The compact title used when the runtime renders the epic container.",
+    ),
+];
+
 /// The two bounds a streamed read is taken under.
 const MAX_FRAMES: ArgSpec = opt(
     "max_frames",
@@ -888,6 +902,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ExternalName,
                 "The epic's name.",
             ),
+            opt(
+                "execution_scope",
+                Place::Body,
+                ArgType::Object(EPIC_EXECUTION_SCOPE),
+                "The epic's durable runtime-facing tracker key and compact title.",
+            ),
             req(
                 "work_profile_category",
                 Place::Body,
@@ -946,6 +966,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::ExternalName,
                 "The epic's name.",
+            ),
+            opt(
+                "execution_scope",
+                Place::Body,
+                ArgType::Object(EPIC_EXECUTION_SCOPE),
+                "The epic's durable runtime-facing tracker key and compact title.",
             ),
             req(
                 "work_profile_category",

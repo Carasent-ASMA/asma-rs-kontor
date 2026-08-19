@@ -18,9 +18,9 @@ use std::collections::BTreeSet;
 
 use kontor_core::DomainError;
 use kontor_core::id::{
-    AgentRunId, AggregateRevision, ArtifactKey, BoundedText, ContentHash, EventCursor, ProjectId,
-    RoleKey, RuntimeBindingId, SCHEMA_VERSION, SpecVersion, TaskId, TeamRunId, Timestamp,
-    parse_utc_timestamp,
+    AgentRunId, AggregateRevision, ArtifactKey, BoundedText, ContentHash, EventCursor, ExternalId,
+    ExternalName, MiniProjectId, ProjectId, RoleKey, RuntimeBindingId, SCHEMA_VERSION, SpecVersion,
+    TaskId, TeamRunId, Timestamp, parse_utc_timestamp,
 };
 use kontor_core::repository::AgentRun;
 use kontor_core::spec::{
@@ -38,6 +38,7 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep, ScriptedFakeRuntime};
 use kontor_runtime::request::{CancelRequest, LaunchParts, LaunchPlacement};
+use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -134,6 +135,22 @@ fn capabilities() -> RuntimeCapabilities {
     }
 }
 
+fn execution_scope(task_id: TaskId, root: WorkspaceRoot) -> ExecutionScope {
+    ExecutionScope::for_task(
+        EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-TEAM").expect("epic key"),
+            short_title: ExternalName::parse("Team contract").expect("epic title"),
+        },
+        TaskScope {
+            task_id,
+            external_issue_key: ExternalId::parse("ASMA-TEAM-1").expect("issue key"),
+            short_code: ExternalId::parse("TEAM-1").expect("short code"),
+            worktree: root,
+        },
+    )
+}
+
 /// One prepared workspace shared by every role of one team run.
 struct Runtime {
     fake: ScriptedFakeRuntime,
@@ -148,6 +165,10 @@ impl Runtime {
         let task_id = TaskId::generate();
         let workspace = fake
             .prepare_workspace(&WorkspacePrepareRequest {
+                scope: execution_scope(
+                    task_id,
+                    WorkspaceRoot::parse("/w/task-1").expect("an absolute path"),
+                ),
                 team_run_id,
                 task_id,
                 workspace_binding_id: WorkspaceBindingId::generate(),
@@ -168,6 +189,7 @@ impl Runtime {
     /// What a launch names, with no authorization attached.
     fn launch_parts(&self, slot: &RoleSlotId, agent_run_id: AgentRunId) -> LaunchParts {
         LaunchParts {
+            scope: execution_scope(self.task_id, self.workspace.root().clone()),
             agent_run_id,
             team_run_id: self.team_run_id,
             role_slot_id: slot.clone(),
@@ -209,6 +231,7 @@ impl Runtime {
 
     fn launch_input(&self) -> SlotLaunch {
         SlotLaunch {
+            scope: execution_scope(self.task_id, self.workspace.root().clone()),
             task_id: self.task_id,
             binding_id: RuntimeBindingId::generate(),
             placement: Some(LaunchPlacement::Workspace(self.workspace.clone())),
