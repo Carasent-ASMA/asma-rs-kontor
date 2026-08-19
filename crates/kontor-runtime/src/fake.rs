@@ -953,6 +953,14 @@ impl ScriptedFakeRuntime {
         self.lock().unlaunchable.insert(slot.as_str().to_owned());
     }
 
+    /// Let a role slot that was deliberately refused become launchable again.
+    ///
+    /// This models a transient runtime refusal clearing before an exact
+    /// scheduler replay resumes the durable admission.
+    pub fn allowing_launch_of(&self, slot: &kontor_core::id::RoleSlotId) {
+        self.lock().unlaunchable.remove(slot.as_str());
+    }
+
     /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
     ///
     /// `compose_paseo` builds every adapter from `PaseoCheckpoint::fresh`, so a
@@ -1716,12 +1724,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         // key. Taking the reservation is part of the same call, so no second
         // launch can pass this line on the strength of a reservation the first is
         // already spending.
+        state.admissions.claim(request)?;
+
         if state.unlaunchable.contains(request.role_slot_id().as_str()) {
+            state.admissions.release(request);
             return Err(RuntimeError::Transport {
                 rule: "this runtime will not launch that role slot",
             });
         }
-        state.admissions.claim(request)?;
 
         // From here the reservation is claimed, so every remaining refusal has to
         // give the seat back. A refused launch leaves no session and no native

@@ -11122,6 +11122,7 @@ struct UnboundWorld {
     epic: String,
     team_run: String,
     seats: Vec<serde_json::Value>,
+    plan_hash: String,
 }
 
 async fn alpha_with_one_unbound_slot(slug: &'static str) -> UnboundWorld {
@@ -11291,6 +11292,7 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
         epic,
         team_run,
         seats,
+        plan_hash,
     }
 }
 
@@ -11807,6 +11809,108 @@ async fn an_unwaived_slot_on_the_same_template_does_receive_the_follow_up() {
             .any(|follow_up| follow_up["to_role_slot"] == serde_json::json!("omega-k3")),
         "the handoff is unconditional, so without a waiver it must derive: {}",
         unwaived.body
+    );
+}
+
+/// An exact scheduler replay is the recovery seam for a durable admission
+/// whose downstream seat failed to launch. If an upstream turn settled in the
+/// meantime, binding that seat must also deliver the handoff already recorded
+/// for it; otherwise the replay reports success while the recovered team stays
+/// idle until an unrelated daemon restart.
+#[tokio::test]
+async fn replaying_a_partial_admission_delivers_its_durable_follow_up() {
+    let recovered = omega_with_one_unbound_slot("recover-dispatch", "omega-u-cat").await;
+    let giver = recovered
+        .seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k1")
+        .expect("omega-k1 is seated")["agent_run_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let settled = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{giver}/turns:settle",
+            recovered.project
+        ),
+        &serde_json::json!({
+            "role_slot": "omega-k1",
+            "expected_task_revision": 1,
+            "artifacts": ["omega-a2", "omega-a3"]
+        }),
+    )
+    .signed_as(&recovered.world, "operator")
+    .with_key("recover-dispatch-turn")
+    .send(&recovered.world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    let settlement = settled.json();
+    let follow_up = settlement["follow_ups"]
+        .as_array()
+        .expect("follow-ups")
+        .iter()
+        .find(|follow_up| follow_up["to_role_slot"] == "omega-k3")
+        .expect("omega-k1 hands to omega-k3");
+    assert_eq!(follow_up["dispatched"], serde_json::json!(false));
+    let target = follow_up["target_agent_run_id"]
+        .as_str()
+        .expect("the unbound run is still the declared target")
+        .to_owned();
+
+    let slot = kontor_core::id::RoleSlotId::parse("omega-k3").expect("a slot");
+    recovered.world.fake.allowing_launch_of(&slot);
+    let replay = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:start",
+            recovered.project, recovered.epic
+        ),
+        &serde_json::json!({"plan_hash": recovered.plan_hash}),
+    )
+    .signed_as(&recovered.world, "operator")
+    .with_key("recover-dispatch-start")
+    .send(&recovered.world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert!(
+        replay.json()["blocked"]
+            .as_array()
+            .expect("blocked")
+            .is_empty(),
+        "the exact replay recovered every seat: {}",
+        replay.body
+    );
+
+    let project_id = kontor_core::id::ProjectId::parse(&recovered.project).expect("a project id");
+    let run = recovered
+        .world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_agent_run(
+                project_id,
+                kontor_core::id::AgentRunId::parse(&target).expect("a run id"),
+            )
+        })
+        .expect("the run is readable")
+        .expect("the run exists");
+    assert!(
+        run.binding.is_some(),
+        "the replay bound the downstream seat"
+    );
+    let dispatches = recovered
+        .world
+        .daemon
+        .state()
+        .with_store(|store| store.list_turn_dispatches(project_id))
+        .expect("the dispatches are readable");
+    assert!(
+        dispatches.iter().any(|dispatch| {
+            dispatch.to_role_slot_id == slot
+                && dispatch.target_agent_run.map(|run| run.to_string()) == Some(target.clone())
+                && dispatch.dispatched
+        }),
+        "the replay must deliver the durable handoff: {dispatches:?}"
     );
 }
 
