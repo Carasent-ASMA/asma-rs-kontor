@@ -1118,6 +1118,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Judge one whole epic with the exact apply rules and commit nothing. */
+        post: operations["preview_epic"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/intake/{receipt_id}": {
         parameters: {
             query?: never;
@@ -3586,6 +3603,15 @@ export interface components {
             /** @description The standard role the session's seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
         };
+        /**
+         * @description The deliberately narrow source lifecycle accepted by an epic import.
+         *
+         *     This is not the native task lifecycle. In particular, `completed` is a
+         *     historical fact from the source system and carries no Kontor gate, artifact,
+         *     run, team or epic-closure evidence.
+         * @enum {string}
+         */
+        EpicImportStateDto: "ready" | "completed";
         /** @description The whole of one epic, read at one control-plane position. */
         EpicProjectionDto: {
             /** @description Every arming decision that touches this epic. */
@@ -3679,6 +3705,13 @@ export interface components {
         EpicTaskRequest: {
             /** @description The titles of the sibling tasks that must finish first. */
             depends_on?: string[];
+            /**
+             * @description The source lifecycle to preserve during this import.
+             *
+             *     Omission remains backward-compatible with the original apply contract
+             *     and means `ready`.
+             */
+            import_state?: components["schemas"]["EpicImportStateDto"];
             /** @description The module the task contends for, if any. */
             module?: string | null;
             /** @description The external tickets to link. */
@@ -4125,6 +4158,38 @@ export interface components {
              * @description The published revision.
              */
             version: number;
+        };
+        /** @description The result of judging an epic with the exact apply rules and no writes. */
+        PreviewEpicDto: {
+            /** @description Whether apply would create the epic or find it unchanged. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The durable epic id when this preview matched an existing epic. */
+            epic_id?: string | null;
+            /** @description The owning project. */
+            project_id: string;
+            /** @description The Realm that judged the graph. */
+            realm_id: string;
+            /** @description Every task, in request order. */
+            tasks: components["schemas"]["PreviewEpicTaskDto"][];
+            team_template?: null | components["schemas"]["RevisionRefDto"];
+            /** @description The work-profile revision that would be frozen onto every task. */
+            work_profile: components["schemas"]["RevisionRefDto"];
+        };
+        /** @description One task as an epic preview judges it, without committing prospective ids. */
+        PreviewEpicTaskDto: {
+            /** @description Whether apply would create it or find it unchanged. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The lifecycle projection apply would persist. */
+            state: string;
+            /**
+             * @description The durable task id when this preview matched an existing task.
+             *
+             *     `None` means apply would create the task. Transaction-local ids used to
+             *     validate a new graph are deliberately not exposed as authority.
+             */
+            task_id?: string | null;
+            /** @description The title it was addressed by. */
+            title: string;
         };
         /** @description Publish one revalidated definition as an immutable revision. */
         ProfileApplyRequest: {
@@ -9152,6 +9217,58 @@ export interface operations {
                 content?: never;
             };
             /** @description Drift, a stale revision, or a reused key */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_epic: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplyEpicRequest"];
+            };
+        };
+        responses: {
+            /** @description Valid and applicable without writes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewEpicDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Drift or a stale revision */
             409: {
                 headers: {
                     [name: string]: unknown;

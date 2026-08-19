@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 41;
+pub const SCHEMA_VERSION: i64 = 42;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -184,6 +184,10 @@ const MIGRATIONS: &[&str] = &[
     // attested seat before a Realm operator records the requester's disposition.
     include_str!("../migrations/0040_advisor_advice.sql"),
     include_str!("../migrations/0041_open_questions.sql"),
+    // Schema v42. The historical lifecycle fact carried by an epic import. It
+    // is cleared by the first native lifecycle transition, so imported
+    // completion is never confused with certified native closure.
+    include_str!("../migrations/0042_imported_task_lifecycle.sql"),
 ];
 
 const _: () = assert!(
@@ -352,6 +356,7 @@ fn apply_pending(
             MIGRATIONS[38],
             MIGRATIONS[39],
             MIGRATIONS[40],
+            MIGRATIONS[41],
         ] {
             transaction.execute_batch(migration)?;
         }

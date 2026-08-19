@@ -127,6 +127,7 @@ impl Modify for RealmBearer {
         crate::applications::completion,
         crate::applications::advance_completion,
         crate::applications::remediate_completion,
+        crate::applications::preview_epic,
         crate::applications::apply_epic,
         crate::applications::read_epic,
         crate::applications::arm,

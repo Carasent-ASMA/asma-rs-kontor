@@ -535,6 +535,10 @@ pub fn router(state: ApiState) -> Router {
             post(applications::ensure_account_profile),
         )
         .route(
+            "/v1/projects/{project_id}/epics:preview",
+            post(applications::preview_epic),
+        )
+        .route(
             "/v1/projects/{project_id}/epics:apply",
             post(applications::apply_epic),
         )

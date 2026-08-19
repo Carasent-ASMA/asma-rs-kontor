@@ -3426,6 +3426,60 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Judge one whole epic with the exact apply rules and commit nothing.",
+        "operationId": "preview_epic",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyEpicRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Valid and applicable without writes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewEpicDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "Drift or a stale revision"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/intake/{receipt_id}": {
       "get": {
         "tags": [
@@ -9718,6 +9772,14 @@
         },
         "additionalProperties": false
       },
+      "EpicImportStateDto": {
+        "type": "string",
+        "description": "The deliberately narrow source lifecycle accepted by an epic import.\n\nThis is not the native task lifecycle. In particular, `completed` is a\nhistorical fact from the source system and carries no Kontor gate, artifact,\nrun, team or epic-closure evidence.",
+        "enum": [
+          "ready",
+          "completed"
+        ]
+      },
       "EpicProjectionDto": {
         "type": "object",
         "description": "The whole of one epic, read at one control-plane position.",
@@ -9915,6 +9977,10 @@
               "type": "string"
             },
             "description": "The titles of the sibling tasks that must finish first."
+          },
+          "import_state": {
+            "$ref": "#/components/schemas/EpicImportStateDto",
+            "description": "The source lifecycle to preserve during this import.\n\nOmission remains backward-compatible with the original apply contract\nand means `ready`."
           },
           "module": {
             "type": [
@@ -10792,6 +10858,90 @@
             "format": "int32",
             "description": "The published revision.",
             "minimum": 0
+          }
+        }
+      },
+      "PreviewEpicDto": {
+        "type": "object",
+        "description": "The result of judging an epic with the exact apply rules and no writes.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "applied",
+          "work_profile",
+          "tasks"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether apply would create the epic or find it unchanged."
+          },
+          "epic_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The durable epic id when this preview matched an existing epic."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that judged the graph."
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreviewEpicTaskDto"
+            },
+            "description": "Every task, in request order."
+          },
+          "team_template": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RevisionRefDto",
+                "description": "The team revision the profile pins, when it prescribes one."
+              }
+            ]
+          },
+          "work_profile": {
+            "$ref": "#/components/schemas/RevisionRefDto",
+            "description": "The work-profile revision that would be frozen onto every task."
+          }
+        }
+      },
+      "PreviewEpicTaskDto": {
+        "type": "object",
+        "description": "One task as an epic preview judges it, without committing prospective ids.",
+        "required": [
+          "title",
+          "applied",
+          "state"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether apply would create it or find it unchanged."
+          },
+          "state": {
+            "type": "string",
+            "description": "The lifecycle projection apply would persist."
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The durable task id when this preview matched an existing task.\n\n`None` means apply would create the task. Transaction-local ids used to\nvalidate a new graph are deliberately not exposed as authority."
+          },
+          "title": {
+            "type": "string",
+            "description": "The title it was addressed by."
           }
         }
       },

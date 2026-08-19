@@ -33,12 +33,12 @@ use kontor_api::applications::{
     AbandonRunRequest, AbandonedRunDto, AccountProfileDto, ApplicationOperations, AppliedDto,
     AppliedEpicDto, AppliedLinkDto, AppliedTaskDto, ApplyEpicRequest, ArmRequest,
     AuthorizationProjectionDto, BlockedTaskDto, DisarmRequest, EnsureAccountProfileRequest,
-    EnsureProjectRequest, EpicProjectionDto, EpicTaskProjectionDto, LifecycleAction,
-    LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, ProjectDto, PublishedTeamRevisionDto,
-    ReadyTaskDto, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerStartDto,
-    SeatProjectionDto, StartRequest, StartedSeatDto, TeamDraftDto, TeamDraftRequest,
-    TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto, TeamsProjectionDto,
-    WorkProfileCatalogDto,
+    EnsureProjectRequest, EpicImportStateDto, EpicProjectionDto, EpicTaskProjectionDto,
+    LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto,
+    PreviewEpicTaskDto, ProjectDto, PublishedTeamRevisionDto, ReadyTaskDto, RevisionRefDto,
+    RuntimeCapabilityDto, SchedulerPlanDto, SchedulerStartDto, SeatProjectionDto, StartRequest,
+    StartedSeatDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto,
+    TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -130,8 +130,8 @@ use kontor_core::spec::{
     SourceProcessingState, TeamRunSnapshot, TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
-    GateVerdict, ObservedContainerKind, RuntimeContact, SessionTopologyNode, TaskState,
-    TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact, SessionTopologyNode,
+    TaskState, TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
 };
 use kontor_core::ticket::{
     CommentPolicy, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, TicketSyncProjection,
@@ -230,6 +230,12 @@ struct PreparedTicketPlan {
     diff: Vec<TicketFieldDiffDto>,
     hash: String,
     tickets: Vec<PreparedTicket>,
+}
+
+/// One validated epic request, ready for preview or apply under the same rules.
+struct PreparedEpic {
+    bundle: ResolvedProfileBundle,
+    tasks: Vec<EpicTask>,
 }
 
 /// The realm-scoped operation a pack registration binds its key to.
@@ -484,6 +490,114 @@ impl Services {
     fn bundle(&self, category: &str, at: Timestamp) -> Result<ResolvedProfileBundle, ApiError> {
         let (pack, category) = self.owning_pack(category)?;
         resolve_profile(&pack, &category, at).map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Validate and type one epic request once for both preview and apply.
+    fn prepare_epic(
+        &self,
+        project_id: ProjectId,
+        request: &ApplyEpicRequest,
+        now: Timestamp,
+    ) -> Result<PreparedEpic, ApiError> {
+        let state = self.state()?;
+        let project = state
+            .with_store(|store| store.get_project(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such project exists in this realm",
+                )
+            })?;
+        if project.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the project moved since the caller read it",
+                )
+                .with_revision(Some(project.revision)));
+        }
+        if state.runtimes().get(&request.runtime_family).is_none() {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "this realm is not configured with the requested runtime family",
+            ));
+        }
+        if let Some(account) = request.account_profile_id {
+            state
+                .with_store(|store| store.get_account_profile(project_id, account))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the selected account profile does not exist in this project",
+                    )
+                })?;
+        }
+
+        let bundle = self.bundle(&request.work_profile_category, now)?;
+        // A caller that pinned a team revision pinned it against a catalog read.
+        // If the profile now pins another, the selection it authorized no longer
+        // exists, and applying the current one would substitute a team closure it
+        // never saw.
+        if let Some(pinned) = &request.team_template {
+            let matches = bundle.team.as_ref().is_some_and(|team| {
+                team.template_id.to_string() == pinned.id && team.version == pinned.version
+            });
+            if !matches {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the profile does not pin the team revision the caller selected",
+                ));
+            }
+        }
+
+        let mut tasks = Vec::with_capacity(request.tasks.len());
+        for task in &request.tasks {
+            let module = task
+                .module
+                .as_deref()
+                .map(ModuleKey::parse)
+                .transpose()
+                .map_err(|error| self.refuse_domain(&error))?;
+            let mut links = Vec::with_capacity(task.ticket_links.len());
+            for link in &task.ticket_links {
+                links.push(EpicTicketLink {
+                    connector: ConnectorKey::parse(&link.connector)
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    external_issue_key: ExternalId::parse(&link.external_issue_key)
+                        .map_err(|error| self.refuse_domain(&error))?,
+                });
+            }
+            // Parsed here, where `WorkspaceRoot` exists, and stored as the
+            // `ExternalName` it wraps. `kontor-core` cannot depend on
+            // `kontor-runtime`, so the path's rules are enforced at this boundary.
+            let worktree = task
+                .worktree
+                .as_deref()
+                .map(|root| {
+                    WorkspaceRoot::parse(root)
+                        .map(|root| ExternalName::parse(root.as_str()))
+                        .map_err(|error| self.refuse_domain(&error))
+                })
+                .transpose()?
+                .transpose()
+                .map_err(|error| self.refuse_domain(&error))?;
+            let imported_state = match task.import_state {
+                EpicImportStateDto::Ready => ImportedTaskState::Ready,
+                EpicImportStateDto::Completed => ImportedTaskState::Completed,
+            };
+            tasks.push(EpicTask {
+                title: task.title.clone(),
+                module,
+                imported_state,
+                depends_on: task.depends_on.clone(),
+                ticket_links: links,
+                worktree,
+            });
+        }
+
+        Ok(PreparedEpic { bundle, tasks })
     }
 
     /// The profile carrying `label` in this project, if there is one.
@@ -1196,11 +1310,16 @@ impl Services {
         let gate_states = state
             .with_store(|store| store.gate_states(project_id, workflow.id))
             .map_err(|error| self.refuse(&error))?;
-        // `done` is itself a closure certificate: the store cannot transition
-        // a task there until every required phase, gate and artifact is proven.
-        // Keeping that invariant available matters for work completed without a
-        // TeamRun, where there is no separate run terminal row to consult.
-        let all_required_gates_passed = task.state == TaskState::Done
+        // Native `done` is itself a closure certificate: the store cannot
+        // transition a task there until every required phase, gate and artifact
+        // is proven. An imported historical completion deliberately is not that
+        // certificate, even though it projects as `done` for dependency and
+        // backlog-count continuity.
+        let native_done = task.state == TaskState::Done
+            && !task
+                .imported_state
+                .is_some_and(ImportedTaskState::is_historical_completion);
+        let all_required_gates_passed = native_done
             || workflow.snapshot.definition.gates.iter().all(|gate| {
                 gate_states
                     .get(&gate.id)
@@ -1219,8 +1338,8 @@ impl Services {
             })
             .transpose()?
             .flatten()
-            .or_else(|| (task.state == TaskState::Done).then_some(TerminalOutcome::Succeeded));
-        let completed_phases = if task.state == TaskState::Done {
+            .or_else(|| native_done.then_some(TerminalOutcome::Succeeded));
+        let completed_phases = if native_done {
             workflow
                 .snapshot
                 .definition
@@ -11197,57 +11316,7 @@ impl ApplicationOperations for Services {
     ) -> Result<AppliedEpicDto, ApiError> {
         let state = self.state()?;
         let now = kontor_api::now();
-        let project = state
-            .with_store(|store| store.get_project(project_id))
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::NotFound,
-                    "no such project exists in this realm",
-                )
-            })?;
-        if project.revision != request.expected_revision {
-            return Err(self
-                .deny(
-                    ApiErrorCode::RevisionConflict,
-                    "the project moved since the caller read it",
-                )
-                .with_revision(Some(project.revision)));
-        }
-        if state.runtimes().get(&request.runtime_family).is_none() {
-            return Err(self.deny(
-                ApiErrorCode::UnsupportedCapability,
-                "this realm is not configured with the requested runtime family",
-            ));
-        }
-        if let Some(account) = request.account_profile_id {
-            state
-                .with_store(|store| store.get_account_profile(project_id, account))
-                .map_err(|error| self.refuse(&error))?
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::NotFound,
-                        "the selected account profile does not exist in this project",
-                    )
-                })?;
-        }
-
-        let bundle = self.bundle(&request.work_profile_category, now)?;
-        // A caller that pinned a team revision pinned it against a catalog read.
-        // If the profile now pins another, the selection it authorized no longer
-        // exists, and applying the current one would substitute a team closure it
-        // never saw.
-        if let Some(pinned) = &request.team_template {
-            let matches = bundle.team.as_ref().is_some_and(|team| {
-                team.template_id.to_string() == pinned.id && team.version == pinned.version
-            });
-            if !matches {
-                return Err(self.deny(
-                    ApiErrorCode::RevisionConflict,
-                    "the profile does not pin the team revision the caller selected",
-                ));
-            }
-        }
+        let PreparedEpic { bundle, tasks } = self.prepare_epic(project_id, request, now)?;
 
         // The key is judged before the graph is written. `apply_epic` is atomic,
         // so a conflict discovered afterwards would have to be reported against a
@@ -11262,7 +11331,7 @@ impl ApplicationOperations for Services {
                 .tasks
                 .iter()
                 .map(|task| {
-                    serde_json::json!({
+                    let mut intent = serde_json::json!({
                         "title": task.title.as_str(),
                         "module": task.module,
                         "depends_on": task
@@ -11280,7 +11349,21 @@ impl ApplicationOperations for Services {
                                 })
                             })
                             .collect::<Vec<_>>(),
-                    })
+                    });
+                    // Preserve the pre-ASMA-7941 intent bytes for the omitted
+                    // compatibility default, so an old apply receipt remains
+                    // replayable after upgrade. Only the new historical fact
+                    // widens the intent.
+                    if task.import_state != EpicImportStateDto::Ready {
+                        intent
+                            .as_object_mut()
+                            .expect("an epic task intent is an object")
+                            .insert(
+                                "import_state".to_owned(),
+                                serde_json::json!(task.import_state),
+                            );
+                    }
+                    intent
                 })
                 .collect::<Vec<_>>(),
         }))?;
@@ -11292,49 +11375,6 @@ impl ApplicationOperations for Services {
                 ));
             };
             return self.applied_epic_replay(project_id, mini_project_id, &bundle);
-        }
-
-        let mut tasks = Vec::with_capacity(request.tasks.len());
-        for task in &request.tasks {
-            let module = task
-                .module
-                .as_deref()
-                .map(ModuleKey::parse)
-                .transpose()
-                .map_err(|error| self.refuse_domain(&error))?;
-            let mut links = Vec::with_capacity(task.ticket_links.len());
-            for link in &task.ticket_links {
-                links.push(EpicTicketLink {
-                    connector: ConnectorKey::parse(&link.connector)
-                        .map_err(|error| self.refuse_domain(&error))?,
-                    external_issue_key: ExternalId::parse(&link.external_issue_key)
-                        .map_err(|error| self.refuse_domain(&error))?,
-                });
-            }
-            // Parsed here, where `WorkspaceRoot` exists, and stored as the
-            // `ExternalName` it wraps. `kontor-core` cannot depend on
-            // `kontor-runtime`, so the path's rules — absolute, no `.`, no `..`,
-            // no repeated separators — are enforced at this boundary and the
-            // store holds a value already known to satisfy them.
-            let worktree = task
-                .worktree
-                .as_deref()
-                .map(|root| {
-                    WorkspaceRoot::parse(root)
-                        .map(|root| ExternalName::parse(root.as_str()))
-                        .map_err(|error| self.refuse_domain(&error))
-                })
-                .transpose()?
-                .transpose()
-                .map_err(|error| self.refuse_domain(&error))?;
-            tasks.push(EpicTask {
-                title: task.title.clone(),
-                module,
-                state: TaskState::Ready,
-                depends_on: task.depends_on.clone(),
-                ticket_links: links,
-                worktree,
-            });
         }
 
         // The epic and the admission position it starts at are written under one
@@ -11429,6 +11469,54 @@ impl ApplicationOperations for Services {
                             applied: applied_dto(link.applied),
                         })
                         .collect(),
+                })
+                .collect(),
+        })
+    }
+
+    async fn preview_epic(
+        &self,
+        project_id: ProjectId,
+        request: &ApplyEpicRequest,
+    ) -> Result<PreviewEpicDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let PreparedEpic { bundle, tasks } = self.prepare_epic(project_id, request, now)?;
+        let preview = state
+            .with_store(|store| {
+                store.preview_epic(&EpicApplication {
+                    project_id,
+                    name: request.name.clone(),
+                    tasks: &tasks,
+                    profile: &bundle.profile,
+                    definition: &bundle.profile.definition,
+                    team: bundle.team.as_ref(),
+                    applied_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+
+        Ok(PreviewEpicDto {
+            realm_id: state.realm_id(),
+            project_id,
+            epic_id: (preview.applied == Applied::Unchanged).then_some(preview.mini_project_id),
+            applied: applied_dto(preview.applied),
+            work_profile: RevisionRefDto {
+                id: preview.profile.0.as_str().to_owned(),
+                version: preview.profile.1,
+            },
+            team_template: preview.team.map(|(id, version)| RevisionRefDto {
+                id: id.to_string(),
+                version,
+            }),
+            tasks: preview
+                .tasks
+                .into_iter()
+                .map(|task| PreviewEpicTaskDto {
+                    title: task.title,
+                    task_id: (task.applied == Applied::Unchanged).then_some(task.task_id),
+                    applied: applied_dto(task.applied),
+                    state: task.state.as_str().to_owned(),
                 })
                 .collect(),
         })

@@ -9,6 +9,8 @@
 //!   relaunch never reach the threshold;
 //! * a parked run that can be advanced, reopened or closed again;
 //! * an approval spent twice, or spent on a command it was not issued for;
+//! * a park that moves the task but leaves an imported historical lifecycle
+//!   fact behind, still describing a state Kontor has since taken over;
 //! * evidence that direct SQL can update or delete.
 
 use std::collections::BTreeMap;
@@ -30,7 +32,7 @@ use kontor_core::spec::{
     ResolvedWorkProfileSnapshot, RoleAuthority, RoleRef, RuntimeRoutingRef, TeamRunSnapshot,
     TeamTemplateRevision, WorkProfileSpec,
 };
-use kontor_core::state::{GateVerdict, RunLifecycle, TaskState};
+use kontor_core::state::{GateVerdict, ImportedTaskState, RunLifecycle, TaskState};
 use kontor_policy::model::{
     ActionDomain, ActionEffect, ActionIntent, ApprovalReceipt, ApprovalReceiptId,
     ApprovalScopeKind, ArtifactEvidenceId, AuthoritySource, EvaluationSubject, GateWaiverId,
@@ -527,6 +529,64 @@ fn two_rejections_by_one_principal_park_the_task_even_across_relaunches() {
         )
         .expect("the rejection row is readable");
     assert_eq!(linked, parked.evaluation_id.to_string());
+}
+
+/// An epic import can bring a task over as historically `ready`, and that
+/// provenance is only true until Kontor moves the task itself. A guardrail park
+/// is such a move, so it must clear the fact — otherwise a parked task goes on
+/// claiming an imported lifecycle it no longer has, which is the same confusion
+/// between imported and native state that the column exists to prevent.
+#[test]
+fn parking_an_imported_task_clears_its_historical_lifecycle_provenance() {
+    let fixture = fixture();
+    // The shape an import leaves behind: never natively transitioned, so the
+    // provenance is still there to be cleared.
+    fixture
+        .raw()
+        .execute(
+            "UPDATE tasks SET state = 'ready', imported_state = 'ready' WHERE id = ?1",
+            rusqlite::params![fixture.task.to_string()],
+        )
+        .expect("the imported task is seeded");
+    let stored = fixture
+        .store
+        .get_task(fixture.project, fixture.task)
+        .expect("the read succeeds")
+        .expect("the task exists");
+    assert_eq!(stored.imported_state, Some(ImportedTaskState::Ready));
+
+    fixture
+        .store
+        .record_gate_rejection(&rejection(
+            &fixture,
+            "principal-alpha",
+            "zz.check",
+            Some(fixture.agent_run()),
+            "one",
+        ))
+        .expect("the first rejection is recorded");
+    let outcome = fixture
+        .store
+        .record_gate_rejection(&rejection(
+            &fixture,
+            "principal-alpha",
+            "zz.check",
+            Some(fixture.agent_run()),
+            "two",
+        ))
+        .expect("the second rejection is recorded");
+    assert!(outcome.parked.is_some(), "the second rejection parks");
+
+    let parked = fixture
+        .store
+        .get_task(fixture.project, fixture.task)
+        .expect("the read succeeds")
+        .expect("the task exists");
+    assert_eq!(parked.state, TaskState::Parked);
+    assert_eq!(
+        parked.imported_state, None,
+        "a native park owns the lifecycle and drops the imported fact"
+    );
 }
 
 #[test]

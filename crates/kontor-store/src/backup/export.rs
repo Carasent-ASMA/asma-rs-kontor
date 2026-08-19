@@ -424,7 +424,7 @@ fn read_table<T: ExportRow>(connection: &Connection) -> Result<Vec<T>, BackupErr
 macro_rules! exported_tables {
     ($(
         $field:ident : $row:ident from $table:literal key($($key:ident),+ ) {
-            $($column:ident : $type:ty,)+
+            $($(#[$column_attribute:meta])* $column:ident : $type:ty,)+
         }
     )+) => {
         $(
@@ -432,6 +432,7 @@ macro_rules! exported_tables {
             #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
             pub struct $row {
                 $(
+                    $(#[$column_attribute])*
                     #[doc = concat!("The `", stringify!($column), "` column.")]
                     pub $column: $type,
                 )+
@@ -645,6 +646,8 @@ exported_tables! {
         title: String,
         module_key: Option<String>,
         state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        imported_state: Option<String>,
         revision: i64,
         created_at: String,
         updated_at: String,

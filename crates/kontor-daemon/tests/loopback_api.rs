@@ -2270,6 +2270,406 @@ async fn reapplying_the_identical_epic_writes_nothing_and_drift_is_refused() {
     assert_eq!(reused.status, 409, "{}", reused.body);
 }
 
+/// GAP-1. Importing a historical backlog used to flatten every task to `ready`,
+/// so a cutover could bring over either the unfinished tasks or the whole task
+/// graph, but not both. The import vocabulary is deliberately smaller than the
+/// native lifecycle: a source task is either still `ready` or historically
+/// `completed`; it cannot claim a live run, a blocked decision or native gate
+/// closure.
+#[tokio::test]
+async fn epic_import_preview_apply_and_replay_preserve_historical_task_lifecycle() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "historical-import-project",
+        "Historical import",
+        "/tmp/kontor-historical-import",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let category = first_category(&world).await;
+    let body = epic_body(
+        revision,
+        "Full-history import",
+        &category,
+        serde_json::json!([
+            {
+                "title": "Already delivered",
+                "import_state": "completed",
+                "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-1"}]
+            },
+            {
+                "title": "Still planned",
+                "import_state": "ready",
+                "depends_on": ["Already delivered"],
+                "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-2"}]
+            }
+        ]),
+    );
+
+    let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["tasks"][0]["state"], "done");
+    assert_eq!(preview.json()["tasks"][1]["state"], "ready");
+    assert!(preview.json()["tasks"][0]["task_id"].is_null());
+    assert!(preview.json()["tasks"][1]["task_id"].is_null());
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store
+                .list_tasks(ProjectId::parse(&project).expect("a project id"))
+                .expect("the task census reads"))
+            .is_empty(),
+        "preview must not leave even a partial task graph behind"
+    );
+
+    let first = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("historical-import-apply")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["tasks"][0]["state"], "done");
+    assert_eq!(first.json()["tasks"][1]["state"], "ready");
+    let epic = first.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let task_ids: Vec<_> = first.json()["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .map(|task| task["task_id"].as_str().expect("a task id").to_owned())
+        .collect();
+
+    let readback = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(readback.status, 200, "{}", readback.body);
+    assert_eq!(readback.json()["tasks"][0]["task_id"], task_ids[0]);
+    assert_eq!(readback.json()["tasks"][1]["task_id"], task_ids[1]);
+    assert_eq!(readback.json()["tasks"][0]["state"], "done");
+    assert_eq!(readback.json()["tasks"][1]["state"], "ready");
+    assert_eq!(
+        readback.json()["tasks"][0]["links"]
+            .as_array()
+            .expect("completed task links")
+            .len(),
+        1
+    );
+    assert_eq!(
+        readback.json()["tasks"][1]["links"]
+            .as_array()
+            .expect("ready task links")
+            .len(),
+        1
+    );
+    assert!(
+        readback.json()["tasks"][0]["gates"]
+            .as_array()
+            .expect("gates")
+            .iter()
+            .all(|gate| gate["state"] == "not_ready"),
+        "historical completion imports no native gate verdict: {}",
+        readback.body
+    );
+
+    let replayed = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("historical-import-replay")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+    assert_eq!(replayed.json()["tasks"][0]["task_id"], task_ids[0]);
+    assert_eq!(replayed.json()["tasks"][1]["task_id"], task_ids[1]);
+
+    let replay_preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(replay_preview.status, 200, "{}", replay_preview.body);
+    assert_eq!(replay_preview.json()["tasks"][0]["task_id"], task_ids[0]);
+    assert_eq!(replay_preview.json()["tasks"][1]["task_id"], task_ids[1]);
+}
+
+#[tokio::test]
+async fn epic_import_defaults_ready_and_refuses_invalid_or_contradictory_state_atomically() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "historical-import-contract",
+        "Historical import contract",
+        "/tmp/kontor-historical-import-contract",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let category = first_category(&world).await;
+    let omitted = epic_body(
+        revision,
+        "Compatibility import",
+        &category,
+        serde_json::json!([{"title": "Stable ready"}]),
+    );
+
+    let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &omitted)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["tasks"][0]["state"], "ready");
+
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &omitted)
+        .signed_as(&world, "admin")
+        .with_key("historical-import-default")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["tasks"][0]["state"], "ready");
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let stable_task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+
+    let invalid = Call::post(
+        format!("/v1/projects/{project}/epics:preview"),
+        &epic_body(
+            revision,
+            "Invalid import",
+            &category,
+            serde_json::json!([{"title": "Invalid", "import_state": "done"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(invalid.status, 400, "{}", invalid.body);
+    assert_eq!(invalid.code(), "invalid_request");
+
+    // The prospective sibling is processed before the contradictory existing
+    // task. A non-atomic apply would leak it before discovering the conflict.
+    let contradictory = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Compatibility import",
+            &category,
+            serde_json::json!([
+                {"title": "Would leak", "import_state": "completed"},
+                {"title": "Stable ready", "import_state": "completed"}
+            ]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("historical-import-contradiction")
+    .send(&world)
+    .await;
+    assert_eq!(contradictory.status, 409, "{}", contradictory.body);
+
+    let readback = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(readback.status, 200, "{}", readback.body);
+    let readback_json = readback.json();
+    let tasks = readback_json["tasks"].as_array().expect("the task list");
+    assert_eq!(
+        tasks.len(),
+        1,
+        "the failed apply must roll back its new sibling"
+    );
+    assert_eq!(tasks[0]["task_id"], stable_task);
+    assert_eq!(tasks[0]["state"], "ready");
+}
+
+#[tokio::test]
+async fn a_mixed_import_closes_after_only_its_native_task_earns_completion() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "mixed-import-close",
+        "Mixed import close",
+        "/tmp/kontor-mixed-import-close",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_revision = created.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let category = first_category(&world).await;
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Import close evaluator",
+            "harness": "fake.runtime",
+            "credential_alias": "import-close-evaluator",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("mixed-import-close-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    // Only the first task will receive native completion evidence. The second
+    // remains historical terminality throughout the close census.
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_revision,
+            "Mixed full-history import",
+            &category,
+            serde_json::json!([
+                {"title": "Native completion"},
+                {"title": "Historical completion", "import_state": "completed"}
+            ]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("mixed-import-close-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let epic_revision = applied.json()["revision"]
+        .as_u64()
+        .expect("an epic revision");
+    let native_task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a native task id")
+        .to_owned();
+    let historical_task = applied.json()["tasks"][1]["task_id"]
+        .as_str()
+        .expect("a historical task id")
+        .to_owned();
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let historical_task_id = TaskId::parse(&historical_task).expect("a task id");
+
+    let historical_before = world.daemon.state().with_store(|store| {
+        let task = store
+            .get_task(project_id, historical_task_id)
+            .expect("the imported task reads")
+            .expect("the imported task exists");
+        let workflow = store
+            .get_active_task_workflow(project_id, historical_task_id)
+            .expect("the imported workflow reads")
+            .expect("the imported workflow exists");
+        let gates = store
+            .gate_states(project_id, workflow.id)
+            .expect("the imported gate states read");
+        let runs = store
+            .list_team_runs_for_task(project_id, historical_task_id)
+            .expect("the imported run census reads");
+        (task, gates, runs)
+    });
+    assert_eq!(
+        historical_before.0.imported_state,
+        Some(kontor_core::state::ImportedTaskState::Completed)
+    );
+    assert_eq!(
+        historical_before.0.state,
+        kontor_core::state::TaskState::Done
+    );
+    assert!(
+        historical_before.1.is_empty(),
+        "historical terminality must not synthesize native gate receipts"
+    );
+    assert!(
+        historical_before.2.is_empty(),
+        "historical terminality must not synthesize a successful run"
+    );
+
+    let seed = Bootstrapped {
+        project: project.clone(),
+        epic: epic.clone(),
+        task: native_task,
+        task_revision: applied.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("a task revision"),
+        account: account_id,
+    };
+    let runs = seat_existing(&world, &seed, "mixed-import-close").await;
+    settle_every_seat(&world, &seed, &runs, "mixed-import-close").await;
+    let completed = discharge_the_profile_and_complete(&world, &seed, "mixed-import-close").await;
+    assert_eq!(completed.status, 200, "{}", completed.body);
+
+    let closed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/lifecycle"),
+        &serde_json::json!({
+            "action": "close_epic",
+            "expected_revision": epic_revision,
+            "reason": "Native work and imported historical work are terminal"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("mixed-import-close-epic")
+    .send(&world)
+    .await;
+    assert_eq!(closed.status, 200, "{}", closed.body);
+    assert_eq!(closed.json()["state"], "closed");
+
+    let historical_after = world.daemon.state().with_store(|store| {
+        let task = store
+            .get_task(project_id, historical_task_id)
+            .expect("the imported task reads")
+            .expect("the imported task exists");
+        let workflow = store
+            .get_active_task_workflow(project_id, historical_task_id)
+            .expect("the imported workflow reads")
+            .expect("the imported workflow exists");
+        let gates = store
+            .gate_states(project_id, workflow.id)
+            .expect("the imported gate states read");
+        let runs = store
+            .list_team_runs_for_task(project_id, historical_task_id)
+            .expect("the imported run census reads");
+        (task, gates, runs)
+    });
+    assert_eq!(
+        historical_after.0.imported_state,
+        Some(kontor_core::state::ImportedTaskState::Completed),
+        "epic close must retain explicit historical provenance"
+    );
+    assert!(historical_after.1.is_empty());
+    assert!(historical_after.2.is_empty());
+}
+
 #[tokio::test]
 async fn a_cyclic_or_dangling_epic_rolls_the_whole_application_back() {
     let world = World::open_empty().await;
@@ -2818,7 +3218,7 @@ async fn a_bounded_auto_arm_is_declarable_by_an_admin_and_by_nobody_else() {
 /// The authority tests need the extractor to succeed so that the refusal they
 /// observe is the capability check and not `Json`'s.
 fn well_formed_body(uri: &str) -> serde_json::Value {
-    if uri.ends_with("epics:apply") {
+    if uri.ends_with("epics:apply") || uri.ends_with("epics:preview") {
         serde_json::json!({
             "expected_revision": 1, "name": "X", "work_profile_category": "x",
             "runtime_family": "fake.runtime", "tasks": []
@@ -2868,6 +3268,7 @@ async fn every_application_operation_refuses_an_unauthenticated_or_under_privile
 
     let mutations = [
         "/v1/projects:ensure".to_owned(),
+        format!("/v1/projects/{project}/epics:preview"),
         format!("/v1/projects/{project}/epics:apply"),
         format!("/v1/projects/{project}/provider-account-profiles:ensure"),
         format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
@@ -2925,6 +3326,7 @@ async fn the_contract_document_lists_every_application_route_and_no_unsafe_surfa
         "/v1/runtime-capabilities",
         "/v1/projects/{project_id}/provider-account-profiles",
         "/v1/projects/{project_id}/provider-account-profiles:ensure",
+        "/v1/projects/{project_id}/epics:preview",
         "/v1/projects/{project_id}/epics:apply",
         "/v1/projects/{project_id}/epics/{epic_id}",
         "/v1/projects/{project_id}/epics/{epic_id}/execution:arm",
@@ -4136,7 +4538,7 @@ async fn ticket_reconciliation_is_a_typed_dry_run_that_names_its_plan() {
 }
 
 #[tokio::test]
-async fn a_configured_jira_boundary_plans_applies_and_refetches_one_closed_ticket() {
+async fn a_configured_jira_boundary_distinguishes_historical_from_native_completion() {
     let connector_dir = tempfile::TempDir::new().expect("a connector directory");
     let executable = connector_dir.path().join("asma-jira-fixture");
     let external_state = connector_dir.path().join("closed");
@@ -4199,6 +4601,71 @@ print(json.dumps(response, sort_keys=True))
 
     let world = World::open_empty_with_asma(&executable).await;
     world.daemon.reconcile().await;
+
+    let historical_project = ensure_project(
+        &world,
+        "jira-historical",
+        "Historical Jira import",
+        "/tmp/kontor-jira-historical",
+    )
+    .await;
+    let historical_project_id = historical_project.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let historical_revision = historical_project.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let category = first_category(&world).await;
+    let historical = Call::post(
+        format!("/v1/projects/{historical_project_id}/epics:apply"),
+        &epic_body(
+            historical_revision,
+            "Historical Jira epic",
+            &category,
+            serde_json::json!([{
+                "title": "Imported completion",
+                "import_state": "completed",
+                "ticket_links": [{
+                    "connector": "jira",
+                    "external_issue_key": "ASMA-7875"
+                }]
+            }]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("jira-historical-import")
+    .send(&world)
+    .await;
+    assert_eq!(historical.status, 200, "{}", historical.body);
+    let historical_task = historical.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+    let historical_plan = Call::post(
+        format!(
+            "/v1/projects/{historical_project_id}/tasks/{historical_task}/ticket:reconcile-plan"
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(historical_plan.status, 200, "{}", historical_plan.body);
+    assert!(
+        historical_plan.json()["diff"]
+            .as_array()
+            .expect("a typed diff")
+            .iter()
+            .all(|entry| entry["milestone"] != "terminal_done"),
+        "historical completion must not authorize Jira closure: {}",
+        historical_plan.body
+    );
+    assert!(
+        !external_state.exists(),
+        "a dry-run against historical completion must not reach apply"
+    );
+
     let seed = bootstrap(&world, "jira-composed").await;
     let project = ProjectId::parse(&seed.project).expect("a project id");
     let epic = MiniProjectId::parse(&seed.epic).expect("an epic id");
@@ -4516,9 +4983,8 @@ async fn finish_natively(world: &World, run: &str) {
         .expect("the runtime observes its own termination");
 }
 
-/// Bootstrap, arm, plan and start, returning `(seed, every seated run)`.
-async fn seated(world: &World, slug: &'static str) -> (Bootstrapped, Vec<String>) {
-    let seed = bootstrap(world, slug).await;
+/// Arm, plan and start an existing bootstrapped task.
+async fn seat_existing(world: &World, seed: &Bootstrapped, prefix: &str) -> Vec<String> {
     let armed = Call::post(
         format!(
             "/v1/projects/{}/epics/{}/execution:arm",
@@ -4534,7 +5000,7 @@ async fn seated(world: &World, slug: &'static str) -> (Bootstrapped, Vec<String>
         }),
     )
     .signed_as(world, "admin")
-    .with_key(format!("{slug}-arm"))
+    .with_key(format!("{prefix}-arm"))
     .send(world)
     .await;
     assert_eq!(armed.status, 200, "{}", armed.body);
@@ -4561,7 +5027,7 @@ async fn seated(world: &World, slug: &'static str) -> (Bootstrapped, Vec<String>
         &serde_json::json!({"plan_hash": hash}),
     )
     .signed_as(world, "operator")
-    .with_key(format!("{slug}-start"))
+    .with_key(format!("{prefix}-start"))
     .send(world)
     .await;
     assert_eq!(started.status, 200, "{}", started.body);
@@ -4581,6 +5047,13 @@ async fn seated(world: &World, slug: &'static str) -> (Bootstrapped, Vec<String>
         "the start produced no seat: {}",
         started.body
     );
+    runs
+}
+
+/// Bootstrap, arm, plan and start, returning `(seed, every seated run)`.
+async fn seated(world: &World, slug: &'static str) -> (Bootstrapped, Vec<String>) {
+    let seed = bootstrap(world, slug).await;
+    let runs = seat_existing(world, &seed, slug).await;
     (seed, runs)
 }
 
@@ -4775,11 +5248,18 @@ async fn discharge_the_profile_and_complete(
         .signed_as(world, "observer")
         .send(world)
         .await;
+    let projection_json = projection.json();
+    let projected_task = projection_json["tasks"]
+        .as_array()
+        .expect("a task list")
+        .iter()
+        .find(|task| task["task_id"] == seed.task)
+        .expect("the selected task is projected");
     // Now discharge that profile. Every gate it declares is recorded through the
     // public route, by a role *it* authorizes, citing the evidence *it* requires —
     // all of which the projection reports, so nothing here is read out of band and
     // nothing is a literal this test invented.
-    let gates = projection.json()["tasks"][0]["gates"]
+    let gates = projected_task["gates"]
         .as_array()
         .expect("a gate list")
         .clone();
@@ -4788,7 +5268,7 @@ async fn discharge_the_profile_and_complete(
         "the pinned profile declares gates to discharge: {}",
         projection.body
     );
-    let workflow_revision = projection.json()["tasks"][0]["workflow_revision"]
+    let workflow_revision = projected_task["workflow_revision"]
         .as_u64()
         .expect("a task with an active workflow reports its revision");
     for (index, gate) in gates.iter().enumerate() {
@@ -4832,10 +5312,14 @@ async fn discharge_the_profile_and_complete(
         .signed_as(world, "observer")
         .send(world)
         .await;
-    for gate in after_gates.json()["tasks"][0]["gates"]
+    let after = after_gates.json();
+    let completed_task = after["tasks"]
         .as_array()
-        .expect("a gate list")
-    {
+        .expect("a task list")
+        .iter()
+        .find(|task| task["task_id"] == seed.task)
+        .expect("the selected task remains projected");
+    for gate in completed_task["gates"].as_array().expect("a gate list") {
         assert_eq!(
             gate["state"], "passed",
             "gate `{}` is discharged: {}",
@@ -4845,8 +5329,7 @@ async fn discharge_the_profile_and_complete(
 
     // The completion cites every artifact the profile requires — again read from
     // the projection rather than named here.
-    let after = after_gates.json();
-    let artifacts: Vec<&str> = after["tasks"][0]["required_artifacts"]
+    let artifacts: Vec<&str> = completed_task["required_artifacts"]
         .as_array()
         .expect("required artifacts")
         .iter()
@@ -4857,7 +5340,7 @@ async fn discharge_the_profile_and_complete(
         "the profile requires artifacts: {}",
         after_gates.body
     );
-    let task_revision = after["tasks"][0]["revision"].as_u64().expect("a revision");
+    let task_revision = completed_task["revision"].as_u64().expect("a revision");
     let done = Call::post(
         &lifecycle,
         &serde_json::json!({

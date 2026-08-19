@@ -17,6 +17,7 @@
 //! * writing a source command receipt into the destination's own receipt
 //!   tables;
 //! * losing the lineage of a record that was deliberately not materialized.
+//! * omitting a task's imported historical lifecycle provenance.
 
 use std::path::{Path, PathBuf};
 
@@ -286,6 +287,57 @@ fn an_export_of_unchanged_state_is_byte_identical_and_hashes_the_same() {
         matches!(tampered.verify(), Err(BackupError::Verification { .. })),
         "a document whose records were edited must not verify"
     );
+}
+
+#[test]
+fn imported_task_lifecycle_provenance_survives_export_serialization_and_parse() {
+    let seeded = seed();
+    plant(
+        &seeded.database,
+        "UPDATE tasks
+         SET state = 'done', imported_state = 'completed'
+         WHERE id = (SELECT id FROM tasks ORDER BY id LIMIT 1)",
+    );
+
+    let export = export_realm(&seeded.store, at("2026-08-10T10:00:00Z")).expect("the export");
+    let bytes = export.canonical_bytes().expect("canonical bytes");
+    let document: serde_json::Value = serde_json::from_slice(&bytes).expect("the export is JSON");
+    assert_eq!(
+        document.pointer("/records/tasks/0/imported_state"),
+        Some(&serde_json::json!("completed")),
+        "the typed task record must carry historical lifecycle provenance"
+    );
+
+    let parsed = KontorExportV1::parse(&bytes).expect("the provenance-bearing export parses");
+    assert_eq!(parsed.records_hash, export.records_hash);
+    let reparsed = serde_json::to_value(parsed).expect("the parsed export serializes");
+    assert_eq!(
+        reparsed.pointer("/records/tasks/0/imported_state"),
+        Some(&serde_json::json!("completed")),
+        "parse and serialization must preserve the source lifecycle fact"
+    );
+
+    let mut legacy = document;
+    legacy
+        .pointer_mut("/records/tasks/0")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("the legacy task row is an object")
+        .remove("imported_state");
+    let mut legacy_records = serde_json::to_vec(
+        legacy
+            .get("records")
+            .expect("the legacy document carries records"),
+    )
+    .expect("the legacy records serialize");
+    legacy_records.push(b'\n');
+    legacy["records_hash"] = serde_json::json!(ContentHash::of(&legacy_records).to_string());
+    let mut legacy_bytes = serde_json::to_vec(&legacy).expect("the legacy export serializes");
+    legacy_bytes.push(b'\n');
+
+    let legacy = KontorExportV1::parse(&legacy_bytes)
+        .expect("a valid v1 export from before the optional provenance field still parses");
+    assert_eq!(legacy.schema_version, EXPORT_SCHEMA_VERSION);
+    assert_eq!(legacy.records.tasks[0].imported_state, None);
 }
 
 #[test]

@@ -57,6 +57,39 @@ closed_enum! {
     }
 }
 
+closed_enum! {
+    /// The deliberately narrow lifecycle vocabulary accepted at an epic-import
+    /// boundary.
+    ///
+    /// `Completed` is a historical source fact, not a Kontor closure claim. It
+    /// may seed [`TaskState::Done`] so dependencies and counts survive a
+    /// cutover, but it carries no phase, gate, artifact, run or team evidence.
+    /// Native lifecycle commands remain the only way to certify those facts.
+    ImportedTaskState, "ImportedTaskState" {
+        /// The source task still has work to do.
+        Ready => "ready",
+        /// The source system says the task completed before Kontor owned it.
+        Completed => "completed",
+    }
+}
+
+impl ImportedTaskState {
+    /// The lifecycle projection this historical source fact seeds.
+    #[must_use]
+    pub const fn task_state(self) -> TaskState {
+        match self {
+            Self::Ready => TaskState::Ready,
+            Self::Completed => TaskState::Done,
+        }
+    }
+
+    /// Whether this fact is historical terminality rather than native closure.
+    #[must_use]
+    pub const fn is_historical_completion(self) -> bool {
+        matches!(self, Self::Completed)
+    }
+}
+
 impl TaskState {
     /// Whether the state is terminal and therefore immutable.
     #[must_use]
