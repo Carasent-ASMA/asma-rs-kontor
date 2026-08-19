@@ -17,9 +17,10 @@
 //!
 //! # And the one it keeps about seats
 //!
-//! A native session is created in exactly one place in this file: inside
-//! [`Services::start`], after `admit_candidate` has committed. Admission commits
-//! first because a crash between the two must leave a run with no session (which
+//! A native session is created in exactly one place in this file: inside the
+//! shared seating path reached by [`Services::start`] and exact admission
+//! recovery, after `admit_candidate` has committed. Admission commits first
+//! because a crash between the two must leave a run with no session (which
 //! reconciliation can see and finish) rather than a session with no run (which
 //! nothing can). There is no method here, and no route above it, that creates a
 //! session any other way.
@@ -37,9 +38,10 @@ use kontor_api::applications::{
     EnsureProjectRequest, EpicExecutionScopeDto, EpicImportStateDto, EpicProjectionDto,
     EpicTaskProjectionDto, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto,
     PreviewEpicDto, PreviewEpicTaskDto, ProjectDto, PublishedTeamRevisionDto, ReadyTaskDto,
-    RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerStartDto, SeatProjectionDto,
-    StartRequest, StartedSeatDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto,
-    TeamRunProjectionDto, TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
+    ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
+    SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto,
+    TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
+    TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -2922,36 +2924,76 @@ impl Services {
         ))
     }
 
+    /// The roster one epic froze, when it has one.
+    fn optional_frozen_roster(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<Option<FrozenRoster>, ApiError> {
+        self.state()?
+            .with_store(|store| store.get_epic_roster(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|stored| {
+                Ok(FrozenRoster {
+                    revision: CoreTeamRevision {
+                        version: stored.core_team_version,
+                        catalog_hash: stored.catalog_hash,
+                        seats: serde_json::from_value(stored.seats).map_err(|_| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "a stored epic roster cannot be read by this build",
+                            )
+                        })?,
+                    },
+                    revision_of_epic: stored.revision,
+                    quick_session_id: stored.quick_session_id,
+                })
+            })
+            .transpose()
+    }
+
     /// The roster one epic froze, or a refusal that it has none.
     fn frozen_roster(
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
     ) -> Result<FrozenRoster, ApiError> {
-        let stored = self
-            .state()?
-            .with_store(|store| store.get_epic_roster(project_id, epic_id))
-            .map_err(|error| self.refuse(&error))?
+        self.optional_frozen_roster(project_id, epic_id)?
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::NotFound,
                     "this epic has frozen no Core Team roster",
                 )
-            })?;
-        Ok(FrozenRoster {
-            revision: CoreTeamRevision {
-                version: stored.core_team_version,
-                catalog_hash: stored.catalog_hash,
-                seats: serde_json::from_value(stored.seats).map_err(|_| {
-                    self.deny(
-                        ApiErrorCode::Unavailable,
-                        "a stored epic roster cannot be read by this build",
-                    )
-                })?,
+            })
+    }
+
+    /// The comparison side of a roster preview.
+    ///
+    /// A legacy epic may predate Core Team publication. Its first explicit
+    /// preview compares the named published target with an empty roster, but
+    /// still carries the epic's revision as the caller's concurrency witness.
+    fn roster_upgrade_baseline(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        target: &CoreTeamRevision,
+    ) -> Result<(FrozenRoster, bool), ApiError> {
+        if let Some(current) = self.optional_frozen_roster(project_id, epic_id)? {
+            return Ok((current, false));
+        }
+        let epic = self.epic_row(project_id, epic_id)?;
+        Ok((
+            FrozenRoster {
+                revision: CoreTeamRevision {
+                    version: target.version,
+                    catalog_hash: target.catalog_hash.clone(),
+                    seats: Vec::new(),
+                },
+                revision_of_epic: epic.revision,
+                quick_session_id: None,
             },
-            revision_of_epic: stored.revision,
-            quick_session_id: stored.quick_session_id,
-        })
+            true,
+        ))
     }
 
     /// One project Core Team revision by version.
@@ -3133,6 +3175,8 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
+        current: &FrozenRoster,
+        bootstrap: bool,
         target: &CoreTeamRevision,
         effects: &[TopologyUpgradeEffectDto],
     ) -> Result<ContentHash, ApiError> {
@@ -3141,6 +3185,9 @@ impl Services {
             "operation": "epic_roster_upgrade_preview",
             "project": project_id.to_string(),
             "epic": epic_id.to_string(),
+            "bootstrap": bootstrap,
+            "source_version": current.revision.version.get(),
+            "source_revision": current.revision_of_epic.get(),
             "target_version": target.version.get(),
             "catalog": target.catalog_hash.as_str(),
             "effects": effect_digest(effects),
@@ -3158,16 +3205,18 @@ impl Services {
         epic_id: MiniProjectId,
         preview_hash: &ContentHash,
     ) -> Result<FrozenRoster, ApiError> {
-        let current = self.frozen_roster(project_id, epic_id)?;
         let target = self.stored_core_team(project_id)?.ok_or_else(|| {
             self.deny(
                 ApiErrorCode::NotFound,
                 "this project has published no Core Team revision",
             )
         })?;
+        let (current, bootstrap) = self.roster_upgrade_baseline(project_id, epic_id, &target)?;
         let effects = roster_upgrade_effects(&current, &target)
             .map_err(|error| self.refuse_domain(&error))?;
-        if &self.roster_upgrade_hash(project_id, epic_id, &target, &effects)? != preview_hash {
+        if &self.roster_upgrade_hash(project_id, epic_id, &current, bootstrap, &target, &effects)?
+            != preview_hash
+        {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
                 "no currently published roster still produces the previewed effects",
@@ -9814,17 +9863,18 @@ impl ApplicationOperations for Services {
         request: &RosterUpgradePreviewRequest,
     ) -> Result<RosterUpgradePreviewDto, ApiError> {
         let state = self.state()?;
-        let current = self.frozen_roster(project_id, epic_id)?;
         // The target the caller named, not whichever revision happens to be
         // current. An upgrade that silently retargeted itself would move a
         // running epic onto a roster nobody looked at.
         let target = self.published_core_team(project_id, request.target.version)?;
+        let (current, bootstrap) = self.roster_upgrade_baseline(project_id, epic_id, &target)?;
         let effects = roster_upgrade_effects(&current, &target)
             .map_err(|error| self.refuse_domain(&error))?;
         Ok(RosterUpgradePreviewDto {
             realm_id: state.realm_id(),
             epic_id,
-            preview_hash: self.roster_upgrade_hash(project_id, epic_id, &target, &effects)?,
+            preview_hash: self
+                .roster_upgrade_hash(project_id, epic_id, &current, bootstrap, &target, &effects)?,
             effects,
         })
     }
@@ -9857,20 +9907,18 @@ impl ApplicationOperations for Services {
         let roster = if replayed {
             self.frozen_roster(project_id, epic_id)?
         } else {
-            let current = self.frozen_roster(project_id, epic_id)?;
-            if current.revision_of_epic != request.expected_revision {
+            // Recover the target first: this also reconstructs either the
+            // frozen source roster or the explicit empty bootstrap baseline.
+            let target =
+                self.target_of_roster_preview(project_id, epic_id, &request.preview_hash)?;
+            if target.revision_of_epic != request.expected_revision {
                 return Err(self
                     .deny(
                         ApiErrorCode::RevisionConflict,
                         "the epic's roster moved since the caller previewed it",
                     )
-                    .with_revision(Some(current.revision_of_epic)));
+                    .with_revision(Some(target.revision_of_epic)));
             }
-            // The target is recovered from the preview digest rather than
-            // remembered, exactly as a topology upgrade does it: what the
-            // caller authorized is a diff, named by its hash.
-            let target =
-                self.target_of_roster_preview(project_id, epic_id, &request.preview_hash)?;
             let now = kontor_api::now();
             // The pin moves before the seats are materialized, so a failure in
             // between leaves the epic pinned to the target with some of its new
@@ -9883,7 +9931,7 @@ impl ApplicationOperations for Services {
             // their next try is refused with "the epic's roster moved since the
             // caller previewed it" — naming an edit that was theirs. Re-reading
             // the epic and previewing again clears it.
-            self.freeze_roster(project_id, epic_id, &target, current.quick_session_id, now)?;
+            self.freeze_roster(project_id, epic_id, &target, target.quick_session_id, now)?;
             let control = self.ensure_scope_chain(
                 project_id,
                 &self.resolve_scope(
@@ -12333,6 +12381,174 @@ impl ApplicationOperations for Services {
             plan_hash: request.plan_hash.clone(),
             started,
             blocked,
+        })
+    }
+
+    async fn resume_admissions(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &ResumeAdmissionsRequest,
+    ) -> Result<SchedulerResumeDto, ApiError> {
+        let state = self.state()?;
+        if !state.barrier().state().is_open() {
+            return Err(self.deny(
+                ApiErrorCode::ReconciliationPending,
+                "startup reconciliation has not finished, so nothing may be resumed",
+            ));
+        }
+        if request.admissions.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "exact admission recovery names at least one TeamRun and AgentRun",
+            ));
+        }
+        let team_runs: BTreeSet<TeamRunId> = request
+            .admissions
+            .iter()
+            .map(|admission| admission.team_run_id)
+            .collect();
+        let agent_runs: BTreeSet<AgentRunId> = request
+            .admissions
+            .iter()
+            .map(|admission| admission.agent_run_id)
+            .collect();
+        if team_runs.len() != request.admissions.len()
+            || agent_runs.len() != request.admissions.len()
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "exact admission recovery cannot name a TeamRun or AgentRun twice",
+            ));
+        }
+
+        let epic = self.epic_row(project_id, epic_id)?;
+        if epic.revision != request.expected_revision {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the epic changed after these admissions were selected for recovery",
+            ));
+        }
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "scheduler_resume",
+            "epic_id": epic_id.to_string(),
+            "expected_revision": request.expected_revision.get(),
+            "admissions": request.admissions,
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+
+        // Resolve and validate the whole set before any runtime is contacted.
+        // This makes the operation atomic at the authority boundary: a drifted
+        // fourth pair cannot launch the first three before it is refused.
+        let mut recoverable = Vec::with_capacity(request.admissions.len());
+        for address in &request.admissions {
+            let recovered = state
+                .with_store(|store| {
+                    store.recoverable_admission(
+                        project_id,
+                        address.team_run_id,
+                        address.agent_run_id,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "no immutable admission event names that TeamRun and AgentRun pair",
+                    )
+                })?;
+            let team = state
+                .with_store(|store| store.get_team_run(project_id, address.team_run_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the admitted TeamRun no longer exists",
+                    )
+                })?;
+            let agent = state
+                .with_store(|store| store.get_agent_run(project_id, address.agent_run_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the admitted AgentRun no longer exists",
+                    )
+                })?;
+            let task = self.task_row(project_id, recovered.admitted.task_id)?;
+            if team.task_id != recovered.admitted.task_id
+                || agent.team_run_id != team.id
+                || task.mini_project_id != Some(epic_id)
+            {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the exact admission identities no longer agree with their task and epic",
+                ));
+            }
+            if team.lifecycle.is_terminal() || agent.terminal.is_some() {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "a terminal admission cannot be resumed",
+                ));
+            }
+            if !replayed
+                && (team.lifecycle != kontor_core::state::RunLifecycle::Queued
+                    || agent.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
+                    || agent.projection.desired
+                        != kontor_core::state::DesiredRunState::RunRequested
+                    || agent.binding.is_some())
+            {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "only an exact queued and unbound admission may be freshly resumed",
+                ));
+            }
+            recoverable.push((address, recovered));
+        }
+
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::StartScheduledWork,
+            target,
+            epic.revision,
+            &intent,
+        )?;
+        let mut started = Vec::new();
+        for (address, recovered) in recoverable {
+            started.extend(
+                self.seat_with_address(
+                    project_id,
+                    &recovered.admitted,
+                    &recovered.launch_key,
+                    Some(address.team_run_id),
+                    Some(address.agent_run_id),
+                )
+                .await?,
+            );
+        }
+        self.mark_started_tasks_in_progress(project_id, &started)?;
+        self.retry_undelivered_dispatches().await?;
+        state.signals().appended();
+        Ok(SchedulerResumeDto {
+            realm_id: state.realm_id(),
+            started,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
         })
     }
 
@@ -15340,6 +15556,25 @@ impl Services {
         project_id: ProjectId,
         admitted: &AdmittedCandidate,
     ) -> Result<Vec<StartedSeatDto>, ApiError> {
+        let launch_key = IdempotencyKey::parse(&format!("{}-{}", key.as_str(), admitted.task_id))
+            .map_err(|error| self.refuse_domain(&error))?;
+        self.seat_with_address(project_id, admitted, &launch_key, None, None)
+            .await
+    }
+
+    /// Re-enter the admission path at one immutable launch address.
+    ///
+    /// Ordinary scheduler starts derive that address from their command key.
+    /// Exact recovery supplies the stored launch key and both preserved run ids;
+    /// every supplied identity is then checked again where the launch is used.
+    async fn seat_with_address(
+        &self,
+        project_id: ProjectId,
+        admitted: &AdmittedCandidate,
+        launch_key: &IdempotencyKey,
+        expected_team_run_id: Option<TeamRunId>,
+        expected_agent_run_id: Option<AgentRunId>,
+    ) -> Result<Vec<StartedSeatDto>, ApiError> {
         let state = self.state()?;
         let now = kontor_api::now();
         let workflow = state
@@ -15428,18 +15663,29 @@ impl Services {
 
         // A team run this task already has is the seat's home. Creating a second
         // one would give the same work two teams.
-        let existing = state
+        let existing: Vec<TeamRunId> = state
             .with_store(|store| store.list_team_runs_for_task(project_id, admitted.task_id))
             .map_err(|error| self.refuse(&error))?
             .into_iter()
-            .find(|(_, lifecycle)| !lifecycle.is_terminal())
-            .map(|(id, _)| id);
-
-        let team_run_id = existing.unwrap_or_else(TeamRunId::generate);
-        let launch_key = IdempotencyKey::parse(&format!("{}-{}", key.as_str(), admitted.task_id))
-            .map_err(|error| self.refuse_domain(&error))?;
+            .filter(|(_, lifecycle)| !lifecycle.is_terminal())
+            .map(|(id, _)| id)
+            .collect();
+        let team_run_id = if let Some(expected) = expected_team_run_id {
+            if existing.as_slice() != [expected] {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the task's live TeamRun set no longer equals the exact recovery address",
+                ));
+            }
+            expected
+        } else {
+            existing
+                .first()
+                .copied()
+                .unwrap_or_else(TeamRunId::generate)
+        };
         let agent_run_id = state
-            .with_store(|store| store.get_receipt_by_key(&launch_key))
+            .with_store(|store| store.get_receipt_by_key(launch_key))
             .map_err(|error| self.refuse(&error))?
             .map(|receipt| match receipt.target {
                 AggregateRef::AgentRun { agent_run_id } => Ok(agent_run_id),
@@ -15450,6 +15696,12 @@ impl Services {
             })
             .transpose()?
             .unwrap_or_else(AgentRunId::generate);
+        if expected_agent_run_id.is_some_and(|expected| expected != agent_run_id) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the launch receipt no longer names the exact recovery AgentRun",
+            ));
+        }
         let binding_id = kontor_core::id::RuntimeBindingId::generate();
         let adapter = state
             .runtimes()
@@ -15544,7 +15796,7 @@ impl Services {
                 launch: NewCommandIntent {
                     project_id,
                     receipt_id: CommandReceiptId::generate(),
-                    idempotency_key: launch_key,
+                    idempotency_key: launch_key.clone(),
                     kind: CommandKind::LaunchRun,
                     target: AggregateRef::AgentRun { agent_run_id },
                     target_revision: AggregateRevision::INITIAL,

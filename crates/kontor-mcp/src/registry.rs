@@ -1178,6 +1178,36 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Start the ready batch a plan named.",
     },
     ToolSpec {
+        name: "kontor_scheduler_resume",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The epic revision observed before recovery.",
+            ),
+            req(
+                "admissions",
+                Place::Body,
+                ArgType::Json,
+                "A non-empty array of exact team_run_id/agent_run_id pairs.",
+            ),
+        ],
+        about: "Resume exact queued admissions without recreating their run identities.",
+    },
+    ToolSpec {
         name: "kontor_lifecycle_transition",
         tier: CallerTier::Operator,
         method: Method::Post,
