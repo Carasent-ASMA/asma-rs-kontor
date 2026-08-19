@@ -40,15 +40,16 @@ use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
     AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ContentHash, ExternalName,
-    MiniProjectId, ProjectId, QuickSessionId, SeatBindingId, TaskId, TeamRunId, TicketLinkId,
-    TopologyNodeId,
+    MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, TaskId, TeamRunId,
+    TicketLinkId, TopologyNodeId,
 };
 use kontor_core::repository::{
-    NewObservation, NewProject, NewRuntimeEvent, NewTask, NewTaskWorkflow, NewTicketLink,
-    ProjectRepository, RealmRepository, RunClosure, RunRepository, SourceDisposition,
-    StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession, TicketRepository,
-    TopologyRepository, WorkflowRepository,
+    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow,
+    NewTicketLink, ProjectRepository, RealmRepository, RunClosure, RunRepository,
+    SourceDisposition, StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
+    TicketRepository, TopologyRepository, WorkflowRepository,
 };
+use kontor_core::spec::CatalogRoleRef;
 use kontor_core::state::{
     Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
     TerminalOutcome,
@@ -11820,6 +11821,51 @@ async fn an_unwaived_slot_on_the_same_template_does_receive_the_follow_up() {
 #[tokio::test]
 async fn replaying_a_partial_admission_delivers_its_durable_follow_up() {
     let recovered = omega_with_one_unbound_slot("recover-dispatch", "omega-u-cat").await;
+    let project_id = kontor_core::id::ProjectId::parse(&recovered.project).expect("a project id");
+    let team_run_id = TeamRunId::parse(&recovered.team_run).expect("a team run id");
+    let (task_id, node_id) = recovered.world.daemon.state().with_store(|store| {
+        let task_id = store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team run is readable")
+            .expect("the team run exists")
+            .task_id;
+        let node_id = store
+            .get_task_topology_node(project_id, task_id)
+            .expect("the task node is readable")
+            .expect("the task node exists")
+            .id;
+        (task_id, node_id)
+    });
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    let catalog = domain
+        .role_catalogs
+        .first()
+        .expect("a bundled role catalog");
+    let role = catalog
+        .role(&RoleCode::parse("SWE").expect("a standard role code"))
+        .expect("the catalog has SWE");
+    recovered.world.daemon.state().with_store(|store| {
+        store
+            .create_seat_binding(&NewSeatBinding {
+                id: SeatBindingId::generate(),
+                project_id,
+                topology_node_id: node_id,
+                role_slot_id: kontor_core::id::RoleSlotId::parse("omega-k3").expect("a role slot"),
+                role: CatalogRoleRef {
+                    catalog_id: catalog.catalog_id,
+                    catalog_revision: catalog.version,
+                    role_code: role.role_code.clone(),
+                    standard_title: role.standard_title.clone(),
+                    custom_display_name: None,
+                },
+                task_id: Some(task_id),
+                team_run_id: Some(team_run_id),
+                attach_deadline: at("2099-01-01T00:00:00Z"),
+                parent_seat_binding_id: None,
+                created_at: at("2026-08-10T09:00:00Z"),
+            })
+            .expect("the same TeamRun's logical seat already exists");
+    });
     let giver = recovered
         .seats
         .iter()
@@ -11881,7 +11927,6 @@ async fn replaying_a_partial_admission_delivers_its_durable_follow_up() {
         replay.body
     );
 
-    let project_id = kontor_core::id::ProjectId::parse(&recovered.project).expect("a project id");
     let run = recovered
         .world
         .daemon

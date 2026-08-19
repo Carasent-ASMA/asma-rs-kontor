@@ -15243,8 +15243,13 @@ impl Services {
         // all. A placement that cannot be resolved stops here, with nothing
         // dispatched and nothing to undo.
         let task_root = self.task_root(project_id, admitted.task_id)?;
-        let placement =
-            self.resolve_placement(project_id, admitted.task_id, &ordered, &task_root)?;
+        let placement = self.resolve_placement(
+            project_id,
+            admitted.task_id,
+            team_run_id,
+            &ordered,
+            &task_root,
+        )?;
 
         // A container is prepared *inside* the runtime's plane, so the plane has
         // to exist first. This is idempotent and re-attests a binding the
@@ -15401,8 +15406,10 @@ impl Services {
     /// is total: it answers with a node or it refuses. The task's node is the
     /// locator, and every check below is a question about *where*, answered from
     /// Kontor's own rows — a node that hosts no session, a working directory
-    /// that is not the bound one, or a slot that already holds a live seat all
-    /// stop here as `placement_blocked`, with nothing dispatched.
+    /// that is not the bound one, or a slot held by another live team all stop
+    /// here as `placement_blocked`, with nothing dispatched. A seat already held
+    /// by this exact task and TeamRun is the idempotent recovery case, not a
+    /// second placement.
     ///
     /// **There is deliberately no escape for a project that has no topology
     /// yet.** An earlier revision answered `Ok(None)` there and let admission
@@ -15424,6 +15431,7 @@ impl Services {
         &self,
         project_id: ProjectId,
         task_id: TaskId,
+        team_run_id: TeamRunId,
         declared: &[RoleSlotId],
         worktree: &kontor_runtime::workspace::WorkspaceRoot,
     ) -> Result<SessionTopologyNode, ApiError> {
@@ -15501,15 +15509,21 @@ impl Services {
 
         // One live seat per `(node, slot)`. A second would give one role two
         // sessions, and the runtime's own admission ledger cannot see the first
-        // one across a restart.
+        // one across a restart. The seat this exact TeamRun already owns is not
+        // a second seat, however: topology materialization may have committed it
+        // before a launch acknowledgement was lost. Admission must be allowed to
+        // re-enter so the adapter can recover the exactly labelled native agent
+        // and attach the still-unbound AgentRun.
         let held = state
             .with_store(|store| store.list_seat_bindings(project_id, node.id))
             .map_err(|error| self.refuse(&error))?;
         for slot in declared {
-            if held
-                .iter()
-                .any(|binding| &binding.role_slot_id == slot && binding.is_non_terminal())
-            {
+            if held.iter().any(|binding| {
+                &binding.role_slot_id == slot
+                    && binding.is_non_terminal()
+                    && (binding.task_id != Some(task_id)
+                        || binding.team_run_id != Some(team_run_id))
+            }) {
                 return Err(self.deny(
                     ApiErrorCode::PlacementBlocked,
                     "a live seat already holds one of this team's role slots on that node",
