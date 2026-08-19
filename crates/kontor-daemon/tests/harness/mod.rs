@@ -15,11 +15,13 @@
 //!   and launch. Nothing here fabricates a binding, because a fabricated one is
 //!   exactly what the API is supposed to refuse.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
+use futures::StreamExt as _;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
     AgentRunId, BoundedText, ExternalId, ExternalName, ProjectId, RealmId, RoleSlotId,
@@ -123,6 +125,19 @@ impl World {
         Self::compose_with(every_capability(), true, false, false, DEFAULT_CAPACITY).await
     }
 
+    /// Start an empty Realm with the explicitly configured Jira wire boundary.
+    pub(crate) async fn open_empty_with_asma(executable: &Path) -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            false,
+            DEFAULT_CAPACITY,
+            Some(executable),
+        )
+        .await
+    }
+
     /// Start an empty Realm whose runtime holds a **plane-level container**.
     ///
     /// This is the shipped Paseo shape and the one no in-process fake had: every
@@ -210,6 +225,17 @@ impl World {
         planed: bool,
         capacity: CapacityConfig,
     ) -> Self {
+        Self::compose_with_connector(capabilities, configured, seeded, planed, capacity, None).await
+    }
+
+    async fn compose_with_connector(
+        capabilities: RuntimeCapabilities,
+        configured: bool,
+        seeded: bool,
+        planed: bool,
+        capacity: CapacityConfig,
+        asma_executable: Option<&Path>,
+    ) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
         let fake = Arc::new(if planed {
             ScriptedFakeRuntime::requiring_a_plane(capabilities)
@@ -221,13 +247,13 @@ impl World {
         } else {
             RuntimeRegistry::new()
         };
-        let daemon = Daemon::start(
-            DaemonConfig::at(directory.path())
-                .with_port(0)
-                .with_capacity(capacity),
-            registry,
-        )
-        .expect("the realm starts");
+        let mut config = DaemonConfig::at(directory.path())
+            .with_port(0)
+            .with_capacity(capacity);
+        if let Some(executable) = asma_executable {
+            config = config.with_asma_executable(executable);
+        }
+        let daemon = Daemon::start(config, registry).expect("the realm starts");
         let router = daemon.router();
 
         let project = ProjectId::generate();
@@ -354,6 +380,7 @@ impl World {
                 at("2026-08-10T09:00:00Z"),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         };
         let authority = self
@@ -498,6 +525,24 @@ impl Call {
         }
     }
 
+    /// A `POST` carrying bytes verbatim.
+    ///
+    /// The point is to send what `post` cannot: a body that is not JSON at all.
+    /// The `content-type` header still says it is, because that is the case the
+    /// extractor has to classify — a caller that lies about its body.
+    pub(crate) fn post_raw(uri: impl Into<String>, body: &'static str) -> Self {
+        Self {
+            method: axum::http::Method::POST,
+            uri: uri.into(),
+            host: "127.0.0.1:7717".to_owned(),
+            origin: None,
+            token: None,
+            idempotency_key: None,
+            extra: Vec::new(),
+            body: Body::from(body),
+        }
+    }
+
     /// Present this Realm's credential for `tier`.
     pub(crate) fn signed_as(mut self, world: &World, tier: &str) -> Self {
         self.token = Some(secret(world, tier));
@@ -565,6 +610,48 @@ impl Call {
     /// Drive the real router and read the whole answer.
     pub(crate) async fn send(self, world: &World) -> Answer {
         self.send_to(&world.router).await
+    }
+
+    /// Drive one SSE response until a bounded number of frames arrives or it
+    /// stays quiet for `idle`.
+    ///
+    /// A live stream is not a finite body. Tests that read it through
+    /// `to_bytes` accidentally assert that the server closes a healthy stream,
+    /// so this helper owns the same two client-side bounds the MCP transport
+    /// does and drops the response when either is spent.
+    pub(crate) async fn send_stream(
+        self,
+        world: &World,
+        max_frames: usize,
+        idle: std::time::Duration,
+    ) -> Answer {
+        let response = world
+            .router
+            .clone()
+            .oneshot(self.build())
+            .await
+            .expect("the router answers");
+        let status = response.status();
+        if status != StatusCode::OK {
+            return Answer::read(response).await;
+        }
+        let mut chunks = response.into_body().into_data_stream();
+        let mut body = String::new();
+        while (Answer {
+            status,
+            body: body.clone(),
+        })
+        .frames()
+        .len()
+            < max_frames
+        {
+            match tokio::time::timeout(idle, chunks.next()).await {
+                Err(_) | Ok(None) => break,
+                Ok(Some(Err(error))) => panic!("the stream body is readable: {error}"),
+                Ok(Some(Ok(chunk))) => body.push_str(&String::from_utf8_lossy(&chunk)),
+            }
+        }
+        Answer { status, body }
     }
 
     /// Drive an arbitrary router — a restarted daemon's, for instance.

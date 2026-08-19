@@ -22,7 +22,12 @@
 use std::path::Path;
 
 /// Every source file the crate's decisions live in.
-const SOURCES: &[&str] = &["src/lib.rs", "src/model.rs", "src/ready.rs"];
+const SOURCES: &[&str] = &[
+    "src/completion.rs",
+    "src/lib.rs",
+    "src/model.rs",
+    "src/ready.rs",
+];
 
 /// Types that name one deployment's own vocabulary.
 ///

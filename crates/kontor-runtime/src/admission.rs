@@ -742,6 +742,30 @@ impl AdmissionLedger {
         }
     }
 
+    /// Release the exact occupied seat whose native session was retired.
+    ///
+    /// Retirement is stronger than a stopped process: the runtime has read back
+    /// durable terminal evidence for this native identity, so the seat may no
+    /// longer answer compatible-work admission with the predecessor's binding.
+    /// Both identifiers are matched before removal; a stale or foreign
+    /// retirement therefore releases nothing.
+    pub fn retire(&mut self, binding_id: RuntimeBindingId, native_id: &ExternalId) {
+        let retired = self.slots.iter().find_map(|(slot, admission)| {
+            matches!(
+                admission,
+                SlotAdmission::Occupied {
+                    binding_id: held_binding,
+                    native_id: held_native,
+                    ..
+                } if *held_binding == binding_id && held_native == native_id
+            )
+            .then(|| slot.clone())
+        });
+        if let Some(slot) = retired {
+            self.slots.remove(&slot);
+        }
+    }
+
     /// The native session a seat holds, if it holds one.
     #[must_use]
     pub fn occupant(&self, slot: &RoleSlotKey) -> Option<&ExternalId> {
@@ -904,6 +928,7 @@ mod tests {
                 parse_utc_timestamp("2026-08-10T09:00:00Z").expect("a canonical time"),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: parse_utc_timestamp("2026-08-10T09:00:00Z").expect("a canonical time"),
         })
     }

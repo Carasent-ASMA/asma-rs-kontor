@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 31;
+pub const SCHEMA_VERSION: i64 = 40;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -140,14 +140,49 @@ const MIGRATIONS: &[&str] = &[
     // explicit epic upgrade that moves a pin — which is why the pin row becomes
     // writable by that one operation, and why the closed kind list grows by two.
     include_str!("../migrations/0029_topology_publication.sql"),
-    // Schema v30. Immutable Project Core Team revisions, and the one command
+    // Schema v30. The container retitle command. One kind, and no title column:
+    // what a container is called is the runtime's fact, read back rather than
+    // mirrored.
+    include_str!("../migrations/0030_retitle_container_command.sql"),
+    // Schema v31. The bounded task reopen: `done -> ready` and nothing else, so
+    // the lifecycle action the surface advertises can reach the domain rule
+    // written for it.
+    include_str!("../migrations/0031_bounded_task_reopen.sql"),
+    // Schema v32. Immutable Project Core Team revisions, and the one command
     // that publishes them. Kept as whole revisions because promotion freezes
     // the exact one an epic was staffed from.
-    include_str!("../migrations/0030_core_team_revisions.sql"),
-    // Schema v31. Quick sessions, their one promotion, and the roster an epic
+    include_str!("../migrations/0032_core_team_revisions.sql"),
+    // Schema v33. Quick sessions, their one promotion, and the roster an epic
     // freezes at that moment -- plus the four OP-04 commands. The promotion row
     // carries its ids so a resumed apply reconciles rather than rebuilds.
-    include_str!("../migrations/0031_quick_sessions_and_promotion.sql"),
+    include_str!("../migrations/0033_quick_sessions_and_promotion.sql"),
+    // Schema v34. Immutable Advisor profile and Committee template revisions,
+    // and the two Admin publications that write them. One table for both
+    // families because they are one storage shape, discriminated by `family`.
+    include_str!("../migrations/0034_consultation_profiles.sql"),
+    // Schema v35. Published epic Completion Profiles, one durable completion run
+    // per epic, and the TPM wake outbox -- plus the three OP-06 commands. The
+    // wake's primary key is the one-wake-per-observation rule, so a replayed
+    // callback collides with the intent already standing instead of opening a
+    // second turn.
+    include_str!("../migrations/0035_epic_completion.sql"),
+    // Schema v36. Repository-backed Advisor/Committee runs, their exact native
+    // seats, immutable Committee findings and the five run command kinds.
+    include_str!("../migrations/0036_consultation_runs.sql"),
+    // Schema v37. An
+    // escalation reaches a human with a recommendation, its author and the
+    // deliberation path already walked (OP-REQ-036): a `needs_human` row states
+    // its brief.
+    include_str!("../migrations/0037_escalation_brief.sql"),
+    // Schema v38. One command kind for
+    // installing a trigger revision, which is how a bounded auto-arm capability
+    // is declared at all. The final rebuild carries the union of both merged
+    // lineages and restores the receipt immutability triggers.
+    include_str!("../migrations/0038_publish_trigger_command.sql"),
+    include_str!("../migrations/0039_committee_remediation.sql"),
+    // Schema v40. One immutable Advisor advice artifact, authored by the exact
+    // attested seat before a Realm operator records the requester's disposition.
+    include_str!("../migrations/0040_advisor_advice.sql"),
 ];
 
 const _: () = assert!(
@@ -298,15 +333,36 @@ fn apply_pending(
         return Ok(());
     }
 
-    // Every pending script runs here, in order, in this one transaction. Each
-    // ends with its own `PRAGMA user_version`, which is transactional: any
-    // failure rolls the version back to where it started along with every object
-    // any of the scripts created.
-    let pending = usize::try_from(version).map_err(|_| StoreError::Pragma {
-        pragma: "user_version",
-    })?;
-    for migration in &MIGRATIONS[pending..] {
-        transaction.execute_batch(migration)?;
+    // Master and the operational-recovery branch both shipped schema numbers 34
+    // and 35 before they met. The former lineage has the escalation brief (and,
+    // at v35, `publish_trigger`) but no consultation profiles. Recognize that
+    // durable shape rather than interpreting its number as the canonical one.
+    // Its escalation objects are already present, so the convergence installs
+    // the consultation generations, the union receipt rebuild, and every later
+    // append-only migration.
+    let operational_hardening_lineage = matches!(version, 34 | 35)
+        && !table_exists(&transaction, "consultation_profile_revisions")?;
+    if operational_hardening_lineage {
+        for migration in [
+            MIGRATIONS[33],
+            MIGRATIONS[34],
+            MIGRATIONS[35],
+            MIGRATIONS[37],
+            MIGRATIONS[38],
+            MIGRATIONS[39],
+        ] {
+            transaction.execute_batch(migration)?;
+        }
+    } else {
+        // Every pending script runs here, in order, in this one transaction.
+        // Each ends with its own transactional `PRAGMA user_version`: any
+        // failure rolls the version and every object back together.
+        let pending = usize::try_from(version).map_err(|_| StoreError::Pragma {
+            pragma: "user_version",
+        })?;
+        for migration in &MIGRATIONS[pending..] {
+            transaction.execute_batch(migration)?;
+        }
     }
 
     // The Realm is created exactly once, by the open that created the schema. An
@@ -349,6 +405,17 @@ fn apply_pending(
     }
     transaction.commit()?;
     Ok(())
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool, StoreError> {
+    let found: Option<i64> = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
 }
 
 /// Load and validate the single Realm row. Never repairs, inserts or replaces.

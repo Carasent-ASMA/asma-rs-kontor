@@ -27,7 +27,8 @@
 //!   the parent is only ever the [`label::PARENT_AGENT`] label — so that check
 //!   has one source now instead of two, and [`PaseoAgent::parent_agent_id`]
 //!   says so at its definition.
-//! * A workspace carries **no labels at all**. See [`workspace_label_suffix`].
+//! * A workspace carries **no labels at all**. Kontor keeps native bindings in
+//!   its own durable store and leaves the title human-readable.
 //! * The lifecycle enum is `initializing | idle | running | error | closed`;
 //!   retirement is the `archivedAt` stamp rather than a status.
 //! * A timeline entry spans `seqStart..=seqEnd` over explicit
@@ -53,7 +54,22 @@ use serde::{Deserialize, Serialize};
 pub const PASEO_WS_PROTOCOL_VERSION: u64 = 1;
 
 /// The Paseo application release this adapter's DTOs, fixtures and argv
-/// evidence are pinned to.
+/// evidence are recorded from, and the **lowest** release it will drive.
+///
+/// A floor rather than an equality, and the distinction is not cosmetic. An
+/// exact pin cannot tell "a release we have not seen" from "a release we cannot
+/// speak to", so every upgrade of the app degraded the entire fleet at once:
+/// bindings frozen under the previous release assert capabilities the
+/// now-unrecognized daemon is not credited with, and
+/// [`crate::adapter::PaseoAdapter`] then refuses to attest a single one of them.
+/// Paseo `0.4.0` did exactly that, and nothing about the wire had changed.
+///
+/// It stays at the release the fixtures are recorded from, because that is the
+/// oldest daemon this adapter is *proven* against — raising it would strand a
+/// daemon known to work. A newer one is driven at full capability until
+/// something it actually removed proves otherwise, which is `REQUIRED_FEATURES`'
+/// job: that check is per-feature and per-connection, so a genuine removal still
+/// degrades correctly without a version ever being named.
 pub const PASEO_APP_VERSION: &str = "0.3.1";
 
 /// The client type this adapter announces in the hello.
@@ -137,6 +153,12 @@ pub mod label {
     /// agent one of its agents spawned; Kontor writes the same key for a seat
     /// it launches. One key, two writers, one meaning.
     pub const PARENT_AGENT: &str = "paseo.parent-agent-id";
+    /// Family-qualified Advisor/Committee run id.
+    pub const CONSULTATION_RUN: &str = "kontor.consultation_run";
+    /// Exact persistent consultation seat.
+    pub const SEAT_BINDING: &str = "kontor.seat_binding_id";
+    /// Explicit non-mutating authority marker for consultation sessions.
+    pub const READ_ONLY: &str = "kontor.read_only";
 
     /// Every label key, in the order they are applied.
     pub const ALL: &[&str] = &[
@@ -254,15 +276,55 @@ impl PaseoServerInfo {
             .collect()
     }
 
-    /// Whether this daemon is the pinned application baseline.
+    /// Whether this daemon is at or above the supported application baseline.
     ///
-    /// A daemon that reports no version at all is *not* the baseline. Absence
-    /// is not agreement, and every DTO below was recorded from a build that
-    /// says which one it is.
+    /// A daemon that reports no version at all is *not* supported. Absence is
+    /// not agreement, and every DTO below was recorded from a build that says
+    /// which one it is.
     #[must_use]
-    pub fn is_pinned_baseline(&self) -> bool {
-        self.version.as_deref() == Some(PASEO_APP_VERSION)
+    pub fn is_supported_baseline(&self) -> bool {
+        self.version
+            .as_deref()
+            .is_some_and(|version| version_at_least(version, PASEO_APP_VERSION))
     }
+}
+
+/// Whether `reported` is at least `floor`, as `MAJOR.MINOR.PATCH`.
+///
+/// Numeric per component rather than lexical, because text order is wrong
+/// exactly where it costs most: `"0.10.0" < "0.4.0"` as strings, so a fleet
+/// comparing that way would degrade itself on the tenth minor release — the
+/// same outage the floor exists to prevent.
+///
+/// A pre-release sorts *below* the release it is named for, so `0.4.0-beta.2`
+/// does not satisfy a floor of `0.4.0`. Anything that does not parse is not at
+/// least anything.
+#[must_use]
+pub fn version_at_least(reported: &str, floor: &str) -> bool {
+    let (Some(left), Some(right)) = (release_triple(reported), release_triple(floor)) else {
+        return false;
+    };
+    if left != right {
+        return left > right;
+    }
+    // The same release: only a final build clears a floor set at it.
+    !reported.contains('-')
+}
+
+/// `MAJOR.MINOR.PATCH` as numbers, discarding any pre-release or build suffix.
+///
+/// A fourth component is rejected rather than truncated: it is not a version
+/// this adapter knows how to order, and ordering it anyway would be a guess.
+fn release_triple(version: &str) -> Option<(u64, u64, u64)> {
+    let core = version.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
 }
 
 /// The answer to `daemon.get_status.request`.
@@ -392,13 +454,12 @@ impl PaseoWorkspace {
             .is_some_and(|git| git.is_paseo_owned_worktree)
     }
 
-    /// The Kontor workspace label this workspace reports back, if any.
+    /// The title a human sees for this workspace.
     ///
-    /// See [`workspace_label_suffix`] for why a display string is carrying it.
+    /// The raw override when it has one, and the resolved name otherwise.
     #[must_use]
-    pub fn reported_label(&self) -> Option<&str> {
-        let titled = self.title.as_deref().unwrap_or(&self.name);
-        extract_workspace_label(titled)
+    pub fn visible_title(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.name)
     }
 }
 
@@ -1032,40 +1093,6 @@ impl PaseoStreamFrame {
 }
 
 // ---------------------------------------------------------------------------
-// Workspace labels, which 0.3.1 does not have
-// ---------------------------------------------------------------------------
-
-/// The Kontor workspace label, wrapped so it survives in a display title.
-///
-/// **Paseo 0.3.1 has no workspace labels.** `workspace create` takes a title and
-/// nothing else, `WorkspaceDescriptorPayload` has no label map, and no request
-/// in the protocol sets one — labels exist for agents only. The 0.2.5 adapter
-/// inferred a `--label` flag from the agent surface; the live 0.3.1 CLI refutes
-/// it.
-///
-/// A title is therefore the only string Kontor can write to a workspace and
-/// read back verbatim, so the correlation label rides in a bracketed suffix of
-/// it. This is a genuine round trip and not a fabricated one:
-/// [`PaseoWorkspace::reported_label`] extracts what Paseo *returned*, and if
-/// Paseo dropped or rewrote the title the extraction fails and correlation
-/// fails with it. Handing
-/// [`kontor_runtime::workspace::WorkspaceCorrelationEvidence::establish`] a
-/// label computed on this side instead would make workspace evidence prove
-/// nothing while looking exactly like this.
-#[must_use]
-pub fn workspace_label_suffix(display_name: &str, label: &str) -> String {
-    format!("{display_name} [{label}]")
-}
-
-/// The Kontor workspace label inside a title, if it carries one.
-#[must_use]
-pub fn extract_workspace_label(title: &str) -> Option<&str> {
-    let start = title.rfind('[')?;
-    let inner = title.get(start + 1..)?.strip_suffix(']')?;
-    (!inner.is_empty()).then_some(inner)
-}
-
-// ---------------------------------------------------------------------------
 // Normalization
 // ---------------------------------------------------------------------------
 
@@ -1424,7 +1451,7 @@ mod tests {
                 .map(|feature| (feature.as_str().to_owned(), true))
                 .collect(),
         };
-        assert!(info.is_pinned_baseline());
+        assert!(info.is_supported_baseline());
         assert!(info.missing_required().is_empty());
         assert!(!info.supports(PaseoFeature::ProjectRename));
         assert!(!info.supports(PaseoFeature::Compaction));
@@ -1441,22 +1468,62 @@ mod tests {
             ..info
         };
         assert!(
-            !unversioned.is_pinned_baseline(),
+            !unversioned.is_supported_baseline(),
             "a daemon that will not say which build it is has not agreed with the pin"
         );
     }
 
     #[test]
-    fn a_workspace_reports_the_label_kontor_wrote_into_its_title() {
-        // 0.3.1 has no workspace labels, so the round trip is through the one
-        // string a create can set and a readback returns.
-        let titled = workspace_label_suffix("TSW · ASMA-7755 · KON-11", "kontor-team-abc");
-        assert_eq!(titled, "TSW · ASMA-7755 · KON-11 [kontor-team-abc]");
-        assert_eq!(extract_workspace_label(&titled), Some("kontor-team-abc"));
-        // A title Paseo rewrote, or one an operator typed, reports nothing —
-        // which fails correlation rather than inventing it.
-        assert_eq!(extract_workspace_label("TSW · ASMA-7755 · KON-11"), None);
-        assert_eq!(extract_workspace_label("something []"), None);
+    fn a_newer_daemon_clears_the_baseline_and_an_older_one_does_not() {
+        let at = |version: &str| PaseoServerInfo {
+            server_id: "srv_1".to_owned(),
+            version: Some(version.to_owned()),
+            hostname: None,
+            features: REQUIRED_FEATURES
+                .iter()
+                .map(|feature| (feature.as_str().to_owned(), true))
+                .collect(),
+        };
+
+        assert!(at(PASEO_APP_VERSION).is_supported_baseline());
+        // The regression this floor was introduced for: 0.4.0 is newer than the
+        // recorded baseline, and an equality pin degraded the whole fleet on it.
+        assert!(at("0.4.0").is_supported_baseline());
+        assert!(at("0.4.1").is_supported_baseline());
+        assert!(at("1.0.0").is_supported_baseline());
+        assert!(
+            !at("0.3.0").is_supported_baseline(),
+            "a release below the recorded baseline is observed, never driven"
+        );
+        assert!(!at("0.2.9").is_supported_baseline());
+    }
+
+    #[test]
+    fn the_baseline_orders_versions_as_numbers_rather_than_text() {
+        // The regression the floor exists for: `"0.10.0" < "0.4.0"` as text, so
+        // a lexical compare would degrade the fleet on the tenth minor release.
+        assert!(version_at_least("0.10.0", "0.4.0"));
+        assert!(version_at_least("0.4.10", "0.4.9"));
+        assert!(!version_at_least("0.4.0", "0.10.0"));
+    }
+
+    #[test]
+    fn a_pre_release_does_not_clear_the_release_it_is_named_for() {
+        assert!(!version_at_least("0.4.0-beta.2", "0.4.0"));
+        // ...but it does clear everything that release supersedes, which is why
+        // a 0.4.0 beta is still driven against a 0.3.1 floor.
+        assert!(version_at_least("0.4.0-beta.2", PASEO_APP_VERSION));
+        assert!(version_at_least("0.4.1-beta.1", "0.4.0"));
+    }
+
+    #[test]
+    fn an_unreadable_version_is_not_at_least_anything() {
+        for reported in ["", "0.4", "0.4.0.1", "next", "v0.4.0", "0.x.0"] {
+            assert!(
+                !version_at_least(reported, "0.4.0"),
+                "{reported} is not a version this adapter can order"
+            );
+        }
     }
 
     #[test]

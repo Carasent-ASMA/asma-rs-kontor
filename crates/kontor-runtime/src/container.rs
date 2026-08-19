@@ -397,10 +397,22 @@ pub struct ContainerBinding {
 /// Not by title — which is the very thing being corrected and therefore the one
 /// value that cannot identify it — and not by working directory, which several
 /// containers can share.
+///
+/// It carries no finished title either. `structural_name` is what the control
+/// plane can render on its own — the node kind's declared template — and
+/// `task_id` names the scope the runtime plane renders the rest from. The plane
+/// holds the Jira issue and the short ticket code; the control plane holds the
+/// template and the node. Neither half can write this title alone, and a request
+/// carrying a finished one would let a caller supply it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetitleContainerRequest {
     /// The node whose container is being retitled.
     pub topology_node_id: TopologyNodeId,
+    /// The durable binding Kontor holds for this container.
+    ///
+    /// Carried so a runtime rebuilt since the container was bound answers about
+    /// the binding Kontor is repairing rather than minting a new identity for it.
+    pub container_binding_id: ContainerBindingId,
     /// The exact native container to address. The only handle in this request.
     pub bound_native_id: ExternalId,
     /// The generation `bound_native_id` is meaningful in.
@@ -409,26 +421,45 @@ pub struct RetitleContainerRequest {
     /// something found under a *different* generation would be renaming
     /// whatever replaced it after a restart.
     pub generation: u64,
-    /// The title the container must end up carrying, derived by the caller from
-    /// the pinned specification and its typed scope.
-    pub desired_title: ExternalName,
+    /// The delivery task whose typed scope names the container, when it has one.
+    ///
+    /// `None` is a structural container — a project or an epic root — which is
+    /// not ticket-scoped and is titled from its template alone.
+    pub task_id: Option<TaskId>,
+    /// The name the node's own pinned kind template renders to.
+    ///
+    /// The floor, not the answer: a plane with a task scope renders over it, and
+    /// the same one the bind path uses.
+    pub structural_name: ExternalName,
     /// When the retitle was requested.
     pub requested_at: Timestamp,
 }
 
-/// What a retitle produced.
+/// What a retitle produced, or would produce.
+///
+/// One type for the preview and the apply on purpose: a preview that answered in
+/// a different shape would be describing a different operation, and the
+/// difference between them is whether the runtime was written to — not what the
+/// answer means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetitleContainerOutcome {
-    /// The binding, read back after the change.
+    /// The binding, read back from the runtime.
     pub snapshot: ContainerBindingSnapshot,
-    /// The title the runtime reported *after* the change, read back rather than
-    /// assumed.
+    /// The title the runtime derived for this container.
+    ///
+    /// The plane's answer, not the request's: the request has no finished title
+    /// to compare against, so this is the value an apply sets and a preview
+    /// announces.
+    pub desired_title: ExternalName,
+    /// The title the runtime reported, read back rather than assumed.
+    ///
+    /// After the change for an apply; as it stands for a preview.
     pub observed_title: String,
-    /// Whether this call changed anything, or found it already correct.
+    /// Whether anything changed, or was already correct.
     ///
     /// A retitle is idempotent: a container already carrying the desired title
     /// is the goal, not an error, and saying which happened is what lets a
-    /// replay answer honestly.
+    /// replay answer honestly. On a preview it reads as *would* change.
     pub changed: bool,
 }
 

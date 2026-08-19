@@ -1776,6 +1776,7 @@ impl Engine {
                 at(LAUNCHED_AT),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at(LAUNCHED_AT),
         };
         let request = self

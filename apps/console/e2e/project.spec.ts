@@ -32,7 +32,7 @@ async function attach(page: Page): Promise<void> {
       '/v1/projects/project-1/advisor-profiles': profileCatalog,
       '/v1/projects/project-1/committee-templates': profileCatalog,
       '/v1/projects/project-1/completion-profiles': profileCatalog,
-      '/v1/projects/project-1/epics/epic-1/completion': { realm_id: REALM, epic_id: 'epic-1', revision: 2, snapshot_cursor: 21, phase: 'review', outstanding: ['audit'], profile: PROFILE },
+      '/v1/projects/project-1/epics/epic-1/completion': { realm_id: REALM, epic_id: 'epic-1', revision: 2, snapshot_cursor: 21, phase: { phase: 'verdict', round: 1 }, blockers: [{ blocker: 'committee_verdict', round: 1 }], profile: PROFILE, integrations: [], rounds: [], closeout: { receipts: [] }, wakes: [], needs_human: null },
     }
     await route.fulfill({ json: bodies[url.pathname] ?? { realm_id: REALM } })
   })

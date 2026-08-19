@@ -44,10 +44,15 @@
 //! recommendations, and [`model::AuthoritySource::RecoveryAdvice`] is refused
 //! wherever an approval is required.
 
+pub mod completion;
 pub mod evaluator;
 pub mod model;
 pub mod recovery;
 
+pub use completion::{
+    CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload, TicketEvidence,
+    TicketGateBlocker, TicketRequirement, closeout_blockers, ticket_gate_blockers,
+};
 pub use evaluator::{
     REJECTIONS_BEFORE_PARK, decide, evaluate, module_isolated_by_worktree, rejections_since_pass,
 };

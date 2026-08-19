@@ -374,6 +374,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one Advisor consultation and its immutable result. */
+        get: operations["advisor_run"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle": {
         parameters: {
             query?: never;
@@ -547,6 +564,23 @@ export interface paths {
         put?: never;
         /** Run the configured native collectors. */
         post: operations["refresh_capacity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one Committee consultation, including all current-round findings. */
+        get: operations["committee_run"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1756,6 +1790,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Repair one bound container's title. */
+        post: operations["apply_container_retitle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** What repairing one bound container's title would do. */
+        post: operations["preview_container_retitle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire": {
         parameters: {
             query?: never;
@@ -1852,6 +1920,23 @@ export interface paths {
         get: operations["trigger"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/triggers:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Install one immutable trigger revision. */
+        post: operations["publish_trigger"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2227,8 +2312,15 @@ export interface components {
              */
             expected_revision: number;
         };
+        /**
+         * @description What the caller did with one Advisor's evidence-only output.
+         * @enum {string}
+         */
+        AdviceDispositionDto: "accepted" | "partially_accepted" | "rejected" | "superseded";
         /** @description One Advisor consultation. */
         AdvisorRunDto: {
+            /** @description Immutable output submitted by the Advisor seat, before disposition. */
+            advice?: unknown;
             /** @description The consultation. */
             advisor_run_id: string;
             /** @description The epic it advises. */
@@ -2237,10 +2329,15 @@ export interface components {
             profile: components["schemas"]["ProfileRevisionDto"];
             /** @description The Realm it belongs to. */
             realm_id: string;
-            /** @description The receipt it was committed under. */
-            receipt: components["schemas"]["MutationReceiptDto"];
+            receipt?: null | components["schemas"]["MutationReceiptDto"];
+            /** @description Immutable output and caller disposition once settled. */
+            result?: unknown;
+            /** @description The one Advisor seat. */
+            seats: components["schemas"]["ConsultationSeatDto"][];
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
+            /** @description Dedicated ASW node. */
+            topology_node_id: string;
         };
         /** @description The JSON body every refusal is reported with. */
         ApiErrorBody: {
@@ -2287,6 +2384,19 @@ export interface components {
              *     name or an operation name — so it can never be a stored value.
              */
             subject?: string | null;
+        };
+        /** @description What a container retitle produced. */
+        AppliedContainerRetitleDto: {
+            /** @description The native container, read back after the change. The same one. */
+            bound_native_id: string;
+            /** @description Whether this call changed anything, or found it already correct. */
+            changed: boolean;
+            /** @description The title the runtime reported afterwards, read back rather than assumed. */
+            observed_title: string;
+            /** @description The receipt it was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The node whose container it is. */
+            topology_node_id: string;
         };
         /**
          * @description Whether an ensure/apply wrote the row or found it already matching.
@@ -2737,6 +2847,32 @@ export interface components {
             account_profile_ids?: string[];
         };
         /**
+         * @description The closeout receipts recorded so far.
+         *
+         *     Receipt ids and inventoried revisions, never caller booleans: `done` is a
+         *     conjunction over authoritative records, and a boolean would let a caller
+         *     assert one it does not hold.
+         */
+        CloseoutEvidenceDto: {
+            /** @description Archive receipt. */
+            archive_receipt: string;
+            /** @description Delivered module/service revisions, keyed by module/service name. */
+            delivered_versions: Record<string, never>;
+            /** @description Merge confirmation. */
+            merge_receipt: string;
+            /** @description Notification receipt. */
+            notification_receipt: string;
+            /** @description Release confirmation, or its typed not-applicable disposition. */
+            release_receipt: string;
+            /** @description Final summary receipt. */
+            summary_receipt: string;
+        };
+        /**
+         * @description One fixed closeout prerequisite.
+         * @enum {string}
+         */
+        CloseoutRequirementDto: "merge" | "release" | "version_inventory" | "summary" | "notification" | "archive";
+        /**
          * @description Server-owned help for one controlled code.
          *
          *     Keyed by `(category, code)`. Compatibility and retired codes stay present as
@@ -2778,26 +2914,68 @@ export interface components {
              */
             snapshot_cursor: number;
         };
+        /** @description One durable Committee finding, including dissent and evidence references. */
+        CommitteeFindingDto: {
+            /** @description Hash of the immutable finding document. */
+            document_hash: string;
+            /** @description Whether required evidence was complete. */
+            evidence_complete: boolean;
+            /** @description References to authoritative evidence. */
+            evidence_refs: string[];
+            /** @description The submitted rationale. */
+            rationale: string;
+            /** @description Reviewer or Judge. */
+            role: string;
+            /** @description Frozen template slot. */
+            role_slot_id: string;
+            /**
+             * Format: int32
+             * @description Round this finding belongs to.
+             */
+            round: number;
+            /** @description Typed conclusion. */
+            verdict: components["schemas"]["ConsultationVerdictDto"];
+        };
         /** @description One Committee consultation. */
         CommitteeRunDto: {
             /** @description The consultation. */
             committee_run_id: string;
             /** @description The epic it advises. */
             epic_id: string;
+            /** @description Durable findings for the current round, including dissent. */
+            findings: components["schemas"]["CommitteeFindingDto"][];
             /**
              * Format: int32
              * @description How many findings have been recorded so far.
              */
             findings_recorded: number;
+            outcome?: null | components["schemas"]["ConsultationVerdictDto"];
             /** @description The Realm it belongs to. */
             realm_id: string;
-            /** @description The receipt it was committed under. */
-            receipt: components["schemas"]["MutationReceiptDto"];
+            receipt?: null | components["schemas"]["MutationReceiptDto"];
+            /** @description Immutable recommendation and tried path that authorized round two. */
+            remediation?: unknown;
+            /** @description Immutable terminal result, including needs-human recommendation/tried path. */
+            result?: unknown;
+            /**
+             * Format: int32
+             * @description One-based immutable round.
+             */
+            round: number;
+            /** @description Every template-declared seat in stable slot order. */
+            seats: components["schemas"]["ConsultationSeatDto"][];
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
             /** @description The pinned template it runs under. */
             template: components["schemas"]["ProfileRevisionDto"];
+            /** @description Dedicated CSW node. */
+            topology_node_id: string;
         };
+        /**
+         * @description One Committee aggregate verdict.
+         * @enum {string}
+         */
+        CommitteeVerdictDto: "pass" | "fail";
         /**
          * @description What a caller states when asking a seat to compact.
          *
@@ -2854,6 +3032,59 @@ export interface components {
             /** @description Why it was requested. */
             trigger: string;
         };
+        /** @description One typed reason completion cannot leave the phase it stands in. */
+        CompletionBlockerDto: {
+            /** @enum {string} */
+            blocker: "missing_ticket";
+            /** @description The ticket. */
+            task_id: string;
+        } | {
+            /** @enum {string} */
+            blocker: "missing_ticket_goal";
+            /** @description The missing goal key. */
+            goal: string;
+            /** @description The ticket. */
+            task_id: string;
+        } | {
+            /** @enum {string} */
+            blocker: "missing_ticket_evidence";
+            /** @description The missing evidence key. */
+            evidence: string;
+            /** @description The ticket. */
+            task_id: string;
+        } | {
+            /** @enum {string} */
+            blocker: "integration_team_run";
+        } | {
+            /** @enum {string} */
+            blocker: "committee_verdict";
+            /**
+             * Format: int32
+             * @description One-based round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            blocker: "remediation_authorization";
+            /**
+             * Format: int32
+             * @description One-based remediation round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            blocker: "remediation_result";
+            /**
+             * Format: int32
+             * @description One-based remediation round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            blocker: "closeout";
+            /** @description Which prerequisite. */
+            requirement: components["schemas"]["CloseoutRequirementDto"];
+        };
         /** @description What a completion write produced. */
         CompletionOutcomeDto: {
             /** @description The receipt it was committed under. */
@@ -2861,14 +3092,81 @@ export interface components {
             /** @description The completion state as it now stands. */
             state: components["schemas"]["CompletionStateDto"];
         };
+        /**
+         * @description Which phase one epic's completion stands in.
+         *
+         *     A typed union rather than a string, because the round is data a caller acts
+         *     on: deciding whether a second Committee round is still permitted means
+         *     reading the round, and a caller that had to parse `"verdict round 2"` out of
+         *     a phrase would be re-implementing the state machine to do it.
+         */
+        CompletionPhaseDto: {
+            /** @enum {string} */
+            phase: "ticket_gate";
+        } | {
+            /** @enum {string} */
+            phase: "integration";
+        } | {
+            /** @enum {string} */
+            phase: "verdict";
+            /**
+             * Format: int32
+             * @description One-based round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            phase: "awaiting_lsa";
+            /**
+             * Format: int32
+             * @description The failed round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            phase: "remediation";
+            /**
+             * Format: int32
+             * @description One-based remediation round.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            phase: "closeout";
+        } | {
+            /** @enum {string} */
+            phase: "done";
+        } | {
+            /** @enum {string} */
+            phase: "needs_human";
+        };
+        /** @description One immutable Committee round in the epic's lineage. */
+        CompletionRoundDto: {
+            /** @description The roles and consultations that produced it. */
+            deliberation: components["schemas"]["DeliberationStepDto"][];
+            /** @description The immutable finding/evidence digest. */
+            evidence: string;
+            /**
+             * Format: int32
+             * @description One-based round.
+             */
+            round: number;
+            /** @description The typed aggregate verdict. */
+            verdict: components["schemas"]["CommitteeVerdictDto"];
+        };
         /** @description One epic's completion state. */
         CompletionStateDto: {
+            /** @description What is still blocking that phase, in a stable order. */
+            blockers: components["schemas"]["CompletionBlockerDto"][];
+            /** @description The closeout receipts recorded so far. */
+            closeout: components["schemas"]["CloseoutEvidenceDto"];
             /** @description The epic. */
             epic_id: string;
-            /** @description What is still outstanding, in a stable order. */
-            outstanding: string[];
+            /** @description Initial and remediation integration results, oldest first. */
+            integrations: components["schemas"]["IntegrationRecordDto"][];
+            needs_human?: null | components["schemas"]["NeedsHumanDto"];
             /** @description Which phase it currently stands in. */
-            phase: string;
+            phase: components["schemas"]["CompletionPhaseDto"];
             /** @description The pinned completion profile it is judged against. */
             profile: components["schemas"]["ProfileRevisionDto"];
             /** @description The Realm it was read in. */
@@ -2878,11 +3176,31 @@ export interface components {
              * @description The revision a write must present.
              */
             revision: number;
+            /** @description The immutable Committee round lineage, oldest first. */
+            rounds: components["schemas"]["CompletionRoundDto"][];
             /**
              * Format: int64
              * @description The position this read is consistent with.
              */
             snapshot_cursor: number;
+            /** @description The wake intents this completion has appended, oldest first. */
+            wakes: components["schemas"]["CompletionWakeDto"][];
+        };
+        /** @description One recorded intent to wake the epic's existing TPM seat. */
+        CompletionWakeDto: {
+            /** @description Whether the runtime has acknowledged the turn. */
+            acknowledged: boolean;
+            /**
+             * Format: int64
+             * @description The completion revision this wake reports.
+             */
+            completion_revision: number;
+            /** @description Why the seat is being woken. */
+            reason: string;
+            /** @description The receipt the wake was recorded under. */
+            receipt: string;
+            /** @description The existing seat woken. Never a seat the wake created. */
+            seat_binding_id: string;
         };
         /**
          * @description One connector specification revision this build can serve.
@@ -2913,6 +3231,68 @@ export interface components {
              * @description The pinned revision.
              */
             version: number;
+        };
+        /** @description One declared consultation seat and its exact runtime readback. */
+        ConsultationSeatDto: {
+            /** @description Logical role under the pinned policy. */
+            logical_role: string;
+            observed_binding?: null | components["schemas"]["ObservedBindingDto"];
+            /** @description Stable profile/template slot. */
+            role_slot_id: string;
+            /** @description Exact persistent SeatBinding. */
+            seat_binding_id: string;
+        };
+        /**
+         * @description The closed Committee verdict vocabulary.
+         * @enum {string}
+         */
+        ConsultationVerdictDto: "compliant" | "non_compliant";
+        /**
+         * @description What one bound container's title is, and what it should be.
+         *
+         *     A preview is a read: it takes no idempotency key, reaches nothing that writes,
+         *     and answers the two titles a human needs to compare. The runtime is asked, so
+         *     `observed_title` is what the container actually carries rather than what Kontor
+         *     once recorded.
+         */
+        ContainerRetitlePreviewDto: {
+            /** @description The native container that would be renamed. */
+            bound_native_id: string;
+            /** @description The title the server derived, which an apply would set. */
+            desired_title: string;
+            /** @description The title the runtime reports it carries now. */
+            observed_title: string;
+            /** @description The Realm that computed it. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The position this preview was computed at.
+             */
+            snapshot_cursor: number;
+            /** @description The node whose container it is. */
+            topology_node_id: string;
+            /** @description Whether an apply would change anything. */
+            would_change: boolean;
+        };
+        /**
+         * @description What repairing one bound container's title is asked for.
+         *
+         *     The revision the caller read the project at, and nothing else. There is no
+         *     field for a title, a native id, a parent or a directory — not because they are
+         *     validated away, but because the type has nowhere to put them. The title is
+         *     derived from the node's pinned topology and the plane's typed scope, and the
+         *     container is addressed by the binding Kontor already holds.
+         */
+        ContainerRetitleRequest: {
+            /**
+             * Format: int64
+             * @description The project revision the caller believes is current.
+             *
+             *     The project, not the node: a repair is authority over the project's own
+             *     rendering, and the project's revision is the one a caller can read before
+             *     presenting it.
+             */
+            expected_revision: number;
         };
         /**
          * @description One seat's context-window policy and the latest attempt to compact it.
@@ -3096,6 +3476,20 @@ export interface components {
             presence: string;
             /** @description The role this seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
+        };
+        /** @description One durable step in the deliberation path already tried. */
+        DeliberationStepDto: {
+            /** @description The consultation or recovery mechanism used. */
+            consultation: string;
+            /** @description Its outcome. */
+            outcome: string;
+            /** @description The role(s) that acted. */
+            role: string;
+            /**
+             * Format: int32
+             * @description The completion/remediation round.
+             */
+            round: number;
         };
         /**
          * @description The native shape the server derived for one node.
@@ -3459,6 +3853,13 @@ export interface components {
             /** @description The trigger that decided, at the revision it decided under. */
             trigger: components["schemas"]["RevisionRefDto"];
         };
+        /** @description One durable integration result, initial or remediation. */
+        IntegrationRecordDto: {
+            /** @description Receipt for the integration TeamRun/result. */
+            receipt: string;
+            /** @description Per-repository results, in a stable order. */
+            repositories: components["schemas"]["RepositoryOutcomeDto"][];
+        };
         /**
          * @description Invoke one consultation against an epic.
          *
@@ -3467,6 +3868,8 @@ export interface components {
          *     is the realm's routing decision, not the caller's.
          */
         InvokeConsultationRequest: {
+            /** @description Exact active epic seat whose role is authorized by the pinned policy. */
+            caller_seat_binding_id: string;
             /**
              * Format: int64
              * @description The epic revision the caller believes is current.
@@ -3476,6 +3879,11 @@ export interface components {
             profile: components["schemas"]["RevisionRefDto"];
             /** @description What is being asked. */
             question: string;
+            /**
+             * @description Optional ticket scope. It must belong to the epic in the route; absent
+             *     means the epic as a whole.
+             */
+            task_id?: string | null;
         };
         /** @description One immutable late-handoff disposition recorded after runtime cancellation. */
         LateHandoffAttestationDto: {
@@ -3625,6 +4033,19 @@ export interface components {
              * @description The control-plane position the answer is consistent with.
              */
             snapshot_cursor: number;
+        };
+        /**
+         * @description The mandatory context a `needs_human` completion carries.
+         *
+         *     Both fields are required by construction. A stalling path that could enter
+         *     human attention without them would be handing an operator a request with no
+         *     recommendation and no record of what had already been tried.
+         */
+        NeedsHumanDto: {
+            /** @description The concrete recommended resolution. */
+            recommended_resolution: string;
+            /** @description Every role, consultation, failed round and remediation already used. */
+            tried_deliberation_path: components["schemas"]["DeliberationStepDto"][];
         };
         /**
          * @description What a runtime actually reported for one node, at one instant.
@@ -4005,6 +4426,20 @@ export interface components {
             /** @description The hash the validation answered with. */
             validation_hash: string;
         };
+        /**
+         * @description What `triggers:publish` is asked for.
+         *
+         *     The body carries the trigger document itself rather than a field-by-field
+         *     mirror of it. A `TriggerSpec` is already a validated, canonicalizable,
+         *     versioned document with its own rules, and restating its twenty-odd fields as
+         *     a second type would create exactly one thing: somewhere for the two to
+         *     disagree. The daemon deserializes it with the domain's own parser, so an
+         *     unknown or malformed field is refused rather than dropped.
+         */
+        PublishTriggerRequest: {
+            /** @description The complete trigger specification, as the domain spells it. */
+            spec: unknown;
+        };
         /** @description One immutable published team-template revision. */
         PublishedTeamRevisionDto: {
             /** @description Stable logical template id. */
@@ -4125,13 +4560,24 @@ export interface components {
         };
         /** @description Record one round of Committee findings. */
         RecordFindingsRequest: {
+            /** @description Whether every evidence reference required by the finding is present. */
+            evidence_complete: boolean;
+            /** @description References to already-authoritative evidence; no payload upload. */
+            evidence_refs?: string[];
             /**
              * Format: int64
              * @description The run revision the caller believes is current.
              */
             expected_revision: number;
-            /** @description The findings document. */
-            findings: Record<string, never>;
+            /** @description Bounded explanation. */
+            rationale: string;
+            /**
+             * Format: int32
+             * @description One-based round.
+             */
+            round: number;
+            /** @description Typed reviewer/Judge conclusion. */
+            verdict: components["schemas"]["ConsultationVerdictDto"];
         };
         /** @description What `gates/{gate_id}:record` is asked for. */
         RecordGateRequest: {
@@ -4187,15 +4633,51 @@ export interface components {
             /** @description The pack document. Validated in full before anything is stored. */
             pack: Record<string, never>;
         };
-        /** @description Send one epic's completion back for remediation. */
+        /** @description Record one epic's remediation authority. */
         RemediateCompletionRequest: {
+            /** @description Which authority is acting, and over what. */
+            action: components["schemas"]["RemediationActionDto"];
             /**
              * Format: int64
              * @description The completion revision the caller believes is current.
              */
             expected_revision: number;
-            /** @description Why. Recorded, never interpreted. */
-            reason: string;
+        };
+        /**
+         * @description One of the two remediation authorities, as a closed tagged action.
+         *
+         *     Remediation takes two distinct seats acting in order, so the request names
+         *     which one is acting rather than carrying a free-text reason. A single
+         *     untyped `reason` could not express the rule the pinned policy enforces: the
+         *     LSA proposes the bounded correction and the TPM routes it, and neither
+         *     receipt alone may launch a round.
+         */
+        RemediationActionDto: {
+            /** @enum {string} */
+            action: "lsa_proposal";
+            /**
+             * @description The immutable evidence digest of that failed round, as the proposer
+             *     read it. A proposal naming another round's evidence is refused rather
+             *     than applied to the round it happens to be filed against.
+             */
+            failed_round_evidence: string;
+            /** @description The digest of the proposed bounded correction. */
+            proposal: string;
+            /**
+             * Format: int32
+             * @description The failed round being answered.
+             */
+            round: number;
+        } | {
+            /** @enum {string} */
+            action: "tpm_route";
+            /**
+             * Format: int32
+             * @description The remediation round being routed.
+             */
+            round: number;
+            /** @description The digest of the routed task set, dependencies and team selections. */
+            route: string;
         };
         /** @description What the Admin-only unusable-seat replacement is asked for. */
         ReplaceSeatRequest: {
@@ -4232,6 +4714,23 @@ export interface components {
             task_id: string;
             /** @description The preserved team run. */
             team_run_id: string;
+        };
+        /**
+         * @description One repository's integration outcome.
+         *
+         *     Polyrepo integration is a collection of these plus the root pointer where one
+         *     applies. Completion never assumes one repository, one branch or one commit,
+         *     so there is no single-revision field for it to assume into.
+         */
+        RepositoryOutcomeDto: {
+            /** @description Delivered module revision. */
+            module_revision: string;
+            /** @description Pull-request or equivalent integration reference. */
+            pull_request: string;
+            /** @description Repository/module name. */
+            repository: string;
+            /** @description Root-pointer revision when this module has one. */
+            root_pointer_revision: string;
         };
         /** @description What `ticket:resolve-conflict` is asked for. */
         ResolveConflictRequest: {
@@ -4709,11 +5208,31 @@ export interface components {
         };
         /** @description Settle one consultation. */
         SettleConsultationRequest: {
+            disposition?: null | components["schemas"]["AdviceDispositionDto"];
             /**
              * Format: int64
              * @description The run revision the caller believes is current.
              */
             expected_revision: number;
+            /**
+             * @description Immutable Advisor output. Present only in the seat-authenticated first
+             *     Advisor step.
+             */
+            output?: string | null;
+            /** @description Bounded disposition rationale. */
+            rationale?: string | null;
+            /** @description Separately-authorized command receipts cited by the disposition. */
+            receipt_ids?: string[];
+            /** @description LSA recommendation authorizing the single Committee re-review. */
+            recommendation?: string | null;
+            /**
+             * @description Optional assertion of the Advisor seat. The server always derives the
+             *     identity from the scoped bearer and refuses a mismatch. Absent for the
+             *     later requester/LSA disposition and for Committee settlement.
+             */
+            seat_binding_id?: string | null;
+            /** @description The exact remediation path tried before round two, or before escalation. */
+            tried_path?: string | null;
         };
         /**
          * @description What `turns:settle` is asked for.
@@ -4938,10 +5457,10 @@ export interface components {
         };
         /**
          * @description A frame the live-content stream emits instead of an item when the timeline can
-         *     no longer be followed.
+         *     no longer be followed or its runtime can no longer be reached.
          */
         StreamRefusalDto: {
-            /** @description Always `timeline_refetch_required`. */
+            /** @description The stable refusal code. */
             code: string;
             /** @description The Realm the session belongs to. */
             realm_id: string;
@@ -6355,6 +6874,48 @@ export interface operations {
             };
         };
     };
+    advisor_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The consultation */
+                advisor_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdvisorRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     settle_advisor_run: {
         parameters: {
             query?: never;
@@ -6875,6 +7436,48 @@ export interface operations {
             };
             /** @description A configured collector could not be reached */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    committee_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The consultation */
+                committee_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitteeRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10294,6 +10897,125 @@ export interface operations {
             };
         };
     };
+    apply_container_retitle: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The node whose container it is */
+                topology_node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContainerRetitleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedContainerRetitleDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_container_retitle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The node whose container it is */
+                topology_node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContainerRetitleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContainerRetitlePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     retire_topology_node: {
         parameters: {
             query?: never;
@@ -10595,6 +11317,61 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_trigger: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishTriggerRequest"];
+            };
+        };
+        responses: {
+            /** @description Installed, or the identical revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriggerSpecDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description That revision is installed with different bytes */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

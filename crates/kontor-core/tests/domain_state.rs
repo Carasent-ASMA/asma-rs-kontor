@@ -104,18 +104,104 @@ fn task_transitions_follow_the_declared_table() {
     assert!(TaskState::Ready.can_transition_to(TaskState::InProgress));
     assert!(TaskState::InProgress.can_transition_to(TaskState::Blocked));
 
-    // A draft cannot jump straight into work, and nothing leaves a terminal
-    // state.
+    // A draft cannot jump straight into work. Nothing leaves a terminal state
+    // except the one structurally legal reopen, `done -> ready`, which
+    // `apply_task_transition` then refuses unless it is explicitly authorized.
     assert!(!TaskState::Draft.can_transition_to(TaskState::InProgress));
     for terminal in [TaskState::Done, TaskState::Failed, TaskState::Cancelled] {
         assert!(terminal.is_terminal());
         for target in TaskState::ALL {
-            assert!(
-                !terminal.can_transition_to(*target),
-                "{terminal} must not reach {target}"
+            let reopen = terminal == TaskState::Done && *target == TaskState::Ready;
+            assert_eq!(
+                terminal.can_transition_to(*target),
+                reopen,
+                "{terminal} -> {target} is not the reachability the table declares"
             );
         }
     }
+    // And only a completed task is reopenable at all.
+    assert!(TaskState::Done.is_reopenable());
+    assert!(!TaskState::Failed.is_reopenable());
+    assert!(!TaskState::Cancelled.is_reopenable());
+}
+
+/// A completed task can be reopened, and only by something that says so.
+///
+/// The bounded exception, stated as its own oracle: one source, one target, and
+/// an authority carrying the receipt it was granted by. Everything else about a
+/// terminal task stays immutable.
+#[test]
+fn a_completed_task_reopens_only_under_an_explicit_authority() {
+    let receipt = CommandReceiptId::generate();
+    let authority = kontor_core::state::TaskReopenAuthority::granted_by(receipt);
+    assert_eq!(
+        authority.receipt(),
+        receipt,
+        "the authority carries the receipt an audit reads"
+    );
+
+    let reopen = TaskTransition {
+        reopen: Some(authority),
+        resume_receipt: Some(receipt),
+        ..TaskTransition::to(TaskState::Ready)
+    };
+    assert_eq!(
+        apply_task_transition(TaskState::Done, &reopen).expect("an authorized reopen is allowed"),
+        TaskState::Ready
+    );
+
+    // The same authority cannot resurrect an outcome: a failed or cancelled task
+    // has a successor, not a second life. The refusal names the transition rather
+    // than the terminality, because the terminality is not what stopped it.
+    for outcome in [TaskState::Failed, TaskState::Cancelled] {
+        let error = apply_task_transition(outcome, &reopen)
+            .expect_err("only a completed task may be reopened");
+        assert_eq!(
+            error,
+            DomainError::IllegalTransition {
+                subject: "task reopen",
+                from: outcome.as_str(),
+                to: "ready",
+            }
+        );
+    }
+
+    // And it reopens to `ready` and nowhere else.
+    for target in [TaskState::InProgress, TaskState::Todo, TaskState::Blocked] {
+        let error = apply_task_transition(
+            TaskState::Done,
+            &TaskTransition {
+                reopen: Some(authority),
+                ..TaskTransition::to(target)
+            },
+        )
+        .expect_err("a reopen returns a task to ready");
+        assert!(matches!(
+            error,
+            DomainError::IllegalTransition {
+                subject: "task reopen",
+                ..
+            }
+        ));
+    }
+
+    // A reopen of something that is not terminal is not a resume in disguise.
+    let error = apply_task_transition(
+        TaskState::Blocked,
+        &TaskTransition {
+            reopen: Some(authority),
+            resume_receipt: Some(receipt),
+            ..TaskTransition::to(TaskState::Ready)
+        },
+    )
+    .expect_err("there is nothing to reopen");
+    assert!(matches!(
+        error,
+        DomainError::IllegalTransition {
+            subject: "task reopen",
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -125,6 +211,19 @@ fn a_terminal_task_is_immutable() {
             .expect_err("a terminal task must not transition");
         assert_eq!(error, DomainError::Terminal { subject: "task" });
     }
+
+    // A resume receipt is not a reopen authority. The two are carried by the same
+    // kind of receipt, so this is the assertion that keeps an ordinary resume from
+    // walking a completed task back open.
+    let error = apply_task_transition(
+        TaskState::Done,
+        &TaskTransition {
+            resume_receipt: Some(CommandReceiptId::generate()),
+            ..TaskTransition::to(TaskState::Ready)
+        },
+    )
+    .expect_err("a resume must not reopen a completed task");
+    assert_eq!(error, DomainError::Terminal { subject: "task" });
 }
 
 #[test]
@@ -1551,14 +1650,39 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     // one epic's pin, so the epic is what it names.
     ("publish_topology_spec", "project", "witness", None),
     ("upgrade_topology", "mini_project", "witness", None),
+    // A native container is not an aggregate a command may name, and the node it
+    // belongs to is not one either. The project is what the authority is over.
+    ("retitle_container", "project", "witness", None),
     // Project configuration, and deliberately nothing else: publishing a roster
     // seats no epic, so no epic aggregate is a legal target for it.
     ("apply_core_team", "project", "witness", None),
+    // Same shape, same reason: publishing a consultation policy document creates
+    // no ASW, no CSW and no seat, so no epic or run aggregate is legal for it.
+    ("apply_advisor_profile", "project", "witness", None),
+    ("apply_committee_template", "project", "witness", None),
     ("ensure_quick_session", "project", "witness", None),
     // Promotion and the two roster commands are about one epic.
     ("promote_quick_session", "mini_project", "witness", None),
     ("materialize_core_team", "mini_project", "witness", None),
     ("upgrade_epic_roster", "mini_project", "witness", None),
+    // Publishing a Completion Profile is project configuration, for the same
+    // reason as `apply_core_team`: it deliberately does not move any running
+    // epic's frozen pin, so no epic aggregate is a legal target for it.
+    ("apply_completion_profile", "project", "witness", None),
+    // Consultation execution is frozen inside one epic. The native runtime
+    // seats and CSW are evidence for that epic, not independent aggregates.
+    ("invoke_advisor_run", "mini_project", "witness", None),
+    ("settle_advisor_run", "mini_project", "witness", None),
+    ("invoke_committee_run", "mini_project", "witness", None),
+    ("record_committee_findings", "mini_project", "witness", None),
+    ("settle_committee_run", "mini_project", "witness", None),
+    // The two completion writes are about one epic's own frozen run.
+    ("advance_completion", "mini_project", "witness", None),
+    ("remediate_completion", "mini_project", "witness", None),
+    // Publishing installs an immutable document into the project and names no
+    // row inside it: the revision it creates is addressed by `(id, version)`,
+    // not by an aggregate carrying a revision of its own.
+    ("publish_trigger", "project", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.

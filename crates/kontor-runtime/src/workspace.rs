@@ -218,6 +218,20 @@ impl WorkspaceCorrelationEvidence {
             established_at,
         })
     }
+
+    /// Correlate a workspace read back by its exact native id.
+    #[must_use]
+    pub const fn by_exact_id(
+        team_run_id: TeamRunId,
+        native: NativeRuntimeIdentity,
+        established_at: Timestamp,
+    ) -> Self {
+        Self {
+            label: WorkspaceLabel::for_team_run(team_run_id),
+            native,
+            established_at,
+        }
+    }
 }
 
 /// The binding between a team run and one native task workspace.

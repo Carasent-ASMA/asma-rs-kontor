@@ -37,9 +37,8 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::body::Json;
 use async_trait::async_trait;
-use axum::Json;
-use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use kontor_core::id::{
@@ -853,9 +852,32 @@ pub struct InvokeConsultationRequest {
     /// What is being asked.
     #[schema(value_type = String)]
     pub question: BoundedText,
+    /// Exact active epic seat whose role is authorized by the pinned policy.
+    #[schema(value_type = String)]
+    pub caller_seat_binding_id: SeatBindingId,
+    /// Optional ticket scope. It must belong to the epic in the route; absent
+    /// means the epic as a whole.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
     /// The epic revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
+}
+
+/// One declared consultation seat and its exact runtime readback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ConsultationSeatDto {
+    /// Stable profile/template slot.
+    pub role_slot_id: String,
+    /// Logical role under the pinned policy.
+    pub logical_role: String,
+    /// Exact persistent SeatBinding.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Native runtime identity after launch/recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_binding: Option<ObservedBindingDto>,
 }
 
 /// One Advisor consultation.
@@ -872,10 +894,44 @@ pub struct AdvisorRunDto {
     pub epic_id: MiniProjectId,
     /// The pinned profile it runs under.
     pub profile: ProfileRevisionDto,
+    /// Dedicated ASW node.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The one Advisor seat.
+    pub seats: Vec<ConsultationSeatDto>,
     /// Its lifecycle, in the server's own vocabulary.
     pub state: String,
+    /// Immutable output submitted by the Advisor seat, before disposition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advice: Option<serde_json::Value>,
+    /// Immutable output and caller disposition once settled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
     /// The receipt it was committed under.
-    pub receipt: MutationReceiptDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<MutationReceiptDto>,
+}
+
+/// One durable Committee finding, including dissent and evidence references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CommitteeFindingDto {
+    /// Round this finding belongs to.
+    pub round: u32,
+    /// Frozen template slot.
+    pub role_slot_id: String,
+    /// Reviewer or Judge.
+    pub role: String,
+    /// Typed conclusion.
+    pub verdict: ConsultationVerdictDto,
+    /// Whether required evidence was complete.
+    pub evidence_complete: bool,
+    /// The submitted rationale.
+    pub rationale: String,
+    /// References to authoritative evidence.
+    pub evidence_refs: Vec<String>,
+    /// Hash of the immutable finding document.
+    #[schema(value_type = String)]
+    pub document_hash: ContentHash,
 }
 
 /// One Committee consultation.
@@ -892,21 +948,59 @@ pub struct CommitteeRunDto {
     pub epic_id: MiniProjectId,
     /// The pinned template it runs under.
     pub template: ProfileRevisionDto,
+    /// Dedicated CSW node.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// Every template-declared seat in stable slot order.
+    pub seats: Vec<ConsultationSeatDto>,
     /// Its lifecycle, in the server's own vocabulary.
     pub state: String,
     /// How many findings have been recorded so far.
     pub findings_recorded: u32,
+    /// One-based immutable round.
+    pub round: u32,
+    /// Server-recomputed settled outcome, when terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ConsultationVerdictDto>,
+    /// Durable findings for the current round, including dissent.
+    pub findings: Vec<CommitteeFindingDto>,
+    /// Immutable recommendation and tried path that authorized round two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<serde_json::Value>,
+    /// Immutable terminal result, including needs-human recommendation/tried path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
     /// The receipt it was committed under.
-    pub receipt: MutationReceiptDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<MutationReceiptDto>,
+}
+
+/// The closed Committee verdict vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsultationVerdictDto {
+    /// Every required reviewer passed with complete evidence.
+    Compliant,
+    /// At least one reviewer failed or cited incomplete evidence.
+    NonCompliant,
 }
 
 /// Record one round of Committee findings.
 #[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecordFindingsRequest {
-    /// The findings document.
-    #[schema(value_type = Object)]
-    pub findings: serde_json::Value,
+    /// One-based round.
+    pub round: u32,
+    /// Typed reviewer/Judge conclusion.
+    pub verdict: ConsultationVerdictDto,
+    /// Whether every evidence reference required by the finding is present.
+    pub evidence_complete: bool,
+    /// Bounded explanation.
+    #[schema(value_type = String)]
+    pub rationale: BoundedText,
+    /// References to already-authoritative evidence; no payload upload.
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
     /// The run revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
@@ -916,9 +1010,289 @@ pub struct RecordFindingsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SettleConsultationRequest {
+    /// Optional assertion of the Advisor seat. The server always derives the
+    /// identity from the scoped bearer and refuses a mismatch. Absent for the
+    /// later requester/LSA disposition and for Committee settlement.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_binding_id: Option<SeatBindingId>,
+    /// Immutable Advisor output. Present only in the seat-authenticated first
+    /// Advisor step.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<BoundedText>,
+    /// What the requester or owning LSA decided about already-durable advice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<AdviceDispositionDto>,
+    /// Bounded disposition rationale.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<BoundedText>,
+    /// Separately-authorized command receipts cited by the disposition.
+    #[serde(default)]
+    pub receipt_ids: Vec<String>,
+    /// LSA recommendation authorizing the single Committee re-review.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<BoundedText>,
+    /// The exact remediation path tried before round two, or before escalation.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tried_path: Option<BoundedText>,
     /// The run revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
+}
+
+/// What the caller did with one Advisor's evidence-only output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdviceDispositionDto {
+    /// Adopted.
+    Accepted,
+    /// Named parts adopted.
+    PartiallyAccepted,
+    /// Considered and declined.
+    Rejected,
+    /// Replaced by a later recorded decision.
+    Superseded,
+}
+
+/// Which phase one epic's completion stands in.
+///
+/// A typed union rather than a string, because the round is data a caller acts
+/// on: deciding whether a second Committee round is still permitted means
+/// reading the round, and a caller that had to parse `"verdict round 2"` out of
+/// a phrase would be re-implementing the state machine to do it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum CompletionPhaseDto {
+    /// Waiting for every declared ticket goal, artifact and gate.
+    TicketGate,
+    /// Waiting for the pinned integration TeamRun.
+    Integration,
+    /// Waiting for one Committee round to settle.
+    Verdict {
+        /// One-based round.
+        round: u8,
+    },
+    /// A round failed; waiting for the exact epic LSA's proposal.
+    AwaitingLsa {
+        /// The failed round.
+        round: u8,
+    },
+    /// An authorized remediation round is in flight.
+    Remediation {
+        /// One-based remediation round.
+        round: u8,
+    },
+    /// Waiting for the fixed closeout receipts.
+    Closeout,
+    /// Terminal: every prerequisite is evidenced.
+    Done,
+    /// Terminal: human input is required.
+    NeedsHuman,
+}
+
+/// One fixed closeout prerequisite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseoutRequirementDto {
+    /// The approved integration outcome was merged.
+    Merge,
+    /// The release was confirmed.
+    Release,
+    /// Delivered module/service revisions were inventoried.
+    VersionInventory,
+    /// The final summary was recorded.
+    Summary,
+    /// Stakeholders were notified.
+    Notification,
+    /// The epic resources were archived.
+    Archive,
+}
+
+/// One typed reason completion cannot leave the phase it stands in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(tag = "blocker", rename_all = "snake_case")]
+pub enum CompletionBlockerDto {
+    /// No evidence record exists for a declared ticket.
+    MissingTicket {
+        /// The ticket.
+        #[schema(value_type = String)]
+        task_id: TaskId,
+    },
+    /// A declared goal has not been certified.
+    MissingTicketGoal {
+        /// The ticket.
+        #[schema(value_type = String)]
+        task_id: TaskId,
+        /// The missing goal key.
+        #[schema(value_type = String)]
+        goal: ExternalName,
+    },
+    /// A declared artifact/evidence key is absent.
+    MissingTicketEvidence {
+        /// The ticket.
+        #[schema(value_type = String)]
+        task_id: TaskId,
+        /// The missing evidence key.
+        #[schema(value_type = String)]
+        evidence: ExternalName,
+    },
+    /// The pinned integration TeamRun has not reported.
+    IntegrationTeamRun,
+    /// One Committee round has not settled a typed aggregate verdict.
+    CommitteeVerdict {
+        /// One-based round.
+        round: u8,
+    },
+    /// The LSA proposal and TPM route are not both durable yet.
+    RemediationAuthorization {
+        /// One-based remediation round.
+        round: u8,
+    },
+    /// The authorized remediation TeamRun has not reported.
+    RemediationResult {
+        /// One-based remediation round.
+        round: u8,
+    },
+    /// One closeout receipt is still missing.
+    Closeout {
+        /// Which prerequisite.
+        requirement: CloseoutRequirementDto,
+    },
+}
+
+/// One Committee aggregate verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitteeVerdictDto {
+    /// Approved.
+    Pass,
+    /// Rejected.
+    Fail,
+}
+
+/// One durable step in the deliberation path already tried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct DeliberationStepDto {
+    /// The role(s) that acted.
+    #[schema(value_type = String)]
+    pub role: ExternalName,
+    /// The consultation or recovery mechanism used.
+    #[schema(value_type = String)]
+    pub consultation: ExternalName,
+    /// The completion/remediation round.
+    pub round: u8,
+    /// Its outcome.
+    #[schema(value_type = String)]
+    pub outcome: ExternalName,
+}
+
+/// One immutable Committee round in the epic's lineage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CompletionRoundDto {
+    /// One-based round.
+    pub round: u8,
+    /// The typed aggregate verdict.
+    pub verdict: CommitteeVerdictDto,
+    /// The immutable finding/evidence digest.
+    #[schema(value_type = String)]
+    pub evidence: ContentHash,
+    /// The roles and consultations that produced it.
+    pub deliberation: Vec<DeliberationStepDto>,
+}
+
+/// One repository's integration outcome.
+///
+/// Polyrepo integration is a collection of these plus the root pointer where one
+/// applies. Completion never assumes one repository, one branch or one commit,
+/// so there is no single-revision field for it to assume into.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RepositoryOutcomeDto {
+    /// Repository/module name.
+    #[schema(value_type = String)]
+    pub repository: ExternalName,
+    /// Pull-request or equivalent integration reference.
+    #[schema(value_type = String)]
+    pub pull_request: ExternalName,
+    /// Delivered module revision.
+    #[schema(value_type = String)]
+    pub module_revision: ExternalName,
+    /// Root-pointer revision when this module has one.
+    #[schema(value_type = String)]
+    pub root_pointer_revision: Option<ExternalName>,
+}
+
+/// One durable integration result, initial or remediation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct IntegrationRecordDto {
+    /// Receipt for the integration TeamRun/result.
+    #[schema(value_type = String)]
+    pub receipt: ContentHash,
+    /// Per-repository results, in a stable order.
+    pub repositories: Vec<RepositoryOutcomeDto>,
+}
+
+/// The closeout receipts recorded so far.
+///
+/// Receipt ids and inventoried revisions, never caller booleans: `done` is a
+/// conjunction over authoritative records, and a boolean would let a caller
+/// assert one it does not hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CloseoutEvidenceDto {
+    /// Merge confirmation.
+    #[schema(value_type = String)]
+    pub merge_receipt: Option<ContentHash>,
+    /// Release confirmation, or its typed not-applicable disposition.
+    #[schema(value_type = String)]
+    pub release_receipt: Option<ContentHash>,
+    /// Delivered module/service revisions, keyed by module/service name.
+    #[schema(value_type = Object)]
+    pub delivered_versions: std::collections::BTreeMap<String, String>,
+    /// Final summary receipt.
+    #[schema(value_type = String)]
+    pub summary_receipt: Option<ContentHash>,
+    /// Notification receipt.
+    #[schema(value_type = String)]
+    pub notification_receipt: Option<ContentHash>,
+    /// Archive receipt.
+    #[schema(value_type = String)]
+    pub archive_receipt: Option<ContentHash>,
+}
+
+/// One recorded intent to wake the epic's existing TPM seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CompletionWakeDto {
+    /// The completion revision this wake reports.
+    #[schema(value_type = u64)]
+    pub completion_revision: AggregateRevision,
+    /// Why the seat is being woken.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+    /// The existing seat woken. Never a seat the wake created.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// The receipt the wake was recorded under.
+    #[schema(value_type = String)]
+    pub receipt: ContentHash,
+    /// Whether the runtime has acknowledged the turn.
+    pub acknowledged: bool,
+}
+
+/// The mandatory context a `needs_human` completion carries.
+///
+/// Both fields are required by construction. A stalling path that could enter
+/// human attention without them would be handing an operator a request with no
+/// recommendation and no record of what had already been tried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct NeedsHumanDto {
+    /// The concrete recommended resolution.
+    #[schema(value_type = String)]
+    pub recommended_resolution: ExternalName,
+    /// Every role, consultation, failed round and remediation already used.
+    pub tried_deliberation_path: Vec<DeliberationStepDto>,
 }
 
 /// One epic's completion state.
@@ -933,9 +1307,19 @@ pub struct CompletionStateDto {
     /// The pinned completion profile it is judged against.
     pub profile: ProfileRevisionDto,
     /// Which phase it currently stands in.
-    pub phase: String,
-    /// What is still outstanding, in a stable order.
-    pub outstanding: Vec<String>,
+    pub phase: CompletionPhaseDto,
+    /// What is still blocking that phase, in a stable order.
+    pub blockers: Vec<CompletionBlockerDto>,
+    /// Initial and remediation integration results, oldest first.
+    pub integrations: Vec<IntegrationRecordDto>,
+    /// The immutable Committee round lineage, oldest first.
+    pub rounds: Vec<CompletionRoundDto>,
+    /// The closeout receipts recorded so far.
+    pub closeout: CloseoutEvidenceDto,
+    /// The wake intents this completion has appended, oldest first.
+    pub wakes: Vec<CompletionWakeDto>,
+    /// Present only in the `needs_human` phase.
+    pub needs_human: Option<NeedsHumanDto>,
     /// The revision a write must present.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
@@ -953,16 +1337,48 @@ pub struct AdvanceCompletionRequest {
     pub expected_revision: AggregateRevision,
 }
 
-/// Send one epic's completion back for remediation.
+/// One of the two remediation authorities, as a closed tagged action.
+///
+/// Remediation takes two distinct seats acting in order, so the request names
+/// which one is acting rather than carrying a free-text reason. A single
+/// untyped `reason` could not express the rule the pinned policy enforces: the
+/// LSA proposes the bounded correction and the TPM routes it, and neither
+/// receipt alone may launch a round.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RemediationActionDto {
+    /// The exact epic LSA's bounded proposal for a failed round.
+    LsaProposal {
+        /// The failed round being answered.
+        round: u8,
+        /// The immutable evidence digest of that failed round, as the proposer
+        /// read it. A proposal naming another round's evidence is refused rather
+        /// than applied to the round it happens to be filed against.
+        #[schema(value_type = String)]
+        failed_round_evidence: ContentHash,
+        /// The digest of the proposed bounded correction.
+        #[schema(value_type = String)]
+        proposal: ContentHash,
+    },
+    /// The exact epic TPM's route for an already approved proposal.
+    TpmRoute {
+        /// The remediation round being routed.
+        round: u8,
+        /// The digest of the routed task set, dependencies and team selections.
+        #[schema(value_type = String)]
+        route: ContentHash,
+    },
+}
+
+/// Record one epic's remediation authority.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemediateCompletionRequest {
     /// The completion revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
-    /// Why. Recorded, never interpreted.
-    #[schema(value_type = String)]
-    pub reason: ExternalName,
+    /// Which authority is acting, and over what.
+    pub action: RemediationActionDto,
 }
 
 /// What a completion write produced.
@@ -1318,6 +1734,71 @@ pub struct TopologyUpgradePreviewDto {
     /// The position this preview was computed at.
     #[schema(value_type = i64)]
     pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// What repairing one bound container's title is asked for.
+///
+/// The revision the caller read the project at, and nothing else. There is no
+/// field for a title, a native id, a parent or a directory — not because they are
+/// validated away, but because the type has nowhere to put them. The title is
+/// derived from the node's pinned topology and the plane's typed scope, and the
+/// container is addressed by the binding Kontor already holds.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRetitleRequest {
+    /// The project revision the caller believes is current.
+    ///
+    /// The project, not the node: a repair is authority over the project's own
+    /// rendering, and the project's revision is the one a caller can read before
+    /// presenting it.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What one bound container's title is, and what it should be.
+///
+/// A preview is a read: it takes no idempotency key, reaches nothing that writes,
+/// and answers the two titles a human needs to compare. The runtime is asked, so
+/// `observed_title` is what the container actually carries rather than what Kontor
+/// once recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ContainerRetitlePreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The node whose container it is.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The native container that would be renamed.
+    #[schema(value_type = String)]
+    pub bound_native_id: ExternalId,
+    /// The title the server derived, which an apply would set.
+    #[schema(value_type = String)]
+    pub desired_title: ExternalName,
+    /// The title the runtime reports it carries now.
+    pub observed_title: String,
+    /// Whether an apply would change anything.
+    pub would_change: bool,
+    /// The position this preview was computed at.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// What a container retitle produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedContainerRetitleDto {
+    /// The node whose container it is.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The native container, read back after the change. The same one.
+    #[schema(value_type = String)]
+    pub bound_native_id: ExternalId,
+    /// The title the runtime reported afterwards, read back rather than assumed.
+    pub observed_title: String,
+    /// Whether this call changed anything, or found it already correct.
+    pub changed: bool,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
 }
 
 /// What applying a named upgrade preview is asked for.
@@ -2897,6 +3378,20 @@ pub struct TriggerSpecDto {
     pub auto_arm: bool,
 }
 
+/// What `triggers:publish` is asked for.
+///
+/// The body carries the trigger document itself rather than a field-by-field
+/// mirror of it. A `TriggerSpec` is already a validated, canonicalizable,
+/// versioned document with its own rules, and restating its twenty-odd fields as
+/// a second type would create exactly one thing: somewhere for the two to
+/// disagree. The daemon deserializes it with the domain's own parser, so an
+/// unknown or malformed field is refused rather than dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct PublishTriggerRequest {
+    /// The complete trigger specification, as the domain spells it.
+    pub spec: serde_json::Value,
+}
+
 /// What `intake:submit` is asked for.
 ///
 /// The envelope is the *canonical* event, already redacted by whoever holds the
@@ -3257,6 +3752,23 @@ pub trait ApplicationOperations: Send + Sync {
         request: &TopologyUpgradePreviewRequest,
     ) -> Result<TopologyUpgradePreviewDto, ApiError>;
 
+    /// What repairing one bound container's title would do. Commits nothing.
+    async fn preview_container_retitle(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRetitleRequest,
+    ) -> Result<ContainerRetitlePreviewDto, ApiError>;
+
+    /// Repair one bound container's title, idempotently, and read it back.
+    async fn apply_container_retitle(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRetitleRequest,
+    ) -> Result<AppliedContainerRetitleDto, ApiError>;
+
     /// Apply the named preview and return the new immutable pin.
     async fn apply_topology_upgrade(
         &self,
@@ -3411,6 +3923,12 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &InvokeConsultationRequest,
     ) -> Result<AdvisorRunDto, ApiError>;
+    /// Read one durable Advisor run and its result.
+    fn advisor_run(
+        &self,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+    ) -> Result<AdvisorRunDto, ApiError>;
     /// Settle one Advisor consultation.
     async fn settle_advisor_run(
         &self,
@@ -3442,12 +3960,19 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &InvokeConsultationRequest,
     ) -> Result<CommitteeRunDto, ApiError>;
+    /// Read one durable Committee run, including every current-round finding.
+    fn committee_run(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+    ) -> Result<CommitteeRunDto, ApiError>;
     /// Record one round of Committee findings.
     async fn record_committee_findings(
         &self,
         key: &IdempotencyKey,
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
         request: &RecordFindingsRequest,
     ) -> Result<CommitteeRunDto, ApiError>;
     /// Settle one Committee consultation.
@@ -3713,6 +4238,14 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         trigger: &str,
         version: SpecVersion,
+    ) -> Result<TriggerSpecDto, ApiError>;
+
+    /// Install one immutable trigger revision.
+    fn publish_trigger(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublishTriggerRequest,
     ) -> Result<TriggerSpecDto, ApiError>;
 
     /// Evaluate one canonical source event and record the decision.
@@ -4376,6 +4909,67 @@ pub async fn apply_topology_upgrade(
     ))
 }
 
+/// What repairing one bound container's title would do.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose container it is")
+    ),
+    request_body = ContainerRetitleRequest,
+    responses((status = 200, body = ContainerRetitlePreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 501))
+)]
+pub async fn preview_container_retitle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    Json(request): Json<ContainerRetitleRequest>,
+) -> Result<Json<ContainerRetitlePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_container_retitle(project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Repair one bound container's title.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose container it is"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ContainerRetitleRequest,
+    responses((status = 200, body = AppliedContainerRetitleDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 501))
+)]
+pub async fn apply_container_retitle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ContainerRetitleRequest>,
+) -> Result<Json<AppliedContainerRetitleDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_container_retitle(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
 /// The current immutable capacity configuration.
 #[utoipa::path(
     get, path = "/v1/capacity/configuration", tag = "applications",
@@ -5010,6 +5604,33 @@ pub async fn invoke_advisor_run(
     ))
 }
 
+/// Read one Advisor consultation and its immutable result.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("advisor_run_id" = String, Path, description = "The consultation")
+    ),
+    responses(
+        (status = 200, body = AdvisorRunDto),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn advisor_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, advisor_run_id)): Path<(String, String)>,
+) -> Result<Json<AdvisorRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let advisor_run_id = parse_id(&state, AdvisorRunId::parse(&advisor_run_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .advisor_run(project_id, advisor_run_id)?,
+    ))
+}
+
 /// Settle one Advisor consultation.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle", tag = "applications",
@@ -5030,9 +5651,38 @@ pub async fn settle_advisor_run(
     caller: Caller,
     Path((project_id, advisor_run_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(request): Json<SettleConsultationRequest>,
+    Json(mut request): Json<SettleConsultationRequest>,
 ) -> Result<Json<AdvisorRunDto>, ApiError> {
-    caller.require(&state, CallerCapability::Operator)?;
+    if caller.consultation_seat().is_some() {
+        let seat_binding_id = caller.require_consultation_seat(&state)?;
+        if request
+            .seat_binding_id
+            .is_some_and(|asserted| asserted != seat_binding_id)
+        {
+            return Err(state.refuse(
+                ApiErrorCode::Forbidden,
+                "the Advisor submission cannot assert a different seat binding",
+            ));
+        }
+        if request.disposition.is_some()
+            || request.rationale.is_some()
+            || !request.receipt_ids.is_empty()
+        {
+            return Err(state.refuse(
+                ApiErrorCode::Forbidden,
+                "the Advisor seat may submit output but cannot disposition its own advice",
+            ));
+        }
+        request.seat_binding_id = Some(seat_binding_id);
+    } else {
+        caller.require(&state, CallerCapability::Operator)?;
+        if request.seat_binding_id.is_some() || request.output.is_some() {
+            return Err(state.refuse(
+                ApiErrorCode::Forbidden,
+                "a Realm operator may disposition advice but cannot author Advisor output",
+            ));
+        }
+    }
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let advisor_run_id = parse_id(&state, AdvisorRunId::parse(&advisor_run_id))?;
     let key = idempotency_key(&state, &headers)?;
@@ -5160,6 +5810,33 @@ pub async fn invoke_committee_run(
     ))
 }
 
+/// Read one Committee consultation, including all current-round findings.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("committee_run_id" = String, Path, description = "The consultation")
+    ),
+    responses(
+        (status = 200, body = CommitteeRunDto),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn committee_run(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id)): Path<(String, String)>,
+) -> Result<Json<CommitteeRunDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .committee_run(project_id, committee_run_id)?,
+    ))
+}
+
 /// Record one round of Committee findings.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record", tag = "applications",
@@ -5182,14 +5859,20 @@ pub async fn record_committee_findings(
     headers: HeaderMap,
     Json(request): Json<RecordFindingsRequest>,
 ) -> Result<Json<CommitteeRunDto>, ApiError> {
-    caller.require(&state, CallerCapability::Operator)?;
+    let seat_binding_id = caller.require_consultation_seat(&state)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
             .applications()
-            .record_committee_findings(&key, project_id, committee_run_id, &request)
+            .record_committee_findings(
+                &key,
+                project_id,
+                committee_run_id,
+                seat_binding_id,
+                &request,
+            )
             .await?,
     ))
 }
@@ -5473,15 +6156,10 @@ pub async fn arm(
     caller: Caller,
     Path((project_id, epic_id)): Path<(String, String)>,
     headers: HeaderMap,
-    request: Result<Json<ArmRequest>, JsonRejection>,
+    request: Json<ArmRequest>,
 ) -> Result<Json<AuthorizationProjectionDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
-    let Json(request) = request.map_err(|_| {
-        state.refuse(
-            ApiErrorCode::InvalidRequest,
-            "execution:arm requires a JSON body matching the documented budget contract",
-        )
-    })?;
+    let Json(request) = request;
     let (project_id, epic_id, key) = scope(&state, &project_id, &epic_id, &headers)?;
     Ok(Json(
         state
@@ -6249,6 +6927,40 @@ pub async fn trigger(
         state
             .applications()
             .trigger(project_id, &trigger, version)?,
+    ))
+}
+
+/// Install one immutable trigger revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/triggers:publish", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = PublishTriggerRequest,
+    responses(
+        (status = 200, body = TriggerSpecDto, description = "Installed, or the identical revision"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "That revision is installed with different bytes")
+    )
+)]
+pub async fn publish_trigger(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<PublishTriggerRequest>,
+) -> Result<Json<TriggerSpecDto>, ApiError> {
+    // Admin, because a published trigger may carry a bounded auto-arm — the
+    // capability to start work with no human in the loop. Granting that is an
+    // authority decision, not an ordinary control-plane write.
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .publish_trigger(&key, project_id, &request)?,
     ))
 }
 

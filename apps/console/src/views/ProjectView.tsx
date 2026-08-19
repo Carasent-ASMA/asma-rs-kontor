@@ -22,8 +22,10 @@ import type {
   QuickSession,
   RevisionRef,
   RoleCatalogEntry,
+  RemediationAction,
   RoleSelection,
   TopologyProjection,
+  TopologySeat,
 } from '../api/types'
 import { CodeHelp } from '../components/CodeHelp'
 import { Fact, Facts, StateBadge } from '../components/primitives'
@@ -237,6 +239,7 @@ export function ProjectView({ client }: { client: OperationalClient }) {
                 epic={data.epic.value}
                 advisors={data.advisors}
                 committees={data.committees}
+                seats={data.topology.value?.nodes.flatMap((node) => node.seats) ?? []}
                 help={help}
               />
             ) : <Unavailable read={data.epic} />}
@@ -533,6 +536,7 @@ function AdvisoryPanel({
   epic,
   advisors,
   committees,
+  seats,
   help,
 }: {
   client: OperationalClient
@@ -540,6 +544,7 @@ function AdvisoryPanel({
   epic: EpicProjection
   advisors: Read<ProfileCatalog>
   committees: Read<ProfileCatalog>
+  seats: readonly TopologySeat[]
   help: readonly CodeHelpEntry[]
 }) {
   return (
@@ -547,12 +552,12 @@ function AdvisoryPanel({
       <section>
         <h4>Advisors · ASWs</h4>
         <p className="caveat">An Advisor Session Workspace is one consultation with one pinned Advisor profile.</p>
-        {advisors.value ? <ConsultationForm kind="Advisor" profiles={advisors.value.revisions} expectedRevision={epic.revision} invoke={(profile, question, commandId) => client.invokeAdvisor(projectId, epic.epic_id, { expected_revision: epic.revision, profile, question }, commandId)} help={help} /> : <Unavailable read={advisors} />}
+        {advisors.value ? <ConsultationForm kind="Advisor" profiles={advisors.value.revisions} expectedRevision={epic.revision} seats={seats} invoke={(profile, question, callerSeatBindingId, commandId) => client.invokeAdvisor(projectId, epic.epic_id, { expected_revision: epic.revision, profile, question, caller_seat_binding_id: callerSeatBindingId }, commandId)} help={help} /> : <Unavailable read={advisors} />}
       </section>
       <section>
         <h4>Committees · CSWs</h4>
         <p className="caveat">A Committee Session Workspace has a pinned protocol and membership; it is distinct from an ASW and a Delivery Team.</p>
-        {committees.value ? <ConsultationForm kind="Committee" profiles={committees.value.revisions} expectedRevision={epic.revision} invoke={(profile, question, commandId) => client.invokeCommittee(projectId, epic.epic_id, { expected_revision: epic.revision, profile, question }, commandId)} help={help} /> : <Unavailable read={committees} />}
+        {committees.value ? <ConsultationForm kind="Committee" profiles={committees.value.revisions} expectedRevision={epic.revision} seats={seats} invoke={(profile, question, callerSeatBindingId, commandId) => client.invokeCommittee(projectId, epic.epic_id, { expected_revision: epic.revision, profile, question, caller_seat_binding_id: callerSeatBindingId }, commandId)} help={help} /> : <Unavailable read={committees} />}
       </section>
     </div>
   )
@@ -562,16 +567,24 @@ function ConsultationForm({
   kind,
   profiles,
   expectedRevision,
+  seats,
   invoke,
   help,
 }: {
   kind: 'Advisor' | 'Committee'
   profiles: readonly ProfileRevision[]
   expectedRevision: number
-  invoke: (profile: RevisionRef, question: string, commandId: string) => Promise<AdvisorRun | CommitteeRun>
+  seats: readonly TopologySeat[]
+  invoke: (
+    profile: RevisionRef,
+    question: string,
+    callerSeatBindingId: string,
+    commandId: string,
+  ) => Promise<AdvisorRun | CommitteeRun>
   help: readonly CodeHelpEntry[]
 }) {
   const [selected, setSelected] = useState(profileKey(profiles[0]))
+  const [caller, setCaller] = useState(seats[0]?.seat_binding_id ?? '')
   const [question, setQuestion] = useState('')
   const [run, setRun] = useState<AdvisorRun | CommitteeRun | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -582,23 +595,26 @@ function ConsultationForm({
     <>
       <form className="operation-form" aria-label={`Invoke ${kind}`} onSubmit={(event) => {
         event.preventDefault()
-        if (!profile) return
+        if (!profile || !caller) return
         const request = {
           expected_revision: expectedRevision,
           profile: { id: profile.id, version: profile.version },
           question: question.trim(),
+          caller_seat_binding_id: caller,
         }
         void act(
-          () => invoke(request.profile, request.question, consult.keyFor(request)),
+          () => invoke(request.profile, request.question, request.caller_seat_binding_id, consult.keyFor(request)),
           (value: AdvisorRun | CommitteeRun) => { consult.release(); setRun(value) },
           setError,
           setBusy,
         )
       }}>
         <label className="field">Profile<select required value={selected} onChange={(event) => setSelected(event.target.value)}>{profiles.map((entry) => <option key={profileKey(entry)} value={profileKey(entry)}>{entry.name} · {entry.id}@{entry.version}</option>)}</select></label>
+        <label className="field">Calling seat<select required value={caller} onChange={(event) => setCaller(event.target.value)}>{seats.map((seat) => <option key={seat.seat_binding_id} value={seat.seat_binding_id}>{seat.role.role_code} · {seat.role.standard_title} · {seat.lifecycle}</option>)}</select></label>
         <label className="field grow">Question<input required value={question} onChange={(event) => setQuestion(event.target.value)} /></label>
-        <button type="submit" disabled={busy || !profile}>Invoke {kind}</button>
+        <button type="submit" disabled={busy || !profile || !caller}>Invoke {kind}</button>
       </form>
+      {seats.length === 0 ? <p className="banner" role="alert">The topology projection returned no seat to call from, so this consultation cannot name an authorized caller.</p> : null}
       <p className="empty">Member count and protocol are not exposed by this `/v1` profile catalog; the console does not infer them from the profile name or hash.</p>
       {run ? (
         <div className="operation-result">
@@ -636,7 +652,11 @@ function CompletionPanel({
 }) {
   const [state, setState] = useState(initial)
   const [receipt, setReceipt] = useState<MutationReceipt | null>(null)
-  const [reason, setReason] = useState('')
+  const [authority, setAuthority] = useState<RemediationAuthority>('lsa_proposal')
+  const [round, setRound] = useState(String('round' in initial.phase ? initial.phase.round : 0))
+  const [evidence, setEvidence] = useState('')
+  const [proposal, setProposal] = useState('')
+  const [route, setRoute] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const advance = useIntentKey()
@@ -645,11 +665,25 @@ function CompletionPanel({
   return (
     <>
       <Facts>
-        <Fact label="phase" value={<CodeHelp code={state.phase} entries={help} />} />
+        <Fact
+          label="phase"
+          value={<><CodeHelp code={state.phase.phase} entries={help} />{'round' in state.phase ? <> · round {state.phase.round}</> : null}</>}
+        />
         <Fact label="profile" value={<code>{state.profile.id}@{state.profile.version}</code>} />
         <Fact label="revision" value={state.revision} />
-        <Fact label="outstanding" value={state.outstanding.length ? state.outstanding.join(', ') : 'none'} />
       </Facts>
+      {state.blockers.length ? (
+        <ul className="compact-list" aria-label="Completion blockers">
+          {state.blockers.map((blocker, index) => (
+            <li key={`${blocker.blocker}-${index}`}>
+              <CodeHelp code={blocker.blocker} entries={help} />
+              {Object.entries(blocker)
+                .filter(([field]) => field !== 'blocker')
+                .map(([field, value]) => <span key={field}> · {field} <code>{String(value)}</code></span>)}
+            </li>
+          ))}
+        </ul>
+      ) : <p className="empty">The server reports no blocker for this phase.</p>}
       <div className="operation-actions">
         <button type="button" disabled={busy} onClick={() => {
           const request = { expected_revision: state.revision }
@@ -663,7 +697,9 @@ function CompletionPanel({
       </div>
       <form className="operation-form" aria-label="Return completion to remediation" onSubmit={(event) => {
         event.preventDefault()
-        const request = { expected_revision: state.revision, reason: reason.trim() }
+        const action = remediationAction(authority, round, proposal, evidence, route)
+        if (!action) return
+        const request = { expected_revision: state.revision, action }
         void act(
           () => client.remediateCompletion(projectId, epicId, request, remediate.keyFor(request)),
           (outcome: CompletionOutcome) => { remediate.release(); accept(outcome) },
@@ -671,7 +707,19 @@ function CompletionPanel({
           setBusy,
         )
       }}>
-        <label className="field grow">Remediation reason<input required value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+        <label className="field">Acting authority<select required value={authority} onChange={(event) => setAuthority(event.target.value as RemediationAuthority)}>
+          <option value="lsa_proposal">LSA proposal</option>
+          <option value="tpm_route">TPM route</option>
+        </select></label>
+        <label className="field">Round<input required type="number" min={0} value={round} onChange={(event) => setRound(event.target.value)} /></label>
+        {authority === 'lsa_proposal' ? (
+          <>
+            <label className="field grow">Failed-round evidence digest<input required value={evidence} onChange={(event) => setEvidence(event.target.value)} /></label>
+            <label className="field grow">Proposed correction digest<input required value={proposal} onChange={(event) => setProposal(event.target.value)} /></label>
+          </>
+        ) : (
+          <label className="field grow">Routed task-set digest<input required value={route} onChange={(event) => setRoute(event.target.value)} /></label>
+        )}
         <button type="submit" disabled={busy}>Return for remediation</button>
       </form>
       <Problem error={error} />
@@ -704,7 +752,7 @@ function RoleFields({
   )
 }
 
-function Receipt({ receipt }: { receipt: MutationReceipt | null }) {
+function Receipt({ receipt }: { receipt: MutationReceipt | null | undefined }) {
   if (!receipt) return null
   return (
     <p className="receipt" role="status">
@@ -756,6 +804,36 @@ function roleGroups(roles: readonly RoleCatalogEntry[]): [string, RoleCatalogEnt
   const groups = new Map<string, RoleCatalogEntry[]>()
   for (const role of roles) groups.set(role.segment, [...(groups.get(role.segment) ?? []), role])
   return [...groups]
+}
+
+/** Which of the two remediation authorities the operator is acting as. */
+type RemediationAuthority = RemediationAction['action']
+
+/**
+ * Build the closed tagged action, or nothing when its own fields are incomplete.
+ *
+ * The contract takes two distinct authorities acting in order rather than one
+ * free-text reason, so the console sends whichever the operator selected with
+ * exactly that variant's required fields — never a merged object carrying both.
+ */
+function remediationAction(
+  authority: RemediationAuthority,
+  round: string,
+  proposal: string,
+  evidence: string,
+  route: string,
+): RemediationAction | null {
+  const numbered = Number.parseInt(round, 10)
+  if (!Number.isInteger(numbered) || numbered < 0) return null
+  if (authority === 'lsa_proposal') {
+    const failed = evidence.trim()
+    const correction = proposal.trim()
+    return failed && correction
+      ? { action: 'lsa_proposal', round: numbered, failed_round_evidence: failed, proposal: correction }
+      : null
+  }
+  const routed = route.trim()
+  return routed ? { action: 'tpm_route', round: numbered, route: routed } : null
 }
 
 function profileKey(profile: ProfileRevision | undefined): string {

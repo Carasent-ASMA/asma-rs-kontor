@@ -57,7 +57,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use kontor_core::DomainError;
-use kontor_core::spec::ModelRung;
+use kontor_core::spec::{ModelRung, SeatAutonomy};
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::net::TcpStream;
@@ -77,10 +77,52 @@ const JSON_FLAG: &str = "--json";
 /// The environment variable Paseo reads the parent agent from.
 pub const PARENT_AGENT_ENV: &str = "PASEO_AGENT_ID";
 
-/// The unattended, approval-aware mode Paseo 0.3.1 exposes for each provider.
+/// Paseo's provider-specific spelling of one [`SeatAutonomy`].
+///
+/// `paseo agent run --mode` is explicitly provider-specific. The same policy
+/// therefore cannot be translated before the selected provider is known:
+/// Codex, for example, accepts `auto-review` and `full-access`, while Claude
+/// accepts `auto`, `bypassPermissions` and `plan`.
+///
+/// The mapping is exhaustive and fails closed when a provider cannot express
+/// an advisory seat. Falling back to a generic spelling is not harmless: Paseo
+/// 0.4.0 rejects `default` for Codex before creating the agent, which left every
+/// replacement verifier permanently queued.
+pub(crate) fn paseo_mode(
+    provider: &str,
+    autonomy: SeatAutonomy,
+) -> RuntimeResult<Option<&'static str>> {
+    match autonomy {
+        SeatAutonomy::Supervised => permission_mode(provider),
+        SeatAutonomy::Bounded => match provider {
+            "claude" => Ok(Some("bypassPermissions")),
+            "codex" => Ok(Some("full-access")),
+            "copilot" => Ok(Some("allow-all")),
+            "opencode" => Ok(Some("build")),
+            "pi" => Ok(None),
+            "omp" => Ok(Some("full")),
+            other => Err(RuntimeError::PermissionModeUnsupported {
+                provider: other.to_owned(),
+            }),
+        },
+        SeatAutonomy::Advisory => match provider {
+            "claude" | "opencode" => Ok(Some("plan")),
+            "copilot" => Ok(Some(
+                "https://agentclientprotocol.com/protocol/session-modes#plan",
+            )),
+            other => Err(RuntimeError::PermissionModeUnsupported {
+                provider: other.to_owned(),
+            }),
+        },
+    }
+}
+
+/// The explicit supervised mode Paseo exposes for each delivery provider.
 ///
 /// Kontor pins this explicitly because an omitted mode delegates authority to
-/// a mutable provider default (including Claude's `default` / Always Ask).
+/// a mutable provider default (including Claude's `default` / Always Ask). The
+/// [`paseo_mode`] selects this branch for supervised seats and the readback path
+/// uses the same function, so launch and verification cannot disagree.
 pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
     match provider {
         "claude" => Ok(Some("auto")),
@@ -97,6 +139,18 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
     }
 }
 
+/// The provider-native non-mutating mode used by consultation seats.
+pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
+    match provider {
+        "claude" | "cursor" => Ok(Some("plan")),
+        "codex" => Ok(Some("auto-review")),
+        // Providers without a proven read-only mode are not consultation-safe.
+        other => Err(RuntimeError::PermissionModeUnsupported {
+            provider: other.to_owned(),
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI commands
 // ---------------------------------------------------------------------------
@@ -106,7 +160,7 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
 /// `argv` never contains `--host`: the live transport appends it. The
 /// constructors below are the only way to build one, so no call site can invent
 /// an unversioned subcommand or forget `--json`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PaseoCommand {
     argv: Vec<String>,
     /// The final positional argument, when the subcommand takes one.
@@ -130,6 +184,23 @@ pub struct PaseoCommand {
     mutates: bool,
 }
 
+impl std::fmt::Debug for PaseoCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PaseoCommand")
+            .field("argv", &self.argv)
+            .field("trailing", &self.trailing)
+            .field("values", &self.values)
+            .field("route", &self.route)
+            .field(
+                "env_names",
+                &self.env.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            )
+            .field("mutates", &self.mutates)
+            .finish()
+    }
+}
+
 impl PaseoCommand {
     /// `paseo --version --json`.
     ///
@@ -146,9 +217,8 @@ impl PaseoCommand {
     /// than asking Paseo to provision one of its own, which would put the role
     /// in a tree Kontor never prepared.
     ///
-    /// There is no `--label`: 0.3.1's `workspace create` does not have one and
-    /// its workspaces carry no labels at all, so the correlation label rides in
-    /// the title. See [`crate::wire::workspace_label_suffix`].
+    /// There is no `--label`: Kontor therefore stores the native workspace id
+    /// in its own durable binding rather than exposing machine identity here.
     #[must_use]
     pub fn workspace_create(canonical_cwd: &str, project_id: &str, title: &str) -> Self {
         Self::mutate(
@@ -180,7 +250,44 @@ impl PaseoCommand {
     /// shape (`paseo agent run [options] <prompt>`); there is no `--prompt`.
     ///
     /// `--provider` is mandatory on this release.
+    ///
+    /// `--mode` carries the seat's declared [`SeatAutonomy`]. It is always sent,
+    /// never omitted for the supervised case: omitting it would leave the
+    /// authority a seat runs under to whatever the runtime happens to default to,
+    /// which is how every seat came to ask about every tool call in the first
+    /// place. Kontor declaring `default` and Paseo choosing `default` look the
+    /// same on the wire and are not the same thing — only one of them is a
+    /// decision.
+    // The arity is the CLI's own: each parameter is one flag `paseo agent run`
+    // takes, in the order it takes them. Bundling them into a struct would hide
+    // exactly the mapping this function exists to make checkable.
+    #[allow(clippy::too_many_arguments)]
     pub fn agent_run(
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        autonomy: SeatAutonomy,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        parent_agent_id: &str,
+        prompt: &str,
+    ) -> RuntimeResult<Self> {
+        let mode = paseo_mode(model_rung.provider.0.as_str(), autonomy)?;
+        Self::agent_run_with_mode(
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            title,
+            labels,
+            parent_agent_id,
+            prompt,
+            mode,
+        )
+    }
+
+    /// Start a consultation in the provider's non-mutating review/plan mode.
+    #[allow(clippy::too_many_arguments)]
+    pub fn consultation_run(
         workspace_id: &str,
         canonical_cwd: &str,
         model_rung: &ModelRung,
@@ -188,15 +295,43 @@ impl PaseoCommand {
         labels: &BTreeMap<String, String>,
         parent_agent_id: &str,
         prompt: &str,
+        credential: &str,
     ) -> RuntimeResult<Self> {
-        let permission_mode = permission_mode(&model_rung.provider.0)?;
+        let mode = consultation_permission_mode(model_rung.provider.0.as_str())?;
+        let mut command = Self::agent_run_with_mode(
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            title,
+            labels,
+            parent_agent_id,
+            prompt,
+            mode,
+        )?;
+        command
+            .env
+            .push(("KONTOR_AUTH".to_owned(), credential.to_owned()));
+        Ok(command)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn agent_run_with_mode(
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        parent_agent_id: &str,
+        prompt: &str,
+        permission_mode: Option<&str>,
+    ) -> RuntimeResult<Self> {
         let mut argv = Argv::new(&["agent", "run", "--background"])
             .option("--workspace", workspace_id)
             .option("--cwd", canonical_cwd)
             .option("--provider", &model_rung.provider.0)
             .option("--model", &model_rung.model.0);
-        if let Some(mode) = permission_mode {
-            argv = argv.option("--mode", mode);
+        if let Some(permission_mode) = permission_mode {
+            argv = argv.option("--mode", permission_mode);
         }
         if let Some(effort) = model_rung.effort {
             argv = argv.option("--thinking", effort.as_str());
@@ -216,6 +351,11 @@ impl PaseoCommand {
     }
 
     /// `paseo agent update {id} --label …` — the adoption write, and nothing else.
+    ///
+    /// Note there is no `--mode` here: 0.3.1's `agent update` takes a name, a
+    /// thinking option and labels, and nothing that changes authority. A seat's
+    /// autonomy is therefore fixed at launch, which is the honest shape — it is
+    /// part of what the launch was admitted as, not a dial to turn afterwards.
     #[must_use]
     pub fn agent_update_labels(agent_id: &str, labels: &BTreeMap<String, String>) -> Self {
         let mut argv = Argv::new(&["agent", "update"]).value(agent_id);
@@ -1380,6 +1520,7 @@ mod tests {
                 "wks_1",
                 "/w/task-1",
                 &route("codex", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+                SeatAutonomy::Supervised,
                 "KON-MVP-11 Implement",
                 &labels(),
                 "agt_orchestrator",
@@ -1414,6 +1555,7 @@ mod tests {
             "wks_1",
             "/w/task-1",
             &route("codex", "gpt-5.6-sol", None),
+            SeatAutonomy::Supervised,
             "t",
             &labels(),
             "agt_p",
@@ -1440,6 +1582,7 @@ mod tests {
             "wks_1",
             "/w/task-1",
             &route("claude", "claude-opus-5", Some(EffortLevel::Xhigh)),
+            SeatAutonomy::Supervised,
             "t",
             &labels(),
             "agt_p",
@@ -1454,6 +1597,32 @@ mod tests {
         );
         assert!(argv.windows(2).any(|pair| pair == ["--thinking", "xhigh"]));
         assert!(argv.windows(2).any(|pair| pair == ["--mode", "auto"]));
+    }
+
+    /// Paseo 0.4.0 rejects the provider-neutral `default` spelling for Codex.
+    /// A standard delivery seat must keep the explicit auto-review behavior the
+    /// provider default gave it before autonomy was frozen into launch requests.
+    #[test]
+    fn a_codex_delivery_launch_uses_a_supported_provider_mode() {
+        let command = PaseoCommand::agent_run(
+            "wks_1",
+            "/w/task-1",
+            &route("codex", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+            SeatAutonomy::Supervised,
+            "Verifier",
+            &labels(),
+            "agt_p",
+            "verify",
+        )
+        .expect("Codex supervised delivery has a pinned mode");
+
+        assert!(
+            command
+                .argv()
+                .windows(2)
+                .any(|pair| pair == ["--mode", "auto-review"])
+        );
+        assert!(!command.argv().iter().any(|argument| argument == "default"));
     }
 
     #[test]
@@ -1482,11 +1651,99 @@ mod tests {
     }
 
     #[test]
+    fn consultation_routes_are_read_only_and_the_scoped_secret_is_not_debugged() {
+        for (provider, model, expected_mode) in [
+            ("claude", "claude-opus-5", "plan"),
+            ("cursor", "composer-2", "plan"),
+            ("codex", "gpt-5.6-sol", "auto-review"),
+        ] {
+            let command = PaseoCommand::consultation_run(
+                "wks_1",
+                "/w/epic",
+                &route(provider, model, None),
+                "Reviewer",
+                &labels(),
+                "agt_orchestrator",
+                "read only",
+                "seat-secret-value",
+            )
+            .expect("a consultation-safe provider");
+            assert!(
+                command
+                    .argv()
+                    .windows(2)
+                    .any(|pair| pair == ["--mode", expected_mode])
+            );
+            assert!(
+                command
+                    .env()
+                    .contains(&("KONTOR_AUTH".to_owned(), "seat-secret-value".to_owned()))
+            );
+            assert!(!format!("{command:?}").contains("seat-secret-value"));
+        }
+        assert!(matches!(
+            consultation_permission_mode("opencode"),
+            Err(RuntimeError::PermissionModeUnsupported { .. })
+        ));
+    }
+
+    /// Every launch states the authority it runs under, and the three intents
+    /// reach Paseo as three different modes.
+    ///
+    /// This is the whole of the "hundreds of permission prompts" fix. Before it,
+    /// `agent run` carried no `--mode` at all, so every seat inherited whatever
+    /// the provider defaulted to and asked the operator about every guarded tool
+    /// call — a question Kontor had already answered by arming the work. The
+    /// mutant this kills is the tempting one: omitting the flag for `supervised`
+    /// because "that is the default anyway". It is only the default until it
+    /// isn't, and a seat's authority may not depend on a provider's release
+    /// notes.
+    #[test]
+    fn every_launch_declares_the_authority_it_runs_under() {
+        let mode_of = |autonomy| {
+            let command = PaseoCommand::agent_run(
+                "wks_1",
+                "/w/task-1",
+                &route("claude", "claude-opus-5", None),
+                autonomy,
+                "t",
+                &labels(),
+                "agt_p",
+                "p",
+            )
+            .expect("the autonomy maps to a Paseo mode");
+            let argv = command.argv().to_vec();
+            let index = argv
+                .iter()
+                .position(|arg| arg == "--mode")
+                .unwrap_or_else(|| panic!("{autonomy} declared no mode: {argv:?}"));
+            argv[index + 1].clone()
+        };
+
+        assert_eq!(mode_of(SeatAutonomy::Supervised), "auto");
+        assert_eq!(mode_of(SeatAutonomy::Bounded), "bypassPermissions");
+        assert_eq!(mode_of(SeatAutonomy::Advisory), "plan");
+
+        // Three intents, three spellings: a mapping that collapsed two of them
+        // would silently give one seat another's authority.
+        let modes: std::collections::BTreeSet<String> = [
+            SeatAutonomy::Supervised,
+            SeatAutonomy::Bounded,
+            SeatAutonomy::Advisory,
+        ]
+        .into_iter()
+        .map(mode_of)
+        .collect();
+        assert_eq!(modes.len(), 3, "two autonomy levels share one Paseo mode");
+    }
+
+    #[test]
     fn the_ledger_route_never_quotes_the_operators_work() {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/private/worktrees/secret-project",
             &route("codex", "gpt-5.6-sol", None),
+            SeatAutonomy::Supervised,
             "KON-MVP-11 Implement",
             &labels(),
             "agt_orchestrator",
@@ -1512,6 +1769,7 @@ mod tests {
             "wks_1",
             "/w/task-1",
             &route("codex", "gpt-5.6-sol", None),
+            SeatAutonomy::Supervised,
             "t",
             &labels(),
             "agt_orchestrator",
@@ -1544,6 +1802,7 @@ mod tests {
             "wks_1",
             "/w/task-1",
             &route("codex", "gpt-5.6-sol", None),
+            SeatAutonomy::Supervised,
             "t",
             &labels(),
             "agt_p",
@@ -1565,6 +1824,7 @@ mod tests {
                 "w",
                 "/w/t",
                 &route("codex", "gpt-5.6-sol", None),
+                SeatAutonomy::Supervised,
                 "t",
                 &labels(),
                 "agt_p",
@@ -1600,7 +1860,7 @@ mod tests {
         assert_eq!(hello["clientId"], "kontor-plane-1");
         assert_eq!(hello["clientType"], "cli");
         assert_eq!(hello["protocolVersion"], 1);
-        assert_eq!(hello["appVersion"], "0.3.1");
+        assert_eq!(hello["appVersion"], PASEO_APP_VERSION);
         // The daemon's capability table spells this one snake_case; the
         // camelCase spelling is silently ignored, which is worse than an error.
         assert_eq!(hello["capabilities"]["selective_agent_timeline"], true);

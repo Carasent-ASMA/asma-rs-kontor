@@ -53,9 +53,9 @@ function operationalClient(overrides: Record<string, unknown> = {}) {
     completionProfiles: vi.fn(async () => ({ realm_id: 'realm-1', project_id: 'project-1', revision: 1, snapshot_cursor: 20, revisions: [PROFILE] })),
     invokeAdvisor: vi.fn(async () => ({ realm_id: 'realm-1', epic_id: 'epic-1', advisor_run_id: 'advisor-1', state: 'running', profile: PROFILE, receipt: RECEIPT })),
     invokeCommittee: vi.fn(async () => ({ realm_id: 'realm-1', epic_id: 'epic-1', committee_run_id: 'committee-1', state: 'running', findings_recorded: 0, template: PROFILE, receipt: RECEIPT })),
-    completion: vi.fn(async () => ({ realm_id: 'realm-1', epic_id: 'epic-1', revision: 2, snapshot_cursor: 20, phase: 'review', outstanding: ['audit'], profile: PROFILE })),
-    advanceCompletion: vi.fn(async () => ({ state: { realm_id: 'realm-1', epic_id: 'epic-1', revision: 3, snapshot_cursor: 30, phase: 'complete', outstanding: [], profile: PROFILE }, receipt: RECEIPT })),
-    remediateCompletion: vi.fn(async () => ({ state: { realm_id: 'realm-1', epic_id: 'epic-1', revision: 3, snapshot_cursor: 30, phase: 'remediation', outstanding: ['fix'], profile: PROFILE }, receipt: RECEIPT })),
+    completion: vi.fn(async () => ({ realm_id: 'realm-1', epic_id: 'epic-1', profile: PROFILE, integrations: [], rounds: [], closeout: { receipts: [] }, wakes: [], needs_human: null, revision: 2, snapshot_cursor: 20, phase: { phase: 'verdict', round: 1 }, blockers: [{ blocker: 'committee_verdict', round: 1 }] })),
+    advanceCompletion: vi.fn(async () => ({ state: { realm_id: 'realm-1', epic_id: 'epic-1', profile: PROFILE, integrations: [], rounds: [], closeout: { receipts: [] }, wakes: [], needs_human: null, revision: 3, snapshot_cursor: 30, phase: { phase: 'done' }, blockers: [] }, receipt: RECEIPT })),
+    remediateCompletion: vi.fn(async () => ({ state: { realm_id: 'realm-1', epic_id: 'epic-1', profile: PROFILE, integrations: [], rounds: [], closeout: { receipts: [] }, wakes: [], needs_human: null, revision: 3, snapshot_cursor: 30, phase: { phase: 'remediation', round: 1 }, blockers: [{ blocker: 'remediation_result', round: 1 }] }, receipt: RECEIPT })),
     ...overrides,
   }
 }
@@ -187,7 +187,7 @@ describe('<ProjectView>', () => {
     }))
     const section = screen.getByRole('heading', { name: 'Completion Profiles' }).closest('section') as HTMLElement
     expect(within(section).getByText('profile catalog unavailable')).toBeInTheDocument()
-    expect(within(section).getByRole('button', { name: 'review' })).toBeInTheDocument()
+    expect(within(section).getByRole('button', { name: 'verdict' })).toBeInTheDocument()
     expect(within(section).getByRole('button', { name: 'Advance completion' })).toBeEnabled()
   })
 
@@ -199,6 +199,75 @@ describe('<ProjectView>', () => {
     expect(within(section).getByRole('list', { name: 'Completion profiles' }))
       .toHaveTextContent('Independent Review')
     expect(within(section).getByText('completion state unavailable')).toBeInTheDocument()
+  })
+
+  it('names the calling seat from the topology projection when invoking a consultation', async () => {
+    // The contract requires an exact active epic seat. The console offers the
+    // ones the server projected rather than letting an id be typed.
+    const client = await open()
+    const form = screen.getByRole('form', { name: 'Invoke Advisor' })
+    expect(within(form).getByLabelText('Calling seat')).toHaveValue('seat-lsa')
+    fireEvent.change(within(form).getByLabelText('Question'), { target: { value: 'is the seam right?' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Invoke Advisor' }))
+    await waitFor(() => expect(client.invokeAdvisor).toHaveBeenCalled())
+    expect(client.invokeAdvisor).toHaveBeenCalledWith(
+      'project-1',
+      'epic-1',
+      expect.objectContaining({
+        caller_seat_binding_id: 'seat-lsa',
+        expected_revision: 7,
+        question: 'is the seam right?',
+      }),
+      expect.any(String),
+    )
+  })
+
+  it('refuses to offer a consultation caller when the topology projected no seat', async () => {
+    await open(operationalClient({
+      topology: vi.fn(async () => { throw new Error('topology unavailable') }),
+    }))
+    const form = screen.getByRole('form', { name: 'Invoke Advisor' })
+    expect(within(form).getByRole('button', { name: 'Invoke Advisor' })).toBeDisabled()
+    expect(screen.getAllByText(/no seat to call from/).length).toBeGreaterThan(0)
+  })
+
+  it('sends the tagged remediation authority the operator selected', async () => {
+    // The mutant this kills: a merged action carrying both variants' fields, or
+    // the old free-form reason.
+    const client = await open()
+    const form = screen.getByRole('form', { name: 'Return completion to remediation' })
+    expect(within(form).getByLabelText('Round')).toHaveValue(1)
+    fireEvent.change(within(form).getByLabelText('Failed-round evidence digest'), { target: { value: 'evidence-1' } })
+    fireEvent.change(within(form).getByLabelText('Proposed correction digest'), { target: { value: 'proposal-1' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Return for remediation' }))
+    await waitFor(() => expect(client.remediateCompletion).toHaveBeenCalledTimes(1))
+    expect(client.remediateCompletion).toHaveBeenCalledWith(
+      'project-1',
+      'epic-1',
+      { expected_revision: 2, action: { action: 'lsa_proposal', round: 1, failed_round_evidence: 'evidence-1', proposal: 'proposal-1' } },
+      expect.any(String),
+    )
+
+    fireEvent.change(within(form).getByLabelText('Acting authority'), { target: { value: 'tpm_route' } })
+    expect(within(form).queryByLabelText('Proposed correction digest')).toBeNull()
+    fireEvent.change(within(form).getByLabelText('Routed task-set digest'), { target: { value: 'route-1' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Return for remediation' }))
+    await waitFor(() => expect(client.remediateCompletion).toHaveBeenCalledTimes(2))
+    expect(client.remediateCompletion).toHaveBeenLastCalledWith(
+      'project-1',
+      'epic-1',
+      { expected_revision: 3, action: { action: 'tpm_route', round: 1, route: 'route-1' } },
+      expect.any(String),
+    )
+  })
+
+  it('renders the typed completion phase and its server blockers', async () => {
+    await open()
+    const section = screen.getByRole('heading', { name: 'Completion Profiles' }).closest('section') as HTMLElement
+    expect(within(section).getByRole('button', { name: 'verdict' })).toBeInTheDocument()
+    const blockers = within(section).getByRole('list', { name: 'Completion blockers' })
+    expect(within(blockers).getByRole('button', { name: 'committee_verdict' })).toBeInTheDocument()
+    expect(blockers).toHaveTextContent('round')
   })
 
   it('keeps independent projection refusals visible while rendering the rest', async () => {

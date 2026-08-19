@@ -267,6 +267,7 @@ impl World {
                 now(),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: now(),
         }
     }
@@ -472,6 +473,7 @@ impl World {
             expected_revision,
             to,
             resume_receipt: None,
+            reopen: false,
             run_outcome: None,
             produced_artifacts: artifacts.clone(),
             completed_phases: phases.clone(),

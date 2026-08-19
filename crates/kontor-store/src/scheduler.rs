@@ -440,6 +440,8 @@ impl SqliteStore {
     ///
     /// A lease whose expiry has passed is *not* reported as held: the place is
     /// reclaimable, and the admission that reclaims it is what records the expiry.
+    /// Pre-worktree-retention leases recover the same task's declared tree; new
+    /// leases retain that value directly and therefore never need the fallback.
     ///
     /// # Errors
     /// Backend failures only.
@@ -447,12 +449,17 @@ impl SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT lease.resource_key, lease.worktree_key, team.task_id
+                "SELECT lease.resource_key,
+                        COALESCE(lease.worktree_key, task_tree.worktree),
+                        team.task_id
                  FROM resource_leases AS lease
                  JOIN agent_runs AS run
                    ON run.project_id = lease.project_id AND run.id = lease.agent_run_id
                  JOIN team_runs AS team
                    ON team.project_id = run.project_id AND team.id = run.team_run_id
+                 LEFT JOIN task_worktrees AS task_tree
+                   ON task_tree.project_id = team.project_id
+                  AND task_tree.task_id = team.task_id
                  WHERE lease.lease_kind = 'module'
                    AND lease.released_at IS NULL
                    AND lease.expired_at IS NULL
@@ -787,7 +794,6 @@ impl SqliteStore {
                 lease_id,
                 LeaseKind::Module,
                 module,
-                admitted.worktree.as_ref(),
                 &module_reclaimed,
             )?;
         }
@@ -800,7 +806,6 @@ impl SqliteStore {
                 lease_id,
                 LeaseKind::Worktree,
                 worktree,
-                None,
                 &worktree_reclaimed,
             )?;
         }
@@ -1227,9 +1232,10 @@ fn ensure_no_open_run(
 /// Recount the ceilings that can be recounted from rows.
 ///
 /// Global, project, mission and account concurrency are all countable from
-/// `agent_runs` and the graph above it, so they are proved again here rather than
+/// non-terminal TeamRun envelopes, so they are proved again here rather than
 /// trusted from the snapshot — which is what stops two instances from each
-/// admitting the last unit of headroom.
+/// admitting the last unit of headroom. Seats never spend these ceilings: one
+/// admitted TeamRun counts once however many declared roles it contains.
 ///
 /// The runtime and provider ceilings deliberately are not. A queued run has no
 /// runtime binding and no provider row yet — the binding is created when the
@@ -1273,60 +1279,45 @@ fn ensure_capacity(
     Ok(())
 }
 
-/// Which population of open runs a count covers.
+/// Which population of non-terminal TeamRun envelopes a count covers.
 enum InFlightScope {
-    /// Every open run in the Realm.
+    /// Every non-terminal TeamRun in the Realm.
     Global,
-    /// Every open run in one project.
+    /// Every non-terminal TeamRun in one project.
     Project(ProjectId),
-    /// Every open run under one goal.
+    /// Every non-terminal TeamRun under one goal.
     Mission(ProjectId, MiniProjectId),
-    /// Every open run pinned to one account.
+    /// Every non-terminal TeamRun using one account.
     Account(ProjectId, AccountProfileId),
 }
 
 fn count_in_flight(transaction: &Transaction<'_>, scope: InFlightScope) -> RepositoryResult<i64> {
-    // A run is in flight when its own lifecycle is open *and* the team it serves
-    // has not closed on settled turns.
-    //
-    // The second half exists because a seat is persistent: a team whose declared
-    // slots have all finished their bounded turns is done, and its native
-    // sessions are deliberately still live. Counting those runs would let a
-    // finished task hold capacity for as long as its seat sits there — and the
-    // seat is meant to sit there. The run's own lifecycle stays open, because
-    // nothing observed the session end; it simply stops being *work in flight*.
-    let open = format!(
-        "run.lifecycle NOT IN ({TERMINAL_LIFECYCLES})
-         AND NOT EXISTS (
-             SELECT 1 FROM team_runs AS settled
-             WHERE settled.project_id = run.project_id
-               AND settled.id = run.team_run_id
-               AND settled.terminal_source_kind = 'settled_turns')"
-    );
+    let open = format!("team.lifecycle NOT IN ({TERMINAL_LIFECYCLES})");
     let (sql, bindings): (String, Vec<String>) = match scope {
         InFlightScope::Global => (
-            format!("SELECT count(*) FROM agent_runs AS run WHERE {open}"),
+            format!("SELECT count(*) FROM team_runs AS team WHERE {open}"),
             Vec::new(),
         ),
         InFlightScope::Project(project) => (
-            format!("SELECT count(*) FROM agent_runs AS run WHERE run.project_id = ?1 AND {open}"),
+            format!("SELECT count(*) FROM team_runs AS team WHERE team.project_id = ?1 AND {open}"),
             vec![project.to_string()],
         ),
         InFlightScope::Mission(project, mission) => (
             format!(
-                "SELECT count(*) FROM agent_runs AS run
-                 JOIN team_runs AS team
-                   ON team.project_id = run.project_id AND team.id = run.team_run_id
+                "SELECT count(*) FROM team_runs AS team
                  JOIN tasks AS task
                    ON task.project_id = team.project_id AND task.id = team.task_id
-                 WHERE run.project_id = ?1 AND task.mini_project_id = ?2 AND {open}"
+                 WHERE team.project_id = ?1 AND task.mini_project_id = ?2 AND {open}"
             ),
             vec![project.to_string(), mission.to_string()],
         ),
         InFlightScope::Account(project, account) => (
             format!(
-                "SELECT count(*) FROM agent_runs AS run
-                 WHERE run.project_id = ?1 AND run.account_profile_id = ?2 AND {open}"
+                "SELECT count(DISTINCT team.id) FROM team_runs AS team
+                 JOIN agent_runs AS run
+                   ON run.project_id = team.project_id AND run.team_run_id = team.id
+                 WHERE team.project_id = ?1 AND run.account_profile_id = ?2
+                   AND run.lifecycle NOT IN ({TERMINAL_LIFECYCLES}) AND {open}"
             ),
             vec![project.to_string(), account.to_string()],
         ),
@@ -1596,13 +1587,16 @@ fn insert_lease(
     lease_id: ResourceLeaseId,
     kind: LeaseKind,
     place: &ExternalName,
-    worktree: Option<&ExternalName>,
     reclaimed: &[ResourceLeaseId],
 ) -> RepositoryResult<()> {
     // Reclaim lineage: the lease this one took the place over from, when this
     // admission is the one that found the previous holder lapsed. At most one
     // lapsed lease per place can have been active, so the first is the only one.
     let reclaimed_from = reclaimed.first().map(ToString::to_string);
+    let worktree = match kind {
+        LeaseKind::Module => request.admitted.worktree.as_ref(),
+        LeaseKind::Worktree => None,
+    };
     transaction
         .execute(
             "INSERT INTO resource_leases

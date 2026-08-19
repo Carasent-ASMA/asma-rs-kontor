@@ -775,6 +775,56 @@
         }
       }
     },
+    "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Read one Advisor consultation and its immutable result.",
+        "operationId": "advisor_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "advisor_run_id",
+            "in": "path",
+            "description": "The consultation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle": {
       "post": {
         "tags": [
@@ -1374,6 +1424,56 @@
           },
           "503": {
             "description": "A configured collector could not be reached"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Read one Committee consultation, including all current-round findings.",
+        "operationId": "committee_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "description": "The consultation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitteeRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
           }
         }
       }
@@ -5594,6 +5694,147 @@
         }
       }
     },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Repair one bound container's title.",
+        "operationId": "apply_container_retitle",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node whose container it is",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContainerRetitleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedContainerRetitleDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "501": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "What repairing one bound container's title would do.",
+        "operationId": "preview_container_retitle",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node whose container it is",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContainerRetitleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContainerRetitlePreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "501": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire": {
       "post": {
         "tags": [
@@ -5965,6 +6206,69 @@
           },
           "404": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/triggers:publish": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Install one immutable trigger revision.",
+        "operationId": "publish_trigger",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishTriggerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Installed, or the identical revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TriggerSpecDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "That revision is installed with different bytes"
           }
         }
       }
@@ -6735,6 +7039,16 @@
         },
         "additionalProperties": false
       },
+      "AdviceDispositionDto": {
+        "type": "string",
+        "description": "What the caller did with one Advisor's evidence-only output.",
+        "enum": [
+          "accepted",
+          "partially_accepted",
+          "rejected",
+          "superseded"
+        ]
+      },
       "AdvisorRunDto": {
         "type": "object",
         "description": "One Advisor consultation.",
@@ -6743,10 +7057,14 @@
           "advisor_run_id",
           "epic_id",
           "profile",
-          "state",
-          "receipt"
+          "topology_node_id",
+          "seats",
+          "state"
         ],
         "properties": {
+          "advice": {
+            "description": "Immutable output submitted by the Advisor seat, before disposition."
+          },
           "advisor_run_id": {
             "type": "string",
             "description": "The consultation."
@@ -6764,12 +7082,33 @@
             "description": "The Realm it belongs to."
           },
           "receipt": {
-            "$ref": "#/components/schemas/MutationReceiptDto",
-            "description": "The receipt it was committed under."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MutationReceiptDto",
+                "description": "The receipt it was committed under."
+              }
+            ]
+          },
+          "result": {
+            "description": "Immutable output and caller disposition once settled."
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsultationSeatDto"
+            },
+            "description": "The one Advisor seat."
           },
           "state": {
             "type": "string",
             "description": "Its lifecycle, in the server's own vocabulary."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "Dedicated ASW node."
           }
         }
       },
@@ -6837,6 +7176,39 @@
               "null"
             ],
             "description": "Which type, field or state machine refused, when the refusal names one.\n\nAlways a `&'static str` written in this workspace — a type name, a field\nname or an operation name — so it can never be a stored value."
+          }
+        }
+      },
+      "AppliedContainerRetitleDto": {
+        "type": "object",
+        "description": "What a container retitle produced.",
+        "required": [
+          "topology_node_id",
+          "bound_native_id",
+          "observed_title",
+          "changed",
+          "receipt"
+        ],
+        "properties": {
+          "bound_native_id": {
+            "type": "string",
+            "description": "The native container, read back after the change. The same one."
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "Whether this call changed anything, or found it already correct."
+          },
+          "observed_title": {
+            "type": "string",
+            "description": "The title the runtime reported afterwards, read back rather than assumed."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt it was committed under."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The node whose container it is."
           }
         }
       },
@@ -7695,6 +8067,56 @@
         },
         "additionalProperties": false
       },
+      "CloseoutEvidenceDto": {
+        "type": "object",
+        "description": "The closeout receipts recorded so far.\n\nReceipt ids and inventoried revisions, never caller booleans: `done` is a\nconjunction over authoritative records, and a boolean would let a caller\nassert one it does not hold.",
+        "required": [
+          "merge_receipt",
+          "release_receipt",
+          "delivered_versions",
+          "summary_receipt",
+          "notification_receipt",
+          "archive_receipt"
+        ],
+        "properties": {
+          "archive_receipt": {
+            "type": "string",
+            "description": "Archive receipt."
+          },
+          "delivered_versions": {
+            "type": "object",
+            "description": "Delivered module/service revisions, keyed by module/service name."
+          },
+          "merge_receipt": {
+            "type": "string",
+            "description": "Merge confirmation."
+          },
+          "notification_receipt": {
+            "type": "string",
+            "description": "Notification receipt."
+          },
+          "release_receipt": {
+            "type": "string",
+            "description": "Release confirmation, or its typed not-applicable disposition."
+          },
+          "summary_receipt": {
+            "type": "string",
+            "description": "Final summary receipt."
+          }
+        }
+      },
+      "CloseoutRequirementDto": {
+        "type": "string",
+        "description": "One fixed closeout prerequisite.",
+        "enum": [
+          "merge",
+          "release",
+          "version_inventory",
+          "summary",
+          "notification",
+          "archive"
+        ]
+      },
       "CodeHelpEntryDto": {
         "type": "object",
         "description": "Server-owned help for one controlled code.\n\nKeyed by `(category, code)`. Compatibility and retired codes stay present as\nexplicit entries: a client reading old state has to render them honestly, and\na projection that dropped them would force every client to keep the private\ndictionary this projection exists to replace. A code with no entry is\nrendered as unknown, because the server returned no definition for it.",
@@ -7765,6 +8187,59 @@
           }
         }
       },
+      "CommitteeFindingDto": {
+        "type": "object",
+        "description": "One durable Committee finding, including dissent and evidence references.",
+        "required": [
+          "round",
+          "role_slot_id",
+          "role",
+          "verdict",
+          "evidence_complete",
+          "rationale",
+          "evidence_refs",
+          "document_hash"
+        ],
+        "properties": {
+          "document_hash": {
+            "type": "string",
+            "description": "Hash of the immutable finding document."
+          },
+          "evidence_complete": {
+            "type": "boolean",
+            "description": "Whether required evidence was complete."
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "References to authoritative evidence."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "The submitted rationale."
+          },
+          "role": {
+            "type": "string",
+            "description": "Reviewer or Judge."
+          },
+          "role_slot_id": {
+            "type": "string",
+            "description": "Frozen template slot."
+          },
+          "round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Round this finding belongs to.",
+            "minimum": 0
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/ConsultationVerdictDto",
+            "description": "Typed conclusion."
+          }
+        }
+      },
       "CommitteeRunDto": {
         "type": "object",
         "description": "One Committee consultation.",
@@ -7773,9 +8248,12 @@
           "committee_run_id",
           "epic_id",
           "template",
+          "topology_node_id",
+          "seats",
           "state",
           "findings_recorded",
-          "receipt"
+          "round",
+          "findings"
         ],
         "properties": {
           "committee_run_id": {
@@ -7786,19 +8264,63 @@
             "type": "string",
             "description": "The epic it advises."
           },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommitteeFindingDto"
+            },
+            "description": "Durable findings for the current round, including dissent."
+          },
           "findings_recorded": {
             "type": "integer",
             "format": "int32",
             "description": "How many findings have been recorded so far.",
             "minimum": 0
           },
+          "outcome": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConsultationVerdictDto",
+                "description": "Server-recomputed settled outcome, when terminal."
+              }
+            ]
+          },
           "realm_id": {
             "type": "string",
             "description": "The Realm it belongs to."
           },
           "receipt": {
-            "$ref": "#/components/schemas/MutationReceiptDto",
-            "description": "The receipt it was committed under."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MutationReceiptDto",
+                "description": "The receipt it was committed under."
+              }
+            ]
+          },
+          "remediation": {
+            "description": "Immutable recommendation and tried path that authorized round two."
+          },
+          "result": {
+            "description": "Immutable terminal result, including needs-human recommendation/tried path."
+          },
+          "round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "One-based immutable round.",
+            "minimum": 0
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsultationSeatDto"
+            },
+            "description": "Every template-declared seat in stable slot order."
           },
           "state": {
             "type": "string",
@@ -7807,8 +8329,20 @@
           "template": {
             "$ref": "#/components/schemas/ProfileRevisionDto",
             "description": "The pinned template it runs under."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "Dedicated CSW node."
           }
         }
+      },
+      "CommitteeVerdictDto": {
+        "type": "string",
+        "description": "One Committee aggregate verdict.",
+        "enum": [
+          "pass",
+          "fail"
+        ]
       },
       "CompactRequestBody": {
         "type": "object",
@@ -7915,6 +8449,182 @@
           }
         }
       },
+      "CompletionBlockerDto": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "No evidence record exists for a declared ticket.",
+            "required": [
+              "task_id",
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "enum": [
+                  "missing_ticket"
+                ]
+              },
+              "task_id": {
+                "type": "string",
+                "description": "The ticket."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A declared goal has not been certified.",
+            "required": [
+              "task_id",
+              "goal",
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "enum": [
+                  "missing_ticket_goal"
+                ]
+              },
+              "goal": {
+                "type": "string",
+                "description": "The missing goal key."
+              },
+              "task_id": {
+                "type": "string",
+                "description": "The ticket."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A declared artifact/evidence key is absent.",
+            "required": [
+              "task_id",
+              "evidence",
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "enum": [
+                  "missing_ticket_evidence"
+                ]
+              },
+              "evidence": {
+                "type": "string",
+                "description": "The missing evidence key."
+              },
+              "task_id": {
+                "type": "string",
+                "description": "The ticket."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The pinned integration TeamRun has not reported.",
+            "required": [
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "enum": [
+                  "integration_team_run"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One Committee round has not settled a typed aggregate verdict.",
+            "required": [
+              "round",
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "enum": [
+                  "committee_verdict"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "format": "int32",
+                "description": "One-based round.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The LSA proposal and TPM route are not both durable yet.",
+            "required": [
+              "round",
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "enum": [
+                  "remediation_authorization"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "format": "int32",
+                "description": "One-based remediation round.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The authorized remediation TeamRun has not reported.",
+            "required": [
+              "round",
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "enum": [
+                  "remediation_result"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "format": "int32",
+                "description": "One-based remediation round.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One closeout receipt is still missing.",
+            "required": [
+              "requirement",
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "enum": [
+                  "closeout"
+                ]
+              },
+              "requirement": {
+                "$ref": "#/components/schemas/CloseoutRequirementDto",
+                "description": "Which prerequisite."
+              }
+            }
+          }
+        ],
+        "description": "One typed reason completion cannot leave the phase it stands in."
+      },
       "CompletionOutcomeDto": {
         "type": "object",
         "description": "What a completion write produced.",
@@ -7933,6 +8643,185 @@
           }
         }
       },
+      "CompletionPhaseDto": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Waiting for every declared ticket goal, artifact and gate.",
+            "required": [
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "ticket_gate"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Waiting for the pinned integration TeamRun.",
+            "required": [
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "integration"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Waiting for one Committee round to settle.",
+            "required": [
+              "round",
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "verdict"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "format": "int32",
+                "description": "One-based round.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A round failed; waiting for the exact epic LSA's proposal.",
+            "required": [
+              "round",
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "awaiting_lsa"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The failed round.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An authorized remediation round is in flight.",
+            "required": [
+              "round",
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "remediation"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "format": "int32",
+                "description": "One-based remediation round.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Waiting for the fixed closeout receipts.",
+            "required": [
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "closeout"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Terminal: every prerequisite is evidenced.",
+            "required": [
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "done"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Terminal: human input is required.",
+            "required": [
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "needs_human"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Which phase one epic's completion stands in.\n\nA typed union rather than a string, because the round is data a caller acts\non: deciding whether a second Committee round is still permitted means\nreading the round, and a caller that had to parse `\"verdict round 2\"` out of\na phrase would be re-implementing the state machine to do it."
+      },
+      "CompletionRoundDto": {
+        "type": "object",
+        "description": "One immutable Committee round in the epic's lineage.",
+        "required": [
+          "round",
+          "verdict",
+          "evidence",
+          "deliberation"
+        ],
+        "properties": {
+          "deliberation": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliberationStepDto"
+            },
+            "description": "The roles and consultations that produced it."
+          },
+          "evidence": {
+            "type": "string",
+            "description": "The immutable finding/evidence digest."
+          },
+          "round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "One-based round.",
+            "minimum": 0
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/CommitteeVerdictDto",
+            "description": "The typed aggregate verdict."
+          }
+        }
+      },
       "CompletionStateDto": {
         "type": "object",
         "description": "One epic's completion state.",
@@ -7941,24 +8830,50 @@
           "epic_id",
           "profile",
           "phase",
-          "outstanding",
+          "blockers",
+          "integrations",
+          "rounds",
+          "closeout",
+          "wakes",
           "revision",
           "snapshot_cursor"
         ],
         "properties": {
+          "blockers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompletionBlockerDto"
+            },
+            "description": "What is still blocking that phase, in a stable order."
+          },
+          "closeout": {
+            "$ref": "#/components/schemas/CloseoutEvidenceDto",
+            "description": "The closeout receipts recorded so far."
+          },
           "epic_id": {
             "type": "string",
             "description": "The epic."
           },
-          "outstanding": {
+          "integrations": {
             "type": "array",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/IntegrationRecordDto"
             },
-            "description": "What is still outstanding, in a stable order."
+            "description": "Initial and remediation integration results, oldest first."
+          },
+          "needs_human": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NeedsHumanDto",
+                "description": "Present only in the `needs_human` phase."
+              }
+            ]
           },
           "phase": {
-            "type": "string",
+            "$ref": "#/components/schemas/CompletionPhaseDto",
             "description": "Which phase it currently stands in."
           },
           "profile": {
@@ -7975,10 +8890,59 @@
             "description": "The revision a write must present.",
             "minimum": 0
           },
+          "rounds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompletionRoundDto"
+            },
+            "description": "The immutable Committee round lineage, oldest first."
+          },
           "snapshot_cursor": {
             "type": "integer",
             "format": "int64",
             "description": "The position this read is consistent with."
+          },
+          "wakes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompletionWakeDto"
+            },
+            "description": "The wake intents this completion has appended, oldest first."
+          }
+        }
+      },
+      "CompletionWakeDto": {
+        "type": "object",
+        "description": "One recorded intent to wake the epic's existing TPM seat.",
+        "required": [
+          "completion_revision",
+          "reason",
+          "seat_binding_id",
+          "receipt",
+          "acknowledged"
+        ],
+        "properties": {
+          "acknowledged": {
+            "type": "boolean",
+            "description": "Whether the runtime has acknowledged the turn."
+          },
+          "completion_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The completion revision this wake reports.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the seat is being woken."
+          },
+          "receipt": {
+            "type": "string",
+            "description": "The receipt the wake was recorded under."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The existing seat woken. Never a seat the wake created."
           }
         }
       },
@@ -8029,6 +8993,108 @@
             "minimum": 0
           }
         }
+      },
+      "ConsultationSeatDto": {
+        "type": "object",
+        "description": "One declared consultation seat and its exact runtime readback.",
+        "required": [
+          "role_slot_id",
+          "logical_role",
+          "seat_binding_id"
+        ],
+        "properties": {
+          "logical_role": {
+            "type": "string",
+            "description": "Logical role under the pinned policy."
+          },
+          "observed_binding": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ObservedBindingDto",
+                "description": "Native runtime identity after launch/recovery."
+              }
+            ]
+          },
+          "role_slot_id": {
+            "type": "string",
+            "description": "Stable profile/template slot."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Exact persistent SeatBinding."
+          }
+        }
+      },
+      "ConsultationVerdictDto": {
+        "type": "string",
+        "description": "The closed Committee verdict vocabulary.",
+        "enum": [
+          "compliant",
+          "non_compliant"
+        ]
+      },
+      "ContainerRetitlePreviewDto": {
+        "type": "object",
+        "description": "What one bound container's title is, and what it should be.\n\nA preview is a read: it takes no idempotency key, reaches nothing that writes,\nand answers the two titles a human needs to compare. The runtime is asked, so\n`observed_title` is what the container actually carries rather than what Kontor\nonce recorded.",
+        "required": [
+          "realm_id",
+          "topology_node_id",
+          "bound_native_id",
+          "desired_title",
+          "observed_title",
+          "would_change",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "bound_native_id": {
+            "type": "string",
+            "description": "The native container that would be renamed."
+          },
+          "desired_title": {
+            "type": "string",
+            "description": "The title the server derived, which an apply would set."
+          },
+          "observed_title": {
+            "type": "string",
+            "description": "The title the runtime reports it carries now."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that computed it."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this preview was computed at."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The node whose container it is."
+          },
+          "would_change": {
+            "type": "boolean",
+            "description": "Whether an apply would change anything."
+          }
+        }
+      },
+      "ContainerRetitleRequest": {
+        "type": "object",
+        "description": "What repairing one bound container's title is asked for.\n\nThe revision the caller read the project at, and nothing else. There is no\nfield for a title, a native id, a parent or a directory — not because they are\nvalidated away, but because the type has nowhere to put them. The title is\nderived from the node's pinned topology and the plane's typed scope, and the\ncontainer is addressed by the binding Kontor already holds.",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller believes is current.\n\nThe project, not the node: a repair is authority over the project's own\nrendering, and the project's revision is the one a caller can read before\npresenting it.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "ContextPolicyDto": {
         "type": "object",
@@ -8418,6 +9484,36 @@
           }
         },
         "additionalProperties": false
+      },
+      "DeliberationStepDto": {
+        "type": "object",
+        "description": "One durable step in the deliberation path already tried.",
+        "required": [
+          "role",
+          "consultation",
+          "round",
+          "outcome"
+        ],
+        "properties": {
+          "consultation": {
+            "type": "string",
+            "description": "The consultation or recovery mechanism used."
+          },
+          "outcome": {
+            "type": "string",
+            "description": "Its outcome."
+          },
+          "role": {
+            "type": "string",
+            "description": "The role(s) that acted."
+          },
+          "round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The completion/remediation round.",
+            "minimum": 0
+          }
+        }
       },
       "DesiredBindingDto": {
         "type": "object",
@@ -9144,15 +10240,41 @@
           }
         }
       },
+      "IntegrationRecordDto": {
+        "type": "object",
+        "description": "One durable integration result, initial or remediation.",
+        "required": [
+          "receipt",
+          "repositories"
+        ],
+        "properties": {
+          "receipt": {
+            "type": "string",
+            "description": "Receipt for the integration TeamRun/result."
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepositoryOutcomeDto"
+            },
+            "description": "Per-repository results, in a stable order."
+          }
+        }
+      },
       "InvokeConsultationRequest": {
         "type": "object",
         "description": "Invoke one consultation against an epic.\n\nA consultation names the pinned profile it runs under and the question it is\nasked. It does not name a model, a provider or a runtime: which seat answers\nis the realm's routing decision, not the caller's.",
         "required": [
           "profile",
           "question",
+          "caller_seat_binding_id",
           "expected_revision"
         ],
         "properties": {
+          "caller_seat_binding_id": {
+            "type": "string",
+            "description": "Exact active epic seat whose role is authorized by the pinned policy."
+          },
           "expected_revision": {
             "type": "integer",
             "format": "int64",
@@ -9166,6 +10288,13 @@
           "question": {
             "type": "string",
             "description": "What is being asked."
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional ticket scope. It must belong to the epic in the route; absent\nmeans the epic as a whole."
           }
         },
         "additionalProperties": false
@@ -9468,6 +10597,27 @@
             "type": "integer",
             "format": "int64",
             "description": "The control-plane position the answer is consistent with."
+          }
+        }
+      },
+      "NeedsHumanDto": {
+        "type": "object",
+        "description": "The mandatory context a `needs_human` completion carries.\n\nBoth fields are required by construction. A stalling path that could enter\nhuman attention without them would be handing an operator a request with no\nrecommendation and no record of what had already been tried.",
+        "required": [
+          "recommended_resolution",
+          "tried_deliberation_path"
+        ],
+        "properties": {
+          "recommended_resolution": {
+            "type": "string",
+            "description": "The concrete recommended resolution."
+          },
+          "tried_deliberation_path": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliberationStepDto"
+            },
+            "description": "Every role, consultation, failed round and remediation already used."
           }
         }
       },
@@ -10260,6 +11410,18 @@
           }
         }
       },
+      "PublishTriggerRequest": {
+        "type": "object",
+        "description": "What `triggers:publish` is asked for.\n\nThe body carries the trigger document itself rather than a field-by-field\nmirror of it. A `TriggerSpec` is already a validated, canonicalizable,\nversioned document with its own rules, and restating its twenty-odd fields as\na second type would create exactly one thing: somewhere for the two to\ndisagree. The daemon deserializes it with the domain's own parser, so an\nunknown or malformed field is refused rather than dropped.",
+        "required": [
+          "spec"
+        ],
+        "properties": {
+          "spec": {
+            "description": "The complete trigger specification, as the domain spells it."
+          }
+        }
+      },
       "PublishedTeamRevisionDto": {
         "type": "object",
         "description": "One immutable published team-template revision.",
@@ -10531,19 +11693,43 @@
         "type": "object",
         "description": "Record one round of Committee findings.",
         "required": [
-          "findings",
+          "round",
+          "verdict",
+          "evidence_complete",
+          "rationale",
           "expected_revision"
         ],
         "properties": {
+          "evidence_complete": {
+            "type": "boolean",
+            "description": "Whether every evidence reference required by the finding is present."
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "References to already-authoritative evidence; no payload upload."
+          },
           "expected_revision": {
             "type": "integer",
             "format": "int64",
             "description": "The run revision the caller believes is current.",
             "minimum": 0
           },
-          "findings": {
-            "type": "object",
-            "description": "The findings document."
+          "rationale": {
+            "type": "string",
+            "description": "Bounded explanation."
+          },
+          "round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "One-based round.",
+            "minimum": 0
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/ConsultationVerdictDto",
+            "description": "Typed reviewer/Judge conclusion."
           }
         },
         "additionalProperties": false
@@ -10630,24 +11816,88 @@
       },
       "RemediateCompletionRequest": {
         "type": "object",
-        "description": "Send one epic's completion back for remediation.",
+        "description": "Record one epic's remediation authority.",
         "required": [
           "expected_revision",
-          "reason"
+          "action"
         ],
         "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RemediationActionDto",
+            "description": "Which authority is acting, and over what."
+          },
           "expected_revision": {
             "type": "integer",
             "format": "int64",
             "description": "The completion revision the caller believes is current.",
             "minimum": 0
-          },
-          "reason": {
-            "type": "string",
-            "description": "Why. Recorded, never interpreted."
           }
         },
         "additionalProperties": false
+      },
+      "RemediationActionDto": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The exact epic LSA's bounded proposal for a failed round.",
+            "required": [
+              "round",
+              "failed_round_evidence",
+              "proposal",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "lsa_proposal"
+                ]
+              },
+              "failed_round_evidence": {
+                "type": "string",
+                "description": "The immutable evidence digest of that failed round, as the proposer\nread it. A proposal naming another round's evidence is refused rather\nthan applied to the round it happens to be filed against."
+              },
+              "proposal": {
+                "type": "string",
+                "description": "The digest of the proposed bounded correction."
+              },
+              "round": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The failed round being answered.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The exact epic TPM's route for an already approved proposal.",
+            "required": [
+              "round",
+              "route",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "tpm_route"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The remediation round being routed.",
+                "minimum": 0
+              },
+              "route": {
+                "type": "string",
+                "description": "The digest of the routed task set, dependencies and team selections."
+              }
+            }
+          }
+        ],
+        "description": "One of the two remediation authorities, as a closed tagged action.\n\nRemediation takes two distinct seats acting in order, so the request names\nwhich one is acting rather than carrying a free-text reason. A single\nuntyped `reason` could not express the rule the pinned policy enforces: the\nLSA proposes the bounded correction and the TPM routes it, and neither\nreceipt alone may launch a round."
       },
       "ReplaceSeatRequest": {
         "type": "object",
@@ -10726,6 +11976,34 @@
           "team_run_id": {
             "type": "string",
             "description": "The preserved team run."
+          }
+        }
+      },
+      "RepositoryOutcomeDto": {
+        "type": "object",
+        "description": "One repository's integration outcome.\n\nPolyrepo integration is a collection of these plus the root pointer where one\napplies. Completion never assumes one repository, one branch or one commit,\nso there is no single-revision field for it to assume into.",
+        "required": [
+          "repository",
+          "pull_request",
+          "module_revision",
+          "root_pointer_revision"
+        ],
+        "properties": {
+          "module_revision": {
+            "type": "string",
+            "description": "Delivered module revision."
+          },
+          "pull_request": {
+            "type": "string",
+            "description": "Pull-request or equivalent integration reference."
+          },
+          "repository": {
+            "type": "string",
+            "description": "Repository/module name."
+          },
+          "root_pointer_revision": {
+            "type": "string",
+            "description": "Root-pointer revision when this module has one."
           }
         }
       },
@@ -11765,11 +13043,64 @@
           "expected_revision"
         ],
         "properties": {
+          "disposition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdviceDispositionDto",
+                "description": "What the requester or owning LSA decided about already-durable advice."
+              }
+            ]
+          },
           "expected_revision": {
             "type": "integer",
             "format": "int64",
             "description": "The run revision the caller believes is current.",
             "minimum": 0
+          },
+          "output": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Immutable Advisor output. Present only in the seat-authenticated first\nAdvisor step."
+          },
+          "rationale": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bounded disposition rationale."
+          },
+          "receipt_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Separately-authorized command receipts cited by the disposition."
+          },
+          "recommendation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "LSA recommendation authorizing the single Committee re-review."
+          },
+          "seat_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional assertion of the Advisor seat. The server always derives the\nidentity from the scoped bearer and refuses a mismatch. Absent for the\nlater requester/LSA disposition and for Committee settlement."
+          },
+          "tried_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact remediation path tried before round two, or before escalation."
           }
         },
         "additionalProperties": false
@@ -12203,7 +13534,7 @@
       },
       "StreamRefusalDto": {
         "type": "object",
-        "description": "A frame the live-content stream emits instead of an item when the timeline can\nno longer be followed.",
+        "description": "A frame the live-content stream emits instead of an item when the timeline can\nno longer be followed or its runtime can no longer be reached.",
         "required": [
           "realm_id",
           "code",
@@ -12212,7 +13543,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Always `timeline_refetch_required`."
+            "description": "The stable refusal code."
           },
           "realm_id": {
             "type": "string",

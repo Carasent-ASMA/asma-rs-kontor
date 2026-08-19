@@ -115,10 +115,14 @@ export type CompletionState = Schemas['CompletionStateDto']
 export type CompletionOutcome = Schemas['CompletionOutcomeDto']
 /** Advance completion from the revision shown to the operator. */
 export type AdvanceCompletionRequest = Schemas['AdvanceCompletionRequest']
+/** One of the two remediation authorities, as a closed tagged action. */
+export type RemediationAction = Schemas['RemediationActionDto']
 /** Return completion to remediation from the revision shown to the operator. */
 export type RemediateCompletionRequest = Schemas['RemediateCompletionRequest']
 /** The receipt every Operational mutation confirms with. */
 export type MutationReceipt = Schemas['MutationReceiptDto']
+/** One seat a topology node hosts. */
+export type TopologySeat = Schemas['TopologySeatDto']
 /** One selectable catalog role. */
 export type RoleCatalogEntry = Schemas['RoleCatalogEntryDto']
 /** The role identity accepted by a write. */
