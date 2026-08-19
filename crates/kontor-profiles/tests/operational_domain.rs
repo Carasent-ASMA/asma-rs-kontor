@@ -231,3 +231,45 @@ fn a_specification_cannot_declare_a_non_current_code_as_a_usable_kind() {
     spec.historical_codes[0].kind = kind("ECP");
     assert!(spec.validate().is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Open-question closers (OP-REQ-038)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn both_open_question_closers_are_declared_codes_of_the_pinned_catalog() {
+    let pack = bundled_operational_domain().expect("the bundled domain validates");
+    let catalog = pack
+        .role_catalogs
+        .first()
+        .expect("a seeded role catalog")
+        .clone();
+
+    for code in [
+        &pack.delivery.architecture_closer_code,
+        &pack.delivery.process_closer_code,
+    ] {
+        assert!(
+            catalog.role(code).is_some(),
+            "the closer code {code} must exist in the pinned catalog"
+        );
+    }
+    assert_ne!(
+        pack.delivery.architecture_closer_code, pack.delivery.process_closer_code,
+        "the split is only a split if the two closers are different roles"
+    );
+}
+
+#[test]
+fn a_closer_code_the_catalog_does_not_declare_is_refused() {
+    // The whole point of declaring closers as data is that they are checked
+    // against the catalog. A code nobody declared would authorize a seat that
+    // cannot exist, and the refusal is what stops that shipping.
+    let mut pack = bundled_operational_domain().expect("the bundled domain validates");
+    pack.delivery.architecture_closer_code =
+        RoleCode::parse("NOPE").expect("a lexically valid code");
+    assert!(
+        pack.validate().is_err(),
+        "a closer the catalog does not declare must be refused"
+    );
+}

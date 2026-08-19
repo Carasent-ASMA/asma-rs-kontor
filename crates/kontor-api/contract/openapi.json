@@ -8621,6 +8621,56 @@
                 "description": "Which prerequisite."
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "An unresolved ambiguity has never been dispositioned.",
+            "required": [
+              "question_id",
+              "subject",
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "enum": [
+                  "open_question_undispositioned"
+                ]
+              },
+              "question_id": {
+                "type": "string",
+                "description": "The question."
+              },
+              "subject": {
+                "type": "string",
+                "description": "What it is about."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A deferred question's trigger fired and reopened it.",
+            "required": [
+              "question_id",
+              "subject",
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "enum": [
+                  "open_question_reopened"
+                ]
+              },
+              "question_id": {
+                "type": "string",
+                "description": "The question."
+              },
+              "subject": {
+                "type": "string",
+                "description": "What it is about."
+              }
+            }
           }
         ],
         "description": "One typed reason completion cannot leave the phase it stands in."

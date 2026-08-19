@@ -9,10 +9,12 @@
 use std::collections::BTreeSet;
 
 use kontor_core::id::{AggregateRevision, ContentHash, ExternalName, SeatBindingId, SpecVersion};
+use kontor_core::open_question::OpenQuestionSummary;
 use kontor_core::{DomainError, DomainResult};
 use kontor_policy::{
-    CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload, TicketEvidence,
-    TicketGateBlocker, TicketRequirement, closeout_blockers, ticket_gate_blockers,
+    CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload,
+    OpenQuestionBlocker, TicketEvidence, TicketGateBlocker, TicketRequirement, closeout_blockers,
+    open_question_blockers, ticket_gate_blockers,
 };
 use serde::{Deserialize, Serialize};
 
@@ -437,6 +439,18 @@ pub struct CompletionState {
     pub pending_remediation: Option<RemediationAuthorization>,
     /// Closeout evidence accumulated so far.
     pub closeout: CloseoutEvidence,
+    /// The open questions read at the last closeout observation.
+    ///
+    /// Stored only so the read projection can report *which* question is
+    /// holding the epic open. It is never the value the gate is judged on: the
+    /// gate reads the ledger fresh on every closeout signal, because a question
+    /// may be raised, or a deferral's trigger may fire, during closeout itself.
+    ///
+    /// Defaulted on decode so a completion started before this gate existed
+    /// still loads; such a run is either already terminal or will be gated by
+    /// its next closeout signal, which cannot be built without a fresh read.
+    #[serde(default)]
+    pub open_questions: Vec<OpenQuestionSummary>,
     /// Mandatory human-attention payload, only in that terminal state.
     pub needs_human: Option<NeedsHumanPayload>,
     /// Signal ids already applied; a replay produces no second wake/effect.
@@ -473,6 +487,7 @@ pub fn start(
         remediations: Vec::new(),
         pending_remediation: None,
         closeout: CloseoutEvidence::default(),
+        open_questions: Vec::new(),
         needs_human: None,
         handled_signals: BTreeSet::new(),
         polling_attempts: 0,
@@ -511,8 +526,19 @@ pub enum CompletionObservation {
     RemediationApproved(RemediationApproval),
     /// The approved remediation TeamRun completed.
     RemediationCompleted(IntegrationRecord),
-    /// New merge/release/version/summary/notify/archive evidence.
-    CloseoutRecorded(CloseoutEvidence),
+    /// New merge/release/version/summary/notify/archive evidence, with the
+    /// epic's open questions as they read at this instant.
+    ///
+    /// The question set is part of the observation rather than an optional extra
+    /// so that a caller cannot record closeout without having looked: an
+    /// omitted set would read as "no open questions" and would let the epic
+    /// finish over the top of an unresolved ambiguity.
+    CloseoutRecorded {
+        /// The closeout receipts observed.
+        evidence: CloseoutEvidence,
+        /// Every open question of this epic, read immediately before this signal.
+        open_questions: Vec<OpenQuestionSummary>,
+    },
     /// Wake/reconcile attention without changing workflow evidence.
     Attention,
     /// Any stalling path may explicitly enter human attention.
@@ -734,9 +760,22 @@ pub fn advance(
                 round: verdict_round,
             });
         }
-        (CompletionObservation::CloseoutRecorded(evidence), CompletionPhase::Closeout) => {
+        (
+            CompletionObservation::CloseoutRecorded {
+                evidence,
+                open_questions,
+            },
+            CompletionPhase::Closeout,
+        ) => {
             merge_closeout(&mut next.closeout, evidence)?;
-            if closeout_blockers(&next.closeout).is_empty() {
+            next.open_questions.clone_from(open_questions);
+            // Both gates, evaluated against this signal's own fresh read. An
+            // unresolved ambiguity keeps the completion in `closeout` rather
+            // than failing it: the epic is not wrong, it is not finished, and
+            // the blocker projection says which question to go and close.
+            if closeout_blockers(&next.closeout).is_empty()
+                && open_question_blockers(open_questions).is_empty()
+            {
                 next.phase = CompletionPhase::Done;
                 commands.push(CompletionCommand::MarkDone);
             }
@@ -802,6 +841,8 @@ pub enum CompletionBlocker {
     },
     /// One fixed closeout receipt is still missing.
     Closeout(CloseoutRequirement),
+    /// An unresolved ambiguity has not been dispositioned.
+    OpenQuestion(OpenQuestionBlocker),
 }
 
 /// Stable typed blockers for the read projection.
@@ -829,6 +870,11 @@ pub fn blockers(state: &CompletionState) -> DomainResult<Vec<CompletionBlocker>>
         CompletionPhase::Closeout => Ok(closeout_blockers(&state.closeout)
             .into_iter()
             .map(CompletionBlocker::Closeout)
+            .chain(
+                open_question_blockers(&state.open_questions)
+                    .into_iter()
+                    .map(CompletionBlocker::OpenQuestion),
+            )
             .collect()),
         CompletionPhase::Done | CompletionPhase::NeedsHuman => Ok(Vec::new()),
     }
@@ -858,6 +904,9 @@ pub fn outstanding(state: &CompletionState) -> DomainResult<Vec<String>> {
                 format!("remediation_result_round_{round}")
             }
             CompletionBlocker::Closeout(requirement) => requirement.as_str().to_owned(),
+            CompletionBlocker::OpenQuestion(question) => {
+                format!("open_question:{}", question.question_id())
+            }
         })
         .collect())
 }
@@ -1024,7 +1073,7 @@ const fn observation_name(observation: &CompletionObservation) -> &'static str {
         CompletionObservation::VerdictRecorded { .. } => "verdict_recorded",
         CompletionObservation::RemediationApproved(_) => "remediation_approved",
         CompletionObservation::RemediationCompleted(_) => "remediation_completed",
-        CompletionObservation::CloseoutRecorded(_) => "closeout_recorded",
+        CompletionObservation::CloseoutRecorded { .. } => "closeout_recorded",
         CompletionObservation::Attention => "attention",
         CompletionObservation::Stalled(_) => "needs_human",
     }

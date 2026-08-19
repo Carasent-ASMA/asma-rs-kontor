@@ -642,6 +642,8 @@
     "advisor_kind": "ASW",
     "committee_kind": "CSW",
     "control_role_code": "TPM",
+    "architecture_closer_code": "LSA",
+    "process_closer_code": "TPM",
     "role_bindings": [
       {
         "role": "architect",

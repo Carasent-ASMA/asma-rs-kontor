@@ -243,6 +243,13 @@ entity_ids! {
     AdvisorProfileId,
     /// Identifies one Committee template across its revisions.
     CommitteeTemplateId,
+    /// Identifies one durable open question: an ambiguity somebody had to
+    /// proceed past, recorded so that later work can be gated on it.
+    ///
+    /// The question is the identity; its rounds, dispositions and trigger
+    /// firings are append-only children addressed by ordinal within it, so a
+    /// correction never needs a new identity to replace an old one.
+    OpenQuestionId,
     /// Identifies one raw provider/account observation.
     ///
     /// Raw evidence is addressable in its own right because an operator's

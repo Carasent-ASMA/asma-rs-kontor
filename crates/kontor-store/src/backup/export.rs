@@ -1339,6 +1339,53 @@ exported_tables! {
         payload: String,
         created_at: String,
     }
+    open_questions: OpenQuestionsRow from "open_questions" key(question_id) {
+        question_id: String,
+        project_id: String,
+        mini_project_id: String,
+        subject: String,
+        scope: String,
+        attachment: String,
+        author_seat_id: String,
+        shareability_class: String,
+        shareability_classifier: Option<String>,
+        shareability_provenance: String,
+        created_at: String,
+        revision: i64,
+    }
+    open_question_rounds: OpenQuestionRoundsRow from "open_question_rounds"
+        key(project_id, question_id, ordinal) {
+        project_id: String,
+        question_id: String,
+        ordinal: i64,
+        author_seat_id: String,
+        why_ambiguous: String,
+        options: String,
+        supersedes: Option<i64>,
+        recorded_at: String,
+    }
+    open_question_dispositions: OpenQuestionDispositionsRow from "open_question_dispositions"
+        key(project_id, question_id, ordinal) {
+        project_id: String,
+        question_id: String,
+        ordinal: i64,
+        author_seat_id: String,
+        kind: String,
+        trigger_key: Option<String>,
+        payload: String,
+        supersedes: Option<i64>,
+        recorded_at: String,
+    }
+    open_question_trigger_firings: OpenQuestionTriggerFiringsRow
+        from "open_question_trigger_firings" key(project_id, question_id, ordinal) {
+        project_id: String,
+        question_id: String,
+        ordinal: i64,
+        disposition_ordinal: i64,
+        trigger_key: String,
+        observed_by_seat_id: String,
+        recorded_at: String,
+    }
 }
 
 impl ExportedRecords {

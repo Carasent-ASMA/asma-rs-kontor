@@ -43,9 +43,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
-    ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId,
-    QuickSessionId, RoleCatalogId, RoleCode, RuntimeKindKey, SeatBindingId, SpecVersion, TaskId,
-    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
+    ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
+    ProjectId, QuickSessionId, RoleCatalogId, RoleCode, RuntimeKindKey, SeatBindingId, SpecVersion,
+    TaskId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
 use kontor_core::spec::{
     CodeCategory, CodeLifecycle, EpicPresence, RoleSegment, ShareabilityClass,
@@ -1161,6 +1161,24 @@ pub enum CompletionBlockerDto {
     Closeout {
         /// Which prerequisite.
         requirement: CloseoutRequirementDto,
+    },
+    /// An unresolved ambiguity has never been dispositioned.
+    OpenQuestionUndispositioned {
+        /// The question.
+        #[schema(value_type = String)]
+        question_id: OpenQuestionId,
+        /// What it is about.
+        #[schema(value_type = String)]
+        subject: BoundedText,
+    },
+    /// A deferred question's trigger fired and reopened it.
+    OpenQuestionReopened {
+        /// The question.
+        #[schema(value_type = String)]
+        question_id: OpenQuestionId,
+        /// What it is about.
+        #[schema(value_type = String)]
+        subject: BoundedText,
     },
 }
 

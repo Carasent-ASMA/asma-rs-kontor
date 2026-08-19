@@ -256,6 +256,16 @@ pub struct OperationalDelivery {
     pub committee_kind: TopologyKindKey,
     /// The standard role the owning control seat is opened under.
     pub control_role_code: RoleCode,
+    /// The standard role that closes architectural and product open questions.
+    ///
+    /// Which role closes which question is deployment data, declared here and
+    /// validated against the catalog below. `kontor-core` is handed the two
+    /// codes and never learns what they spell — a generic aggregate that
+    /// branched on one realm's roster would authorize the wrong seat the moment
+    /// another realm renamed its roles.
+    pub architecture_closer_code: RoleCode,
+    /// The standard role that closes process and routing open questions.
+    pub process_closer_code: RoleCode,
     /// The Foundation-to-catalog role correspondence for delivery seats.
     pub role_bindings: Vec<DeliveryRoleBinding>,
 }
@@ -338,8 +348,13 @@ impl OperationalDomainPack {
             }
         }
         let catalog = &self.role_catalogs[0];
-        for code in std::iter::once(&self.delivery.control_role_code)
-            .chain(self.delivery.role_bindings.iter().map(|it| &it.role_code))
+        for code in [
+            &self.delivery.control_role_code,
+            &self.delivery.architecture_closer_code,
+            &self.delivery.process_closer_code,
+        ]
+        .into_iter()
+        .chain(self.delivery.role_bindings.iter().map(|it| &it.role_code))
         {
             if catalog.role(code).is_none() {
                 return Err(DomainError::invalid(

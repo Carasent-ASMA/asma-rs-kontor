@@ -3,16 +3,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::DomainError;
-use kontor_core::id::{ContentHash, ExternalName, SeatBindingId, TaskId};
+use kontor_core::id::{
+    BoundedText, ContentHash, ExternalName, OpenQuestionId, SeatBindingId, TaskId,
+};
+use kontor_core::open_question::{OpenQuestionStatus, OpenQuestionSummary};
 use kontor_policy::{
-    CloseoutEvidence, CloseoutRequirement, DeliberationStep, TicketEvidence, TicketRequirement,
+    CloseoutEvidence, CloseoutRequirement, DeliberationStep, OpenQuestionBlocker, TicketEvidence,
+    TicketRequirement,
 };
 use kontor_scheduler::{
-    CommitteeVerdict, CompiledCompletion, CompletionCommand, CompletionEdgeCondition,
-    CompletionNodeKey, CompletionObservation, CompletionPhase, CompletionProfile, CompletionSignal,
-    CompletionState, IntegrationRecord, PollingFallback, RemediationApproval,
-    RemediationAuthorization, RepositoryOutcome, SignalDelivery, advance, compile,
-    operational_default, outstanding, start,
+    CommitteeVerdict, CompiledCompletion, CompletionBlocker, CompletionCommand,
+    CompletionEdgeCondition, CompletionNodeKey, CompletionObservation, CompletionPhase,
+    CompletionProfile, CompletionSignal, CompletionState, IntegrationRecord, PollingFallback,
+    RemediationApproval, RemediationAuthorization, RepositoryOutcome, SignalDelivery, advance,
+    blockers, compile, operational_default, outstanding, start,
 };
 
 fn name(value: &str) -> ExternalName {
@@ -325,7 +329,10 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
     let partial = callback(
         &state,
         "partial-closeout",
-        CompletionObservation::CloseoutRecorded(CloseoutEvidence::default()),
+        CompletionObservation::CloseoutRecorded {
+            evidence: CloseoutEvidence::default(),
+            open_questions: Vec::new(),
+        },
     );
     let (next, commands) = apply_and_restart(&compiled, &state, &partial);
     assert_one_tpm_wake(&commands, tpm);
@@ -342,7 +349,10 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
     let final_signal = callback(
         &state,
         "full-closeout",
-        CompletionObservation::CloseoutRecorded(full_closeout()),
+        CompletionObservation::CloseoutRecorded {
+            evidence: full_closeout(),
+            open_questions: Vec::new(),
+        },
     );
     let (done, commands) = apply_and_restart(&compiled, &state, &final_signal);
     assert_eq!(done.phase, CompletionPhase::Done);
@@ -435,4 +445,226 @@ fn an_incomplete_ticket_gate_cannot_start_integration() {
     )
     .expect_err("the ticket gate is closed");
     assert!(matches!(error, DomainError::MissingEvidence { .. }));
+}
+
+// ---------------------------------------------------------------------------
+// The open-question completion gate (OP-REQ-038)
+// ---------------------------------------------------------------------------
+
+fn question(status: OpenQuestionStatus) -> OpenQuestionSummary {
+    OpenQuestionSummary {
+        question_id: OpenQuestionId::generate(),
+        subject: BoundedText::parse("whether the mirror is authoritative").expect("text"),
+        status,
+    }
+}
+
+/// Drive one completion to the closeout phase with nothing else outstanding.
+fn at_closeout() -> (CompiledCompletion, CompletionState, SeatBindingId) {
+    let compiled = compile(operational_default().expect("bundled profile")).expect("compiles");
+    let tpm = SeatBindingId::generate();
+    let task = TaskId::generate();
+    let mut state = start(&compiled, tpm, vec![requirement(task)]).expect("starts");
+
+    // Each signal needs its own id: `handled_signals` makes a repeated id a
+    // replay, which would silently leave the phase where it was.
+    for (id, observation) in [
+        (
+            "tickets-closed",
+            CompletionObservation::TicketsClosed(vec![ticket_evidence(task)]),
+        ),
+        (
+            "integration-done",
+            CompletionObservation::IntegrationCompleted(integration("integration")),
+        ),
+    ] {
+        let signal = callback(&state, id, observation);
+        state = advance(&compiled, &state, &signal).expect("advances").state;
+    }
+    let verdict = callback(
+        &state,
+        "verdict-1-pass",
+        CompletionObservation::VerdictRecorded {
+            round: 1,
+            verdict: CommitteeVerdict::Pass,
+            evidence: digest("finding"),
+            deliberation: deliberation(1, "passed"),
+        },
+    );
+    state = advance(&compiled, &state, &verdict)
+        .expect("advances")
+        .state;
+    assert_eq!(state.phase, CompletionPhase::Closeout);
+    (compiled, state, tpm)
+}
+
+fn record_closeout(
+    compiled: &CompiledCompletion,
+    state: &CompletionState,
+    id: &str,
+    open_questions: Vec<OpenQuestionSummary>,
+) -> (CompletionState, Vec<CompletionCommand>) {
+    let signal = callback(
+        state,
+        id,
+        CompletionObservation::CloseoutRecorded {
+            evidence: full_closeout(),
+            open_questions,
+        },
+    );
+    let transition = advance(compiled, state, &signal).expect("closeout applies");
+    (transition.state, transition.commands)
+}
+
+#[test]
+fn an_undispositioned_question_keeps_the_epic_out_of_done() {
+    let (compiled, state, _) = at_closeout();
+    let open = question(OpenQuestionStatus::Open);
+    let (next, commands) = record_closeout(&compiled, &state, "closeout", vec![open.clone()]);
+
+    assert_eq!(
+        next.phase,
+        CompletionPhase::Closeout,
+        "an unresolved ambiguity leaves the completion non-terminal"
+    );
+    assert!(
+        !commands.contains(&CompletionCommand::MarkDone),
+        "MarkDone is refused while a question is undispositioned"
+    );
+    assert_eq!(
+        blockers(&next).expect("projects"),
+        vec![CompletionBlocker::OpenQuestion(
+            OpenQuestionBlocker::Undispositioned {
+                question_id: open.question_id,
+                subject: open.subject.clone(),
+            }
+        )],
+        "the blocker names the question and its subject as data"
+    );
+    assert_eq!(
+        outstanding(&next).expect("projects"),
+        vec![format!("open_question:{}", open.question_id)]
+    );
+}
+
+#[test]
+fn a_reopened_question_keeps_the_epic_out_of_done() {
+    let (compiled, state, _) = at_closeout();
+    let reopened = question(OpenQuestionStatus::Reopened);
+    let (next, commands) = record_closeout(&compiled, &state, "closeout", vec![reopened.clone()]);
+
+    assert_eq!(next.phase, CompletionPhase::Closeout);
+    assert!(!commands.contains(&CompletionCommand::MarkDone));
+    assert_eq!(
+        blockers(&next).expect("projects"),
+        vec![CompletionBlocker::OpenQuestion(
+            OpenQuestionBlocker::Reopened {
+                question_id: reopened.question_id,
+                subject: reopened.subject,
+            }
+        )]
+    );
+}
+
+#[test]
+fn every_disposition_releases_the_gate() {
+    for status in [
+        OpenQuestionStatus::Resolved,
+        OpenQuestionStatus::Deferred,
+        OpenQuestionStatus::NotRelevant,
+    ] {
+        let (compiled, state, _) = at_closeout();
+        let (next, commands) =
+            record_closeout(&compiled, &state, "closeout", vec![question(status)]);
+        assert_eq!(
+            next.phase,
+            CompletionPhase::Done,
+            "`{status}` is a disposition and releases the gate"
+        );
+        assert!(commands.contains(&CompletionCommand::MarkDone));
+        assert!(blockers(&next).expect("projects").is_empty());
+    }
+}
+
+#[test]
+fn a_question_raised_after_completion_started_still_blocks_done() {
+    // The question set is not frozen when completion starts: this run began
+    // with none and acquires one during closeout.
+    let (compiled, state, _) = at_closeout();
+    assert!(
+        state.open_questions.is_empty(),
+        "the run started with no open questions"
+    );
+
+    let late = question(OpenQuestionStatus::Open);
+    let (next, commands) = record_closeout(&compiled, &state, "late-question", vec![late.clone()]);
+    assert_eq!(next.phase, CompletionPhase::Closeout);
+    assert!(!commands.contains(&CompletionCommand::MarkDone));
+
+    // And once that question is dispositioned, the next closeout signal passes.
+    let dispositioned = OpenQuestionSummary {
+        status: OpenQuestionStatus::Resolved,
+        ..late
+    };
+    let (done, commands) =
+        record_closeout(&compiled, &next, "closed-question", vec![dispositioned]);
+    assert_eq!(
+        done.phase,
+        CompletionPhase::Done,
+        "release happens once the current question is dispositioned"
+    );
+    assert!(commands.contains(&CompletionCommand::MarkDone));
+}
+
+#[test]
+fn one_blocking_question_among_many_is_enough_to_hold_the_epic() {
+    let (compiled, state, _) = at_closeout();
+    let blocking = question(OpenQuestionStatus::Reopened);
+    let questions = vec![
+        question(OpenQuestionStatus::Resolved),
+        blocking.clone(),
+        question(OpenQuestionStatus::NotRelevant),
+        question(OpenQuestionStatus::Deferred),
+    ];
+    let (next, commands) = record_closeout(&compiled, &state, "closeout", questions);
+
+    assert_eq!(next.phase, CompletionPhase::Closeout);
+    assert!(!commands.contains(&CompletionCommand::MarkDone));
+    assert_eq!(
+        blockers(&next).expect("projects"),
+        vec![CompletionBlocker::OpenQuestion(
+            OpenQuestionBlocker::Reopened {
+                question_id: blocking.question_id,
+                subject: blocking.subject,
+            }
+        )],
+        "only the blocking question is reported"
+    );
+}
+
+#[test]
+fn closeout_receipts_and_questions_are_independent_gates() {
+    let (compiled, state, _) = at_closeout();
+    let signal = callback(
+        &state,
+        "partial-and-question",
+        CompletionObservation::CloseoutRecorded {
+            evidence: CloseoutEvidence::default(),
+            open_questions: vec![question(OpenQuestionStatus::Open)],
+        },
+    );
+    let next = advance(&compiled, &state, &signal).expect("applies").state;
+    let projected = blockers(&next).expect("projects");
+
+    assert_eq!(next.phase, CompletionPhase::Closeout);
+    assert_eq!(
+        projected.len(),
+        CloseoutRequirement::ALL.len() + 1,
+        "both gates report at once rather than masking each other"
+    );
+    assert!(
+        projected
+            .iter()
+            .any(|blocker| matches!(blocker, CompletionBlocker::OpenQuestion(_)))
+    );
 }

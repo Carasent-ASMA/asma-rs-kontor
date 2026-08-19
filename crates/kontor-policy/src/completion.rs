@@ -7,7 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use kontor_core::id::{ContentHash, ExternalName, TaskId};
+use kontor_core::id::{BoundedText, ContentHash, ExternalName, OpenQuestionId, TaskId};
+use kontor_core::open_question::{OpenQuestionStatus, OpenQuestionSummary};
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 
@@ -266,4 +267,78 @@ impl TryFrom<UncheckedNeedsHuman> for NeedsHumanPayload {
     fn try_from(value: UncheckedNeedsHuman) -> Result<Self, Self::Error> {
         Self::new(value.recommended_resolution, value.tried_deliberation_path)
     }
+}
+
+// ---------------------------------------------------------------------------
+// The open-question gate (OP-REQ-038)
+// ---------------------------------------------------------------------------
+
+/// Why an unresolved ambiguity is holding completion open.
+///
+/// The identity and the subject are both carried, because a blocker naming only
+/// a UUID tells whoever has to go and close the question nothing about what it
+/// is. Both are data rather than a rendered sentence, for the same reason every
+/// other blocker in this module is.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenQuestionBlocker {
+    /// Raised and never dispositioned.
+    Undispositioned {
+        /// The question.
+        question_id: OpenQuestionId,
+        /// What it is about.
+        subject: BoundedText,
+    },
+    /// Deferred, and the trigger it was parked on has since fired.
+    Reopened {
+        /// The question.
+        question_id: OpenQuestionId,
+        /// What it is about.
+        subject: BoundedText,
+    },
+}
+
+impl OpenQuestionBlocker {
+    /// The question this blocker names.
+    #[must_use]
+    pub const fn question_id(&self) -> OpenQuestionId {
+        match self {
+            Self::Undispositioned { question_id, .. } | Self::Reopened { question_id, .. } => {
+                *question_id
+            }
+        }
+    }
+}
+
+/// The questions that stop an epic reaching `done`, in stable question order.
+///
+/// An undispositioned question blocks, and so does one whose deferral has been
+/// reopened. Every one of the three dispositions releases its question — that
+/// is what makes `deferred` an honest answer rather than a way of hiding one:
+/// the deferral names the trigger that will bring the question back, and until
+/// that trigger fires the question is genuinely closed.
+///
+/// The input is a freshly read summary set, never a snapshot taken when
+/// completion started. A question raised during closeout has to count.
+#[must_use]
+pub fn open_question_blockers(summaries: &[OpenQuestionSummary]) -> Vec<OpenQuestionBlocker> {
+    let mut blocking: Vec<&OpenQuestionSummary> = summaries
+        .iter()
+        .filter(|summary| summary.status.blocks_completion())
+        .collect();
+    blocking.sort_by_key(|summary| summary.question_id);
+    blocking
+        .into_iter()
+        .map(|summary| match summary.status {
+            OpenQuestionStatus::Reopened => OpenQuestionBlocker::Reopened {
+                question_id: summary.question_id,
+                subject: summary.subject.clone(),
+            },
+            // `blocks_completion` admits exactly `open` and `reopened`; the
+            // three dispositioned states never reach here.
+            _ => OpenQuestionBlocker::Undispositioned {
+                question_id: summary.question_id,
+                subject: summary.subject.clone(),
+            },
+        })
+        .collect()
 }
