@@ -431,6 +431,71 @@ impl ToolSpec {
     }
 }
 
+/// One named, registry-defined subset of the tool vocabulary.
+///
+/// A profile narrows *presentation only*: which tools a server lists, and — so
+/// the list and the callable set are the same set — which calls it admits. It
+/// is always intersected with what the credential tier already allows and can
+/// never widen it: authority remains the credential's. Profiles live here,
+/// next to the tier declarations, because free-form tool lists in seat files
+/// are deliberately not accepted — a list in configuration would be a second
+/// authority model beside the credential (see `seats/README.md`).
+#[derive(Debug, Clone, Copy)]
+pub struct ServeProfile {
+    /// The name `--serve-profile` selects.
+    pub name: &'static str,
+    /// The registry tool names this profile serves, within the tier.
+    pub tools: &'static [&'static str],
+}
+
+impl ServeProfile {
+    /// The profile named, if this registry declares it.
+    #[must_use]
+    pub fn find(name: &str) -> Option<&'static Self> {
+        SERVE_PROFILES.iter().find(|profile| profile.name == name)
+    }
+
+    /// Whether this profile serves the named tool.
+    #[must_use]
+    pub fn allows(&self, tool: &str) -> bool {
+        self.tools.contains(&tool)
+    }
+
+    /// Every declared profile name, so a startup refusal can name the valid ones.
+    #[must_use]
+    pub fn names() -> Vec<&'static str> {
+        SERVE_PROFILES.iter().map(|profile| profile.name).collect()
+    }
+}
+
+/// Every declared serve profile.
+///
+/// `worker` is the everyday working seat's surface: read the work, claim it,
+/// settle a turn, record a gate verdict, talk on the session, submit intake,
+/// propose memory and resolve context — 16 tools, all at or below operator
+/// tier, which the drift test below pins against the registry.
+pub static SERVE_PROFILES: &[ServeProfile] = &[ServeProfile {
+    name: "worker",
+    tools: &[
+        "kontor_task_get",
+        "kontor_run_get",
+        "kontor_realm_get",
+        "kontor_code_help_get",
+        "kontor_intake_receipt_get",
+        "kontor_ticket_comments_list",
+        "kontor_events_list",
+        "kontor_completion_get",
+        "kontor_ticket_claim",
+        "kontor_turn_settle",
+        "kontor_gate_record",
+        "kontor_session_message_send",
+        "kontor_ticket_comments_pull",
+        "kontor_intake_submit",
+        "kontor_memory_propose",
+        "kontor_context_resolve",
+    ],
+}];
+
 /// Every operation a Paseo Lead Architect can reach, and nothing else.
 ///
 /// The public `/v1` routes deliberately absent are listed in
@@ -3995,6 +4060,46 @@ mod tests {
             0,
             "a client that could name an outcome could decide how a run ended"
         );
+    }
+
+    /// Every profile entry is a real registry tool at or below operator tier.
+    ///
+    /// This is the drift catch: a tool renamed in [`REGISTRY`] without its
+    /// profile entry following would otherwise silently vanish from every seat
+    /// that serves the profile, and an admin-tier entry would be a profile
+    /// pretending to be authority.
+    #[test]
+    fn every_profile_entry_names_a_registry_tool_at_or_below_operator() {
+        for profile in SERVE_PROFILES {
+            let unique: BTreeSet<_> = profile.tools.iter().collect();
+            assert_eq!(
+                unique.len(),
+                profile.tools.len(),
+                "profile `{}` lists a tool twice",
+                profile.name
+            );
+            for name in profile.tools {
+                let tool = ToolSpec::find(name).unwrap_or_else(|| {
+                    panic!(
+                        "profile `{}` names `{name}`, which is not a registry tool",
+                        profile.name
+                    )
+                });
+                assert!(
+                    CallerTier::Operator.at_least(tool.tier),
+                    "profile `{}` names `{name}` at {} tier — a profile may not \
+                     reach above operator",
+                    profile.name,
+                    tool.tier.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_worker_profile_is_the_sixteen_tools_the_plan_pinned() {
+        let worker = ServeProfile::find("worker").expect("the worker profile is declared");
+        assert_eq!(worker.tools.len(), 16, "worker v1 is exactly 16 tools");
     }
 
     #[test]

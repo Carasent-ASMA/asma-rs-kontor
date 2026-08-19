@@ -28,7 +28,7 @@ use serde::Serialize;
 
 use crate::capability::{Denied, Gate};
 use crate::client::{CallerTier, FrameBudget, Method, Reply, Request, Transport, TransportFailure};
-use crate::registry::{ArgSpec, ArgType, OpKind, Place, REGISTRY, ToolSpec};
+use crate::registry::{ArgSpec, ArgType, OpKind, Place, REGISTRY, ServeProfile, ToolSpec};
 
 /// One tool's whole answer.
 ///
@@ -91,6 +91,11 @@ impl Failure {
 /// One realm, one credential tier, one closed tool vocabulary.
 pub struct Dispatcher {
     gate: Gate,
+    /// The active serve profile, when this server was started with one.
+    ///
+    /// Presentation, never authority: it removes tools from both the served
+    /// list and call admission, always within the tier, and can add nothing.
+    profile: Option<&'static ServeProfile>,
     transport: Box<dyn Transport>,
 }
 
@@ -99,6 +104,7 @@ impl std::fmt::Debug for Dispatcher {
         formatter
             .debug_struct("Dispatcher")
             .field("tier", &self.gate.configured())
+            .field("profile", &self.profile.map(|profile| profile.name))
             .field("transport", &self.transport)
             .finish_non_exhaustive()
     }
@@ -114,8 +120,20 @@ impl Dispatcher {
     pub fn new(transport: Box<dyn Transport>) -> Self {
         Self {
             gate: Gate::new(transport.tier()),
+            profile: None,
             transport,
         }
+    }
+
+    /// The same dispatcher, narrowed to one registry-declared serve profile.
+    ///
+    /// Narrowing only: the served list and the callable set both become
+    /// profile ∩ tier. A profile naming a tool the tier refuses changes
+    /// nothing — the gate still refuses it first.
+    #[must_use]
+    pub const fn with_profile(mut self, profile: &'static ServeProfile) -> Self {
+        self.profile = Some(profile);
+        self
     }
 
     /// The authority every call is made at.
@@ -130,12 +148,15 @@ impl Dispatcher {
         self.transport.base_url()
     }
 
-    /// The tools this server serves, which is every tool its tier reaches.
+    /// The tools this server serves: every tool its tier reaches, intersected
+    /// with the active serve profile when one is set.
     pub fn tools(&self) -> impl Iterator<Item = &'static ToolSpec> {
         let configured = self.gate.configured();
-        REGISTRY
-            .iter()
-            .filter(move |tool| configured.at_least(tool.tier))
+        let profile = self.profile;
+        REGISTRY.iter().filter(move |tool| {
+            configured.at_least(tool.tier)
+                && profile.is_none_or(|profile| profile.allows(tool.name))
+        })
     }
 
     /// Resolve, authorize, validate and make exactly one request.
@@ -156,6 +177,20 @@ impl Dispatcher {
             tool: tool.to_owned(),
             configured: self.gate.configured(),
         })?;
+
+        // 1b. The active serve profile, enforced at admission and not only at
+        //     listing: a narrowed list whose calls stayed open would be a list
+        //     lying about the callable set. List and callable set are the same
+        //     two predicates, so they cannot drift apart.
+        if let Some(profile) = self.profile
+            && !profile.allows(spec.name)
+        {
+            return Err(Denied::ProfileExcluded {
+                tool: tool.to_owned(),
+                profile: profile.name,
+            }
+            .into());
+        }
 
         // 2. Authorize, before a request exists. This is the *only* authority
         //    decision in the crate. `required_tier` is the declared tier for every

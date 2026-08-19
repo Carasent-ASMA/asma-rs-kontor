@@ -40,6 +40,7 @@ use kontor_runtime_paseo::adapter::{
 };
 use kontor_runtime_paseo::client::PaseoLiveTransport;
 use kontor_runtime_paseo::mcp::PaseoMcpHttp;
+use kontor_runtime_paseo::seat_mcp::SeatMcp;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
@@ -348,12 +349,15 @@ fn deferred_family(bytes: &[u8]) -> Option<&'static str> {
 /// Returns [`FleetError::Invalid`] for a setting the domain refuses and
 /// [`FleetError::DuplicateFamily`] when two settings claim one family — which
 /// would otherwise silently keep whichever was composed last.
-pub fn build_registry(settings: &RuntimeSettings) -> Result<RuntimeRegistry, FleetError> {
+pub fn build_registry(
+    settings: &RuntimeSettings,
+    seat_mcp: Option<&SeatMcp>,
+) -> Result<RuntimeRegistry, FleetError> {
     let mut registry = RuntimeRegistry::new();
     let mut claimed: BTreeSet<RuntimeKindKey> = BTreeSet::new();
     for setting in &settings.runtimes {
         let (family, adapter) = match setting {
-            RuntimeSetting::Paseo(paseo) => compose_paseo(paseo)?,
+            RuntimeSetting::Paseo(paseo) => compose_paseo(paseo, seat_mcp)?,
         };
         if !claimed.insert(family.clone()) {
             return Err(FleetError::DuplicateFamily {
@@ -365,9 +369,30 @@ pub fn build_registry(settings: &RuntimeSettings) -> Result<RuntimeRegistry, Fle
     Ok(registry)
 }
 
+/// The seat MCP composition this daemon's Paseo planes perform at seat spawn.
+///
+/// Resolved once, at daemon level: `KONTOR_SEAT_MCP=off` in the daemon's
+/// environment is the kill switch and yields `None`, which disables composition
+/// for every plane. The `kontor-mcp` command a seat's `.mcp.json` names is the
+/// daemon's own sibling binary when one exists — the realm's binaries install
+/// together — else the bare name resolved on the seat's `PATH`; see
+/// [`kontor_runtime_paseo::seat_mcp::kontor_mcp_command`].
+#[must_use]
+pub fn seat_mcp(state_root: &Path) -> Option<SeatMcp> {
+    use kontor_runtime_paseo::seat_mcp::{KILL_SWITCH_ENV, enabled, kontor_mcp_command};
+    if !enabled(std::env::var(KILL_SWITCH_ENV).ok().as_deref()) {
+        return None;
+    }
+    Some(SeatMcp {
+        command: kontor_mcp_command(),
+        state_root: state_root.to_owned(),
+    })
+}
+
 /// Build one Paseo execution plane.
 fn compose_paseo(
     setting: &PaseoSetting,
+    seat_mcp: Option<&SeatMcp>,
 ) -> Result<(RuntimeKindKey, Arc<dyn RuntimeAdapter>), FleetError> {
     let refuse = |rule: &'static str| FleetError::Invalid {
         family: setting.runtime_kind.clone(),
@@ -454,6 +479,7 @@ fn compose_paseo(
         // An empty map means this plane adopts nothing and creates what it
         // needs, which is right for a topology with one root above the seat.
         adopted_containers,
+        seat_mcp: seat_mcp.cloned(),
     };
     // The credential leaves the settings document here and goes straight into the
     // transport, which is the only thing that may hold it.
@@ -530,7 +556,7 @@ mod tests {
         let settings = read(directory.path()).expect("an absent file is not a failure");
         assert!(settings.runtimes.is_empty());
         assert!(
-            build_registry(&settings)
+            build_registry(&settings, None)
                 .expect("an empty fleet composes")
                 .families()
                 .next()
@@ -544,7 +570,7 @@ mod tests {
             schema_version: RUNTIMES_SCHEMA,
             runtimes: vec![paseo("paseo.agent")],
         };
-        let registry = build_registry(&settings).expect("the lane composes");
+        let registry = build_registry(&settings, None).expect("the lane composes");
         let families: Vec<String> = registry.families().map(ToString::to_string).collect();
         assert_eq!(families, vec!["paseo.agent".to_owned()]);
         assert!(
@@ -584,7 +610,7 @@ mod tests {
             runtimes: vec![RuntimeSetting::Paseo(setting)],
         };
         assert!(
-            build_registry(&settings).is_ok(),
+            build_registry(&settings, None).is_ok(),
             "a named adoption composes"
         );
 
@@ -599,7 +625,7 @@ mod tests {
             runtimes: vec![RuntimeSetting::Paseo(broken)],
         };
         assert!(
-            build_registry(&settings).is_err(),
+            build_registry(&settings, None).is_err(),
             "an unparseable topology node id is a configuration error"
         );
     }
@@ -612,7 +638,7 @@ mod tests {
         };
         assert!(
             matches!(
-                build_registry(&settings),
+                build_registry(&settings, None),
                 Err(FleetError::DuplicateFamily { .. })
             ),
             "the second would otherwise silently replace the first"
@@ -632,7 +658,7 @@ mod tests {
                 }
             })],
         };
-        let error = build_registry(&settings).expect_err("a worktree root that is not absolute");
+        let error = build_registry(&settings, None).expect_err("a worktree root that is not absolute");
         let rendered = error.to_string();
         assert!(
             rendered.contains("canonical_worktree_cwd"),
@@ -685,7 +711,7 @@ mod tests {
             schema_version: RUNTIMES_SCHEMA,
             runtimes: vec![RuntimeSetting::Paseo(setting)],
         };
-        let registry = build_registry(&settings).expect("the complete Paseo plane composes");
+        let registry = build_registry(&settings, None).expect("the complete Paseo plane composes");
         assert!(
             registry
                 .get(&RuntimeKindKey::parse("paseo.agent").expect("a valid key"))

@@ -335,6 +335,12 @@ pub struct PaseoConfig {
     /// children of it remain outside Kontor unless a topology binding names
     /// their exact native ids.
     pub adopted_containers: BTreeMap<TopologyNodeId, ExternalId>,
+    /// Worktree-local MCP composition for Claude seats, when the daemon
+    /// enabled it.
+    ///
+    /// `None` means no composition at all — the daemon's `KONTOR_SEAT_MCP=off`
+    /// kill switch, or a caller that never configured it. See [`crate::seat_mcp`].
+    pub seat_mcp: Option<crate::seat_mcp::SeatMcp>,
 }
 
 impl PaseoConfig {
@@ -2863,6 +2869,24 @@ impl PaseoAdapter {
                 rule: "a live Paseo agent already carries this role slot's labels",
             });
         }
+
+        // Compose the seat's worktree-local MCP config before anything is
+        // spawned, so a Claude seat starts with exactly one kontor server at
+        // operator tier under the worker profile instead of whatever ambient
+        // harness config the machine carries. Loud on failure: a seat silently
+        // launched without its control-plane surface would fail later, further
+        // from the cause.
+        crate::seat_mcp::compose_for_seat(
+            self.config.seat_mcp.as_ref(),
+            request.model_rung().provider.0.as_str(),
+            std::path::Path::new(task_scope.canonical_worktree_cwd.as_str()),
+        )
+        .map_err(|error| {
+            tracing::warn!(%error, "seat MCP composition failed");
+            RuntimeError::LaunchNotAdmitted {
+                rule: "seat MCP composition failed in the task worktree",
+            }
+        })?;
 
         let agent_display_name = self
             .config

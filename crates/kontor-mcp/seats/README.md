@@ -11,7 +11,7 @@ admin-scoped.
 | Seat | File | Tier | Reaches |
 | --- | --- | :---: | --- |
 | Paseo Lead Architect | [`paseo-lead.json`](paseo-lead.json) | `admin` | The whole tool vocabulary |
-| Worker | [`worker.json`](worker.json) | `operator` | Reads, scheduling, lifecycle, context, gates, settlement, ticket reconciliation, session follow-up and permissions |
+| Worker | [`worker.json`](worker.json) | `operator` | The registry's `worker` serve profile: reads of its own work, claiming, turn settlement, gates, session follow-up, intake, memory proposals and context |
 | Reviewer | [`reviewer.json`](reviewer.json) | `observer` | Reads only |
 
 ## Filling in the two values
@@ -31,8 +31,17 @@ startup, before a client exists.
 - **A bearer value.** The secret is read from the realm's own credential file and
   never appears on argv, where every process listing on the machine would show it.
 - **An arbitrary URL.** Only loopback is addressable.
-- **A tool subset.** The tool list follows from the tier. A seat that listed tools
-  would be a second authority model beside the credential.
+- **A free-form tool subset.** The tool list follows from the tier. A seat file
+  that listed tool names would be a second authority model beside the credential:
+  config drift across seat files, no single source of truth, and a list readers
+  would mistake for authority when only the credential enforces anything. What a
+  seat *may* name is a **serve profile** — `--serve-profile worker` — because a
+  profile is declared in the registry next to the tiers, not in the seat file.
+  A profile narrows presentation only, always within the credential tier, and is
+  enforced at call time as well as in the tool list: a tool the profile excludes
+  is refused even when the tier would allow it, so the list and the callable set
+  are the same set. A profile can never widen a tier, and an unknown profile name
+  refuses to start. Free-form lists remain banned.
 
 ## Why the worker is not the Lead
 
