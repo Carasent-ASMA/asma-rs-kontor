@@ -1653,6 +1653,36 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     // A native container is not an aggregate a command may name, and the node it
     // belongs to is not one either. The project is what the authority is over.
     ("retitle_container", "project", "witness", None),
+    // Project configuration, and deliberately nothing else: publishing a roster
+    // seats no epic, so no epic aggregate is a legal target for it.
+    ("apply_core_team", "project", "witness", None),
+    // Same shape, same reason: publishing a consultation policy document creates
+    // no ASW, no CSW and no seat, so no epic or run aggregate is legal for it.
+    ("apply_advisor_profile", "project", "witness", None),
+    ("apply_committee_template", "project", "witness", None),
+    ("ensure_quick_session", "project", "witness", None),
+    // Promotion and the two roster commands are about one epic.
+    ("promote_quick_session", "mini_project", "witness", None),
+    ("materialize_core_team", "mini_project", "witness", None),
+    ("upgrade_epic_roster", "mini_project", "witness", None),
+    // Publishing a Completion Profile is project configuration, for the same
+    // reason as `apply_core_team`: it deliberately does not move any running
+    // epic's frozen pin, so no epic aggregate is a legal target for it.
+    ("apply_completion_profile", "project", "witness", None),
+    // Consultation execution is frozen inside one epic. The native runtime
+    // seats and CSW are evidence for that epic, not independent aggregates.
+    ("invoke_advisor_run", "mini_project", "witness", None),
+    ("settle_advisor_run", "mini_project", "witness", None),
+    ("invoke_committee_run", "mini_project", "witness", None),
+    ("record_committee_findings", "mini_project", "witness", None),
+    ("settle_committee_run", "mini_project", "witness", None),
+    // The two completion writes are about one epic's own frozen run.
+    ("advance_completion", "mini_project", "witness", None),
+    ("remediate_completion", "mini_project", "witness", None),
+    // Publishing installs an immutable document into the project and names no
+    // row inside it: the revision it creates is addressed by `(id, version)`,
+    // not by an aggregate carrying a revision of its own.
+    ("publish_trigger", "project", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.

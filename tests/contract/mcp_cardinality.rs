@@ -75,6 +75,14 @@ fn sample(ty: ArgType, name: &str) -> serde_json::Value {
         ArgType::IdempotencyKey => serde_json::Value::String(format!("key-for-{name}")),
         ArgType::Text => serde_json::Value::String("sample".to_owned()),
         ArgType::Timestamp => serde_json::Value::String("2026-08-13T10:00:00Z".to_owned()),
+        // A declared object is sampled from its own fields, so a tool that gains
+        // one is covered here without a hand-written fixture — the same reason
+        // every other arm is generated rather than listed per tool.
+        ArgType::Object(fields) => fields
+            .iter()
+            .map(|field| (field.name.to_owned(), sample(field.ty, field.name)))
+            .collect::<serde_json::Map<_, _>>()
+            .into(),
         ArgType::Revision | ArgType::U32 | ArgType::U64 => serde_json::Value::from(1),
         ArgType::I64 => serde_json::Value::from(1),
         ArgType::Bool => serde_json::Value::Bool(true),

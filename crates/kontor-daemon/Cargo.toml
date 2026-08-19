@@ -33,6 +33,10 @@ kontor-store = { path = "../kontor-store", version = "=0.1.0" }
 # same hand as the store and the adapters.
 kontor-profiles = { path = "../kontor-profiles", version = "=0.1.0" }
 kontor-teams = { path = "../kontor-teams", version = "=0.1.0" }
+# KON-OP-06: the completion ticket-gate/closeout vocabulary and the mandatory
+# `NEEDS_HUMAN` payload are decided in `kontor-policy`; this crate composes them
+# and never re-implements a rule. Same split as `kontor-scheduler` above.
+kontor-policy = { path = "../kontor-policy", version = "=0.1.0" }
 kontor-scheduler = { path = "../kontor-scheduler", version = "=0.1.0" }
 # Admission policy — which observation moves the adaptive window, and what a
 # cooldown means — is the account layer's. The composition root is where that

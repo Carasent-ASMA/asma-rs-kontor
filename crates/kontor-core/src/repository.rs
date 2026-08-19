@@ -18,16 +18,20 @@ use crate::calendar::{
     HolidayImportBatch, HolidaySourceRevision, OverrideRevocation, ScheduleOverride,
     WorkCalendarAssignment, WorkScope,
 };
+use crate::consultation::{
+    CommitteeRole, CommitteeVerdict, ConsultationFamily, ConsultationRunId, ConsultationRunState,
+};
 use crate::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ConnectorKey,
-    ContentHash, CredentialAlias, EventCursor, ExecutionAuthorizationId, ExternalId,
-    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, GuardrailEvaluationId,
-    IdempotencyKey, IntakeDecisionId, IntakeReceiptId, MiniProjectId, ModuleKey, PersonaScenarioId,
-    PhaseKey, ProjectId, RealmId, RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId,
-    RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId, SpecVersion,
-    StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
-    TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
+    CalendarExceptionId, CalendarProfileId, CanonicalDocument, CapacityObservationId,
+    CommandReceiptId, ConnectorKey, ContentHash, CredentialAlias, EventCursor,
+    ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
+    GateKey, GuardrailEvaluationId, IdempotencyKey, IntakeDecisionId, IntakeReceiptId,
+    MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey, ProjectId, QuickSessionId, RealmId,
+    RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId,
+    SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
+    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
+    TriggerKey, WorkCalendarId, WorkProfileKey,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -177,6 +181,403 @@ pub struct ProjectTopologyDefault {
     pub topology: TopologySnapshot,
     /// Selection instant.
     pub selected_at: Timestamp,
+}
+
+/// One immutable published Project Core Team revision, as it is stored.
+///
+/// The seats are held as the canonical document the application layer resolved,
+/// rather than as columns this layer would have to re-validate. The store's
+/// obligation is that the revision it returns is byte-identical to the one that
+/// was published — not that it can independently re-derive a role's standard
+/// title, which is the catalog's job and is already pinned by `catalog_hash`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCoreTeamRevision {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Monotonic revision within the project.
+    pub version: SpecVersion,
+    /// Canonical hash of the exact role catalog the seats resolved against.
+    pub catalog_hash: ContentHash,
+    /// The resolved seats, in their published order.
+    pub seats: serde_json::Value,
+    /// Publication instant.
+    pub published_at: Timestamp,
+}
+
+/// One published Advisor profile or Committee template revision, as it is
+/// stored.
+///
+/// The definition is held as the canonical document the domain produced, for
+/// the same reason `StoredCoreTeamRevision` holds its seats that way: the
+/// store's obligation is that what it returns is byte-identical to what was
+/// published, and `definition_hash` already pins the typed value it was
+/// canonicalized from. Re-deriving whether the document is publishable is the
+/// specification's job, and it has already been done once, before the write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredConsultationProfileRevision {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Which family this revision belongs to.
+    pub family: ConsultationFamily,
+    /// The profile or template identity shared by every revision of it.
+    pub profile_id: String,
+    /// Monotonic version within `profile_id`.
+    pub version: SpecVersion,
+    /// The label frozen at publish.
+    pub name: ExternalName,
+    /// The canonical definition, byte-for-byte as published.
+    ///
+    /// Held as the canonical text rather than as a re-serialized value: a
+    /// `serde_json::Value` round-trip is only incidentally byte-stable, and the
+    /// digest below is over these exact bytes.
+    pub definition: String,
+    /// Digest of that canonical definition.
+    pub definition_hash: ContentHash,
+    /// Publication instant.
+    pub published_at: Timestamp,
+}
+
+/// One repository-backed Advisor or Committee invocation.
+///
+/// The exact policy revision, question, context document and topology id are
+/// frozen before the first runtime effect. `result` is absent until settlement
+/// and, once present, is immutable by repository rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredConsultationRun {
+    /// Family-qualified run identity.
+    pub id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic the consultation belongs to.
+    pub mini_project_id: MiniProjectId,
+    /// Exact published profile/template identity.
+    pub profile_id: String,
+    /// Exact published profile/template version.
+    pub profile_version: SpecVersion,
+    /// Digest of the pinned definition.
+    pub definition_hash: ContentHash,
+    /// Bounded question asked at invocation.
+    pub question: BoundedText,
+    /// Digest of the question bytes.
+    pub question_hash: ContentHash,
+    /// Canonical frozen input and provenance.
+    pub context: serde_json::Value,
+    /// Digest of the canonical context document.
+    pub context_hash: ContentHash,
+    /// Exact caller seat whose role was authorized by the pinned definition.
+    pub caller_seat_binding_id: SeatBindingId,
+    /// Dedicated ASW/CSW node, stable across retries and restarts.
+    pub topology_node_id: TopologyNodeId,
+    /// Invocation idempotency key, persisted before native effects.
+    pub invoke_key: IdempotencyKey,
+    /// Canonical invocation intent digest bound to that key.
+    pub invoke_intent_hash: ContentHash,
+    /// Current lifecycle.
+    pub state: ConsultationRunState,
+    /// One-based Committee round; Advisors remain on round one.
+    pub round: u32,
+    /// Immutable family-specific result after settlement.
+    pub result: Option<serde_json::Value>,
+    /// Digest of `result`, when settled.
+    pub result_hash: Option<ContentHash>,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+    /// Last durable change.
+    pub updated_at: Timestamp,
+    /// Settlement instant.
+    pub settled_at: Option<Timestamp>,
+}
+
+/// The immutable evidence authored by one Advisor seat before disposition.
+///
+/// This is deliberately not the consultation result: the requester or owning
+/// LSA records that later, after considering these frozen bytes. Keeping the
+/// artifact separate makes it impossible for the disposition authority to
+/// rewrite the Advisor's output in the same command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAdvisorAdvice {
+    /// Advisor invocation the evidence belongs to.
+    pub advisor_run_id: AdvisorRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Exact attested Advisor SeatBinding that submitted it.
+    pub seat_binding_id: SeatBindingId,
+    /// Canonical evidence document.
+    pub document: serde_json::Value,
+    /// Digest of the canonical evidence bytes.
+    pub document_hash: ContentHash,
+    /// Append instant.
+    pub recorded_at: Timestamp,
+}
+
+/// One template-declared native consultation seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredConsultationSeat {
+    /// Owning consultation.
+    pub run_id: ConsultationRunId,
+    /// Stable template slot.
+    pub role_slot_id: RoleSlotId,
+    /// Committee function. Advisors have no Committee role.
+    pub committee_role: Option<CommitteeRole>,
+    /// Logical role used for policy and display.
+    pub logical_role: RoleKey,
+    /// Exact persistent topology seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact selected provider/model/effort rung.
+    pub model_rung: crate::spec::ModelRung,
+    /// Runtime readback after launch/recovery.
+    pub native_identity: Option<NativeRuntimeIdentity>,
+    /// Provider-native conversation id, when the runtime exposes one.
+    pub provider_session_id: Option<ExternalId>,
+    /// When the native identity was last read back.
+    pub observed_at: Option<Timestamp>,
+}
+
+/// One immutable Committee finding or Judge aggregate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCommitteeFinding {
+    /// Owning Committee.
+    pub committee_run_id: crate::id::CommitteeRunId,
+    /// One-based round.
+    pub round: u32,
+    /// Exact template slot that submitted it.
+    pub role_slot_id: RoleSlotId,
+    /// Whether this is an independent finding or the Judge aggregate.
+    pub role: CommitteeRole,
+    /// Typed verdict. The Judge must match the server-recomputed value.
+    pub verdict: CommitteeVerdict,
+    /// Whether every required evidence reference was supplied.
+    pub evidence_complete: bool,
+    /// Canonical bounded evidence document.
+    pub document: serde_json::Value,
+    /// Digest of the exact document.
+    pub document_hash: ContentHash,
+    /// Submission instant.
+    pub recorded_at: Timestamp,
+}
+
+/// One durable Quick session, as it is stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredQuickSession {
+    /// Session identity.
+    pub id: QuickSessionId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The exact catalog role its seat fills.
+    pub role: CatalogRoleRef,
+    /// The stable slot the role occupies.
+    pub role_slot_id: RoleSlotId,
+    /// The QSW hosting it.
+    pub topology_node_id: TopologyNodeId,
+    /// Its one seat.
+    pub seat_binding_id: SeatBindingId,
+    /// The session base it was placed under.
+    pub psw_topology_node_id: TopologyNodeId,
+    /// The native project observed for that base at placement, when one had
+    /// been observed by then.
+    pub psw_native_id: Option<ExternalId>,
+    /// What the session is for. Recorded, never interpreted.
+    pub purpose: BoundedText,
+    /// The canonical intent of the command that opened it, which is how a
+    /// retry that lost its answer finds this row instead of opening a second.
+    pub intent_hash: ContentHash,
+    /// What has become of the source.
+    pub disposition: SourceDisposition,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// What promotion does with the Quick session it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceDisposition {
+    /// Keep the source durable and idle. The default, and the only one a
+    /// promotion that was not asked to archive may produce.
+    Idle,
+    /// Archive the source, after the handoff has been delivered.
+    Archive,
+}
+
+impl SourceDisposition {
+    /// The stable spelling used in JSON and SQLite.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Archive => "archive",
+        }
+    }
+
+    /// Parse the stable spelling.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::Invalid`] for any other text.
+    pub fn parse(text: &str) -> DomainResult<Self> {
+        match text {
+            "idle" => Ok(Self::Idle),
+            "archive" => Ok(Self::Archive),
+            _ => Err(DomainError::invalid(
+                "SourceDisposition",
+                "is not a known value",
+            )),
+        }
+    }
+}
+
+/// One promotion of one Quick session into an epic.
+///
+/// Written before the first effect, carrying the ids those effects use, so a
+/// resumed apply reconciles the same MiniProject rather than building a second.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredPromotion {
+    /// The source session.
+    pub quick_session_id: QuickSessionId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic this promotion creates, frozen at authorization.
+    pub mini_project_id: MiniProjectId,
+    /// The digest of the plan this apply was authorized against.
+    pub preview_hash: ContentHash,
+    /// What the source becomes once delivery succeeds.
+    pub source_disposition: SourceDisposition,
+    /// The exact delivered handoff, once it has been delivered.
+    pub handoff: Option<serde_json::Value>,
+    /// That handoff's digest.
+    pub handoff_hash: Option<ContentHash>,
+    /// The seat it was delivered to.
+    pub lsa_seat_binding_id: Option<SeatBindingId>,
+    /// When delivery completed. Absent while the promotion is still in flight.
+    pub completed_at: Option<Timestamp>,
+    /// Authorization instant.
+    pub created_at: Timestamp,
+}
+
+/// The roster one epic is staffed from, frozen at promotion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredEpicRoster {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic.
+    pub mini_project_id: MiniProjectId,
+    /// The Core Team revision this epic pinned.
+    pub core_team_version: SpecVersion,
+    /// The catalog that revision resolved against.
+    pub catalog_hash: ContentHash,
+    /// The frozen seats, in their published order.
+    pub seats: serde_json::Value,
+    /// The session this epic was promoted from, when it was.
+    pub quick_session_id: Option<QuickSessionId>,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Freezing instant.
+    pub pinned_at: Timestamp,
+}
+
+/// One published, immutable epic Completion Profile revision.
+///
+/// The definition is the canonical document rather than a decoded profile: this
+/// crate holds the persistence vocabulary and `kontor-scheduler` holds the
+/// completion types, so decoding here would invert that dependency. The digest
+/// travels beside the bytes so a reader can prove the two agree without
+/// re-serializing — which is what a re-serialize would silently paper over if a
+/// stored row had drifted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCompletionProfile {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Stable logical profile id.
+    pub id: ExternalName,
+    /// Immutable revision.
+    pub version: SpecVersion,
+    /// Frozen human label.
+    pub name: ExternalName,
+    /// The canonical published definition.
+    pub definition: serde_json::Value,
+    /// Digest of the canonical definition.
+    pub definition_hash: ContentHash,
+    /// Publication instant.
+    pub published_at: Timestamp,
+}
+
+/// One epic's durable completion run.
+///
+/// The pinned profile identity is stored as columns beside the state document,
+/// so a read can prove which revision this run froze without decoding the
+/// state. That matters on restore: a state whose pin disagreed with the profile
+/// it is being compiled against has to refuse, and it cannot refuse on a field
+/// it needed the profile to read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredEpicCompletion {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic.
+    pub mini_project_id: MiniProjectId,
+    /// The profile this run froze.
+    pub profile_id: ExternalName,
+    /// The exact pinned revision.
+    pub profile_version: SpecVersion,
+    /// The pinned definition's digest.
+    pub definition_hash: ContentHash,
+    /// The canonical completion state document.
+    pub state: serde_json::Value,
+    /// Optimistic-concurrency revision, mirroring the state's own.
+    pub revision: AggregateRevision,
+    /// Last transition instant.
+    pub updated_at: Timestamp,
+}
+
+/// One epic LSA remediation proposal awaiting its TPM route.
+///
+/// The first half of a two-authority approval. It is a row of its own rather
+/// than a field on the completion state because the state records an
+/// authorization only when it is complete — a half-filled one stored there would
+/// read as approved to everything that consumes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredRemediationProposal {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic.
+    pub mini_project_id: MiniProjectId,
+    /// The failed round this answers.
+    pub round: u8,
+    /// That round's evidence digest, as the proposer read it.
+    pub failed_round_evidence: ContentHash,
+    /// The proposed bounded correction.
+    pub proposal: ContentHash,
+    /// The exact seat that proposed.
+    pub lsa_seat_binding_id: SeatBindingId,
+    /// Proposal instant.
+    pub proposed_at: Timestamp,
+}
+
+/// One recorded intent to wake an epic's existing TPM seat.
+///
+/// The primary key is `(epic, completion revision, reason, seat)` because that
+/// is exactly what "one wake per observation" means. A duplicate observation or
+/// a replayed callback collides with the row already there and reuses its
+/// receipt, so it cannot open a second turn for one completion revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCompletionWake {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic whose completion moved.
+    pub mini_project_id: MiniProjectId,
+    /// The completion revision this wake reports.
+    pub completion_revision: AggregateRevision,
+    /// Why the seat is being woken.
+    pub reason: ExternalName,
+    /// The existing seat to wake. Never a seat this wake created.
+    pub seat_binding_id: SeatBindingId,
+    /// The receipt the wake was recorded under.
+    pub receipt: ContentHash,
+    /// When the intent was appended.
+    pub appended_at: Timestamp,
+    /// When the runtime acknowledged the turn, once it has.
+    pub acknowledged_at: Option<Timestamp>,
 }
 
 /// One immutable topology snapshot pinned to a MiniProject/epic.

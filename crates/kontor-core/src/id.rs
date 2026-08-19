@@ -235,6 +235,14 @@ entity_ids! {
     AdvisorRunId,
     /// Identifies one consultation of a Committee.
     CommitteeRunId,
+    /// Identifies one Advisor profile across its revisions.
+    ///
+    /// The profile is the identity a run pins; a revision is a version within
+    /// it. Every consultation names both, so advice stays readable against the
+    /// exact policy that produced it after the profile has moved on.
+    AdvisorProfileId,
+    /// Identifies one Committee template across its revisions.
+    CommitteeTemplateId,
     /// Identifies one raw provider/account observation.
     ///
     /// Raw evidence is addressable in its own right because an operator's

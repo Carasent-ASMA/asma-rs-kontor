@@ -31,8 +31,11 @@
 //!   same step finds the revision has moved and is refused. The steps themselves
 //!   are append-only.
 
-use kontor_core::id::{AgentRunId, AggregateRevision, ContentHash, Timestamp};
+use kontor_core::id::{
+    AgentRunId, AggregateRevision, BoundedText, ContentHash, RoleKey, Timestamp,
+};
 use kontor_core::{DomainError, DomainResult};
+use serde::{Deserialize, Serialize};
 
 use crate::model::{EscalationCause, RecoveryEpisode, RecoveryStatus, RecoveryStepKind};
 
@@ -71,8 +74,79 @@ pub enum RecoveryAction {
     },
     /// Declare the work recovered.
     Recover,
-    /// Hand the episode to a human, naming which of the five causes applies.
-    Escalate(EscalationCause),
+    /// Hand the episode to a human, naming which of the five causes applies and
+    /// what the operator is being asked to confirm.
+    Escalate(Escalation),
+}
+
+/// What an escalation must carry before a human is asked anything.
+///
+/// OP-REQ-036: human attention is a last resort, and an entry into
+/// [`RecoveryStatus::NeedsHuman`] states a **recommended resolution** with its
+/// author. The rule exists because the expensive failure is not being asked — it
+/// is being asked a bare question. An operator handed "this is stuck" has to
+/// reconstruct what was already tried and invent an answer; an operator handed
+/// "this is stuck, here is what I would do, here is what I already tried" has
+/// only to agree or not.
+///
+/// The *tried deliberation path* is deliberately **not** a field. The episode
+/// already records it — `advisor_used`, `committee_used`, `effective_followups`
+/// and the appended steps — so asking a caller to restate it would invite a
+/// second, unverified account of the same facts, and the one place they could
+/// disagree is the one place an operator is relying on them.
+/// [`DeliberationPath::of`] derives it instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Escalation {
+    /// Which of the five causes applies.
+    pub cause: EscalationCause,
+    /// What the author believes should happen, in enough words to act on.
+    pub recommendation: BoundedText,
+    /// The role that is recommending it.
+    ///
+    /// A recommendation nobody is named for is an anonymous suggestion, and an
+    /// operator cannot weigh it against what else they know.
+    pub recommended_by: RoleKey,
+}
+
+/// What was already tried before a human was asked.
+///
+/// Derived from the episode rather than declared, so it cannot disagree with the
+/// episode's own steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliberationPath {
+    /// Whether deterministic inspection and repair ran.
+    pub deterministic_repair: bool,
+    /// Whether the one advisor consultation was spent.
+    pub advisor: bool,
+    /// Whether the one committee was convened.
+    pub committee: bool,
+    /// How many follow-ups were actually dispatched.
+    pub followups: u32,
+}
+
+impl DeliberationPath {
+    /// Read the path an episode has actually walked.
+    #[must_use]
+    pub const fn of(episode: &RecoveryEpisode) -> Self {
+        Self {
+            // Every route out of `Open` other than escalation passes through the
+            // deterministic step, so anything past `Open` has run it.
+            deterministic_repair: !matches!(episode.status, RecoveryStatus::Open),
+            advisor: episode.advisor_used,
+            committee: episode.committee_used,
+            followups: episode.effective_followups,
+        }
+    }
+
+    /// Whether anything at all was tried before the human was reached.
+    ///
+    /// Not a refusal on its own: [`EscalationCause::UnsafeState`] is exactly the
+    /// case where trying *is* the mistake. It is reported so an operator can see
+    /// which kind of escalation they are holding.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.deterministic_repair && !self.advisor && !self.committee && self.followups == 0
+    }
 }
 
 impl RecoveryAction {
@@ -134,6 +208,14 @@ pub struct RecoveryTransition {
     pub dispatched_successor: Option<AgentRunId>,
     /// Why it escalated, when it did.
     pub escalation_cause: Option<EscalationCause>,
+    /// What the operator is being asked to confirm, when a human was reached.
+    ///
+    /// Present exactly when `escalation_cause` is: OP-REQ-036 makes the two
+    /// halves of an escalation inseparable, so a transition carrying a cause and
+    /// no recommendation is not representable through [`plan`].
+    pub escalation_brief: Option<Escalation>,
+    /// What had already been tried when the human was reached.
+    pub deliberation_path: Option<DeliberationPath>,
     /// When it closed, when it did.
     pub closed_at: Option<Timestamp>,
 }
@@ -181,6 +263,8 @@ pub fn plan(
         successor_agent_run_id: episode.successor_agent_run_id,
         dispatched_successor: None,
         escalation_cause: None,
+        escalation_brief: None,
+        deliberation_path: None,
         closed_at: None,
     };
 
@@ -199,9 +283,14 @@ pub fn plan(
                     ..settled
                 })
             } else {
+                // The one escalation the machine raises on its own, so it is the
+                // one that has to write its own brief. An empty deliberation path
+                // is correct here and not a gap: an unsafe state is precisely the
+                // case where trying more things first is the mistake.
                 Ok(escalated(
                     &settled,
-                    EscalationCause::UnsafeState,
+                    episode,
+                    &unsafe_state_escalation(),
                     request.occurred_at,
                 ))
             }
@@ -310,22 +399,62 @@ pub fn plan(
             })
         }
 
-        RecoveryAction::Escalate(cause) => Ok(escalated(&settled, *cause, request.occurred_at)),
+        RecoveryAction::Escalate(escalation) => Ok(escalated(
+            &settled,
+            episode,
+            escalation,
+            request.occurred_at,
+        )),
+    }
+}
+
+/// The role `kontord` records its own recommendations under.
+///
+/// A machine-raised escalation still names an author, because "who is
+/// recommending this" is the question an operator weighs the recommendation
+/// with, and "the daemon, from a deterministic rule" is a genuinely different
+/// answer from "a seat, from its own judgement".
+const SYSTEM_AUTHOR: &str = "kontord";
+
+/// The brief the machine writes when deterministic repair finds an unsafe state.
+fn unsafe_state_escalation() -> Escalation {
+    Escalation {
+        cause: EscalationCause::UnsafeState,
+        recommendation: BoundedText::parse(
+            "Deterministic inspection found the workspace or runtime state unsafe to act on, so \
+             nothing was attempted. Inspect the seat's worktree and runtime session, then either \
+             clear the unsafe condition and re-open the episode, or cancel the work. Do not \
+             dispatch a follow-up until the state is understood: this escalation exists because \
+             acting on it is what would cause damage.",
+        )
+        .expect("a compiled-in recommendation is bounded, printable and carries no secret"),
+        recommended_by: RoleKey::parse(SYSTEM_AUTHOR)
+            .expect("a compiled-in role key is an open key"),
     }
 }
 
 /// The one construction of a `needs_human` transition.
 ///
 /// Every escalation goes through here, so [`RecoveryStatus::NeedsHuman`] cannot
-/// be reached without one of the five [`EscalationCause`] values attached.
+/// be reached without one of the five [`EscalationCause`] values attached — and,
+/// since OP-REQ-036, without the recommended resolution and the deliberation
+/// path that make the operator's cheapest correct action a confirmation.
+///
+/// The recommendation is required by the *type*: [`Escalation`] has no
+/// constructor that omits it, so "escalate with a bare cause" is not something a
+/// caller can express and then be refused for. That is the difference between a
+/// rule and a check — a check has a path around it.
 fn escalated(
     settled: &RecoveryTransition,
-    cause: EscalationCause,
+    episode: &RecoveryEpisode,
+    escalation: &Escalation,
     occurred_at: Timestamp,
 ) -> RecoveryTransition {
     RecoveryTransition {
         status: RecoveryStatus::NeedsHuman,
-        escalation_cause: Some(cause),
+        escalation_cause: Some(escalation.cause),
+        escalation_brief: Some(escalation.clone()),
+        deliberation_path: Some(DeliberationPath::of(episode)),
         closed_at: Some(occurred_at),
         ..settled.clone()
     }

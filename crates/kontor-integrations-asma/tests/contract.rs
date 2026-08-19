@@ -1868,10 +1868,54 @@ fn the_bundled_specifications_are_the_seed_this_build_ships() {
         spec.class_of(&hold.status_id),
         Some(kontor_core::ticket::SemanticStatusClass::Hold)
     );
+    assert_eq!(
+        spec.class_of(&external("10237")),
+        Some(kontor_core::ticket::SemanticStatusClass::Active),
+        "the live ASMA Jira workflow's DRAFT state is known even when no Kontor milestone applies"
+    );
 
     // The seed contains no transition id: routes are discovered, never declared.
     let json = workflow.document().json();
     assert!(!json.contains("transition"), "the seed declares no route");
+}
+
+#[test]
+fn the_live_draft_status_can_converge_to_closed() {
+    let catalog = SpecCatalog::bundled().expect("the bundled data loads");
+    let workflow = catalog
+        .select_workflow_spec(&asma_workflow_key().workflow())
+        .expect("the bundled workflow is selectable");
+    let field = asma_field_spec();
+    let spec = workflow.spec();
+    let draft = spec
+        .statuses
+        .iter()
+        .find(|status| status.selector.status_id == external("10237"))
+        .expect("the live DRAFT status is declared")
+        .selector
+        .clone();
+    assert!(
+        spec.inbound_compatible.contains(&draft),
+        "a known live starting status must be safe to converge"
+    );
+
+    let closed = target_of(spec, TERMINAL_DONE);
+    let link_id = TicketLinkId::generate();
+    let projection = projection(&field, Vec::new());
+    let facts = facts(
+        TaskState::Done,
+        GateState::Passed,
+        Some(TerminalOutcome::Succeeded),
+    );
+    let key = idempotency();
+    let asma = unspawned();
+    let delegation = delegate(&asma, workflow, &field, &projection, &facts, link_id, &key);
+    let seen = observed(link_id, &draft, None, vec![route("close", &closed)]);
+
+    match delegation.plan(&seen) {
+        ReconciliationOutcome::Transition(plan) => assert_eq!(plan.target, closed),
+        other => panic!("expected DRAFT to converge to Closed, got {other:?}"),
+    }
 }
 
 /// Drive the process boundary through the one delegation this crate still has.

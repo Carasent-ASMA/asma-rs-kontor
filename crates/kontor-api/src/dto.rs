@@ -814,13 +814,13 @@ pub struct StreamFrameDto {
 }
 
 /// A frame the live-content stream emits instead of an item when the timeline can
-/// no longer be followed.
+/// no longer be followed or its runtime can no longer be reached.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct StreamRefusalDto {
     /// The Realm the session belongs to.
     #[schema(value_type = String)]
     pub realm_id: RealmId,
-    /// Always `timeline_refetch_required`.
+    /// The stable refusal code.
     pub code: &'static str,
     /// A static description of what broke.
     pub rule: &'static str,

@@ -140,6 +140,7 @@ const TIMELINE_PAGE_ONE_OF_TWO: &str = fixture!("protocol/timeline-page-one-of-t
 const TIMELINE_PAGE_TWO_RENUMBERED: &str = fixture!("protocol/timeline-page-two-renumbered.json");
 const AGENT_LIST_SLOT_MOVED: &str = fixture!("protocol/agent-list-slot-moved.json");
 const SERVER_INFO_OTHER_VERSION: &str = fixture!("protocol/unsupported-app-version.json");
+const SERVER_INFO_NEWER_VERSION: &str = fixture!("protocol/newer-app-version.json");
 const TIMELINE_RESET: &str = fixture!("protocol/timeline-reset.json");
 const TIMELINE_STALE_CURSOR: &str = fixture!("protocol/timeline-stale-cursor.json");
 const CLI_STOPPED_NONE: &str = fixture!("cli/agent-stopped-none.json");
@@ -336,6 +337,7 @@ fn any_agent_run() -> PaseoCommand {
         WORKSPACE_ID,
         CWD,
         &model_rung(),
+        kontor_core::spec::SeatAutonomy::standard(),
         "t",
         &BTreeMap::new(),
         ORCHESTRATOR,
@@ -468,6 +470,7 @@ impl Plane {
             prompt: text("bootstrap the role"),
             model_rung,
             context_policy: standard_context_policy(),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         }))
     }
@@ -1234,6 +1237,7 @@ async fn role_slot_a_same_slot_race_yields_one_permit_and_one_agent() {
             prompt: text("bootstrap"),
             model_rung: model_rung(),
             context_policy: standard_context_policy(),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         });
     // The parts name a different binding than the reservation does, so even the
@@ -2927,15 +2931,18 @@ async fn placement_a_labelled_agent_outside_the_workspace_blocks_the_slot() {
 
 #[tokio::test]
 async fn security_a_daemon_off_the_pinned_baseline_is_observed_not_driven() {
-    // Every DTO, argv and label spelling here was recorded against 0.3.1. A
-    // full feature list from an unrecognized build does not re-establish that,
-    // and Grade A is exactly the claim that it did. The degraded fixture is the
-    // other half: a build that *is* 0.3.1 but withholds a required feature is
-    // just as undriveable, and for a different reason.
+    // Every DTO, argv and label spelling here was recorded against 0.3.1, so a
+    // build *older* than that was never proven to speak them and Grade A is
+    // exactly the claim that it was. A newer build is a different question and
+    // is driven — see `security_a_newer_daemon_is_driven_at_full_capability`,
+    // which is the regression test for the 0.4.0 fleet outage an equality pin
+    // caused. The degraded fixture is the other half: a build at or above the
+    // baseline that withholds a required feature is just as undriveable, and
+    // for a different reason.
     for (info, why) in [
         (
             SERVER_INFO_OTHER_VERSION,
-            "an unrecognized application version",
+            "an application version below the recorded baseline",
         ),
         (SERVER_INFO_DEGRADED, "a missing required feature"),
     ] {
@@ -2959,6 +2966,40 @@ async fn security_a_daemon_off_the_pinned_baseline_is_observed_not_driven() {
             "nothing is driven on a build this adapter was not recorded against"
         );
     }
+}
+
+/// A daemon newer than the recorded baseline is driven, not quarantined.
+///
+/// The regression test for a real outage: Paseo `0.4.0` shipped, the baseline
+/// was compared for equality, and every binding in the realm became
+/// unattestable at once — bindings frozen under `0.3.1` assert capabilities a
+/// build the adapter refused to recognize is not credited with. Nothing on the
+/// wire had changed. A version above the floor is now driven at full
+/// capability, and a genuine removal is caught by the required-feature check
+/// instead, which asks the daemon what it can do rather than inferring it from
+/// a number.
+#[tokio::test]
+async fn security_a_newer_daemon_is_driven_at_full_capability() {
+    let recorded = daemon();
+    recorded.set_identity(&v(SERVER_INFO_NEWER_VERSION));
+    let plane = Plane::fresh(recorded);
+
+    let declared = plane
+        .adapter
+        .discover_capabilities()
+        .await
+        .expect("the runtime is reachable");
+
+    assert_eq!(
+        declared.trust_grade,
+        TrustGrade::A,
+        "a release above the baseline advertising every required feature is authoritative"
+    );
+    assert!(
+        declared.supports(RuntimeCapability::Launch),
+        "a newer Paseo is driven rather than quarantined"
+    );
+    assert!(declared.supports(RuntimeCapability::PrepareWorkspace));
 }
 
 #[tokio::test]

@@ -144,6 +144,50 @@ closed_enum! {
         /// display that Kontor itself rendered wrongly, and the container it
         /// repairs is addressed by its durable binding rather than by its name.
         RetitleContainer => "retitle_container",
+        /// Publish the next immutable Project Core Team revision.
+        ///
+        /// The project is the aggregate. This changes project configuration and
+        /// nothing else: it seats no epic, because a Core Team is the roster an
+        /// epic is staffed *from*, and a running epic holds the revision it
+        /// froze at promotion.
+        ApplyCoreTeam => "apply_core_team",
+        /// Publish the next immutable Advisor profile revision.
+        ///
+        /// The project is the aggregate. Publishing a policy document creates no
+        /// ASW and no seat: a profile is what a consultation would be asked
+        /// under, and until someone invokes one there is nothing running to
+        /// name.
+        ApplyAdvisorProfile => "apply_advisor_profile",
+        /// Publish the next immutable Committee template revision.
+        ///
+        /// The project is the aggregate, for the same reason: a template seats
+        /// no CSW until it is convened.
+        ApplyCommitteeTemplate => "apply_committee_template",
+        /// Invoke and materialize one Advisor run under a pinned profile.
+        InvokeAdvisorRun => "invoke_advisor_run",
+        /// Freeze one Advisor's output and the caller's disposition.
+        SettleAdvisorRun => "settle_advisor_run",
+        /// Invoke and materialize one Committee under a pinned template.
+        InvokeCommitteeRun => "invoke_committee_run",
+        /// Append one immutable reviewer finding or Judge aggregate.
+        RecordCommitteeFindings => "record_committee_findings",
+        /// Recompute and freeze one Committee's typed outcome.
+        SettleCommitteeRun => "settle_committee_run",
+        /// Open one ad-hoc Quick session under the project's session base.
+        ///
+        /// The project is the aggregate. A Quick session creates no MiniProject
+        /// and no TeamRun, so there is no narrower one to name.
+        EnsureQuickSession => "ensure_quick_session",
+        /// Turn one Quick session into an epic.
+        ///
+        /// The epic is the aggregate, because the epic is what the command
+        /// brings into existence and what every later command about this work
+        /// will address.
+        PromoteQuickSession => "promote_quick_session",
+        /// Materialize one epic's frozen roster into seats.
+        MaterializeCoreTeam => "materialize_core_team",
+        /// Move one epic's roster pin to another published revision.
+        UpgradeEpicRoster => "upgrade_epic_roster",
         /// Bring a provider-account profile into existence, or prove the one
         /// with that label matches.
         ///
@@ -170,6 +214,31 @@ closed_enum! {
         /// assignee the connector accepts. A claim can name only the principal,
         /// so a claim receipt must not be citable as an arbitrary assignment.
         ClaimTicket => "claim_ticket",
+        /// Publish the next immutable epic Completion Profile revision.
+        ///
+        /// The project is the aggregate, for the same reason as
+        /// [`CommandKind::ApplyCoreTeam`]: a published profile is project
+        /// configuration, and publishing one deliberately does not move any
+        /// running epic's frozen pin.
+        ApplyCompletionProfile => "apply_completion_profile",
+        /// Commit one deterministic completion transition for one epic.
+        AdvanceCompletion => "advance_completion",
+        /// Record one epic's LSA remediation proposal or TPM next-round route.
+        ///
+        /// Distinct from [`CommandKind::AdvanceCompletion`] because the two
+        /// carry different authority: advancing reconciles observations any
+        /// operator may present, while remediation is the exact epic LSA and TPM
+        /// seats acting. One kind covering both would let an advance receipt be
+        /// replayed as the authority that launched a remediation round.
+        RemediateCompletion => "remediate_completion",
+        /// Install one immutable trigger revision into a project.
+        ///
+        /// Distinct from [`CommandKind::SubmitIntake`], which *acts under* a
+        /// pinned trigger: publishing declares what a trigger may do — including,
+        /// under [`crate::spec::AutoArmPolicy::BoundedAutoArm`], the capability
+        /// to arm work without a human. A submission receipt must never be
+        /// citable as the authority that granted that.
+        PublishTrigger => "publish_trigger",
     }
 }
 
@@ -356,9 +425,14 @@ impl CommandKind {
             // intake decision that creates no work graph has no narrower
             // aggregate to name, and naming one it did not create would be a
             // claim about work that does not exist.
-            Self::EnsureProject | Self::EnsureAccountProfile | Self::SubmitIntake => {
-                witness(matches!(target, A::Project))
-            }
+            // Publishing a trigger installs a document into the project and
+            // names no row inside it: the trigger revision it creates is
+            // immutable and is addressed by `(id, version)`, not by an aggregate
+            // with a revision of its own.
+            Self::EnsureProject
+            | Self::EnsureAccountProfile
+            | Self::SubmitIntake
+            | Self::PublishTrigger => witness(matches!(target, A::Project)),
             Self::ApplyEpicGraph | Self::TransitionEpic | Self::StartScheduledWork => {
                 witness(matches!(target, A::MiniProject))
             }
@@ -397,6 +471,38 @@ impl CommandKind {
             // touches one node's container. The project is the one aggregate it
             // certainly has, exactly as for `ObserveSeat`.
             Self::RetitleContainer => witness(matches!(target, A::Project)),
+            // The project, and only the project. A Core Team is project
+            // configuration: allowing an epic here would let a receipt claim
+            // that publishing a roster changed one running epic, which is the
+            // one thing publishing a roster deliberately does not do.
+            Self::ApplyCoreTeam | Self::EnsureQuickSession => witness(matches!(target, A::Project)),
+            // The project, and only the project. A published profile or
+            // template is project configuration; an epic here would let a
+            // receipt claim that publishing one changed a running consultation,
+            // which is exactly what pinning a revision prevents.
+            Self::ApplyAdvisorProfile | Self::ApplyCommitteeTemplate => {
+                witness(matches!(target, A::Project))
+            }
+            // The epic each of these is about. Promotion names the epic it
+            // creates rather than the project it creates it in: the receipt has
+            // to be findable from the thing that now exists.
+            Self::PromoteQuickSession
+            | Self::MaterializeCoreTeam
+            | Self::UpgradeEpicRoster => witness(matches!(target, A::MiniProject)),
+            // Publishing a Completion Profile is project configuration; the two
+            // completion writes are about one epic's own frozen run. Splitting
+            // them here is what stops a profile publication from being citable
+            // as authority over an epic that had already pinned another
+            // revision.
+            Self::ApplyCompletionProfile => witness(matches!(target, A::Project)),
+            Self::AdvanceCompletion | Self::RemediateCompletion => {
+                witness(matches!(target, A::MiniProject))
+            }
+            Self::InvokeAdvisorRun
+            | Self::SettleAdvisorRun
+            | Self::InvokeCommitteeRun
+            | Self::RecordCommitteeFindings
+            | Self::SettleCommitteeRun => witness(matches!(target, A::MiniProject)),
         }
     }
 

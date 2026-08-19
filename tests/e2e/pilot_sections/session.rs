@@ -39,6 +39,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, Response};
+use futures::StreamExt as _;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
     AgentRunId, BoundedText, ExternalName, ProjectId, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
@@ -514,10 +515,14 @@ async fn read_frames(
     agent: &'static str,
 ) -> (u16, Vec<Value>) {
     let answer = realm
-        .get_as(
+        .get_stream_as(
             &format!("/v1/sessions/{run}/stream?after={anchor}"),
             CallerTier::Observer,
             agent,
+            FrameBudget {
+                max_frames: 100,
+                idle: std::time::Duration::from_millis(100),
+            },
         )
         .await;
     let frames = sse_frames(&answer.body)
@@ -791,9 +796,13 @@ async fn refetch(
         .unwrap_or_default()
         .to_owned();
     let gap_stream = realm
-        .get(
+        .get_stream(
             &format!("/v1/sessions/{gap_run}/stream?after={gap_anchor}"),
             CallerTier::Observer,
+            FrameBudget {
+                max_frames: 100,
+                idle: std::time::Duration::from_millis(100),
+            },
         )
         .await;
     let frames = sse_frames(&gap_stream.body);
@@ -1361,7 +1370,11 @@ async fn surface_parity(bundle: &mut Bundle, realm: &Realm, run: AgentRunId) {
         .unwrap_or_default()
         .to_owned();
     let http_stream = realm
-        .get(&format!("/v1/sessions/{run}/stream?after={anchor}"), tier)
+        .get_stream(
+            &format!("/v1/sessions/{run}/stream?after={anchor}"),
+            tier,
+            FrameBudget::default(),
+        )
         .await;
 
     // --- MCP, through the real tool catalogue and the real gate.
@@ -1669,6 +1682,7 @@ impl Realm {
                 at("2026-08-12T09:00:00Z"),
             )
             .expect("the standard fallback freezes"),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-12T09:00:00Z"),
         };
         let authority = self
@@ -1747,6 +1761,31 @@ impl Realm {
             .body(Body::empty())
             .expect("a well-formed request");
         Answer::of(&self.router, request).await
+    }
+
+    /// A bounded live-stream read as one tier, from a named client.
+    async fn get_stream_as(
+        &self,
+        uri: &str,
+        tier: CallerTier,
+        agent: &str,
+        budget: FrameBudget,
+    ) -> Answer {
+        let request = self
+            .signed(Method::GET, uri, tier)
+            .header("user-agent", agent)
+            .body(Body::empty())
+            .expect("a well-formed request");
+        Answer::stream(&self.router, request, budget).await
+    }
+
+    /// A bounded live-stream read as one tier.
+    async fn get_stream(&self, uri: &str, tier: CallerTier, budget: FrameBudget) -> Answer {
+        let request = self
+            .signed(Method::GET, uri, tier)
+            .body(Body::empty())
+            .expect("a well-formed request");
+        Answer::stream(&self.router, request, budget).await
     }
 
     /// Deliver one message under `key`.
@@ -1843,11 +1882,11 @@ impl Realm {
     }
 }
 
-/// One whole answer, body included.
+/// One bounded answer, body included.
 struct Answer {
     /// The HTTP status.
     status: u16,
-    /// The whole body as text. SSE bodies are finite here, so buffering is safe.
+    /// The whole finite document, or the bounded prefix of an SSE body.
     body: String,
 }
 
@@ -1867,6 +1906,36 @@ impl Answer {
             status,
             body: String::from_utf8_lossy(&bytes).into_owned(),
         }
+    }
+
+    /// Drive one SSE response until its client-side frame or idle bound is spent.
+    async fn stream(router: &Router, request: Request<Body>, budget: FrameBudget) -> Self {
+        let response: Response<Body> = router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("the router answers");
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+                .await
+                .expect("the refusal body is readable");
+            return Self {
+                status,
+                body: String::from_utf8_lossy(&bytes).into_owned(),
+            };
+        }
+
+        let mut chunks = response.into_body().into_data_stream();
+        let mut body = String::new();
+        while sse_frames(&body).len() < budget.max_frames {
+            match tokio::time::timeout(budget.idle, chunks.next()).await {
+                Err(_) | Ok(None) => break,
+                Ok(Some(Err(error))) => panic!("the stream body is readable: {error}"),
+                Ok(Some(Ok(chunk))) => body.push_str(&String::from_utf8_lossy(&chunk)),
+            }
+        }
+        Self { status, body }
     }
 
     /// The body as JSON, or `null` when it is not a JSON document.
@@ -1974,6 +2043,44 @@ impl RouterTransport {
         )
         .await
     }
+
+    /// Turn one narrow stream request into one client-bounded loopback call.
+    async fn dispatch_stream(&self, request: &ClientRequest, budget: FrameBudget) -> Answer {
+        let mut uri = request.path.clone();
+        if !request.query.is_empty() {
+            uri.push('?');
+            uri.push_str(
+                &request
+                    .query
+                    .iter()
+                    .map(|(name, value)| format!("{}={}", encode(name), encode(value)))
+                    .collect::<Vec<_>>()
+                    .join("&"),
+            );
+        }
+        let method = match request.method {
+            ClientMethod::Get => Method::GET,
+            ClientMethod::Post => Method::POST,
+        };
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("host", LOOPBACK_AUTHORITY)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", self.secret));
+        if let Some(key) = &request.idempotency_key {
+            builder = builder.header("idempotency-key", key);
+        }
+        let body = request.body.as_ref().map_or_else(Body::empty, |value| {
+            Body::from(serde_json::to_vec(value).expect("a serializable body"))
+        });
+        Answer::stream(
+            &self.router,
+            builder.body(body).expect("a well-formed request"),
+            budget,
+        )
+        .await
+    }
 }
 
 impl fmt::Debug for RouterTransport {
@@ -2002,6 +2109,7 @@ impl Transport for RouterTransport {
         let answer = self.dispatch(request).await;
         let body = serde_json::from_str(&answer.body).map_err(|_| TransportFailure::Protocol {
             path: request.path.clone(),
+            status: Some(answer.status),
             detail: "the answer was not a JSON document",
         })?;
         Ok(Reply {
@@ -2015,13 +2123,14 @@ impl Transport for RouterTransport {
         request: &ClientRequest,
         budget: FrameBudget,
     ) -> Result<Reply, TransportFailure> {
-        let answer = self.dispatch(request).await;
+        let answer = self.dispatch_stream(request, budget).await;
         // A refused stream answers with a JSON error body rather than frames, and
         // the client has to see it as the refusal it is.
         if !(200..300).contains(&answer.status) {
             let body =
                 serde_json::from_str(&answer.body).map_err(|_| TransportFailure::Protocol {
                     path: request.path.clone(),
+                    status: Some(answer.status),
                     detail: "the refusal was not a JSON document",
                 })?;
             return Ok(Reply {

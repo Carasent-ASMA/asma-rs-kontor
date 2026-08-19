@@ -370,6 +370,85 @@ fn every_tool_schema_is_closed_and_types_its_properties() {
     }
 }
 
+/// Every declared nested object matches the DTO field it stands for.
+///
+/// `ArgType::Object` exists so a caller can read a nested shape instead of
+/// guessing it — which is worth having only while the declaration is *true*. A
+/// schema that has drifted from its DTO is worse than the bare `object` it
+/// replaced: the caller has no reason to doubt it, so a wrong field name is
+/// discovered from a refusal anyway, having first been advertised as correct.
+///
+/// This is stated over the whole registry rather than over one tool, so a later
+/// `ArgType::Object` gets the same guarantee without anyone remembering to ask
+/// for it.
+#[test]
+fn every_declared_nested_object_matches_the_contracts_own_dto() {
+    let document = contract();
+    let mut checked = 0_usize;
+    for tool in REGISTRY {
+        let route = route_of(tool);
+        let Some(schema) = document
+            .pointer(&format!(
+                "/paths/{}/{}/requestBody/content/application~1json/schema",
+                tool.path.replace('/', "~1"),
+                route.0.to_lowercase()
+            ))
+            .map(|schema| resolve(&document, schema))
+        else {
+            continue;
+        };
+
+        for arg in tool.args_in(Place::Body) {
+            let ArgType::Object(fields) = arg.ty else {
+                continue;
+            };
+            let property = schema
+                .pointer(&format!("/properties/{}", arg.name))
+                .unwrap_or_else(|| panic!("{}'s {} is a property of its DTO", tool.name, arg.name));
+            let resolved = resolve(&document, property);
+
+            let contracted: BTreeSet<String> = resolved
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .map(|properties| properties.keys().cloned().collect())
+                .unwrap_or_default();
+            let declared: BTreeSet<String> =
+                fields.iter().map(|field| field.name.to_owned()).collect();
+            assert_eq!(
+                declared, contracted,
+                "{}'s {} declares a shape its DTO does not have",
+                tool.name, arg.name
+            );
+
+            let contracted_required: BTreeSet<String> = resolved
+                .get("required")
+                .and_then(serde_json::Value::as_array)
+                .map(|required| {
+                    required
+                        .iter()
+                        .filter_map(|name| name.as_str().map(ToOwned::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let declared_required: BTreeSet<String> = fields
+                .iter()
+                .filter(|field| field.required)
+                .map(|field| field.name.to_owned())
+                .collect();
+            assert_eq!(
+                declared_required, contracted_required,
+                "{}'s {} disagrees with its DTO about which fields are required",
+                tool.name, arg.name
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "no nested object was checked, so this test proved nothing"
+    );
+}
+
 /// The closed value set one tool argument declares.
 fn declared_enum(tool_name: &str, argument: &str) -> &'static [&'static str] {
     let tool = ToolSpec::find(tool_name).expect("a declared tool");
@@ -438,7 +517,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        117,
+        120,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -448,7 +527,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        118,
+        121,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -618,11 +697,13 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_advisor_profile_apply", CallerTier::Admin),
         ("kontor_advisor_run_invoke", CallerTier::Operator),
         ("kontor_advisor_run_settle", CallerTier::Operator),
+        ("kontor_advisor_run_get", CallerTier::Observer),
         ("kontor_committee_templates_list", CallerTier::Observer),
         ("kontor_committee_template_preview", CallerTier::Admin),
         ("kontor_committee_template_apply", CallerTier::Admin),
         ("kontor_committee_run_invoke", CallerTier::Operator),
         ("kontor_committee_findings_record", CallerTier::Operator),
+        ("kontor_committee_run_get", CallerTier::Observer),
         ("kontor_committee_run_settle", CallerTier::Operator),
         ("kontor_completion_profiles_list", CallerTier::Observer),
         ("kontor_completion_profile_preview", CallerTier::Admin),
@@ -635,6 +716,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // title rather than accepting one.
         ("kontor_container_retitle_preview", CallerTier::Admin),
         ("kontor_container_retitle_apply", CallerTier::Admin),
+        // Publishing a trigger may declare a bounded auto-arm, which is the
+        // capability to start work with no human in the loop. That is an
+        // authority grant, so the daemon requires admin on the route.
+        ("kontor_trigger_publish", CallerTier::Admin),
     ]);
     for tool in REGISTRY {
         assert_eq!(

@@ -23,9 +23,10 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 
+use crate::body::Json;
 use crate::dto::{CompactRequestBody, CompactionReceiptDto};
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -42,7 +43,8 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::request::CompactRequest;
 use kontor_runtime::request::{
-    HistoryRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, SendMessageRequest,
+    HistoryRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest,
+    SendMessageRequest,
 };
 use kontor_runtime::timeline::{EventSubject, HistoryCursor, HistoryReader, SessionEventKind};
 use serde::Deserialize;
@@ -73,6 +75,14 @@ const DEFAULT_PAGE: u32 = 50;
 
 /// The SSE event name a broken timeline is reported under.
 const REFUSAL_EVENT: &str = "error";
+
+/// How often a quiet runtime subscription is reconciled for newly pushed data.
+///
+/// The adapter closes the history/live race and returns a bounded batch. Keeping
+/// the HTTP response live therefore means taking another bounded batch after its
+/// last trusted position; it never means guessing that an empty batch is a
+/// terminal session.
+const LIVE_RECONCILE_INTERVAL: Duration = Duration::from_millis(250);
 
 /// One resolved, vouched-for session this process may address.
 struct Session {
@@ -318,40 +328,106 @@ pub async fn stream(
         .await
         .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
 
+    let stopping = state.signals().stops();
+    let binding = session.snapshot;
+    let adapter = session.adapter;
+    let kinds = EVERY_KIND.iter().copied().collect::<BTreeSet<_>>();
     let stream = futures::stream::unfold(
-        Some((subscription, realm_id, session.agent_run_id)),
+        Some((
+            subscription,
+            adapter,
+            binding,
+            kinds,
+            stopping,
+            realm_id,
+            session.agent_run_id,
+        )),
         |held| async move {
-            let (mut subscription, realm_id, agent_run_id) = held?;
-            match subscription.next_event() {
-                None => None,
-                Some(Ok(event)) => {
-                    // The frame id is the *runtime's* position, spelled
-                    // `epoch:sequence` so it can never be mistaken for — or
-                    // replayed as — a control-plane cursor.
-                    let frame = Event::default()
-                        .id(event.position.to_string())
-                        .event("content")
-                        .json_data(StreamFrameDto {
-                            realm_id,
-                            agent_run_id,
-                            item: crate::dto::TimelineItemDto::from(&event),
-                        })
-                        .ok()?;
-                    Some((Ok(frame), Some((subscription, realm_id, agent_run_id))))
+            let (mut subscription, adapter, binding, kinds, mut stopping, realm_id, agent_run_id) =
+                held?;
+            loop {
+                match subscription.next_event() {
+                    Some(Ok(event)) => {
+                        // The frame id is the *runtime's* position, spelled
+                        // `epoch:sequence` so it can never be mistaken for — or
+                        // replayed as — a control-plane cursor.
+                        let frame = Event::default()
+                            .id(event.position.to_string())
+                            .event("content")
+                            .json_data(StreamFrameDto {
+                                realm_id,
+                                agent_run_id,
+                                item: crate::dto::TimelineItemDto::from(&event),
+                            })
+                            .ok()?;
+                        return Some((
+                            Ok(frame),
+                            Some((
+                                subscription,
+                                adapter,
+                                binding,
+                                kinds,
+                                stopping,
+                                realm_id,
+                                agent_run_id,
+                            )),
+                        ));
+                    }
+                    // A broken timeline ends the stream with a typed frame.
+                    // Continuing would hand the caller a hole it cannot see.
+                    Some(Err(_)) => {
+                        let refusal = Event::default()
+                            .event(REFUSAL_EVENT)
+                            .json_data(StreamRefusalDto {
+                                realm_id,
+                                code: "timeline_refetch_required",
+                                rule: "the runtime renumbered or skipped this session's content",
+                            })
+                            .ok()?;
+                        return Some((Ok(refusal), None));
+                    }
+                    None => {}
                 }
-                // A broken timeline ends the stream with a typed frame. Continuing
-                // would hand the caller a hole it cannot see.
-                Some(Err(_)) => {
-                    let refusal = Event::default()
-                        .event(REFUSAL_EVENT)
-                        .json_data(StreamRefusalDto {
-                            realm_id,
-                            code: "timeline_refetch_required",
-                            rule: "the runtime renumbered or skipped this session's content",
-                        })
-                        .ok()?;
-                    Some((Ok(refusal), None))
+
+                if *stopping.borrow() {
+                    return None;
                 }
+                tokio::select! {
+                    () = tokio::time::sleep(LIVE_RECONCILE_INTERVAL) => {}
+                    changed = stopping.changed() => {
+                        if changed.is_err() || *stopping.borrow() {
+                            return None;
+                        }
+                    }
+                }
+
+                let strict_after = subscription.position();
+                subscription = match adapter
+                    .subscribe_live(&LiveSubscribeRequest {
+                        binding: binding.clone(),
+                        kinds: kinds.clone(),
+                        strict_after,
+                    })
+                    .await
+                {
+                    Ok(next) => next,
+                    Err(error) => {
+                        tracing::warn!(
+                            agent_run_id = %agent_run_id,
+                            detail = %error,
+                            "a live session stream lost its runtime"
+                        );
+                        let refusal = Event::default()
+                            .event(REFUSAL_EVENT)
+                            .json_data(StreamRefusalDto {
+                                realm_id,
+                                code: "runtime_unavailable",
+                                rule: "the session's runtime could not continue the live stream",
+                            })
+                            .ok()?;
+                        return Some((Ok(refusal), None));
+                    }
+                };
             }
         },
     );
@@ -393,6 +469,18 @@ pub async fn send_message(
     let demand = LimitDemand::MessageBytes(body.as_str().len() as u64);
     session.preflight(realm_id, RuntimeCapability::SendMessage, Some(demand))?;
 
+    // A persistent seat may be between native processes. Resume is a no-op for
+    // an already-live session and reloads a closed, resumable one in place. A
+    // direct send cannot do that job: Paseo quite correctly refuses to address a
+    // process that is no longer running.
+    session
+        .adapter
+        .resume(&ResumeRequest {
+            binding: session.snapshot.clone(),
+            requested_at: now(),
+        })
+        .await
+        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
     let acknowledged = session
         .adapter
         .send(&SendMessageRequest {

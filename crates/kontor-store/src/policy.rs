@@ -43,7 +43,7 @@
 
 use kontor_core::DomainError;
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CanonicalDocument,
+    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CanonicalDocument,
     CommandReceiptId, ContentHash, ExternalId, GateKey, GuardrailEvaluationId, IdempotencyKey,
     ProjectId, RoleKey, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, Timestamp,
 };
@@ -58,7 +58,7 @@ use kontor_policy::model::{
     GateWaiverId, GuardrailEvaluation, GuardrailRuleKey, PolicyVerdict, ReasonCode,
     RecoveryEpisode, RecoveryEpisodeId, RecoveryStatus, RecoveryStepKind,
 };
-use kontor_policy::recovery::{RecoveryRequest, RecoveryTransition};
+use kontor_policy::recovery::{Escalation, RecoveryRequest, RecoveryTransition};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
@@ -1180,12 +1180,16 @@ fn read_episode(
         i64,
         String,
         Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
     );
     let found: Option<Row> = transaction
         .query_row(
             "SELECT task_id, workflow_id, parked_agent_run_id, status, cause_evaluation_id,
                     advisor_used, committee_used, effective_followups, successor_agent_run_id,
-                    escalation_cause, revision, created_at, closed_at
+                    escalation_cause, revision, created_at, closed_at,
+                    escalation_recommendation, escalation_recommended_by, deliberation_path_json
              FROM recovery_episodes WHERE project_id = ?1 AND id = ?2",
             params![project_id.to_string(), id.to_string()],
             |row| {
@@ -1203,6 +1207,9 @@ fn read_episode(
                     row.get(10)?,
                     row.get(11)?,
                     row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
+                    row.get(15)?,
                 ))
             },
         )
@@ -1222,6 +1229,9 @@ fn read_episode(
         revision,
         created_at,
         closed_at,
+        recommendation,
+        recommended_by,
+        path_json,
     )) = found
     else {
         return Ok(None);
@@ -1242,10 +1252,60 @@ fn read_episode(
             .as_deref()
             .map(EscalationCause::parse)
             .transpose()?,
+        // The three columns are one value, so they are read as one. A row
+        // carrying two of the three is a row this build did not write, and
+        // reporting a half-brief would be worse than reporting none: an operator
+        // would read a recommendation with no author, or an author with no
+        // recommendation, as the whole of what was recorded.
+        escalation_brief: read_escalation_brief(
+            escalation.as_deref(),
+            recommendation.as_deref(),
+            recommended_by.as_deref(),
+        )?,
+        deliberation_path: path_json
+            .as_deref()
+            .map(|json| {
+                serde_json::from_str(json).map_err(|_| {
+                    kontor_core::DomainError::invalid(
+                        "RecoveryEpisode",
+                        "the stored deliberation path is not this build's document",
+                    )
+                })
+            })
+            .transpose()?,
         revision: revision_of(revision)?,
         created_at: read_timestamp(&created_at)?,
         closed_at: closed_at.as_deref().map(read_timestamp).transpose()?,
     }))
+}
+
+/// Read the three escalation-brief columns as the one value they are.
+///
+/// All three travel together or none do. A row with some of them is either a
+/// pre-OP-REQ-036 escalation (all three NULL, and the cause alone) or a write no
+/// build of this daemon performed; reporting a partial brief would show an
+/// operator a recommendation with no author, or an author with no
+/// recommendation, as if that were the whole record.
+fn read_escalation_brief(
+    cause: Option<&str>,
+    recommendation: Option<&str>,
+    recommended_by: Option<&str>,
+) -> RepositoryResult<Option<Escalation>> {
+    match (cause, recommendation, recommended_by) {
+        (Some(cause), Some(recommendation), Some(recommended_by)) => Ok(Some(Escalation {
+            cause: EscalationCause::parse(cause)?,
+            recommendation: BoundedText::parse(recommendation)?,
+            recommended_by: RoleKey::parse(recommended_by)?,
+        })),
+        // A historical escalation: the cause survives, and the brief honestly
+        // reads as absent rather than as an invented recommendation.
+        (_, None, None) => Ok(None),
+        _ => Err(kontor_core::DomainError::invalid(
+            "RecoveryEpisode",
+            "a stored escalation carries only part of its brief",
+        )
+        .into()),
+    }
 }
 
 /// Prove a dispatched follow-up runs as a distinct successor of this episode.
@@ -1378,7 +1438,9 @@ fn write_transition(
         .execute(
             "UPDATE recovery_episodes
              SET status = ?1, advisor_used = ?2, committee_used = ?3, effective_followups = ?4,
-                 successor_agent_run_id = ?5, escalation_cause = ?6, closed_at = ?7, revision = ?8
+                 successor_agent_run_id = ?5, escalation_cause = ?6, closed_at = ?7, revision = ?8,
+                 escalation_recommendation = ?12, escalation_recommended_by = ?13,
+                 deliberation_path_json = ?14
              WHERE project_id = ?9 AND id = ?10 AND revision = ?11",
             params![
                 transition.status.as_str(),
@@ -1391,7 +1453,29 @@ fn write_transition(
                 revision_column(next_revision)?,
                 episode.project_id.to_string(),
                 episode.id.to_string(),
-                revision_column(episode.revision)?
+                revision_column(episode.revision)?,
+                // OP-REQ-036. The database refuses a `needs_human` row missing any
+                // of these, so a transition that reached the state without a brief
+                // fails here rather than becoming a question nobody can answer.
+                transition
+                    .escalation_brief
+                    .as_ref()
+                    .map(|brief| brief.recommendation.as_str()),
+                transition
+                    .escalation_brief
+                    .as_ref()
+                    .map(|brief| brief.recommended_by.as_str()),
+                transition
+                    .deliberation_path
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|_| {
+                        kontor_core::DomainError::invalid(
+                            "RecoveryTransition",
+                            "the deliberation path could not be canonicalized",
+                        )
+                    })?
             ],
         )
         .map_err(backend)?;
@@ -1409,6 +1493,8 @@ fn write_transition(
         effective_followups: transition.effective_followups,
         successor_agent_run_id: transition.successor_agent_run_id,
         escalation_cause: transition.escalation_cause,
+        escalation_brief: transition.escalation_brief.clone(),
+        deliberation_path: transition.deliberation_path,
         revision: next_revision,
         closed_at: transition.closed_at,
         ..episode.clone()

@@ -41,7 +41,23 @@ const EXPECTED_TABLES: &[&str] = &[
     "command_receipts",
     "command_targets",
     "compaction_receipts",
+    "consultation_profile_revisions",
+    // Schema v36 (KON-OP-05): frozen consultation execution, exact native
+    // seat bindings, and immutable Committee findings.
+    "consultation_runs",
+    "consultation_seats",
+    "committee_findings",
+    "committee_remediations",
+    "advisor_advice_artifacts",
     "context_packs",
+    "core_team_revisions",
+    // Schema v32 (KON-OP-06): published Completion Profile revisions, one durable
+    // completion run per epic, and the TPM wake outbox.
+    "completion_profile_revisions",
+    "epic_completion",
+    "epic_completion_remediation_proposals",
+    "epic_completion_wakes",
+    "epic_rosters",
     "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
@@ -85,6 +101,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "policy_evaluations",
     "projects",
     "project_topology_defaults",
+    "quick_session_promotions",
+    "quick_sessions",
     "realm_idempotency_bindings",
     "realm_metadata",
     "recovery_episodes",
@@ -181,6 +199,21 @@ const MIGRATIONS_THROUGH_V24: &[&str] = &[
     include_str!("../migrations/0024_replace_seat_command.sql"),
 ];
 
+/// The suffix deployed by OP-03 before the OP-04 migrations were integrated.
+///
+/// Both delivery branches called their second migration `v31`. This exact
+/// historical chain builds the live shape the converging v32/v33 upgrade must
+/// recognize without relabeling or rebuilding the database out of band.
+const OP03_MIGRATIONS_V25_THROUGH_V31: &[&str] = &[
+    include_str!("../migrations/0025_document_shareability.sql"),
+    include_str!("../migrations/0026_operational_liveness.sql"),
+    include_str!("../migrations/0027_task_topology_node.sql"),
+    include_str!("../migrations/0028_native_capacity.sql"),
+    include_str!("../migrations/0029_topology_publication.sql"),
+    include_str!("../migrations/0030_retitle_container_command.sql"),
+    include_str!("../migrations/0031_bounded_task_reopen.sql"),
+];
+
 /// A minimal project → task → workflow → team run → agent run chain, inserted
 /// with direct SQL so the schema's own constraints are what is under test.
 const RUN_FIXTURE: &str = "\
@@ -230,9 +263,31 @@ fn raw(directory: &TempDir) -> Connection {
     let connection =
         Connection::open(directory.path().join("kontor.db")).expect("a raw connection opens");
     connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys can be disabled");
+    let fk: i64 = connection
+        .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+        .expect("readable");
+    eprintln!("FOREIGN_KEYS = {fk}");
+    connection
         .pragma_update(None, "foreign_keys", true)
         .expect("foreign keys can be enabled");
     connection
+}
+
+fn migrate_through_v33(connection: &Connection) {
+    for migration in MIGRATIONS_THROUGH_V24
+        .iter()
+        .chain(OP03_MIGRATIONS_V25_THROUGH_V31)
+        .chain(&[
+            include_str!("../migrations/0032_core_team_revisions.sql"),
+            include_str!("../migrations/0033_quick_sessions_and_promotion.sql"),
+        ])
+    {
+        connection
+            .execute_batch(migration)
+            .expect("the canonical migrations through v33 run");
+    }
 }
 
 fn table_names(connection: &Connection) -> BTreeSet<String> {
@@ -260,7 +315,248 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 31);
+    assert_eq!(SCHEMA_VERSION, 40);
+}
+
+/// The two Wave-3 branches independently occupied schema numbers 30 and 31.
+///
+/// The live OP-03 lineage therefore has `retitle_container` receipts and the
+/// bounded task-reopen trigger, but no Core Team or Quick-session tables. A
+/// daemon built from OP-04 used to see the matching number, skip migration, and
+/// then fail its startup inventory because its enum could not decode that
+/// durable receipt. The forward-only convergence preserves the receipt, keeps
+/// the Realm identity and adds the missing OP-04 schema.
+#[test]
+fn the_deployed_op03_v31_lineage_converges_without_losing_its_receipts() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000e1";
+    const PROJECT: &str = "0193f000-0000-7000-8000-0000000000e2";
+    const RECEIPT: &str = "0193f000-0000-7000-8000-0000000000e3";
+    const HASH: &str = "a9d5f6d002d956b8af5787a05e0ca000d45c03977ffa54ee8fbed719fed5fd23";
+
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        for migration in MIGRATIONS_THROUGH_V24
+            .iter()
+            .chain(OP03_MIGRATIONS_V25_THROUGH_V31)
+        {
+            connection
+                .execute_batch(migration)
+                .expect("the deployed OP-03 migration chain runs");
+        }
+        connection
+            .execute(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, ?1, 1, '2026-08-17T06:00:00Z', NULL)",
+                [REALM],
+            )
+            .expect("the deployed Realm identity is written");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, root_path, revision, created_at)
+                 VALUES (?1, 'P', '/tmp/op03-v31', 1, '2026-08-17T06:00:00Z')",
+                [PROJECT],
+            )
+            .expect("the deployed project is written");
+        connection
+            .execute(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision,
+                      intent, intent_hash, state, attempts, created_at, updated_at)
+                 VALUES (?1, ?2, 'op03-retitle', 'retitle_container',
+                         json_object('kind', 'project', 'project_id', ?2), 1,
+                         json_object('schema_version', 1), ?3, 'intent_persisted', 0,
+                         '2026-08-17T06:00:00Z', '2026-08-17T06:00:00Z')",
+                rusqlite::params![RECEIPT, PROJECT, HASH],
+            )
+            .expect("the historical retitle receipt is written");
+    }
+
+    let store = SqliteStore::open(&path).expect("the deployed v31 lineage converges");
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
+    assert_eq!(store.realm_id().to_string(), REALM);
+    store
+        .foreign_key_check()
+        .expect("the receipt rebuild keeps every reference sound");
+    store
+        .integrity_check()
+        .expect("the converged file is sound");
+
+    let project = ProjectId::parse(PROJECT).expect("a project id");
+    let receipt = kontor_core::id::CommandReceiptId::parse(RECEIPT).expect("a receipt id");
+    let kept = store
+        .get_receipt(project, receipt)
+        .expect("the historical receipt decodes")
+        .expect("the historical receipt survives");
+    assert_eq!(
+        kept.kind,
+        kontor_core::receipt::CommandKind::RetitleContainer
+    );
+
+    let connection = raw(&directory);
+    for table in [
+        "core_team_revisions",
+        "quick_sessions",
+        "quick_session_promotions",
+        "epic_rosters",
+    ] {
+        let exists: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .expect("the catalogue is readable");
+        assert_eq!(exists, 1, "the OP-04 table `{table}` was not added");
+    }
+}
+
+/// Master and the operational-recovery branch both shipped schema v35 with
+/// different objects. This constructs master's durable shape -- escalation
+/// brief plus a `publish_trigger` receipt, but no consultation tables -- and
+/// proves the merge recognizes shape rather than trusting the colliding number.
+#[test]
+fn the_operational_hardening_v35_lineage_converges_without_losing_its_receipt() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000f1";
+    const PROJECT: &str = "0193f000-0000-7000-8000-0000000000f2";
+    const RECEIPT: &str = "0193f000-0000-7000-8000-0000000000f3";
+    const HASH: &str = "a9d5f6d002d956b8af5787a05e0ca000d45c03977ffa54ee8fbed719fed5fd23";
+
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        migrate_through_v33(&connection);
+        connection
+            .execute_batch(include_str!("../migrations/0037_escalation_brief.sql"))
+            .expect("the historical escalation migration runs");
+        connection
+            .execute_batch(include_str!(
+                "../migrations/0038_publish_trigger_command.sql"
+            ))
+            .expect("the historical publish-trigger receipt shape is built");
+        connection
+            .execute_batch("PRAGMA user_version = 35;")
+            .expect("the historical lineage carries its shipped version");
+        connection
+            .execute(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, ?1, 1, '2026-08-18T06:00:00Z', NULL)",
+                [REALM],
+            )
+            .expect("the Realm identity is written");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, root_path, revision, created_at)
+                 VALUES (?1, 'P', '/tmp/hardening-v35', 1, '2026-08-18T06:00:00Z')",
+                [PROJECT],
+            )
+            .expect("the project is written");
+        connection
+            .execute(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision,
+                      intent, intent_hash, state, attempts, created_at, updated_at)
+                 VALUES (?1, ?2, 'historical-publish-trigger', 'publish_trigger',
+                         json_object('kind', 'project', 'project_id', ?2), 1,
+                         json_object('schema_version', 1), ?3, 'intent_persisted', 0,
+                         '2026-08-18T06:00:00Z', '2026-08-18T06:00:00Z')",
+                rusqlite::params![RECEIPT, PROJECT, HASH],
+            )
+            .expect("the historical publish-trigger receipt is written");
+    }
+
+    let store = SqliteStore::open(&path).expect("the operational-hardening lineage converges");
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
+    assert_eq!(store.realm_id().to_string(), REALM);
+    store
+        .foreign_key_check()
+        .expect("the receipt survives with sound references");
+
+    let project = ProjectId::parse(PROJECT).expect("a project id");
+    let receipt = kontor_core::id::CommandReceiptId::parse(RECEIPT).expect("a receipt id");
+    let kept = store
+        .get_receipt(project, receipt)
+        .expect("the historical receipt decodes")
+        .expect("the historical receipt survives");
+    assert_eq!(kept.kind, kontor_core::receipt::CommandKind::PublishTrigger);
+
+    let connection = raw(&directory);
+    for table in [
+        "consultation_profile_revisions",
+        "completion_profile_revisions",
+        "consultation_runs",
+    ] {
+        let exists: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .expect("the catalogue is readable");
+        assert_eq!(exists, 1, "the converged table `{table}` is missing");
+    }
+    let receipt_triggers: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema
+             WHERE type = 'trigger' AND name LIKE 'command_receipts_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the trigger catalogue is readable");
+    assert_eq!(
+        receipt_triggers, 2,
+        "the final rebuild restores both invariants"
+    );
+}
+
+/// The currently deployed recovery daemon is schema v36. Its normal append-only
+/// path must add the operational-hardening objects and keep its Realm identity.
+#[test]
+fn the_deployed_consultation_v36_lineage_upgrades_forward() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000f4";
+
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        migrate_through_v33(&connection);
+        for migration in [
+            include_str!("../migrations/0034_consultation_profiles.sql"),
+            include_str!("../migrations/0035_epic_completion.sql"),
+            include_str!("../migrations/0036_consultation_runs.sql"),
+        ] {
+            connection
+                .execute_batch(migration)
+                .expect("the deployed consultation lineage runs");
+        }
+        connection
+            .execute(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, ?1, 1, '2026-08-18T06:00:00Z', NULL)",
+                [REALM],
+            )
+            .expect("the deployed Realm identity is written");
+    }
+
+    let store = SqliteStore::open(&path).expect("the deployed v36 lineage upgrades");
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
+    assert_eq!(store.realm_id().to_string(), REALM);
+    let connection = raw(&directory);
+    let escalation_columns: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('recovery_episodes')
+             WHERE name IN ('escalation_recommendation',
+                            'escalation_recommended_by', 'deliberation_path_json')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the recovery shape is readable");
+    assert_eq!(escalation_columns, 3);
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it
@@ -1046,6 +1342,108 @@ fn the_schema_has_no_outbound_comment_representation() {
             "`{policy}` must not be a storable comment policy"
         );
     }
+}
+
+/// OP-REQ-036, enforced by the database and not only by the type.
+///
+/// `RecoveryAction::Escalate` already makes a briefless escalation
+/// unrepresentable in Rust, which is the guarantee that matters for the code
+/// that exists today. This is the guard for the code that does not: a repair
+/// script, an import, or a future writer that reaches the table by another
+/// route. An operator asked to decide something with no recommendation and no
+/// account of what was tried is exactly the outcome the requirement exists to
+/// prevent, whichever writer produced it.
+#[test]
+fn a_needs_human_row_cannot_be_written_without_its_brief() {
+    let directory = temp();
+    let _store = open(&directory);
+    // Foreign keys are off for this one test. An episode references a project, a
+    // task, a workflow and an agent run, and building all four would be four
+    // fixtures' worth of setup for a question about none of them — while a
+    // reference failure would also make the "accepted" half of the test pass for
+    // the wrong reason. Triggers fire either way, which is what is under test.
+    let connection =
+        Connection::open(directory.path().join("kontor.db")).expect("a raw connection opens");
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys can be disabled");
+
+    let insert = |status: &str, brief: bool| {
+        let (recommendation, author, path) = if brief {
+            (
+                Some("Cancel the seat and re-plan the ticket."),
+                Some("lsa"),
+                Some(
+                    r#"{"deterministic_repair":true,"advisor":true,"committee":true,"followups":2}"#,
+                ),
+            )
+        } else {
+            (None, None, None)
+        };
+        connection.execute(
+            "INSERT INTO recovery_episodes
+                 (id, project_id, task_id, workflow_id, parked_agent_run_id, status,
+                  cause_evaluation_id, advisor_used, committee_used, effective_followups,
+                  successor_agent_run_id, escalation_cause, revision, created_at, closed_at,
+                  escalation_recommendation, escalation_recommended_by, deliberation_path_json)
+             VALUES (?1, '0193f000-0000-7000-8000-000000000001',
+                     '0193f000-0000-7000-8000-000000000002',
+                     '0193f000-0000-7000-8000-000000000003',
+                     '0193f000-0000-7000-8000-000000000004', ?2,
+                     '0193f000-0000-7000-8000-000000000005', 1, 1, 2, NULL,
+                     'budget_exhausted', 1, '2026-08-16T10:00:00Z',
+                     '2026-08-16T11:00:00Z', ?3, ?4, ?5)",
+            rusqlite::params![
+                format!(
+                    "0193f000-0000-7000-8000-00000000{:04}",
+                    u32::from(brief) + 10
+                ),
+                status,
+                recommendation,
+                author,
+                path
+            ],
+        )
+    };
+
+    assert!(
+        insert("needs_human", false).is_err(),
+        "a `needs_human` row with no recommendation, author or path must be refused"
+    );
+    insert("needs_human", true).expect("a complete escalation is accepted");
+
+    // A non-terminal episode has nothing to recommend yet, so the rule applies
+    // to the escalation and not to every row.
+    connection
+        .execute(
+            "INSERT INTO recovery_episodes
+                 (id, project_id, task_id, workflow_id, parked_agent_run_id, status,
+                  cause_evaluation_id, advisor_used, committee_used, effective_followups,
+                  successor_agent_run_id, escalation_cause, revision, created_at, closed_at)
+             VALUES ('0193f000-0000-7000-8000-000000000020',
+                     '0193f000-0000-7000-8000-000000000001',
+                     '0193f000-0000-7000-8000-000000000002',
+                     '0193f000-0000-7000-8000-000000000003',
+                     '0193f000-0000-7000-8000-000000000004', 'open',
+                     '0193f000-0000-7000-8000-000000000005', 0, 0, 0, NULL, NULL, 1,
+                     '2026-08-16T10:00:00Z', NULL)",
+            [],
+        )
+        .expect("an open episode needs no brief");
+
+    // …and the update path is the one every real escalation actually takes.
+    assert!(
+        connection
+            .execute(
+                "UPDATE recovery_episodes
+                 SET status = 'needs_human', escalation_cause = 'budget_exhausted',
+                     closed_at = '2026-08-16T11:00:00Z'
+                 WHERE id = '0193f000-0000-7000-8000-000000000020'",
+                [],
+            )
+            .is_err(),
+        "escalating by UPDATE must carry the brief too, or the trigger guards only the rarer path"
+    );
 }
 
 #[test]

@@ -62,7 +62,7 @@ use kontor_core::id::{
 };
 use kontor_core::repository::{AgentRun, NewAgentRun};
 use kontor_core::spec::{
-    ContextPolicySnapshot, ContextWindowPolicy, ModelRung, ResolvedContextPolicy,
+    ContextPolicySnapshot, ContextWindowPolicy, ModelRung, ResolvedContextPolicy, SeatAutonomy,
     TeamContextPolicySeed, TeamRunSnapshot,
 };
 use kontor_core::state::{
@@ -369,6 +369,7 @@ impl LaunchPermit {
             prompt: launch.prompt,
             model_rung: launch.model_rung,
             context_policy: launch.context_policy,
+            autonomy: launch.autonomy,
             requested_at: launch.requested_at,
         });
         PreparedLaunch {
@@ -458,6 +459,12 @@ pub struct SlotLaunch {
     /// runtime's declared bounds *before* the session exists, so the record of
     /// what was asked for cannot be written after the fact.
     pub context_policy: ContextPolicySnapshot,
+    /// How much this seat may do before it has to ask a human.
+    ///
+    /// Resolved from the frozen team template *before* the session exists, for
+    /// the same reason `context_policy` is: what a seat was authorized to do is
+    /// a fact about the launch, not something the runtime may report afterwards.
+    pub autonomy: SeatAutonomy,
     /// When the launch was requested.
     pub requested_at: Timestamp,
 }

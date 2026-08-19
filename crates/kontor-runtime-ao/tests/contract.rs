@@ -328,6 +328,7 @@ fn launch_parts(agent_run_id: AgentRunId) -> LaunchParts {
             at("2026-08-10T09:00:00Z"),
         )
         .expect("the standard fallback freezes"),
+        autonomy: kontor_core::spec::SeatAutonomy::standard(),
         requested_at: at("2026-08-10T09:00:00Z"),
     }
 }

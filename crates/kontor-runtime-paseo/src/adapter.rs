@@ -48,13 +48,14 @@ use async_trait::async_trait;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{
     AgentRunId, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, TaskId, TeamRunId, Timestamp, TopologyNodeId,
+    RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
 };
 use kontor_core::repository::RuntimeBinding;
-use kontor_core::spec::ModelRung;
+use kontor_core::spec::{ModelRung, SeatAutonomy};
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
+    ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
     LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
@@ -88,7 +89,8 @@ use kontor_runtime::workspace::{
 };
 
 use crate::client::{
-    PaseoCommand, PaseoRpc, PaseoTransport, ensure_frame_bounded, permission_mode,
+    PaseoCommand, PaseoRpc, PaseoTransport, consultation_permission_mode, ensure_frame_bounded,
+    paseo_mode,
 };
 use crate::mcp::{PaseoMcp, RENAME_WORKSPACE_TOOL};
 use crate::wire::{
@@ -755,6 +757,10 @@ struct PaseoState {
     /// inside it, so a ledger keyed by the run would make the second run of one
     /// ticket look like a new place to put things.
     containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
+    /// Consultation launches currently between exact-label census and readback.
+    /// The native census is the durable uniqueness proof; this closes the
+    /// in-process race while that proof is being established.
+    consultation_claims: BTreeSet<SeatBindingId>,
     bindings: IssuedBindingRegistry,
     admissions: AdmissionLedger,
     records: BTreeMap<RuntimeBindingId, PaseoSeatRecord>,
@@ -938,6 +944,7 @@ impl PaseoAdapter {
                 // this process kept. Seeding it from a checkpoint would hide
                 // the one path the restart fixture exists to exercise.
                 containers: BTreeMap::new(),
+                consultation_claims: BTreeSet::new(),
                 placements: checkpoint.placements.iter().cloned().collect(),
                 bindings: {
                     let mut registry = IssuedBindingRegistry::new();
@@ -1597,7 +1604,12 @@ impl PaseoAdapter {
         Ok(())
     }
 
-    fn verify_agent_route(agent: &PaseoAgent, requested: &ModelRung) -> RuntimeResult<()> {
+    fn verify_agent_route_with_mode(
+        agent: &PaseoAgent,
+        requested: &ModelRung,
+        consultation: bool,
+        autonomy: SeatAutonomy,
+    ) -> RuntimeResult<()> {
         if agent.provider != requested.provider.0 || agent.model != requested.model.0 {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -1606,7 +1618,11 @@ impl PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
-        let expected_mode = permission_mode(&requested.provider.0)?;
+        let expected_mode = if consultation {
+            consultation_permission_mode(&requested.provider.0)?
+        } else {
+            paseo_mode(&requested.provider.0, autonomy)?
+        };
         if agent.current_mode_id.as_deref() != expected_mode {
             return Err(RuntimeError::PermissionModeMismatch {
                 provider: requested.provider.0.clone(),
@@ -1615,6 +1631,14 @@ impl PaseoAdapter {
             });
         }
         Ok(())
+    }
+
+    fn verify_agent_route(
+        agent: &PaseoAgent,
+        requested: &ModelRung,
+        autonomy: SeatAutonomy,
+    ) -> RuntimeResult<()> {
+        Self::verify_agent_route_with_mode(agent, requested, false, autonomy)
     }
 
     // -- Evidence -----------------------------------------------------------
@@ -2241,7 +2265,7 @@ impl PaseoAdapter {
     /// * [`RuntimeError::Transport`] — Paseo refused, or acknowledged another id.
     /// * [`RuntimeError::CorrelationFailed`] — the fresh readback does not report
     ///   the agent archived, so nothing may cite it as finished.
-    pub async fn retire(
+    async fn retire_session(
         &self,
         binding: &RuntimeBindingSnapshot,
         at: Timestamp,
@@ -2263,13 +2287,17 @@ impl PaseoAdapter {
         if !agent.is_archived() {
             return Err(RuntimeError::CorrelationFailed);
         }
-        self.observation(
+        let observation = self.observation(
             binding.agent_run_id(),
             binding.identity().clone(),
             &agent,
             at,
             ObservationSource::Inspect,
-        )
+        )?;
+        self.lock()
+            .admissions
+            .retire(binding.binding_id(), &binding.identity().native_id);
+        Ok(observation)
     }
 
     /// Link a successor seat to the predecessor it replaced.
@@ -2730,7 +2758,7 @@ impl PaseoAdapter {
     async fn declared(&self) -> RuntimeResult<RuntimeCapabilities> {
         let mut capabilities = match self.fetch_server_info().await {
             Ok(info) => {
-                let degraded = !info.missing_required().is_empty() || !info.is_pinned_baseline();
+                let degraded = !info.missing_required().is_empty() || !info.is_supported_baseline();
                 self.lock().server = Some(info);
                 if degraded {
                     self.config.degraded_capabilities()
@@ -2844,6 +2872,7 @@ impl PaseoAdapter {
             &workspace_id,
             task_scope.canonical_worktree_cwd.as_str(),
             request.model_rung(),
+            request.autonomy(),
             &agent_display_name,
             &labels,
             self.config.scope.orchestrator_agent_id.as_str(),
@@ -2870,7 +2899,7 @@ impl PaseoAdapter {
         // trusting the CLI here is a defect the fixtures name explicitly.
         let agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        Self::verify_agent_route(&agent, request.model_rung())?;
+        Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())?;
 
         let snapshot = self.bind(
             request.agent_run_id(),
@@ -2960,6 +2989,155 @@ impl PaseoAdapter {
             }),
             _ => Err(RuntimeError::CorrelationFailed),
         }
+    }
+
+    fn consultation_labels(
+        &self,
+        request: &ConsultationLaunchRequest,
+        project: &PaseoProjectBinding,
+        workspace_id: &str,
+    ) -> BTreeMap<String, String> {
+        let scope = &self.config.scope;
+        [
+            (
+                label::CONSULTATION_RUN,
+                format!(
+                    "{}/{}",
+                    request.run_id.family().as_str(),
+                    request.run_id.as_text()
+                ),
+            ),
+            (label::JIRA_EPIC, scope.jira_epic_key.as_str().to_owned()),
+            (
+                label::PROJECT_ID,
+                project.mini_project_id.as_str().to_owned(),
+            ),
+            (label::SEAT_BINDING, request.seat_binding_id.to_string()),
+            (label::ROLE, request.role_slot_id.as_str().to_owned()),
+            (label::ROLE_SLOT, request.role_slot_id.as_str().to_owned()),
+            (label::WORKSPACE_ID, workspace_id.to_owned()),
+            (label::WORKTREE, request.cwd.as_str().to_owned()),
+            (
+                label::PARENT_AGENT,
+                scope.orchestrator_agent_id.as_str().to_owned(),
+            ),
+            (label::READ_ONLY, "true".to_owned()),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect()
+    }
+
+    async fn launch_consultation_inner(
+        &self,
+        request: &ConsultationLaunchRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        let declared = self.declared().await?;
+        let project = self.require_project()?;
+        let generation = self.generation();
+        let held = self
+            .fetch_project_agents(&project, false)
+            .await?
+            .into_iter()
+            .filter(|agent| !agent.is_archived())
+            .count();
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Launch,
+                autonomous: true,
+                account_pinned: false,
+                binding: None,
+                // The consultation container is verified against the adapter's
+                // own ledger immediately below; there is no fake TeamRun/Task
+                // pair with which to build a delivery PlacementClaim.
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::ConcurrentSessions(
+                    u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
+                )),
+                context_policy: Some(&request.context_policy),
+            },
+        )?;
+
+        request.container.ensure_correlated()?;
+        request.container.ensure_generation(generation)?;
+        request.container.ensure_root(&request.cwd)?;
+        let prepared = self
+            .lock()
+            .containers
+            .get(&request.container.topology_node_id())
+            .cloned()
+            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+        if prepared != request.container {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "this is not the consultation container this runtime prepared",
+            });
+        }
+        let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
+        let workspace = self.fetch_workspace(&workspace_id).await?;
+        self.verify_workspace_placement(&workspace, &project, &request.cwd)?;
+
+        let labels = self.consultation_labels(request, &project, &workspace_id);
+        let slot_labels = [(
+            label::SEAT_BINDING.to_owned(),
+            request.seat_binding_id.to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let census = self.fetch_agents(&slot_labels, false).await?;
+        let exact = census
+            .iter()
+            .filter(|agent| agent.matches_labels(&labels) && !agent.is_archived())
+            .collect::<Vec<_>>();
+        let (native_id, created) = match exact.as_slice() {
+            [agent] => (agent.id.clone(), false),
+            [] if census.iter().any(|agent| !agent.is_archived()) => {
+                return Err(RuntimeError::SlotAlreadyAdmitted {
+                    rule: "a live Paseo agent already carries this consultation seat binding",
+                });
+            }
+            [] => {
+                let command = PaseoCommand::consultation_run(
+                    &workspace_id,
+                    request.cwd.as_str(),
+                    &request.model_rung,
+                    request.display_name.as_str(),
+                    &labels,
+                    self.config.scope.orchestrator_agent_id.as_str(),
+                    request.prompt.as_str(),
+                    request.credential.expose_secret(),
+                )?;
+                let native_id = match self.transport.run(&command).await {
+                    Ok(output) => {
+                        output
+                            .parse::<PaseoCliAgentStarted>("PaseoCliAgentStarted")?
+                            .agent_id
+                    }
+                    Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
+                    Err(other) => return Err(other),
+                };
+                (native_id, true)
+            }
+            _ => return Err(RuntimeError::CorrelationFailed),
+        };
+        let agent = self.fetch_agent(&native_id).await?;
+        self.verify_agent_placement(&agent, &workspace_id, &labels)?;
+        Self::verify_agent_route_with_mode(
+            &agent,
+            &request.model_rung,
+            true,
+            SeatAutonomy::Advisory,
+        )?;
+        Ok(ConsultationLaunchOutcome {
+            identity: self.identity(ExternalId::parse(&agent.id)?, generation),
+            provider_session_id: agent
+                .provider_session_id()
+                .map(ExternalId::parse)
+                .transpose()?,
+            observed_at: request.requested_at,
+            created,
+        })
     }
 }
 
@@ -3076,6 +3254,65 @@ impl RuntimeAdapter for PaseoAdapter {
 
     async fn prepare_plane(&self) -> RuntimeResult<()> {
         self.prepare_project(&self.plane_command_id()).await?;
+        Ok(())
+    }
+
+    async fn launch_consultation(
+        &self,
+        request: &ConsultationLaunchRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        {
+            let state = &mut *self.lock();
+            if !state.consultation_claims.insert(request.seat_binding_id) {
+                return Err(RuntimeError::SlotAlreadyAdmitted {
+                    rule: "this consultation seat already has a launch in flight",
+                });
+            }
+        }
+        let outcome = self.launch_consultation_inner(request).await;
+        self.lock()
+            .consultation_claims
+            .remove(&request.seat_binding_id);
+        outcome
+    }
+
+    async fn message_consultation(
+        &self,
+        request: &ConsultationMessageRequest,
+    ) -> RuntimeResult<()> {
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation != self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the consultation seat belongs to another runtime generation",
+            });
+        }
+        let native_id = request.identity.native_id.as_str();
+        let agent = self.fetch_agent(native_id).await?;
+        let expected_run = format!(
+            "{}/{}",
+            request.run_id.family().as_str(),
+            request.run_id.as_text()
+        );
+        let expected_seat = request.seat_binding_id.to_string();
+        if agent.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
+            || agent.label(label::CONSULTATION_RUN) != Some(expected_run.as_str())
+            || agent.is_archived()
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let rpc = PaseoRpc::send_message(
+            self.next_request_id(),
+            native_id,
+            &request.message_id.to_string(),
+            request.body.as_str(),
+        );
+        let frame = self.transport.request(&rpc).await?;
+        let accepted: PaseoSendAccepted = frame.resolve(&rpc, "PaseoSendAccepted")?;
+        if accepted.agent_id != native_id || !accepted.accepted {
+            return Err(RuntimeError::CorrelationFailed);
+        }
         Ok(())
     }
 
@@ -3681,6 +3918,14 @@ impl RuntimeAdapter for PaseoAdapter {
             request.requested_at,
             ObservationSource::CommandAck,
         )
+    }
+
+    async fn retire(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        self.retire_session(binding, at).await
     }
 
     async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation> {

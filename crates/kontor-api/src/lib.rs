@@ -37,6 +37,7 @@
 
 pub mod applications;
 pub mod auth;
+pub mod body;
 pub mod control;
 pub mod dto;
 pub mod error;
@@ -51,7 +52,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router, extract::Request};
-use kontor_core::id::Timestamp;
+use kontor_core::id::{SeatBindingId, Timestamp};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -75,7 +76,7 @@ pub fn now() -> Timestamp {
 /// handler cannot be reached without one. Extracting it is infallible for that
 /// reason; the fallible part already happened, before any handler ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Caller(pub CallerCapability);
+pub struct Caller(pub CallerCapability, Option<SeatBindingId>);
 
 impl Caller {
     /// Refuse a caller whose tier does not reach `required`.
@@ -86,15 +87,43 @@ impl Caller {
     ///
     /// # Errors
     /// Returns [`ApiErrorCode::Forbidden`] when the caller's tier is lower than
-    /// `required`.
+    /// `required`, or when the bearer is a consultation-seat credential. Seat
+    /// bearers are denied on every ordinary route so independent reviewers
+    /// cannot read peers' findings or reach unrelated mutations.
     pub fn require(self, state: &ApiState, required: CallerCapability) -> Result<(), ApiError> {
-        if self.0.at_least(required) {
+        if self.1.is_none() && self.0.at_least(required) {
             return Ok(());
         }
         Err(state.refuse(
             ApiErrorCode::Forbidden,
             "this route requires a higher realm authority than the presented credential",
         ))
+    }
+
+    /// The consultation SeatBinding authenticated by the bearer, when this is
+    /// a seat-scoped credential rather than a shared Realm credential.
+    #[must_use]
+    pub const fn consultation_seat(self) -> Option<SeatBindingId> {
+        self.1
+    }
+
+    /// Require the exact consultation-seat subject carried by a scoped bearer.
+    ///
+    /// This is deliberately separate from [`Self::require`]: a consultation
+    /// seat is read-only everywhere except the submission routes that call this
+    /// method explicitly. It never inherits the Realm operator secret's broad
+    /// authority merely because that secret signs the scoped credential.
+    ///
+    /// # Errors
+    /// Returns [`ApiErrorCode::Forbidden`] for a shared Realm credential or any
+    /// caller that did not authenticate as one consultation seat.
+    pub fn require_consultation_seat(self, state: &ApiState) -> Result<SeatBindingId, ApiError> {
+        self.consultation_seat().ok_or_else(|| {
+            state.refuse(
+                ApiErrorCode::Forbidden,
+                "this route requires the submitting consultation seat's scoped credential",
+            )
+        })
     }
 }
 
@@ -154,13 +183,21 @@ async fn authenticate(
             "this realm requires an Authorization: Bearer credential",
         )
     })?;
-    let authority = state.credentials().authority(presented).ok_or_else(|| {
-        state.refuse(
+    let caller = if let Some(authority) = state.credentials().authority(presented) {
+        Caller(authority, None)
+    } else if let Some(seat_binding_id) = state.credentials().consultation_seat(presented) {
+        // The capability value is only a storage placeholder: `Caller::require`
+        // denies every seat-scoped caller before checking it. Submission routes
+        // opt in through `require_consultation_seat`, so the bearer cannot read
+        // peers' findings or inherit the signing secret's Realm authority.
+        Caller(CallerCapability::Observer, Some(seat_binding_id))
+    } else {
+        return Err(state.refuse(
             ApiErrorCode::Unauthenticated,
             "the presented credential is not one of this realm's",
-        )
-    })?;
-    parts.extensions.insert(Caller(authority));
+        ));
+    };
+    parts.extensions.insert(caller);
     Ok(next.run(Request::from_parts(parts, body)).await)
 }
 
@@ -434,6 +471,10 @@ pub fn router(state: ApiState) -> Router {
             post(applications::settle_advisor_run),
         )
         .route(
+            "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}",
+            get(applications::advisor_run),
+        )
+        .route(
             "/v1/projects/{project_id}/committee-templates",
             get(applications::committee_templates),
         )
@@ -448,6 +489,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/projects/{project_id}/epics/{epic_id}/committee-runs:invoke",
             post(applications::invoke_committee_run),
+        )
+        .route(
+            "/v1/projects/{project_id}/committee-runs/{committee_run_id}",
+            get(applications::committee_run),
         )
         .route(
             "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record",
@@ -595,6 +640,10 @@ pub fn router(state: ApiState) -> Router {
             post(applications::validate_work_profile),
         )
         // Triggers and intake.
+        .route(
+            "/v1/projects/{project_id}/triggers:publish",
+            post(applications::publish_trigger),
+        )
         .route(
             "/v1/projects/{project_id}/triggers/{trigger}/{version}",
             get(applications::trigger),

@@ -174,6 +174,7 @@ impl Transport for RouterTransport {
             .expect("the whole body is readable");
         let body = serde_json::from_slice(&bytes).map_err(|_| TransportFailure::Protocol {
             path: request.path.clone(),
+            status: Some(status),
             detail: "the body was not JSON",
         })?;
         Ok(Reply { status, body })
@@ -190,6 +191,7 @@ impl Transport for RouterTransport {
         // rather than hanging or pretending.
         Err(TransportFailure::Protocol {
             path: request.path.clone(),
+            status: None,
             detail: "streamed reads are proved against the http transport",
         })
     }

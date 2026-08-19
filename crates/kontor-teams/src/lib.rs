@@ -69,8 +69,18 @@
 //! Every rule here is structural. No function reads a slot id, a role name, a
 //! gate name or a template name.
 
+pub mod operational;
 pub mod run;
 pub mod spec;
+
+pub use operational::{
+    CoreTeamRevision, CoreTeamSeat, CoreTeamSeatSelection, EpicPresence, MANDATORY_LEAD_ROLE,
+    MANDATORY_PROGRAM_ROLE, OperationalEffects, OperationalKinds, OperationalWorkflow,
+    PinnedConfiguration, ProjectSessionBaseBinding, PromotionNode, PromotionOutcome, PromotionPlan,
+    PromotionPreview, PromotionSeat, PromotionTarget, QuickSession, QuickSessionRequest,
+    QuickSourceEvidence, RosterUpgradeOutcome, RosterUpgradePlan, RosterUpgradePreview,
+    SourceDisposition,
+};
 
 pub use run::{
     ClosedSlot, LaunchPermit, OccupiedSlot, PreparedLaunch, ReplacementPending, RoleSlotWaiver,

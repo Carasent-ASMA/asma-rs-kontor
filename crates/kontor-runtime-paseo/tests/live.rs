@@ -30,7 +30,7 @@ use kontor_runtime_paseo::client::{
     PASEO_DEFAULT_ENDPOINT, PaseoCommand, PaseoLiveTransport, PaseoRpc, PaseoTransport,
 };
 use kontor_runtime_paseo::wire::{
-    PASEO_APP_VERSION, PASEO_WS_PROTOCOL_VERSION, PaseoFeature, PaseoProjectList,
+    PASEO_APP_VERSION, PASEO_WS_PROTOCOL_VERSION, PaseoFeature, PaseoProjectList, version_at_least,
 };
 use secrecy::SecretString;
 
@@ -91,14 +91,11 @@ async fn live_hello_is_accepted_and_the_daemon_pushes_a_pinned_identity() {
         "live Paseo announced version={:?} serverId={}",
         identity.version, identity.server_id
     );
-    assert_eq!(
-        identity.version.as_deref(),
-        Some(PASEO_APP_VERSION),
-        "this adapter's DTOs and argv evidence are pinned to {PASEO_APP_VERSION}"
-    );
     assert!(
-        identity.is_pinned_baseline(),
-        "an unpinned build is observed, never driven"
+        identity.is_supported_baseline(),
+        "a build below the {PASEO_APP_VERSION} floor is observed, never driven; \
+         this daemon reports {:?}",
+        identity.version
     );
     assert!(
         identity.missing_required().is_empty(),
@@ -171,21 +168,28 @@ async fn live_the_status_readback_agrees_with_the_pushed_identity() {
         .resolve(&request, "PaseoDaemonStatus")
         .expect("the answer is the pinned 0.3.1 shape");
 
-    assert_eq!(status.version.as_deref(), Some(PASEO_APP_VERSION));
+    assert!(
+        status
+            .version
+            .as_deref()
+            .is_some_and(|version| version_at_least(version, PASEO_APP_VERSION)),
+        "the readback is at or above the {PASEO_APP_VERSION} floor, reporting {:?}",
+        status.version
+    );
     assert_eq!(
         status.server_id, pushed.server_id,
         "the push and the readback describe the same daemon boot"
     );
 }
 
-/// The bundled CLI is the pinned baseline too.
+/// The bundled CLI clears the baseline too.
 ///
-/// 0.3.1 prints the bare version for `--version --json` rather than JSON, which
+/// Paseo prints the bare version for `--version --json` rather than JSON, which
 /// is why this reads text: a parser expecting an object here would fail against
 /// the very build it is pinned to.
 #[tokio::test]
 #[ignore = "requires a live Paseo daemon; see the module docs"]
-async fn live_cli_reports_the_pinned_baseline() {
+async fn live_cli_reports_the_supported_baseline() {
     let transport = live!();
     let output = transport
         .run(&PaseoCommand::version())
@@ -193,7 +197,10 @@ async fn live_cli_reports_the_pinned_baseline() {
         .expect("the Paseo CLI answers");
     let reported = output.version().expect("a zero exit prints a version");
     println!("live Paseo CLI reports {reported}");
-    assert_eq!(reported, PASEO_APP_VERSION);
+    assert!(
+        version_at_least(&reported, PASEO_APP_VERSION),
+        "the bundled CLI is at or above the {PASEO_APP_VERSION} floor, reporting {reported}"
+    );
 }
 
 /// An unknown agent id is a refusal rather than an empty session.

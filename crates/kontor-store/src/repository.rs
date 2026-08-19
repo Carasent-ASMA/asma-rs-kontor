@@ -18,16 +18,20 @@ use kontor_core::calendar::{
     HolidayProviderKind, HolidaySourceRevision, IanaTimeZone, OverrideExpiry, OverrideRevocation,
     ScheduleOverride, WeeklyWindow, WorkCalendarAssignment, WorkScope,
 };
+use kontor_core::consultation::{
+    CommitteeRole, CommitteeVerdict, ConsultationFamily, ConsultationRunId, ConsultationRunState,
+};
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CalendarExceptionId,
-    CalendarProfileId, CanonicalDocument, CapacityObservationId, CommandReceiptId, ContentHash,
-    CredentialAlias, CurrencyCode, EventCursor, ExternalId, ExternalName, GateKey,
-    GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
-    ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId, RealmId, RoleCatalogId, RoleCode,
-    RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId,
-    SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
-    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
-    TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
+    CalendarExceptionId, CalendarProfileId, CanonicalDocument, CapacityObservationId,
+    CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode, EventCursor,
+    ExternalId, ExternalName, GateKey, GuardrailEvaluationId, HolidaySourceId, IdempotencyKey,
+    IntakeReceiptId, MiniProjectId, ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId,
+    QuickSessionId, RealmId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId,
+    RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion,
+    StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
+    TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
@@ -47,7 +51,11 @@ use kontor_core::repository::{
     PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, RealmEventPage,
     RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
     RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SourceEventIngest, SpecRepository, StoredCapacityConfiguration, Task,
+    SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
+    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
+    StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
+    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task,
     TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
     TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
     validate_dependency_graph,
@@ -113,6 +121,265 @@ pub(crate) fn conflict(subject: &'static str, rule: &'static str) -> RepositoryE
 
 pub(crate) fn text(timestamp: Timestamp) -> String {
     format_utc_timestamp(timestamp)
+}
+
+fn canonical_json(value: &serde_json::Value, subject: &'static str) -> RepositoryResult<String> {
+    CanonicalDocument::from_serializable(value)
+        .map(|document| document.json().to_owned())
+        .map_err(|_| RepositoryError::Conflict {
+            subject,
+            rule: "the document cannot be canonicalized",
+        })
+}
+
+type ConsultationRunColumns = (
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    i64,
+    String,
+    String,
+    Option<String>,
+);
+
+fn consultation_run_id(
+    family: ConsultationFamily,
+    value: &str,
+) -> RepositoryResult<ConsultationRunId> {
+    match family {
+        ConsultationFamily::Advisor => AdvisorRunId::parse(value).map(ConsultationRunId::Advisor),
+        ConsultationFamily::Committee => {
+            CommitteeRunId::parse(value).map(ConsultationRunId::Committee)
+        }
+    }
+    .map_err(RepositoryError::from)
+}
+
+fn read_consultation_run(
+    project_id: ProjectId,
+    run_id: ConsultationRunId,
+    columns: ConsultationRunColumns,
+) -> RepositoryResult<StoredConsultationRun> {
+    let (
+        mini_project_id,
+        profile_id,
+        profile_version,
+        definition_hash,
+        question,
+        question_hash,
+        context,
+        context_hash,
+        caller_seat_binding_id,
+        topology_node_id,
+        invoke_key,
+        invoke_intent_hash,
+        state,
+        round,
+        result,
+        result_hash,
+        revision,
+        created_at,
+        updated_at,
+        settled_at,
+    ) = columns;
+    let question = BoundedText::parse(&question)?;
+    let question_hash = ContentHash::parse(&question_hash)?;
+    if ContentHash::of(question.as_str().as_bytes()) != question_hash {
+        return Err(RepositoryError::Conflict {
+            subject: "consultation run",
+            rule: "the stored question no longer matches its digest",
+        });
+    }
+    let context_hash = ContentHash::parse(&context_hash)?;
+    let context = CanonicalDocument::from_stored(&context, &context_hash)?;
+    let result_hash = result_hash
+        .map(|hash| ContentHash::parse(&hash))
+        .transpose()?;
+    let result = match (result, result_hash.as_ref()) {
+        (Some(json), Some(hash)) => Some(
+            serde_json::from_str(CanonicalDocument::from_stored(&json, hash)?.json()).map_err(
+                |error| RepositoryError::Backend {
+                    detail: format!("a consultation result could not be decoded: {error}"),
+                },
+            )?,
+        ),
+        (None, None) => None,
+        _ => {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "result bytes and digest must be present together",
+            });
+        }
+    };
+    Ok(StoredConsultationRun {
+        id: run_id,
+        project_id,
+        mini_project_id: MiniProjectId::parse(&mini_project_id)?,
+        profile_id,
+        profile_version: read_version(profile_version)?,
+        definition_hash: ContentHash::parse(&definition_hash)?,
+        question,
+        question_hash,
+        context: serde_json::from_str(context.json()).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a consultation context could not be decoded: {error}"),
+            }
+        })?,
+        context_hash,
+        caller_seat_binding_id: SeatBindingId::parse(&caller_seat_binding_id)?,
+        topology_node_id: TopologyNodeId::parse(&topology_node_id)?,
+        invoke_key: IdempotencyKey::parse(&invoke_key)?,
+        invoke_intent_hash: ContentHash::parse(&invoke_intent_hash)?,
+        state: ConsultationRunState::parse(&state)?,
+        round: u32::try_from(round).map_err(|_| RepositoryError::Conflict {
+            subject: "consultation run",
+            rule: "round is outside the supported range",
+        })?,
+        result,
+        result_hash,
+        revision: revision_of(revision)?,
+        created_at: read_timestamp(&created_at)?,
+        updated_at: read_timestamp(&updated_at)?,
+        settled_at: settled_at.map(|value| read_timestamp(&value)).transpose()?,
+    })
+}
+
+type ConsultationSeatColumns = (
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn read_consultation_seat(
+    run_id: ConsultationRunId,
+    columns: ConsultationSeatColumns,
+) -> RepositoryResult<StoredConsultationSeat> {
+    let (
+        role_slot_id,
+        committee_role,
+        logical_role,
+        seat_binding_id,
+        model_rung,
+        runtime_kind,
+        host,
+        generation,
+        native_id,
+        provider_session_id,
+        observed_at,
+    ) = columns;
+    let native_identity = match (runtime_kind, host, generation, native_id) {
+        (Some(runtime_kind), Some(host), Some(generation), Some(native_id)) => {
+            Some(NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                host: ExternalName::parse(&host)?,
+                generation: u64::try_from(generation).map_err(|_| RepositoryError::Conflict {
+                    subject: "consultation seat",
+                    rule: "runtime generation is negative",
+                })?,
+                native_id: ExternalId::parse(&native_id)?,
+            })
+        }
+        (None, None, None, None) => None,
+        _ => {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat",
+                rule: "native identity is only partially present",
+            });
+        }
+    };
+    Ok(StoredConsultationSeat {
+        run_id,
+        role_slot_id: RoleSlotId::parse(&role_slot_id)?,
+        committee_role: committee_role
+            .map(|role| CommitteeRole::parse(&role))
+            .transpose()?,
+        logical_role: RoleKey::parse(&logical_role)?,
+        seat_binding_id: SeatBindingId::parse(&seat_binding_id)?,
+        model_rung: serde_json::from_str(&model_rung).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a consultation model rung could not be decoded: {error}"),
+            }
+        })?,
+        native_identity,
+        provider_session_id: provider_session_id
+            .map(|value| ExternalId::parse(&value))
+            .transpose()?,
+        observed_at: observed_at
+            .map(|value| read_timestamp(&value))
+            .transpose()?,
+    })
+}
+
+type CommitteeFindingColumns = (String, String, String, i64, String, String, String);
+
+fn read_committee_finding(
+    committee_run_id: CommitteeRunId,
+    round: u32,
+    columns: CommitteeFindingColumns,
+) -> RepositoryResult<StoredCommitteeFinding> {
+    let (role_slot_id, role, verdict, complete, document, document_hash, recorded_at) = columns;
+    let document_hash = ContentHash::parse(&document_hash)?;
+    let document = CanonicalDocument::from_stored(&document, &document_hash)?;
+    Ok(StoredCommitteeFinding {
+        committee_run_id,
+        round,
+        role_slot_id: RoleSlotId::parse(&role_slot_id)?,
+        role: CommitteeRole::parse(&role)?,
+        verdict: CommitteeVerdict::parse(&verdict)?,
+        evidence_complete: complete == 1,
+        document: serde_json::from_str(document.json()).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a Committee finding could not be decoded: {error}"),
+            }
+        })?,
+        document_hash,
+        recorded_at: read_timestamp(&recorded_at)?,
+    })
+}
+
+type AdvisorAdviceColumns = (String, String, String, String);
+
+fn read_advisor_advice(
+    project_id: ProjectId,
+    advisor_run_id: AdvisorRunId,
+    columns: AdvisorAdviceColumns,
+) -> RepositoryResult<StoredAdvisorAdvice> {
+    let (seat_binding_id, document, document_hash, recorded_at) = columns;
+    let document_hash = ContentHash::parse(&document_hash)?;
+    let document = CanonicalDocument::from_stored(&document, &document_hash)?;
+    Ok(StoredAdvisorAdvice {
+        advisor_run_id,
+        project_id,
+        seat_binding_id: SeatBindingId::parse(&seat_binding_id)?,
+        document: serde_json::from_str(document.json()).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("Advisor advice could not be decoded: {error}"),
+            }
+        })?,
+        document_hash,
+        recorded_at: read_timestamp(&recorded_at)?,
+    })
 }
 
 pub(crate) fn read_timestamp(value: &str) -> RepositoryResult<Timestamp> {
@@ -1051,6 +1318,1979 @@ fn role_catalog_in(
         subject: "role catalog",
     })?;
     stored_document(&json, &hash)
+}
+
+/// Project Core Team configuration.
+///
+/// Inherent rather than a trait: there is one implementation, and a port here
+/// would be a second thing to keep in agreement with the two statements below.
+impl SqliteStore {
+    /// Publish the next immutable Core Team revision for one project.
+    ///
+    /// The version is checked against what is already stored inside the same
+    /// transaction rather than trusted from the caller. Two applies racing on
+    /// the same project would otherwise both read version *n*, both compute
+    /// *n+1*, and the second would land on the primary key with a message about
+    /// a unique index rather than about the roster it failed to publish.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the version is not the next
+    /// one for this project.
+    pub fn publish_core_team_revision(
+        &self,
+        revision: &StoredCoreTeamRevision,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let current: Option<i64> = transaction
+            .query_row(
+                "SELECT MAX(version) FROM core_team_revisions WHERE project_id = ?1",
+                params![revision.project_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .flatten();
+        let expected = current.map_or(1, |version| version.saturating_add(1));
+        if version_column(revision.version) != expected {
+            return Err(RepositoryError::Conflict {
+                subject: "core team revision",
+                rule: "must be the next revision for this project",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO core_team_revisions
+                     (project_id, version, catalog_hash, seats, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    revision.project_id.to_string(),
+                    version_column(revision.version),
+                    revision.catalog_hash.as_str(),
+                    revision.seats.to_string(),
+                    text(revision.published_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Publish the next immutable revision of one Advisor profile or Committee
+    /// template.
+    ///
+    /// The gap check is per `(project, family, profile_id)`: version one starts
+    /// a profile, and every later version must be exactly the next one. A caller
+    /// that skipped a version would publish a revision whose predecessor never
+    /// existed, and a run pinning "the previous revision" would then have
+    /// nothing to read.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the version is not the next
+    /// one for that profile, or a backend error.
+    pub fn publish_consultation_profile_revision(
+        &self,
+        revision: &StoredConsultationProfileRevision,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let current: Option<i64> = transaction
+            .query_row(
+                "SELECT MAX(version) FROM consultation_profile_revisions
+                 WHERE project_id = ?1 AND family = ?2 AND profile_id = ?3",
+                params![
+                    revision.project_id.to_string(),
+                    revision.family.as_str(),
+                    revision.profile_id.as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .flatten();
+        let expected = current.map_or(1, |version| version.saturating_add(1));
+        if version_column(revision.version) != expected {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation profile revision",
+                rule: "must be the next revision for this profile",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO consultation_profile_revisions
+                     (project_id, family, profile_id, version, name, definition,
+                      definition_hash, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    revision.project_id.to_string(),
+                    revision.family.as_str(),
+                    revision.profile_id.as_str(),
+                    version_column(revision.version),
+                    revision.name.as_str(),
+                    revision.definition.as_str(),
+                    revision.definition_hash.as_str(),
+                    text(revision.published_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Every published revision of one consultation family in a project.
+    ///
+    /// Ordered by profile then version, oldest first, so a catalog read is a
+    /// stable projection rather than whatever order the pages happen to be in.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_consultation_profile_revisions(
+        &self,
+        project_id: ProjectId,
+        family: ConsultationFamily,
+    ) -> RepositoryResult<Vec<StoredConsultationProfileRevision>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT profile_id, version, name, definition, definition_hash, created_at
+                 FROM consultation_profile_revisions
+                 WHERE project_id = ?1 AND family = ?2
+                 ORDER BY profile_id ASC, version ASC",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string(), family.as_str()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(
+                |(profile_id, version, name, definition, definition_hash, created_at)| {
+                    // Re-admitted rather than merely parsed: `from_stored`
+                    // proves the bytes are still canonical *and* that they
+                    // still hash to the digest published with them. A silently
+                    // rewritten definition would otherwise be served to a run
+                    // that pinned the original.
+                    let digest = ContentHash::parse(&definition_hash)?;
+                    let document = CanonicalDocument::from_stored(&definition, &digest)?;
+                    Ok(StoredConsultationProfileRevision {
+                        project_id,
+                        family,
+                        profile_id,
+                        version: read_version(version)?,
+                        name: ExternalName::parse(&name)?,
+                        definition: document.json().to_owned(),
+                        definition_hash: digest,
+                        published_at: read_timestamp(&created_at)?,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    /// Atomically freeze one consultation, its dedicated topology node and all
+    /// template-declared logical seats before any native launch.
+    ///
+    /// # Errors
+    /// Refuses any duplicate run/node/seat, cross-project reference or backend
+    /// failure. No partial topology survives a refused insert.
+    pub fn create_consultation_run(
+        &self,
+        run: &StoredConsultationRun,
+        node: &NewSessionTopologyNode,
+        seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
+    ) -> RepositoryResult<()> {
+        if run.project_id != node.project_id
+            || run.topology_node_id != node.id
+            || node.mini_project_id != Some(run.mini_project_id)
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "the frozen run and topology node do not describe one scope",
+            });
+        }
+        let verified_context = CanonicalDocument::from_serializable(&run.context)?;
+        if ContentHash::of(run.question.as_str().as_bytes()) != run.question_hash
+            || verified_context.hash() != &run.context_hash
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "frozen input does not match its digest",
+            });
+        }
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO topology_nodes
+                     (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
+                      kind, parent_id, lifecycle, placement, task_id, revision,
+                      created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                         'active', 'unbound', NULL, 1, ?9, ?9)",
+                params![
+                    node.id.to_string(),
+                    node.project_id.to_string(),
+                    node.mini_project_id.map(|id| id.to_string()),
+                    node.topology.spec_id.to_string(),
+                    version_column(node.topology.version),
+                    node.topology.canonical_hash.as_str(),
+                    node.kind.as_str(),
+                    node.parent_id.map(|id| id.to_string()),
+                    text(node.created_at),
+                ],
+            )
+            .map_err(backend)?;
+
+        let context = canonical_json(&run.context, "consultation context")?;
+        let result = run
+            .result
+            .as_ref()
+            .map(|value| canonical_json(value, "consultation result"))
+            .transpose()?;
+        transaction
+            .execute(
+                "INSERT INTO consultation_runs
+                     (run_id, project_id, mini_project_id, family, profile_id,
+                      profile_version, definition_hash, question, question_hash,
+                      context, context_hash, caller_seat_binding_id, topology_node_id,
+                      invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
+                      updated_at, settled_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                         ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                params![
+                    run.id.as_text(),
+                    run.project_id.to_string(),
+                    run.mini_project_id.to_string(),
+                    run.id.family().as_str(),
+                    run.profile_id,
+                    version_column(run.profile_version),
+                    run.definition_hash.as_str(),
+                    run.question.as_str(),
+                    run.question_hash.as_str(),
+                    context,
+                    run.context_hash.as_str(),
+                    run.caller_seat_binding_id.to_string(),
+                    run.topology_node_id.to_string(),
+                    run.invoke_key.as_str(),
+                    run.invoke_intent_hash.as_str(),
+                    run.state.as_str(),
+                    i64::from(run.round),
+                    result,
+                    run.result_hash.as_ref().map(ContentHash::as_str),
+                    i64::try_from(run.revision.get()).unwrap_or(i64::MAX),
+                    text(run.created_at),
+                    text(run.updated_at),
+                    run.settled_at.map(text),
+                ],
+            )
+            .map_err(backend)?;
+
+        for (seat, binding) in seats {
+            if seat.run_id != run.id
+                || binding.id != seat.seat_binding_id
+                || binding.project_id != run.project_id
+                || binding.topology_node_id != node.id
+                || binding.role_slot_id != seat.role_slot_id
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "consultation seat",
+                    rule: "the frozen seat and SeatBinding do not describe one slot",
+                });
+            }
+            transaction
+                .execute(
+                    "INSERT INTO seat_bindings
+                         (id, project_id, topology_node_id, role_slot_id,
+                          role_catalog_id, role_catalog_version, role_code,
+                          standard_title, custom_display_name, task_id, team_run_id,
+                          lifecycle, attach_deadline, last_attached_at, last_activity_at,
+                          parent_seat_binding_id, released_at,
+                          replaced_by_seat_binding_id, runtime_reported,
+                          revision, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                             NULL, NULL, 'active', ?10, NULL, NULL, ?11,
+                             NULL, NULL, NULL, 1, ?12, ?12)",
+                    params![
+                        binding.id.to_string(),
+                        binding.project_id.to_string(),
+                        binding.topology_node_id.to_string(),
+                        binding.role_slot_id.as_str(),
+                        binding.role.catalog_id.to_string(),
+                        version_column(binding.role.catalog_revision),
+                        binding.role.role_code.as_str(),
+                        binding.role.standard_title.as_str(),
+                        binding
+                            .role
+                            .custom_display_name
+                            .as_ref()
+                            .map(ExternalName::as_str),
+                        text(binding.attach_deadline),
+                        binding.parent_seat_binding_id.map(|id| id.to_string()),
+                        text(binding.created_at),
+                    ],
+                )
+                .map_err(backend)?;
+            let model = serde_json::to_string(&seat.model_rung).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("a consultation model rung could not be encoded: {error}"),
+                }
+            })?;
+            transaction
+                .execute(
+                    "INSERT INTO consultation_seats
+                         (run_id, project_id, role_slot_id, committee_role,
+                          logical_role, seat_binding_id, model_rung,
+                          runtime_kind, host, generation, native_id,
+                          provider_session_id, observed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                             NULL, NULL, NULL, NULL, NULL, NULL)",
+                    params![
+                        run.id.as_text(),
+                        run.project_id.to_string(),
+                        seat.role_slot_id.as_str(),
+                        seat.committee_role.map(CommitteeRole::as_str),
+                        seat.logical_role.as_str(),
+                        seat.seat_binding_id.to_string(),
+                        model,
+                    ],
+                )
+                .map_err(backend)?;
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// One family-qualified consultation in one project.
+    pub fn get_consultation_run(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> RepositoryResult<Option<StoredConsultationRun>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT mini_project_id, profile_id, profile_version,
+                        definition_hash, question, question_hash, context,
+                        context_hash, caller_seat_binding_id, topology_node_id,
+                        invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
+                        updated_at, settled_at
+                 FROM consultation_runs
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = ?3",
+                params![project_id.to_string(), run_id.as_text(), run_id.family().as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, String>(12)?,
+                        row.get::<_, i64>(13)?,
+                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, Option<String>>(15)?,
+                        row.get::<_, i64>(16)?,
+                        row.get::<_, String>(17)?,
+                        row.get::<_, String>(18)?,
+                        row.get::<_, Option<String>>(19)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|columns| read_consultation_run(project_id, run_id, columns))
+            .transpose()
+    }
+
+    /// The run an invocation key already froze, if any.
+    pub fn get_consultation_run_by_key(
+        &self,
+        project_id: ProjectId,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<StoredConsultationRun>> {
+        let found: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT run_id, family FROM consultation_runs
+                 WHERE project_id = ?1 AND invoke_key = ?2",
+                params![project_id.to_string(), key.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((run_id, family)) = found else {
+            return Ok(None);
+        };
+        let family = ConsultationFamily::parse(&family)?;
+        self.get_consultation_run(project_id, consultation_run_id(family, &run_id)?)
+    }
+
+    /// Every run of one family in an epic, oldest first.
+    pub fn list_consultation_runs(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+        family: ConsultationFamily,
+    ) -> RepositoryResult<Vec<StoredConsultationRun>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT run_id FROM consultation_runs
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND family = ?3
+                 ORDER BY created_at, run_id",
+            )
+            .map_err(backend)?;
+        let ids = statement
+            .query_map(
+                params![
+                    project_id.to_string(),
+                    mini_project_id.to_string(),
+                    family.as_str()
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        ids.into_iter()
+            .map(|id| {
+                let run_id = consultation_run_id(family, &id)?;
+                self.get_consultation_run(project_id, run_id)?
+                    .ok_or(RepositoryError::NotFound {
+                        subject: "consultation run",
+                    })
+            })
+            .collect()
+    }
+
+    /// The frozen seats of one consultation, in slot order.
+    pub fn list_consultation_seats(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> RepositoryResult<Vec<StoredConsultationSeat>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT role_slot_id, committee_role, logical_role,
+                        seat_binding_id, model_rung, runtime_kind, host,
+                        generation, native_id, provider_session_id, observed_at
+                 FROM consultation_seats
+                 WHERE project_id = ?1 AND run_id = ?2
+                 ORDER BY role_slot_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string(), run_id.as_text()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                ))
+            })
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(|row| read_consultation_seat(run_id, row))
+            .collect()
+    }
+
+    /// Persist the exact native identity a consultation launch read back.
+    /// Repeating the same observation is a replay; a different identity for the
+    /// same frozen seat is a conflict.
+    pub fn bind_consultation_seat(
+        &self,
+        project_id: ProjectId,
+        seat: &StoredConsultationSeat,
+    ) -> RepositoryResult<()> {
+        let identity = seat
+            .native_identity
+            .as_ref()
+            .ok_or(RepositoryError::Conflict {
+                subject: "consultation seat",
+                rule: "a native readback is required before binding",
+            })?;
+        let transaction = self.begin()?;
+        let existing: Option<(String, String, i64, String)> = transaction
+            .query_row(
+                "SELECT runtime_kind, host, generation, native_id
+                 FROM consultation_seats
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND runtime_kind IS NOT NULL",
+                params![
+                    project_id.to_string(),
+                    seat.run_id.as_text(),
+                    seat.role_slot_id.as_str()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((runtime, host, generation, native)) = existing {
+            if runtime != identity.runtime_kind.as_str()
+                || host != identity.host.as_str()
+                || u64::try_from(generation).ok() != Some(identity.generation)
+                || native != identity.native_id.as_str()
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "consultation seat",
+                    rule: "a frozen seat cannot move to another native session",
+                });
+            }
+            transaction.commit().map_err(backend)?;
+            return Ok(());
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_seats
+                 SET runtime_kind = ?4, host = ?5, generation = ?6,
+                     native_id = ?7, provider_session_id = ?8, observed_at = ?9
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND runtime_kind IS NULL",
+                params![
+                    project_id.to_string(),
+                    seat.run_id.as_text(),
+                    seat.role_slot_id.as_str(),
+                    identity.runtime_kind.as_str(),
+                    identity.host.as_str(),
+                    i64::try_from(identity.generation).unwrap_or(i64::MAX),
+                    identity.native_id.as_str(),
+                    seat.provider_session_id.as_ref().map(ExternalId::as_str),
+                    seat.observed_at.map(text),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::NotFound {
+                subject: "consultation seat",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Read the immutable advice artifact one Advisor seat submitted.
+    pub fn get_advisor_advice(
+        &self,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+    ) -> RepositoryResult<Option<StoredAdvisorAdvice>> {
+        let columns = self
+            .connection
+            .query_row(
+                "SELECT seat_binding_id, document, document_hash, recorded_at
+                 FROM advisor_advice_artifacts
+                 WHERE project_id = ?1 AND advisor_run_id = ?2",
+                params![project_id.to_string(), advisor_run_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        columns
+            .map(|columns| read_advisor_advice(project_id, advisor_run_id, columns))
+            .transpose()
+    }
+
+    /// Atomically append one Advisor's immutable output and advance its run.
+    ///
+    /// An exact existing document is a replay. A different document can never
+    /// replace it, and the disposition authority has no operation that writes
+    /// this table.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_advisor_advice(
+        &self,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+        seat_binding_id: SeatBindingId,
+        document: &serde_json::Value,
+        document_hash: &ContentHash,
+        expected_revision: AggregateRevision,
+        recorded_at: Timestamp,
+    ) -> RepositoryResult<(StoredConsultationRun, bool)> {
+        let encoded = canonical_json(document, "Advisor advice")?;
+        let transaction = self.begin()?;
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT document_hash FROM advisor_advice_artifacts
+                 WHERE project_id = ?1 AND advisor_run_id = ?2",
+                params![project_id.to_string(), advisor_run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some(existing_hash) = existing {
+            if existing_hash != document_hash.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "Advisor advice",
+                    rule: "the Advisor already submitted different immutable output",
+                });
+            }
+            transaction.commit().map_err(backend)?;
+            let run = self
+                .get_consultation_run(project_id, ConsultationRunId::Advisor(advisor_run_id))?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "Advisor run",
+                })?;
+            return Ok((run, false));
+        }
+        transaction
+            .execute(
+                "INSERT INTO advisor_advice_artifacts
+                     (advisor_run_id, project_id, seat_binding_id,
+                      document, document_hash, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    advisor_run_id.to_string(),
+                    project_id.to_string(),
+                    seat_binding_id.to_string(),
+                    encoded,
+                    document_hash.as_str(),
+                    text(recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                 SET revision = revision + 1, updated_at = ?4
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = 'advisor'
+                   AND state = 'running' AND result IS NULL AND revision = ?3",
+                params![
+                    project_id.to_string(),
+                    advisor_run_id.to_string(),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    text(recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "Advisor run",
+                rule: "only the current running revision can accept its advice",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        let run = self
+            .get_consultation_run(project_id, ConsultationRunId::Advisor(advisor_run_id))?
+            .ok_or(RepositoryError::NotFound {
+                subject: "Advisor run",
+            })?;
+        Ok((run, true))
+    }
+
+    /// Append one immutable Committee finding. Returns `true` when inserted and
+    /// `false` for an exact replay.
+    pub fn append_committee_finding(
+        &self,
+        project_id: ProjectId,
+        finding: &StoredCommitteeFinding,
+    ) -> RepositoryResult<bool> {
+        let document = canonical_json(&finding.document, "Committee finding")?;
+        let transaction = self.begin()?;
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT document_hash FROM committee_findings
+                 WHERE project_id = ?1 AND committee_run_id = ?2
+                   AND round = ?3 AND role_slot_id = ?4",
+                params![
+                    project_id.to_string(),
+                    finding.committee_run_id.to_string(),
+                    i64::from(finding.round),
+                    finding.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some(hash) = existing {
+            if hash != finding.document_hash.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "Committee finding",
+                    rule: "a slot already recorded a different finding for this round",
+                });
+            }
+            transaction.commit().map_err(backend)?;
+            return Ok(false);
+        }
+        transaction
+            .execute(
+                "INSERT INTO committee_findings
+                     (committee_run_id, project_id, round, role_slot_id, role,
+                      verdict, evidence_complete, document, document_hash, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    finding.committee_run_id.to_string(),
+                    project_id.to_string(),
+                    i64::from(finding.round),
+                    finding.role_slot_id.as_str(),
+                    finding.role.as_str(),
+                    finding.verdict.as_str(),
+                    i64::from(finding.evidence_complete),
+                    document,
+                    finding.document_hash.as_str(),
+                    text(finding.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(true)
+    }
+
+    /// Atomically append one immutable finding and advance the owning run.
+    /// An exact existing document is a replay and leaves the revision alone;
+    /// a different document for the frozen slot conflicts.
+    pub fn record_committee_finding(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        finding: &StoredCommitteeFinding,
+        expected_revision: AggregateRevision,
+        next_state: ConsultationRunState,
+        updated_at: Timestamp,
+    ) -> RepositoryResult<(StoredConsultationRun, bool)> {
+        let ConsultationRunId::Committee(committee_run_id) = run_id else {
+            return Err(RepositoryError::Conflict {
+                subject: "Committee finding",
+                rule: "a finding can only belong to a Committee run",
+            });
+        };
+        if committee_run_id != finding.committee_run_id {
+            return Err(RepositoryError::Conflict {
+                subject: "Committee finding",
+                rule: "the finding and run identity differ",
+            });
+        }
+        let document = canonical_json(&finding.document, "Committee finding")?;
+        let transaction = self.begin()?;
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT document_hash FROM committee_findings
+                 WHERE project_id = ?1 AND committee_run_id = ?2
+                   AND round = ?3 AND role_slot_id = ?4",
+                params![
+                    project_id.to_string(),
+                    committee_run_id.to_string(),
+                    i64::from(finding.round),
+                    finding.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some(hash) = existing {
+            if hash != finding.document_hash.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "Committee finding",
+                    rule: "a slot already recorded a different finding for this round",
+                });
+            }
+            transaction.commit().map_err(backend)?;
+            let run = self.get_consultation_run(project_id, run_id)?.ok_or(
+                RepositoryError::NotFound {
+                    subject: "consultation run",
+                },
+            )?;
+            return Ok((run, false));
+        }
+        transaction
+            .execute(
+                "INSERT INTO committee_findings
+                     (committee_run_id, project_id, round, role_slot_id, role,
+                      verdict, evidence_complete, document, document_hash, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    finding.committee_run_id.to_string(),
+                    project_id.to_string(),
+                    i64::from(finding.round),
+                    finding.role_slot_id.as_str(),
+                    finding.role.as_str(),
+                    finding.verdict.as_str(),
+                    i64::from(finding.evidence_complete),
+                    document,
+                    finding.document_hash.as_str(),
+                    text(finding.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                 SET state = ?4, revision = revision + 1, updated_at = ?5
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = ?3
+                   AND revision = ?6 AND result IS NULL",
+                params![
+                    project_id.to_string(),
+                    run_id.as_text(),
+                    run_id.family().as_str(),
+                    next_state.as_str(),
+                    text(updated_at),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "the run moved since it was read",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        let run =
+            self.get_consultation_run(project_id, run_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "consultation run",
+                })?;
+        Ok((run, true))
+    }
+
+    /// Every immutable finding in one Committee round, in slot order.
+    pub fn list_committee_findings(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: kontor_core::id::CommitteeRunId,
+        round: u32,
+    ) -> RepositoryResult<Vec<StoredCommitteeFinding>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT role_slot_id, role, verdict, evidence_complete,
+                        document, document_hash, recorded_at
+                 FROM committee_findings
+                 WHERE project_id = ?1 AND committee_run_id = ?2 AND round = ?3
+                 ORDER BY role_slot_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![
+                    project_id.to_string(),
+                    committee_run_id.to_string(),
+                    i64::from(round)
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(|row| read_committee_finding(committee_run_id, round, row))
+            .collect()
+    }
+
+    /// Advance one consultation under compare-and-swap.
+    pub fn advance_consultation_run(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        expected_revision: AggregateRevision,
+        state: ConsultationRunState,
+        result: Option<(&serde_json::Value, &ContentHash)>,
+        updated_at: Timestamp,
+    ) -> RepositoryResult<StoredConsultationRun> {
+        let encoded = result
+            .map(|(value, _)| canonical_json(value, "consultation result"))
+            .transpose()?;
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                 SET state = ?4, result = ?5, result_hash = ?6,
+                     revision = revision + 1, updated_at = ?7,
+                     settled_at = CASE WHEN ?4 = 'settled' THEN ?7 ELSE NULL END
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = ?3
+                   AND revision = ?8",
+                params![
+                    project_id.to_string(),
+                    run_id.as_text(),
+                    run_id.family().as_str(),
+                    state.as_str(),
+                    encoded,
+                    result.map(|(_, hash)| hash.as_str()),
+                    text(updated_at),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "the run moved since it was read",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_run(project_id, run_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })
+    }
+
+    /// Record the single bounded Committee remediation and open round two.
+    #[allow(clippy::too_many_arguments)]
+    pub fn remediate_committee_run(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        expected_revision: AggregateRevision,
+        recommendation: &BoundedText,
+        tried_path: &BoundedText,
+        document: &serde_json::Value,
+        document_hash: &ContentHash,
+        recorded_at: Timestamp,
+    ) -> RepositoryResult<StoredConsultationRun> {
+        let encoded = canonical_json(document, "Committee remediation")?;
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO committee_remediations
+                     (committee_run_id, project_id, from_round, recommendation,
+                      tried_path, document, document_hash, recorded_at)
+                 VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    committee_run_id.to_string(),
+                    project_id.to_string(),
+                    recommendation.as_str(),
+                    tried_path.as_str(),
+                    encoded,
+                    document_hash.as_str(),
+                    text(recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                 SET state = 'running', round = 2, revision = revision + 1,
+                     updated_at = ?4, settled_at = NULL
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = 'committee'
+                   AND round = 1 AND state = 'awaiting_judge' AND revision = ?3",
+                params![
+                    project_id.to_string(),
+                    committee_run_id.to_string(),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    text(recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "Committee remediation",
+                rule: "only a settled-evidence round one may open round two",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })
+    }
+
+    /// Read the immutable remediation document, when round two was opened.
+    pub fn get_committee_remediation(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+    ) -> RepositoryResult<Option<serde_json::Value>> {
+        let encoded = self
+            .connection
+            .query_row(
+                "SELECT document FROM committee_remediations
+                 WHERE project_id = ?1 AND committee_run_id = ?2",
+                params![project_id.to_string(), committee_run_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        encoded
+            .map(|document| {
+                serde_json::from_str(&document).map_err(|error| RepositoryError::Backend {
+                    detail: format!("a Committee remediation could not be decoded: {error}"),
+                })
+            })
+            .transpose()
+    }
+
+    /// Record one Quick session and the ids its placement used.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the session already exists.
+    pub fn create_quick_session(&self, session: &StoredQuickSession) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let role =
+            serde_json::to_string(&session.role).map_err(|error| RepositoryError::Backend {
+                detail: format!("a quick session role could not be encoded: {error}"),
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO quick_sessions
+                     (id, project_id, role, role_slot_id, topology_node_id, seat_binding_id,
+                      psw_topology_node_id, psw_native_id, purpose, intent_hash, disposition,
+                      revision, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    session.id.to_string(),
+                    session.project_id.to_string(),
+                    role,
+                    session.role_slot_id.as_str(),
+                    session.topology_node_id.to_string(),
+                    session.seat_binding_id.to_string(),
+                    session.psw_topology_node_id.to_string(),
+                    session.psw_native_id.as_ref().map(ExternalId::as_str),
+                    session.purpose.as_str(),
+                    session.intent_hash.as_str(),
+                    session.disposition.as_str(),
+                    i64::try_from(session.revision.get()).unwrap_or(i64::MAX),
+                    text(session.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                // Two ensures of the same request racing. The loser has written
+                // nothing else yet — the row is deliberately first — so it can
+                // simply read the winner's session and return that.
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "quick session",
+                        rule: "one command opens one session",
+                    }
+                }
+                other => backend(other),
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// One Quick session in one project.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_quick_session(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.quick_session_where("id = ?2", project_id, &quick_session_id.to_string())
+    }
+
+    /// The Quick session one command opened, if it already opened one.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_quick_session_by_intent(
+        &self,
+        project_id: ProjectId,
+        intent_hash: &ContentHash,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.quick_session_where("intent_hash = ?2", project_id, intent_hash.as_str())
+    }
+
+    /// One Quick session, addressed by whichever unique column names it.
+    fn quick_session_where(
+        &self,
+        predicate: &str,
+        project_id: ProjectId,
+        value: &str,
+    ) -> RepositoryResult<Option<StoredQuickSession>> {
+        self.connection
+            .query_row(
+                &format!(
+                    "SELECT id, role, role_slot_id, topology_node_id, seat_binding_id,
+                            psw_topology_node_id, psw_native_id, purpose, intent_hash,
+                            disposition, revision, created_at
+                     FROM quick_sessions WHERE project_id = ?1 AND {predicate}"
+                ),
+                params![project_id.to_string(), value],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, String>(11)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredQuickSession {
+                    id: QuickSessionId::parse(&columns.0)?,
+                    project_id,
+                    role: serde_json::from_str(&columns.1).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a stored quick session role is unreadable: {error}"),
+                        }
+                    })?,
+                    role_slot_id: RoleSlotId::parse(&columns.2)?,
+                    topology_node_id: TopologyNodeId::parse(&columns.3)?,
+                    seat_binding_id: SeatBindingId::parse(&columns.4)?,
+                    psw_topology_node_id: TopologyNodeId::parse(&columns.5)?,
+                    psw_native_id: columns.6.as_deref().map(ExternalId::parse).transpose()?,
+                    purpose: BoundedText::parse(&columns.7)?,
+                    intent_hash: ContentHash::parse(&columns.8)?,
+                    disposition: SourceDisposition::parse(&columns.9)?,
+                    revision: AggregateRevision::parse(
+                        u64::try_from(columns.10).unwrap_or_default(),
+                    )?,
+                    created_at: read_timestamp(&columns.11)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Move one Quick session's source disposition, bumping its revision.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] when the session does not exist.
+    pub fn set_quick_session_disposition(
+        &self,
+        project_id: ProjectId,
+        quick_session_id: QuickSessionId,
+        disposition: SourceDisposition,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE quick_sessions SET disposition = ?3, revision = revision + 1
+                 WHERE project_id = ?1 AND id = ?2",
+                params![
+                    project_id.to_string(),
+                    quick_session_id.to_string(),
+                    disposition.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "quick session",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Authorize one promotion, freezing the ids and the roster its effects
+    /// will use.
+    ///
+    /// Both rows are written before the first effect, and in one transaction.
+    /// They are the two things a resumed apply reads to know what it is
+    /// resuming: the promotion row says which epic, the roster row says which
+    /// seats. Writing either one later — or the two separately — leaves a
+    /// window where a failure has recorded the source as promoted while the
+    /// resume path cannot find what it was promoted into. Since the promotion
+    /// row is keyed by its source and nothing deletes it, a source caught in
+    /// that window would be permanently unpromotable.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the source is already
+    /// promoted.
+    pub fn begin_promotion(
+        &self,
+        promotion: &StoredPromotion,
+        roster: &StoredEpicRoster,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO quick_session_promotions
+                     (quick_session_id, project_id, mini_project_id, preview_hash,
+                      source_disposition, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    promotion.quick_session_id.to_string(),
+                    promotion.project_id.to_string(),
+                    promotion.mini_project_id.to_string(),
+                    promotion.preview_hash.as_str(),
+                    promotion.source_disposition.as_str(),
+                    text(promotion.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "quick session promotion",
+                        rule: "a Quick session is promoted exactly once",
+                    }
+                }
+                other => backend(other),
+            })?;
+        // Legal before the MiniProject exists: `epic_rosters` deliberately
+        // carries no foreign key to `mini_projects`, because the roster is what
+        // the epic is built *from*.
+        transaction
+            .execute(
+                "INSERT INTO epic_rosters
+                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
+                      quick_session_id, revision, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    roster.project_id.to_string(),
+                    roster.mini_project_id.to_string(),
+                    version_column(roster.core_team_version),
+                    roster.catalog_hash.as_str(),
+                    roster.seats.to_string(),
+                    roster.quick_session_id.map(|id| id.to_string()),
+                    i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
+                    text(roster.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Record that a promotion's handoff reached its seat.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] when no promotion is in flight.
+    pub fn complete_promotion(
+        &self,
+        quick_session_id: QuickSessionId,
+        handoff: &serde_json::Value,
+        handoff_hash: &ContentHash,
+        lsa_seat_binding_id: SeatBindingId,
+        completed_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE quick_session_promotions
+                 SET handoff = ?2, handoff_hash = ?3, lsa_seat_binding_id = ?4, completed_at = ?5
+                 WHERE quick_session_id = ?1",
+                params![
+                    quick_session_id.to_string(),
+                    handoff.to_string(),
+                    handoff_hash.as_str(),
+                    lsa_seat_binding_id.to_string(),
+                    text(completed_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "quick session promotion",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// The promotion of one Quick session, in flight or complete.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_promotion(
+        &self,
+        quick_session_id: QuickSessionId,
+    ) -> RepositoryResult<Option<StoredPromotion>> {
+        self.connection
+            .query_row(
+                "SELECT project_id, mini_project_id, preview_hash, source_disposition,
+                        handoff, handoff_hash, lsa_seat_binding_id, completed_at, created_at
+                 FROM quick_session_promotions WHERE quick_session_id = ?1",
+                params![quick_session_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredPromotion {
+                    quick_session_id,
+                    project_id: ProjectId::parse(&columns.0)?,
+                    mini_project_id: MiniProjectId::parse(&columns.1)?,
+                    preview_hash: ContentHash::parse(&columns.2)?,
+                    source_disposition: SourceDisposition::parse(&columns.3)?,
+                    handoff: columns
+                        .4
+                        .map(|handoff| serde_json::from_str(&handoff))
+                        .transpose()
+                        .map_err(|error| RepositoryError::Backend {
+                            detail: format!("a stored handoff is unreadable: {error}"),
+                        })?,
+                    handoff_hash: columns.5.as_deref().map(ContentHash::parse).transpose()?,
+                    lsa_seat_binding_id: columns
+                        .6
+                        .as_deref()
+                        .map(SeatBindingId::parse)
+                        .transpose()?,
+                    completed_at: columns.7.as_deref().map(read_timestamp).transpose()?,
+                    created_at: read_timestamp(&columns.8)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Freeze, or move, the roster one epic is staffed from.
+    ///
+    /// # Errors
+    /// Returns a backend error.
+    pub fn put_epic_roster(&self, roster: &StoredEpicRoster) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO epic_rosters
+                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
+                      quick_session_id, revision, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (project_id, mini_project_id) DO UPDATE SET
+                     core_team_version = excluded.core_team_version,
+                     catalog_hash = excluded.catalog_hash,
+                     seats = excluded.seats,
+                     revision = epic_rosters.revision + 1,
+                     pinned_at = excluded.pinned_at",
+                params![
+                    roster.project_id.to_string(),
+                    roster.mini_project_id.to_string(),
+                    version_column(roster.core_team_version),
+                    roster.catalog_hash.as_str(),
+                    roster.seats.to_string(),
+                    roster.quick_session_id.map(|id| id.to_string()),
+                    i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
+                    text(roster.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// The roster one epic is staffed from.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_epic_roster(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<StoredEpicRoster>> {
+        self.connection
+            .query_row(
+                "SELECT core_team_version, catalog_hash, seats, quick_session_id, revision,
+                        pinned_at
+                 FROM epic_rosters WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredEpicRoster {
+                    project_id,
+                    mini_project_id,
+                    core_team_version: read_version(columns.0)?,
+                    catalog_hash: ContentHash::parse(&columns.1)?,
+                    seats: serde_json::from_str(&columns.2).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a stored epic roster is unreadable: {error}"),
+                        }
+                    })?,
+                    quick_session_id: columns
+                        .3
+                        .as_deref()
+                        .map(QuickSessionId::parse)
+                        .transpose()?,
+                    revision: AggregateRevision::parse(
+                        u64::try_from(columns.4).unwrap_or_default(),
+                    )?,
+                    pinned_at: read_timestamp(&columns.5)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Read the revision a project is currently configured with.
+    ///
+    /// The highest published version, which is the only definition of current
+    /// this schema has.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_current_core_team(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Option<StoredCoreTeamRevision>> {
+        let found: Option<(i64, String, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT version, catalog_hash, seats, created_at
+                 FROM core_team_revisions
+                 WHERE project_id = ?1
+                 ORDER BY version DESC
+                 LIMIT 1",
+                params![project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(version, catalog_hash, seats, created_at)| {
+                Ok(StoredCoreTeamRevision {
+                    project_id,
+                    version: read_version(version)?,
+                    catalog_hash: ContentHash::parse(&catalog_hash)?,
+                    seats: serde_json::from_str(&seats).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("stored core team seats are not valid JSON: {error}"),
+                        }
+                    })?,
+                    published_at: read_timestamp(&created_at)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Every published Completion Profile revision, oldest first.
+    ///
+    /// The built-in `operational_default@1` is deliberately *not* a row here.
+    /// It ships with the build, so seeding it per project would mean one copy
+    /// per project that a later build could not correct, and a project created
+    /// before the seed ran would silently have a different catalog from one
+    /// created after. The read path adds it.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_completion_profiles(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<StoredCompletionProfile>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, version, name, definition, definition_hash, published_at
+                 FROM completion_profile_revisions
+                 WHERE project_id = ?1
+                 ORDER BY id, version",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut published = Vec::new();
+        for row in rows {
+            let columns = row.map_err(backend)?;
+            published.push(StoredCompletionProfile {
+                project_id,
+                id: ExternalName::parse(&columns.0)?,
+                version: read_version(columns.1)?,
+                name: ExternalName::parse(&columns.2)?,
+                definition: serde_json::from_str(&columns.3).map_err(|error| {
+                    RepositoryError::Backend {
+                        detail: format!("a stored completion profile is unreadable: {error}"),
+                    }
+                })?,
+                definition_hash: ContentHash::parse(&columns.4)?,
+                published_at: read_timestamp(&columns.5)?,
+            });
+        }
+        Ok(published)
+    }
+
+    /// Publish one immutable Completion Profile revision.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when that exact revision already
+    /// stands. A published revision is immutable, so a second write of one is
+    /// never an update.
+    pub fn publish_completion_profile(
+        &self,
+        profile: &StoredCompletionProfile,
+    ) -> RepositoryResult<()> {
+        self.connection
+            .execute(
+                "INSERT INTO completion_profile_revisions
+                     (project_id, id, version, name, definition, definition_hash, published_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    profile.project_id.to_string(),
+                    profile.id.as_str(),
+                    version_column(profile.version),
+                    profile.name.as_str(),
+                    profile.definition.to_string(),
+                    profile.definition_hash.as_str(),
+                    text(profile.published_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "completion profile revision",
+                        rule: "a published revision is immutable and published once",
+                    }
+                }
+                other => backend(other),
+            })?;
+        Ok(())
+    }
+
+    /// Read one epic's durable completion run.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_epic_completion(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<StoredEpicCompletion>> {
+        self.connection
+            .query_row(
+                "SELECT profile_id, profile_version, definition_hash, state, revision, updated_at
+                 FROM epic_completion WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredEpicCompletion {
+                    project_id,
+                    mini_project_id,
+                    profile_id: ExternalName::parse(&columns.0)?,
+                    profile_version: read_version(columns.1)?,
+                    definition_hash: ContentHash::parse(&columns.2)?,
+                    state: serde_json::from_str(&columns.3).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a stored completion state is unreadable: {error}"),
+                        }
+                    })?,
+                    revision: AggregateRevision::parse(
+                        u64::try_from(columns.4).unwrap_or_default(),
+                    )?,
+                    updated_at: read_timestamp(&columns.5)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Start one epic's completion run.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the epic already has one. A
+    /// second run for one epic would be a second immutable round lineage over
+    /// the same work.
+    pub fn create_epic_completion(
+        &self,
+        completion: &StoredEpicCompletion,
+    ) -> RepositoryResult<()> {
+        self.connection
+            .execute(
+                "INSERT INTO epic_completion
+                     (project_id, mini_project_id, profile_id, profile_version, definition_hash,
+                      state, revision, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    completion.project_id.to_string(),
+                    completion.mini_project_id.to_string(),
+                    completion.profile_id.as_str(),
+                    version_column(completion.profile_version),
+                    completion.definition_hash.as_str(),
+                    completion.state.to_string(),
+                    i64::try_from(completion.revision.get()).unwrap_or(i64::MAX),
+                    text(completion.updated_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "epic completion",
+                        rule: "one epic has exactly one completion run",
+                    }
+                }
+                other => backend(other),
+            })?;
+        Ok(())
+    }
+
+    /// Store one epic's next completion state under an optimistic-concurrency
+    /// check.
+    ///
+    /// The expected revision is compared *in the `UPDATE`* rather than by a read
+    /// followed by a write: two callers advancing one epic from the same revision
+    /// would both pass a separate check, and the second would overwrite the
+    /// first's transition along with the effects it had already planned.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when the run has moved since the
+    /// caller read it, and [`RepositoryError::NotFound`] when it does not exist.
+    pub fn update_epic_completion(
+        &self,
+        completion: &StoredEpicCompletion,
+        expected_revision: AggregateRevision,
+    ) -> RepositoryResult<()> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE epic_completion
+                    SET state = ?3, revision = ?4, updated_at = ?5
+                  WHERE project_id = ?1 AND mini_project_id = ?2 AND revision = ?6",
+                params![
+                    completion.project_id.to_string(),
+                    completion.mini_project_id.to_string(),
+                    completion.state.to_string(),
+                    i64::try_from(completion.revision.get()).unwrap_or(i64::MAX),
+                    text(completion.updated_at),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 1 {
+            return Ok(());
+        }
+        // Nothing changed: either the run is gone or it moved. Which one it is
+        // decides the caller's answer, so it is read rather than guessed.
+        let exists = self
+            .connection
+            .query_row(
+                "SELECT 1 FROM epic_completion WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![
+                    completion.project_id.to_string(),
+                    completion.mini_project_id.to_string()
+                ],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(backend)?
+            .is_some();
+        Err(if exists {
+            RepositoryError::Conflict {
+                subject: "epic completion",
+                rule: "the completion run moved since the caller read it",
+            }
+        } else {
+            RepositoryError::NotFound {
+                subject: "epic completion",
+            }
+        })
+    }
+
+    /// Append one wake intent, returning `false` when it already stood.
+    ///
+    /// `false` is the replay answer: the intent for this exact
+    /// `(epic, revision, reason, seat)` is already recorded, so the caller reuses
+    /// its receipt rather than opening a second turn.
+    ///
+    /// # Errors
+    /// Returns a backend error.
+    pub fn append_completion_wake(&self, wake: &StoredCompletionWake) -> RepositoryResult<bool> {
+        let inserted = self
+            .connection
+            .execute(
+                "INSERT OR IGNORE INTO epic_completion_wakes
+                     (project_id, mini_project_id, completion_revision, reason, seat_binding_id,
+                      receipt, appended_at, acknowledged_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    wake.project_id.to_string(),
+                    wake.mini_project_id.to_string(),
+                    i64::try_from(wake.completion_revision.get()).unwrap_or(i64::MAX),
+                    wake.reason.as_str(),
+                    wake.seat_binding_id.to_string(),
+                    wake.receipt.as_str(),
+                    text(wake.appended_at),
+                    wake.acknowledged_at.map(text),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(inserted == 1)
+    }
+
+    /// Record that the runtime took the turn one wake intent asked for.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] when no such intent stands.
+    pub fn acknowledge_completion_wake(
+        &self,
+        wake: &StoredCompletionWake,
+        acknowledged_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE epic_completion_wakes
+                    SET acknowledged_at = ?6
+                  WHERE project_id = ?1 AND mini_project_id = ?2 AND completion_revision = ?3
+                    AND reason = ?4 AND seat_binding_id = ?5",
+                params![
+                    wake.project_id.to_string(),
+                    wake.mini_project_id.to_string(),
+                    i64::try_from(wake.completion_revision.get()).unwrap_or(i64::MAX),
+                    wake.reason.as_str(),
+                    wake.seat_binding_id.to_string(),
+                    text(acknowledged_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(RepositoryError::NotFound {
+                subject: "completion wake intent",
+            })
+        }
+    }
+
+    /// The distinct artifact-contract keys one task has durable evidence for.
+    ///
+    /// Keys only. The completion ticket gate asks whether a declared artifact is
+    /// evidenced, not what its locator is, and handing it the locators would put
+    /// this read in the position of deciding which of several records for one key
+    /// counts — a decision the gate does not need and must not make twice.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_task_artifact_keys(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<BTreeSet<ExternalName>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT DISTINCT artifact_key FROM artifact_evidence
+                 WHERE project_id = ?1 AND task_id = ?2
+                 ORDER BY artifact_key",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(backend)?;
+        let mut keys = BTreeSet::new();
+        for row in rows {
+            keys.insert(ExternalName::parse(&row.map_err(backend)?)?);
+        }
+        Ok(keys)
+    }
+
+    /// Record one epic LSA remediation proposal for a failed round.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when a proposal already stands for
+    /// that round. Replacing it would change the bounded correction the TPM is
+    /// about to route, after the round it answers was already fixed.
+    pub fn insert_remediation_proposal(
+        &self,
+        proposal: &StoredRemediationProposal,
+    ) -> RepositoryResult<()> {
+        self.connection
+            .execute(
+                "INSERT INTO epic_completion_remediation_proposals
+                     (project_id, mini_project_id, round, failed_round_evidence, proposal,
+                      lsa_seat_binding_id, proposed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    proposal.project_id.to_string(),
+                    proposal.mini_project_id.to_string(),
+                    i64::from(proposal.round),
+                    proposal.failed_round_evidence.as_str(),
+                    proposal.proposal.as_str(),
+                    proposal.lsa_seat_binding_id.to_string(),
+                    text(proposal.proposed_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    RepositoryError::Conflict {
+                        subject: "remediation proposal",
+                        rule: "one failed round has one bounded proposal",
+                    }
+                }
+                other => backend(other),
+            })?;
+        Ok(())
+    }
+
+    /// Read the proposal standing for one epic's failed round.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn get_remediation_proposal(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+        round: u8,
+    ) -> RepositoryResult<Option<StoredRemediationProposal>> {
+        self.connection
+            .query_row(
+                "SELECT failed_round_evidence, proposal, lsa_seat_binding_id, proposed_at
+                 FROM epic_completion_remediation_proposals
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND round = ?3",
+                params![
+                    project_id.to_string(),
+                    mini_project_id.to_string(),
+                    i64::from(round)
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|columns| {
+                Ok(StoredRemediationProposal {
+                    project_id,
+                    mini_project_id,
+                    round,
+                    failed_round_evidence: ContentHash::parse(&columns.0)?,
+                    proposal: ContentHash::parse(&columns.1)?,
+                    lsa_seat_binding_id: SeatBindingId::parse(&columns.2)?,
+                    proposed_at: read_timestamp(&columns.3)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Every wake intent for one epic, oldest revision first.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_completion_wakes(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<StoredCompletionWake>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT completion_revision, reason, seat_binding_id, receipt, appended_at,
+                        acknowledged_at
+                 FROM epic_completion_wakes
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                 ORDER BY completion_revision, reason, seat_binding_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .map_err(backend)?;
+        let mut wakes = Vec::new();
+        for row in rows {
+            let columns = row.map_err(backend)?;
+            wakes.push(StoredCompletionWake {
+                project_id,
+                mini_project_id,
+                completion_revision: AggregateRevision::parse(
+                    u64::try_from(columns.0).unwrap_or_default(),
+                )?,
+                reason: ExternalName::parse(&columns.1)?,
+                seat_binding_id: SeatBindingId::parse(&columns.2)?,
+                receipt: ContentHash::parse(&columns.3)?,
+                appended_at: read_timestamp(&columns.4)?,
+                acknowledged_at: columns.5.as_deref().map(read_timestamp).transpose()?,
+            });
+        }
+        Ok(wakes)
+    }
 }
 
 impl TopologyRepository for SqliteStore {
