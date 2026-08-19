@@ -111,6 +111,7 @@
     }
   ],
   "inbound_compatible": [
+    { "status_id": "10237", "status_name": "DRAFT" },
     { "status_id": "10213", "status_name": "READY FOR DEVELOPMENT" },
     { "status_id": "10214", "status_name": "In Development" },
     { "status_id": "10229", "status_name": "Code review" },
