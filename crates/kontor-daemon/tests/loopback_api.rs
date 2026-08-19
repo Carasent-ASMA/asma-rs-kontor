@@ -2505,6 +2505,138 @@ async fn epic_import_defaults_ready_and_refuses_invalid_or_contradictory_state_a
     assert_eq!(tasks[0]["state"], "ready");
 }
 
+/// GAP-1 follow-through. Import provenance describes the lifecycle an epic was
+/// *declared* with, not the progress Kontor has made since. Judging a reapply
+/// against the task's current state broke the oldest promise the apply contract
+/// makes — that an identical manifest is replayable — the moment any task
+/// started, because the first native transition both clears the provenance and
+/// moves the state.
+#[tokio::test]
+async fn an_identical_manifest_reapplies_over_a_task_that_natively_progressed() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "progressed").await;
+
+    let armed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/execution:arm",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({
+            "expected_revision": 1, "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 10, "max_commands": 10, "max_duration_seconds": 10,
+                       "max_cost_minor_units": 10, "cost_currency": "NOK"},
+            "granted_by": seed.account, "reason": "Arm it"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("progressed-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:plan",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a plan hash")
+        .to_owned();
+
+    let started = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/scheduler:start",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"plan_hash": hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("progressed-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+
+    // The native transition that clears the imported fact. Everything below is
+    // about a task whose provenance column is now empty on purpose.
+    let progressed = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(progressed.status, 200, "{}", progressed.body);
+    assert_eq!(progressed.json()["tasks"][0]["state"], "in_progress");
+
+    let revision = ensure_project(
+        &world,
+        "progressed-reread",
+        "Kontor",
+        "/tmp/kontor-progressed",
+    )
+    .await
+    .json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let category = first_category(&world).await;
+
+    // The same manifest the epic was created from — task state omitted, so the
+    // compatibility default — plus one task the caller has since added.
+    let reapplied = Call::post(
+        format!("/v1/projects/{}/epics:apply", seed.project),
+        &epic_body(
+            revision,
+            "Control epic",
+            &category,
+            serde_json::json!([
+                {"title": "The task"},
+                {"title": "A later task", "depends_on": ["The task"]}
+            ]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("progressed-reapply")
+    .send(&world)
+    .await;
+    assert_eq!(reapplied.status, 200, "{}", reapplied.body);
+    assert_eq!(reapplied.json()["applied"], "unchanged");
+    assert_eq!(reapplied.json()["epic_id"], seed.epic);
+    assert_eq!(
+        reapplied.json()["tasks"][0]["task_id"],
+        seed.task,
+        "the progressed task keeps the identity every dependency already names"
+    );
+    assert_eq!(reapplied.json()["tasks"][0]["applied"], "unchanged");
+    assert_eq!(
+        reapplied.json()["tasks"][0]["state"],
+        "in_progress",
+        "a reapply preserves native progress instead of resetting it to the imported declaration: {}",
+        reapplied.body
+    );
+    assert_eq!(reapplied.json()["tasks"][1]["applied"], "created");
+
+    // Nothing rolled back: the graph the reapply judged is the graph on disk,
+    // with the added sibling present and the progressed task still progressed.
+    let after = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    let after_json = after.json();
+    let tasks = after_json["tasks"].as_array().expect("the task list");
+    assert_eq!(tasks.len(), 2, "the sibling the reapply added is durable");
+    assert_eq!(tasks[0]["task_id"], seed.task);
+    assert_eq!(tasks[0]["state"], "in_progress");
+}
+
 #[tokio::test]
 async fn a_mixed_import_closes_after_only_its_native_task_earns_completion() {
     let world = World::open_empty().await;
