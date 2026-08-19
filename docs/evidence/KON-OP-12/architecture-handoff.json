@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "task": "KON-OP-12",
+  "jira": "ASMA-7881",
+  "status": "architect_handoff",
+  "canonical_requirement": "../../../../../_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md#kon-op-12--make-an-unresolved-ambiguity-a-durable-dispositioned-record",
+  "baseline": {
+    "worktree_submodule_head": "33e07a274dfc7b36318fbf6667520557b12cab55",
+    "observed_origin_master": "ba57bcd",
+    "instruction": "Refresh remotes and create the ASMA-7881 submodule branch from current origin/master before editing. The checked-out gitlink predates the merged OP-01, OP-05 and OP-06 implementations and their schema-lineage convergence fixes. Preserve this untracked handoff when switching."
+  },
+  "domain_model": {
+    "module": "crates/kontor-core/src/open_question.rs",
+    "identity": "Add OpenQuestionId and, if stable event addressing needs it, OpenQuestionDispositionId to kontor-core/src/id.rs.",
+    "aggregate": "OpenQuestion is project-scoped and epic-attached. Its immutable header carries subject, a typed record-or-document attachment, original author SeatBindingId, write-time Shareability, creation instant and aggregate revision. Its current state is derived from append-only rounds, dispositions and deferred-trigger firings.",
+    "rounds": "A round carries its author, why the state is ambiguous, a non-empty ordered option set, its ordinal and an optional superseded-round reference. A correction appends a successor round and never edits the predecessor.",
+    "dispositions": "Use one closed enum with exactly resolved(deciding_record), deferred(concrete_reopening_trigger), and not_relevant(reason). Every disposition record has an author and immutable sequence/id. A correction appends a disposition that names the disposition it supersedes.",
+    "reopening": "Firing the exact trigger named by the current deferred disposition appends a trigger-firing record and makes the aggregate open again. It does not delete or rewrite the deferred disposition.",
+    "shareability": "Construct the default with Shareability::default_for(ShareabilityTier::ProjectKnowledge), yielding project_shared. Persist the full class/classifier/provenance stamp on the question header and offer no reclassification method.",
+    "authority": "Raising accepts any valid SeatBindingId and performs no role/capability check. Disposition authority is data-defined: architectural/product scopes require the configured architecture closer and process/routing scopes require the configured process closer. Do not branch on literal LSA or TPM inside kontor-core; seed those codes in the Operational domain pack and validate that both exist in the pinned role catalog."
+  },
+  "detector": {
+    "contract": "A pure function takes immutable typed observations and returns a stable ordered Vec<OpenQuestionFinding>. It receives no repository, mutable aggregate or command port.",
+    "findings": [
+      "two simultaneously accepted decision records for the same subject with different content hashes",
+      "a citation whose exact decision revision is marked superseded",
+      "a deferred disposition whose exact named trigger appears in the fired-trigger observations"
+    ],
+    "boundary": "The detector only reports. Reopening occurs only through the explicit aggregate/repository trigger-firing operation; detecting a finding never auto-resolves, auto-defers, auto-closes or writes."
+  },
+  "persistence": {
+    "migration": "Append schema v41 as 0041_open_questions.sql and increment the migration inventory. Use an open_questions head row plus immutable child tables for rounds, dispositions and trigger firings. Only the aggregate head/revision may change under compare-and-swap; child UPDATE and DELETE must be refused by schema triggers.",
+    "foreign_keys": "Every row is project-scoped. The question names its MiniProject, author SeatBinding and attachment metadata without allowing a cross-project reference. Child primary/foreign keys include project_id so tenant isolation does not rely on globally unique UUIDs.",
+    "repository_port": "Add a narrow OpenQuestionRepository port with raise, get, list_for_epic, append_correction, disposition/supersede_disposition, and fire_deferred_trigger operations. Each mutating operation is atomic and revision-checked; there is no generic update or delete.",
+    "backup": "Add typed deterministic export/import rows for every new table. Snapshot restore then follows SQLite automatically; add explicit export/import and snapshot/reopen assertions so every round, disposition, trigger firing and shareability stamp survives."
+  },
+  "completion_gate": {
+    "predicate": "Add a pure kontor-policy predicate returning typed blockers that include OpenQuestionId and subject. An undispositioned or reopened question blocks; any current resolved, deferred-with-unfired-trigger, or not_relevant disposition releases that question.",
+    "integration": "Wire the existing operational_default@1 completion path so the question predicate is evaluated from a fresh repository read immediately before MarkDone. A blocker must keep the completion non-terminal and appear in its typed blocker projection with the question identity. Make only the minimum scheduler/daemon/API projection edits needed for this existing completion surface; do not create an open-question escalation or notification surface.",
+    "freshness": "Do not freeze the question set when completion starts: a question may be raised or a deferred trigger may fire during later completion phases. The pre-Done read must therefore be current and project/epic-scoped."
+  },
+  "role_instruction": {
+    "surface": "Extend the resolved prompt text used for every ordinary team seat, both root and downstream activation, with the duty to record an open question before proceeding on an unevidenced assumption.",
+    "rule": "The text creates a duty, not a scanner, capability, role or new standing run. Preserve the existing wait instruction for downstream seats."
+  },
+  "file_map": [
+    "crates/kontor-core/src/id.rs",
+    "crates/kontor-core/src/lib.rs",
+    "crates/kontor-core/src/open_question.rs",
+    "crates/kontor-core/src/repository.rs",
+    "crates/kontor-profiles/src/pack.rs",
+    "crates/kontor-profiles/fixtures/operational-domain.json",
+    "crates/kontor-policy/src/completion.rs",
+    "crates/kontor-policy/src/lib.rs",
+    "crates/kontor-scheduler/src/completion.rs",
+    "crates/kontor-daemon/src/applications.rs",
+    "crates/kontor-api/src/applications.rs",
+    "crates/kontor-store/migrations/0041_open_questions.sql",
+    "crates/kontor-store/src/migrations.rs",
+    "crates/kontor-store/src/repository.rs",
+    "crates/kontor-store/src/backup/export.rs",
+    "crates/kontor-store/src/backup/import.rs"
+  ],
+  "verification": {
+    "core_property_tests": [
+      "disposition truth table and exactly-three variant parse/serde behavior",
+      "deferred requires a concrete non-empty trigger",
+      "trigger mismatch refuses and matching trigger reopens",
+      "round and disposition corrections append superseding history without changing prior bytes",
+      "any seat can raise; configured closer split governs disposition",
+      "default shareability is project_shared and immutable"
+    ],
+    "policy_scheduler_tests": [
+      "undispositioned/reopened question produces a blocker naming id and subject",
+      "each valid disposition releases the gate",
+      "a question raised or reopened after completion start still prevents MarkDone",
+      "release occurs after the current question is dispositioned"
+    ],
+    "detector_tests": [
+      "contradicting accepted decisions",
+      "superseded citation",
+      "fired deferred trigger",
+      "stable finding order",
+      "input aggregate and repository state are byte-identical before and after detection"
+    ],
+    "store_tests": [
+      "migration inventory and schema immutability triggers",
+      "repository restart round trip",
+      "cross-project and stale-revision refusal",
+      "deterministic export/import round trip",
+      "snapshot restore round trip"
+    ],
+    "mutation_targets": [
+      "close without disposition",
+      "defer without trigger",
+      "ignore matching fired trigger",
+      "MarkDone with a blocker",
+      "detector writes or changes aggregate state",
+      "wrong closer accepted",
+      "new escalation, notification or auditor-role surface"
+    ],
+    "commands": [
+      "cargo fmt --all -- --check",
+      "cargo clippy --workspace --all-targets -- -D warnings",
+      "cargo test -p kontor-core",
+      "cargo test -p kontor-policy",
+      "cargo test -p kontor-scheduler",
+      "cargo test -p kontor-store",
+      "cargo test -p kontor-daemon",
+      "cargo test --workspace"
+    ]
+  },
+  "prohibitions": [
+    "No Escalation aggregate or second escalation state machine.",
+    "No notification transport or interactive prompt channel.",
+    "No ambiguity auditor role code, seat, standing scan or background service.",
+    "No detector-side mutation.",
+    "No raw role-name authorization in generic core code.",
+    "No in-place UPDATE or DELETE of rounds, dispositions or trigger history.",
+    "No public open-question API/CLI/MCP expansion unless the existing completion projection requires a typed blocker addition."
+  ]
+}
