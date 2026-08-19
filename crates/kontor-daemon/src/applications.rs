@@ -103,8 +103,8 @@ use kontor_core::id::{
     ExecutionAuthorizationId, ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId,
     MiniProjectId, ModuleKey, Money, ProjectId, QuickSessionId, RoleCatalogId, RoleCode, RoleKey,
     RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId,
-    SpecVersion, StatusConflictId, TaskId, TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId,
-    TopologySpecId, TriggerKey,
+    SpecVersion, StatusConflictId, TaskId, TeamRunId, TicketProjectionId, Timestamp,
+    TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
 };
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
@@ -119,8 +119,8 @@ use kontor_core::repository::{
     SpecRepository, StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
     StoredConsultationProfileRevision, StoredConsultationRun, StoredConsultationSeat,
     StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
-    StoredQuickSession, StoredRemediationProposal, TaskTransitionRequest, TicketRepository,
-    TopologyRepository, WorkflowRepository,
+    StoredQuickSession, StoredRemediationProposal, TaskTransitionRequest, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -133,8 +133,15 @@ use kontor_core::state::{
     GateVerdict, ObservedContainerKind, RuntimeContact, SessionTopologyNode, TaskState,
     TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
 };
-use kontor_core::ticket::OwnershipAction;
-use kontor_integrations_asma::jira::SpecCatalog;
+use kontor_core::ticket::{
+    CommentPolicy, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, TicketSyncProjection,
+    TransitionPlan,
+};
+use kontor_integrations_asma::AsmaExecutable;
+use kontor_integrations_asma::jira::{
+    ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, FieldSpecKey, JiraOutcome, Observed,
+    PinnedProfile, SpecCatalog, TicketDelegation, WorkflowSpecKey,
+};
 use kontor_policy::{
     CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload, TicketEvidence,
     TicketGateBlocker, TicketRequirement,
@@ -207,6 +214,24 @@ struct SessionBase {
     native_id: Option<ExternalId>,
 }
 
+/// One Jira link prepared by the connector plan and reusable by its apply.
+struct PreparedTicket {
+    link: TicketLink,
+    wire_key: IdempotencyKey,
+    projection: TicketSyncProjection,
+    facts: InternalTaskFacts,
+    observed: Observed,
+    transition: Option<TransitionPlan>,
+}
+
+/// The complete, externally observed plan one reconcile response names.
+struct PreparedTicketPlan {
+    links: Vec<kontor_core::id::TicketLinkId>,
+    diff: Vec<TicketFieldDiffDto>,
+    hash: String,
+    tickets: Vec<PreparedTicket>,
+}
+
 /// The realm-scoped operation a pack registration binds its key to.
 ///
 /// A `&'static str` and not a free string: it is half of what a key is bound to,
@@ -244,6 +269,8 @@ pub struct Services {
     domain: OperationalDomainPack,
     /// The connector specifications this build ships, parsed on first use.
     connectors: OnceLock<SpecCatalog>,
+    /// The one configured Jira wire boundary, when this Realm has one.
+    asma: Option<AsmaExecutable>,
     /// How many simultaneous runs this Realm admits, from its configuration.
     ///
     /// Held here and read at both the planning and the admission call site, so a
@@ -284,6 +311,7 @@ impl Services {
     pub fn new(
         realm_id: kontor_core::id::RealmId,
         capacity: CapacityConfig,
+        asma: Option<AsmaExecutable>,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
@@ -291,6 +319,7 @@ impl Services {
             pack: kontor_profiles::seeds::bundled_pack()?,
             domain: kontor_profiles::bundled_operational_domain()?,
             connectors: OnceLock::new(),
+            asma,
             capacity,
         }))
     }
@@ -1079,6 +1108,280 @@ impl Services {
         Ok(self.connectors.get_or_init(|| catalog))
     }
 
+    /// The configured Jira boundary, or the honest answer for a Realm without it.
+    fn asma(&self) -> Result<&AsmaExecutable, ApiError> {
+        self.asma.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "this realm is not configured with the ASMA Jira connector boundary",
+            )
+        })
+    }
+
+    /// Turn the connector crate's typed refusal into the closed API vocabulary.
+    fn refuse_asma(&self, error: &kontor_integrations_asma::AsmaError) -> ApiError {
+        tracing::warn!(detail = %error, "the configured Jira connector refused reconciliation");
+        match error {
+            kontor_integrations_asma::AsmaError::Conflict { .. } => self.deny(
+                ApiErrorCode::RevisionConflict,
+                "fresh Jira evidence conflicts with the pinned external-workflow policy",
+            ),
+            kontor_integrations_asma::AsmaError::Domain(_)
+            | kontor_integrations_asma::AsmaError::Selection { .. }
+            | kontor_integrations_asma::AsmaError::Refused { .. } => self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the pinned Jira specification cannot represent this reconciliation",
+            ),
+            kontor_integrations_asma::AsmaError::Unavailable { .. } => self.deny(
+                ApiErrorCode::Unavailable,
+                "the configured ASMA Jira connector boundary could not answer",
+            ),
+            _ => self.deny(
+                ApiErrorCode::Unavailable,
+                "the configured ASMA Jira connector boundary refused reconciliation",
+            ),
+        }
+    }
+
+    /// Select the exact bundled mapping pinned by one task's frozen profile.
+    fn jira_specs<'a>(
+        &'a self,
+        workflow: &kontor_core::repository::TaskWorkflow,
+    ) -> Result<(&'a CompiledFieldSpec, &'a CompiledWorkflowSpec), ApiError> {
+        let catalog = self.connector_catalog()?;
+        let seed_field = catalog.field_specs().first().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "this build ships no Jira ticket-field specification",
+            )
+        })?;
+        let field = catalog
+            .select_field_spec(&FieldSpecKey {
+                connector: seed_field.spec().connector.clone(),
+                project: seed_field.spec().project.clone(),
+                issue_type: seed_field.spec().issue_type.clone(),
+                version: seed_field.spec().version,
+            })
+            .map_err(|error| self.refuse_asma(&error))?;
+        let seed_workflow = catalog.workflow_specs().first().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "this build ships no Jira external-workflow specification",
+            )
+        })?;
+        let external = catalog
+            .select_workflow_spec(&WorkflowSpecKey {
+                connector: seed_workflow.spec().connector.clone(),
+                project: seed_workflow.spec().project.clone(),
+                issue_type: seed_workflow.spec().issue_type.clone(),
+                version: seed_workflow.spec().version,
+                work_profile: Some(PinnedProfile {
+                    key: workflow.snapshot.definition.id.clone(),
+                    version: workflow.snapshot.definition.version,
+                }),
+            })
+            .map_err(|error| self.refuse_asma(&error))?;
+        Ok((field, external))
+    }
+
+    /// Compile the internal facts the pure Jira policy is allowed to inspect.
+    fn ticket_facts(
+        &self,
+        project_id: ProjectId,
+        task: &kontor_core::repository::Task,
+        workflow: &kontor_core::repository::TaskWorkflow,
+        projection_revision: AggregateRevision,
+    ) -> Result<InternalTaskFacts, ApiError> {
+        let state = self.state()?;
+        let gate_states = state
+            .with_store(|store| store.gate_states(project_id, workflow.id))
+            .map_err(|error| self.refuse(&error))?;
+        // `done` is itself a closure certificate: the store cannot transition
+        // a task there until every required phase, gate and artifact is proven.
+        // Keeping that invariant available matters for work completed without a
+        // TeamRun, where there is no separate run terminal row to consult.
+        let all_required_gates_passed = task.state == TaskState::Done
+            || workflow.snapshot.definition.gates.iter().all(|gate| {
+                gate_states
+                    .get(&gate.id)
+                    .is_some_and(|state| state.satisfies_requirement())
+            });
+        let run_outcome = state
+            .with_store(|store| store.list_team_runs_for_task(project_id, task.id))
+            .map_err(|error| self.refuse(&error))?
+            .last()
+            .copied()
+            .map(|(team_run_id, _)| {
+                Ok(state
+                    .with_store(|store| store.get_team_run(project_id, team_run_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .and_then(|run| run.terminal.map(|terminal| terminal.outcome)))
+            })
+            .transpose()?
+            .flatten()
+            .or_else(|| (task.state == TaskState::Done).then_some(TerminalOutcome::Succeeded));
+        let completed_phases = if task.state == TaskState::Done {
+            workflow
+                .snapshot
+                .definition
+                .phases
+                .iter()
+                .map(|phase| phase.id.clone())
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        Ok(InternalTaskFacts {
+            task_id: task.id,
+            task_state: task.state,
+            task_revision: task.revision,
+            workflow_revision: workflow.revision,
+            projection_revision,
+            completed_phases,
+            gate_states: gate_states.into_iter().collect(),
+            all_required_gates_passed,
+            run_outcome,
+        })
+    }
+
+    /// Observe Jira, run the pure policy, and validate each proposed write.
+    async fn prepare_ticket_plan(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<PreparedTicketPlan, ApiError> {
+        let state = self.state()?;
+        let task = self.task_row(project_id, task_id)?;
+        let links = state
+            .with_store(|store| store.list_task_ticket_links(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        let workflow = state
+            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+
+        if links.is_empty() {
+            let document = self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "task_id": task_id.to_string(),
+                "task_revision": task.revision.get(),
+                "links": [],
+            }))?;
+            return Ok(PreparedTicketPlan {
+                links: Vec::new(),
+                diff: Vec::new(),
+                hash: document.hash().as_str().to_owned(),
+                tickets: Vec::new(),
+            });
+        }
+
+        let workflow = workflow.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "a Jira-linked task has no active workflow specification",
+            )
+        })?;
+        let (field_spec, workflow_spec) = self.jira_specs(&workflow)?;
+        let asma = self.asma()?;
+        let mut diff = Vec::new();
+        let mut tickets = Vec::new();
+        for link in links {
+            if !matches!(link.connector.as_str(), "jira" | "connector.jira") {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "this build cannot reconcile the linked ticket's connector",
+                ));
+            }
+            let facts = self.ticket_facts(project_id, &task, &workflow, link.revision)?;
+            let wire_key_text = format!("{}:{}", idempotency_key.as_str(), link.id);
+            let wire_key = IdempotencyKey::parse(&wire_key_text)
+                .map_err(|error| self.refuse_domain(&error))?;
+            let projection = TicketSyncProjection {
+                schema_version: SCHEMA_VERSION,
+                id: TicketProjectionId::generate(),
+                link_id: link.id,
+                link_revision: link.revision,
+                connector: field_spec.spec().connector.clone(),
+                field_spec_project: field_spec.spec().project.clone(),
+                field_spec_issue_type: field_spec.spec().issue_type.clone(),
+                field_spec_version: field_spec.spec().version,
+                external_issue_key: link.external_issue_key.clone(),
+                fields: Vec::new(),
+                comment_policy: CommentPolicy::InboundOnly,
+                external_comment_cursor: None,
+                computed_at: kontor_api::now(),
+            };
+            let delegation = TicketDelegation {
+                asma,
+                field_spec,
+                workflow_spec,
+                projection: &projection,
+                facts: &facts,
+                link_id: link.id,
+                idempotency_key: &wire_key,
+            };
+            let observed = delegation
+                .observe()
+                .await
+                .map_err(|error| self.refuse_asma(&error))?;
+            let transition = match delegation.plan(&observed) {
+                ReconciliationOutcome::NoOp => None,
+                ReconciliationOutcome::Transition(plan) => {
+                    let dry_run = delegation
+                        .dry_run(&observed, &plan)
+                        .await
+                        .map_err(|error| self.refuse_asma(&error))?;
+                    if !matches!(dry_run.outcome, JiraOutcome::Planned | JiraOutcome::NoOp) {
+                        return Err(self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the Jira boundary did not validate the planned reconciliation",
+                        ));
+                    }
+                    diff.push(TicketFieldDiffDto {
+                        milestone: plan.milestone.as_str().to_owned(),
+                        kontor: plan.target.status_name.as_str().to_owned(),
+                        external: Some(observed.observation.status.status_name.as_str().to_owned()),
+                    });
+                    Some(*plan)
+                }
+                ReconciliationOutcome::Conflict(_) => {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "fresh Jira evidence conflicts with the pinned external-workflow policy",
+                    ));
+                }
+            };
+            tickets.push(PreparedTicket {
+                link,
+                wire_key,
+                projection,
+                facts,
+                observed,
+                transition,
+            });
+        }
+
+        let document = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "task_id": task_id.to_string(),
+            "task_revision": task.revision.get(),
+            "workflow_revision": workflow.revision.get(),
+            "tickets": tickets.iter().map(|ticket| serde_json::json!({
+                "link_id": ticket.link.id.to_string(),
+                "link_revision": ticket.link.revision.get(),
+                "observation_hash": ticket.observed.observation.payload_hash.as_str(),
+                "milestone": ticket.transition.as_ref().map(|plan| plan.milestone.as_str()),
+                "destination": ticket.transition.as_ref().map(|plan| plan.target.status_id.as_str()),
+            })).collect::<Vec<_>>(),
+        }))?;
+        Ok(PreparedTicketPlan {
+            links: tickets.iter().map(|ticket| ticket.link.id).collect(),
+            diff,
+            hash: document.hash().as_str().to_owned(),
+            tickets,
+        })
+    }
+
     /// Hold a runtime's frozen snapshot in this process *and* durably.
     ///
     /// Both, because they answer different questions. The in-process registry is
@@ -1539,78 +1842,6 @@ impl Services {
                 .to_owned(),
             receipt_id: String::new(),
         })
-    }
-
-    /// The typed reconciliation projection for one task's tickets.
-    ///
-    /// The field set is closed by construction: the only thing Kontor asserts
-    /// about an external ticket here is the semantic milestone its own workflow
-    /// phase maps to. There is no branch that could add a status string, an
-    /// assignee or a comment, because there is no input carrying one.
-    fn reconcile_projection(
-        &self,
-        project_id: ProjectId,
-        task_id: TaskId,
-    ) -> Result<
-        (
-            Vec<kontor_core::id::TicketLinkId>,
-            Vec<TicketFieldDiffDto>,
-            String,
-        ),
-        ApiError,
-    > {
-        let state = self.state()?;
-        self.task_row(project_id, task_id)?;
-        let links = state
-            .with_store(|store| store.list_task_ticket_links(project_id, task_id))
-            .map_err(|error| self.refuse(&error))?;
-        let workflow = state
-            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
-            .map_err(|error| self.refuse(&error))?;
-        let milestone = workflow.as_ref().map_or_else(
-            || "unknown".to_owned(),
-            |workflow| workflow.current_phase.as_str().to_owned(),
-        );
-
-        let mut diff = Vec::new();
-        for link in &links {
-            // Without a pinned field specification there is no mapping from a
-            // Kontor phase to an external field, and inventing one is exactly the
-            // arbitrary mutation this operation must not perform. Such a link is
-            // reported as needing a specification rather than as converged.
-            let spec = state
-                .with_store(|store| {
-                    store.get_ticket_field_spec(&kontor_core::repository::ConnectorSpecSelector {
-                        project_id,
-                        connector: link.connector.clone(),
-                        project: kontor_core::id::ExternalProjectKey::parse("unknown")
-                            .unwrap_or_else(|_| unreachable!("a literal open key parses")),
-                        issue_type: kontor_core::id::ExternalIssueTypeKey::parse("unknown")
-                            .unwrap_or_else(|_| unreachable!("a literal open key parses")),
-                        version: SpecVersion::FIRST,
-                    })
-                })
-                .map_err(|error| self.refuse(&error))?;
-            if spec.is_none() {
-                diff.push(TicketFieldDiffDto {
-                    milestone: milestone.clone(),
-                    kontor: milestone.clone(),
-                    external: None,
-                });
-            }
-        }
-        let document = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "task_id": task_id.to_string(),
-            "milestone": milestone,
-            "links": links.iter().map(|link| link.id.to_string()).collect::<Vec<_>>(),
-            "diff": diff.len(),
-        }))?;
-        Ok((
-            links.iter().map(|link| link.id).collect(),
-            diff,
-            document.hash().as_str().to_owned(),
-        ))
     }
 
     /// Read one epic's goal row, refusing an id that is not in this project.
@@ -12372,14 +12603,23 @@ impl ApplicationOperations for Services {
         task_id: TaskId,
     ) -> Result<TicketReconcilePlanDto, ApiError> {
         let state = self.state()?;
-        let (links, diff, hash) = self.reconcile_projection(project_id, task_id)?;
+        let plan_key_text = format!(
+            "ticket-plan:{}:{}",
+            task_id,
+            self.task_row(project_id, task_id)?.revision.get()
+        );
+        let plan_key =
+            IdempotencyKey::parse(&plan_key_text).map_err(|error| self.refuse_domain(&error))?;
+        let plan = self
+            .prepare_ticket_plan(project_id, task_id, &plan_key)
+            .await?;
         Ok(TicketReconcilePlanDto {
             realm_id: state.realm_id(),
             task_id,
-            projection_hash: hash,
-            links: links.iter().map(ToString::to_string).collect(),
-            converged: diff.is_empty(),
-            diff,
+            projection_hash: plan.hash,
+            links: plan.links.iter().map(ToString::to_string).collect(),
+            converged: plan.diff.is_empty(),
+            diff: plan.diff,
         })
     }
 
@@ -12392,16 +12632,6 @@ impl ApplicationOperations for Services {
     ) -> Result<TicketReconcileAppliedDto, ApiError> {
         let state = self.state()?;
         let task = self.task_row(project_id, task_id)?;
-        let (links, diff, hash) = self.reconcile_projection(project_id, task_id)?;
-        // The plan is re-derived and its digest compared, exactly as a scheduler
-        // start re-derives its batch: applying a plan the realm has moved past
-        // would converge a ticket towards something nobody looked at.
-        if hash != request.projection_hash {
-            return Err(self.deny(
-                ApiErrorCode::RevisionConflict,
-                "the named reconciliation plan no longer describes this realm",
-            ));
-        }
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "ticket_reconcile_apply",
@@ -12409,7 +12639,34 @@ impl ApplicationOperations for Services {
             "projection_hash": request.projection_hash,
         }))?;
         let target = AggregateRef::Task { task_id };
-        let receipt = if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
+        let replayed = self.replayed(key, &intent, Some(&target))?;
+        let plan = self.prepare_ticket_plan(project_id, task_id, key).await?;
+
+        // A replay whose first attempt already converged is successful even
+        // though the live observation now produces a different (empty) plan.
+        // A replay that still sees the original difference resumes the same
+        // idempotent external operation instead of papering over a lost effect.
+        if plan.diff.is_empty()
+            && let Some(existing) = replayed.as_ref()
+        {
+            return Ok(TicketReconcileAppliedDto {
+                realm_id: state.realm_id(),
+                task_id,
+                projection_hash: request.projection_hash.clone(),
+                converged: plan.links.iter().map(ToString::to_string).collect(),
+                receipt_id: existing.id.to_string(),
+            });
+        }
+        // The plan is re-derived and its digest compared, exactly as a scheduler
+        // start re-derives its batch: applying a plan the realm has moved past
+        // would converge a ticket towards something nobody looked at.
+        if plan.hash != request.projection_hash {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the named reconciliation plan no longer describes this realm",
+            ));
+        }
+        let receipt = if let Some(existing) = replayed {
             existing.id
         } else {
             self.record(
@@ -12421,21 +12678,89 @@ impl ApplicationOperations for Services {
                 &intent,
             )?
         };
-        if !diff.is_empty() {
-            // Converging a real difference means transitioning a ticket in the
-            // external system, and that needs the connector this Realm is
-            // configured with. Reporting success without one would be a claim
-            // about a system nothing contacted.
-            return Err(self.deny(
-                ApiErrorCode::Unavailable,
-                "this realm is not configured with a connector that can converge that ticket",
-            ));
+
+        // An unlinked task has no external boundary to invoke. Its empty plan
+        // is still a valid, durable reconciliation receipt, and composing Jira
+        // must not become a prerequisite for projects that have no Jira links.
+        if plan.tickets.is_empty() {
+            return Ok(TicketReconcileAppliedDto {
+                realm_id: state.realm_id(),
+                task_id,
+                projection_hash: request.projection_hash.clone(),
+                converged: Vec::new(),
+                receipt_id: receipt.to_string(),
+            });
+        }
+
+        let (field_spec, workflow_spec) = self.jira_specs(
+            &state
+                .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "a Jira-linked task has no active workflow specification",
+                    )
+                })?,
+        )?;
+        let asma = self.asma()?;
+        for ticket in &plan.tickets {
+            let Some(transition) = &ticket.transition else {
+                continue;
+            };
+            let delegation = TicketDelegation {
+                asma,
+                field_spec,
+                workflow_spec,
+                projection: &ticket.projection,
+                facts: &ticket.facts,
+                link_id: ticket.link.id,
+                idempotency_key: &ticket.wire_key,
+            };
+            let response = delegation
+                .apply(
+                    &ticket.observed,
+                    transition,
+                    ApplyAuthority {
+                        authorized_by: receipt,
+                    },
+                )
+                .await
+                .map_err(|error| self.refuse_asma(&error))?;
+            let transition_receipt = delegation
+                .receipt(&ticket.observed, transition, &response)
+                .map_err(|error| self.refuse_asma(&error))?;
+            state
+                .with_store(|store| {
+                    store.append_observation(project_id, &ticket.observed.observation)
+                })
+                .map_err(|error| self.refuse(&error))?;
+            if let Some(confirmation) = &response.confirmation {
+                let mut confirmed = confirmation
+                    .observation
+                    .to_core(ticket.link.id, confirmation.confirmed_at)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                confirmed.id = transition_receipt.refetched_observation_id.ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "a confirmed Jira transition receipt names no refetched observation",
+                    )
+                })?;
+                state
+                    .with_store(|store| store.append_observation(project_id, &confirmed))
+                    .map_err(|error| self.refuse(&error))?;
+            }
+            state
+                .with_store(|store| {
+                    store.insert_transition_receipt(project_id, &transition_receipt)
+                })
+                .map_err(|error| self.refuse(&error))?;
         }
         Ok(TicketReconcileAppliedDto {
             realm_id: state.realm_id(),
             task_id,
             projection_hash: request.projection_hash.clone(),
-            converged: links.iter().map(ToString::to_string).collect(),
+            converged: plan.links.iter().map(ToString::to_string).collect(),
             receipt_id: receipt.to_string(),
         })
     }
