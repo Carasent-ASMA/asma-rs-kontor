@@ -1,13 +1,13 @@
 # KON-OP-09 / ASMA-7878 — release notes
 
 > **Date:** 2026-08-19 12:13 CEST
-> **Status:** 🟢 Approved
+> **Status:** 🟡 In Review — release blocked by current-`master` contract integration
 > **Author:** Architect · OP-09 successor seat
 > **Category:** report
 > **Scope:** `KON-OP-09` Operational diagnostic UI/UX release unit
-> **Summary:** Release evidence for the accepted OP-09 console revision, its
-> independent code-review and QA gates, and the bounded limitations carried
-> into the integrated OP-10 proof.
+> **Summary:** Release evidence for the accepted OP-09 console revision and its
+> independent code-review and QA gates, plus the current-`master` contract
+> incompatibility that blocks the release gate.
 
 ---
 
@@ -26,8 +26,11 @@ already closed by the accepted remediation.
 
 ## Release verdict
 
-**PASS for `release-gate` evaluation.** The frozen `code@1` profile reserves
-this verdict for `architect` and requires the `release-notes` artifact.
+**BLOCKED: do not record `release-gate` passed.** The frozen `code@1` profile
+reserves that verdict for `architect` and requires the `release-notes` artifact.
+The accepted OP-09 revision passes its frozen prerequisite gates, but it cannot
+be integrated into current `master` without new production behavior and a new
+review/QA cycle.
 
 The accepted production revision is
 `ffeffc3f23844228437cf3f27ece216e10489da2`. The two later commits are
@@ -85,7 +88,7 @@ Kontor project `01a0064a-e056-7603-9968-ef64fdaacb75`, task
 | --- | --- | --- |
 | `code-review-gate` | `docs/evidence/KON-OP-09/REVIEW.md` at `4f3242b` | passed at accepted production head `ffeffc3` |
 | `qa-gate` | `docs/evidence/KON-OP-09/QA.md` at `3f4ec94`; receipt `01a01978-638c-77e3-b190-4e1decaa582f`, sequence `2` | passed |
-| `release-gate` | this `release-notes` artifact | recommended passed by the authorized architect successor |
+| `release-gate` | this `release-notes` artifact | not recorded; blocked by current-`master` integration |
 
 The accepted QA run reports:
 
@@ -112,10 +115,33 @@ server route, public contract or generated schema. The current TeamRun,
 workspaces, seats, native sessions and bindings are preserved. OP-09 creates no
 topology and performs no direct Jira or runtime mutation.
 
-The release branch is `feat/ASMA-7878-kontor-diagnostic-ui`; its target is the
-`asma-rs-kontor` default branch through the repository's reviewed pull-request
-flow. Jira status follows the authoritative Kontor task state through typed
-ticket reconciliation after the release gate is durable.
+The release branch is `feat/ASMA-7878-kontor-diagnostic-ui`; PR 44 targets the
+`asma-rs-kontor` default branch and is currently conflicting. Jira must remain
+at the authoritative Kontor `in_progress` state until a corrected revision is
+reviewed, QA passes again and the release gate is durable.
+
+## Current-master integration refusal
+
+PR 44 was opened from evidence commit
+`847c934d7745fcc372701fed422fe3cb564987fd`. Merging current `origin/master`
+produced one conflict in generated `apps/console/src/api/schema.d.ts`.
+Regenerating that file from the merged authoritative `openapi.json` resolved
+the generated artifact cleanly: `verify:api` passed and all 290 Vitest
+assertions passed. TypeScript then refused the merged production source:
+
+- Advisor and Committee invocation now require `caller_seat_binding_id`.
+- The invocation receipt may be `undefined`, while the existing view accepts
+  only a receipt or `null`.
+- Completion phase is now a typed discriminated object rather than a string.
+- The old `outstanding` field no longer exists on the completion projection.
+- Completion remediation now requires a typed `action` rather than a free-form
+  `reason`.
+
+These are contract and workflow decisions, not conflict-marker choices. The
+architect release seat therefore aborted the local merge, left PR 44 open, did
+not record the release gate, did not complete the task and did not reconcile
+Jira. Remediation must return through the existing attached implementation,
+inspection and tester seats; no replacement topology is needed.
 
 ## Deliberate limitations
 
