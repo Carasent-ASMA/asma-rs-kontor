@@ -65,6 +65,71 @@ export type PublishedTeamRevision = Schemas['PublishedTeamRevisionDto']
 /** Teams drafts and revisions at one realm cursor. */
 export type TeamsProjection = Schemas['TeamsProjectionDto']
 
+/** One project-scoped Operational epic. */
+export type EpicProjection = Schemas['EpicProjectionDto']
+/** The project's authoritative logical and observed session topology. */
+export type TopologyProjection = Schemas['TopologyProjectionDto']
+/** The project's current Core Team. */
+export type CoreTeam = Schemas['CoreTeamDto']
+/** A proposed Core Team composition. */
+export type CoreTeamPreviewRequest = Schemas['CoreTeamPreviewRequest']
+/** The server's preview of a Core Team change. */
+export type CoreTeamPreview = Schemas['CoreTeamPreviewDto']
+/** Apply an unchanged Core Team preview. */
+export type CoreTeamApplyRequest = Schemas['CoreTeamApplyRequest']
+/** One Core Team role plus its explicit epic-presence policy. */
+export type CoreTeamSeatSelection = Schemas['CoreTeamSeatSelectionDto']
+/** A receipt-backed Core Team write. */
+export type CoreTeamOutcome = Schemas['CoreTeamOutcomeDto']
+/** The roles a Quick session may select. */
+export type QuickRoles = Schemas['QuickRolesDto']
+/** Open one Quick session. */
+export type EnsureQuickSessionRequest = Schemas['EnsureQuickSessionRequest']
+/** One ensured Quick session. */
+export type QuickSession = Schemas['QuickSessionDto']
+/** The server's promotion preview. */
+export type PromotionPreview = Schemas['PromotionPreviewDto']
+/** Apply an unchanged promotion preview. */
+export type PromotionApplyRequest = Schemas['PromotionApplyRequest']
+/** A Quick session after promotion to an epic. */
+export type PromotedSession = Schemas['PromotedSessionDto']
+/** The server-owned admission and capacity picture for one project. */
+export type ProjectCapacity = Schemas['ProjectCapacityDto']
+/** Help for every controlled code pinned by one epic. */
+export type CodeHelpProjection = Schemas['CodeHelpProjectionDto']
+/** One server-owned controlled-code definition. */
+export type CodeHelpEntry = Schemas['CodeHelpEntryDto']
+/** Published revisions of one consultation or completion profile family. */
+export type ProfileCatalog = Schemas['ProfileCatalogDto']
+/** One published consultation or completion profile. */
+export type ProfileRevision = Schemas['ProfileRevisionDto']
+/** Invoke one Advisor or Committee consultation. */
+export type InvokeConsultationRequest = Schemas['InvokeConsultationRequest']
+/** One receipt-backed Advisor consultation. */
+export type AdvisorRun = Schemas['AdvisorRunDto']
+/** One receipt-backed Committee consultation. */
+export type CommitteeRun = Schemas['CommitteeRunDto']
+/** One epic's completion state. */
+export type CompletionState = Schemas['CompletionStateDto']
+/** A receipt-backed completion transition. */
+export type CompletionOutcome = Schemas['CompletionOutcomeDto']
+/** Advance completion from the revision shown to the operator. */
+export type AdvanceCompletionRequest = Schemas['AdvanceCompletionRequest']
+/** One of the two remediation authorities, as a closed tagged action. */
+export type RemediationAction = Schemas['RemediationActionDto']
+/** Return completion to remediation from the revision shown to the operator. */
+export type RemediateCompletionRequest = Schemas['RemediateCompletionRequest']
+/** The receipt every Operational mutation confirms with. */
+export type MutationReceipt = Schemas['MutationReceiptDto']
+/** One seat a topology node hosts. */
+export type TopologySeat = Schemas['TopologySeatDto']
+/** One selectable catalog role. */
+export type RoleCatalogEntry = Schemas['RoleCatalogEntryDto']
+/** The role identity accepted by a write. */
+export type RoleSelection = Schemas['RoleSelectionDto']
+/** One immutable server-owned revision reference. */
+export type RevisionRef = Schemas['RevisionRefDto']
+
 /** The JSON body every refusal is reported with. */
 export type Refusal = Schemas['ApiErrorBody']
 

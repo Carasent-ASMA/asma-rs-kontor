@@ -22,6 +22,7 @@ import { TaskView } from '../views/TaskView'
 import { SessionView } from '../views/SessionView'
 import { IntakeView, ScheduleView, WorkflowView } from '../views/GatedViews'
 import { TeamsView } from '../views/TeamsView'
+import { ProjectView } from '../views/ProjectView'
 
 /** Render the console. */
 export function App({ store }: { store?: CredentialStore }) {
@@ -110,7 +111,8 @@ export function App({ store }: { store?: CredentialStore }) {
             {view === 'intake' ? <IntakeView /> : null}
             {view === 'workflow' ? <WorkflowView /> : null}
             {view === 'schedule' ? <ScheduleView /> : null}
-            {/* Teams reads and writes through the same attached realm client. */}
+            {view === 'project' && realm.client ? <ProjectView client={realm.client} /> : null}
+            {/* Delivery Teams reads and writes through the same attached realm client. */}
             {view === 'teams' && realm.client ? <TeamsView client={realm.client} /> : null}
           </>
         )}
