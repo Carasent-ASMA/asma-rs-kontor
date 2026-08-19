@@ -965,8 +965,12 @@ impl TicketDelegation<'_> {
         // whole point is to converge the owner first and let the next
         // observation decide. Demanding the destination here would report a
         // fully successful assignment as contested state and invite a retry.
+        // A staged hop is judged against the status it was going to, not the
+        // milestone: demanding the milestone here would report a hop that landed
+        // exactly as planned as contested state and invite a retry of a move Jira
+        // has already made.
         let status_arrived =
-            plan.transition.is_none() || now.status.status_id == plan.target.status_id;
+            plan.transition.is_none() || now.status.status_id == plan.destination().status_id;
         let holder_arrived = now.assignee_account_id == expected_holder;
         if status_arrived && holder_arrived {
             return Ok(AmbiguityVerdict::AlreadyConfirmed(after));
@@ -1182,7 +1186,7 @@ impl TicketDelegation<'_> {
                     "the selected transition was not offered by this observation",
                 )
             })?;
-        if offered.to.status_id != plan.target.status_id {
+        if offered.to.status_id != plan.destination().status_id {
             return Err(AsmaError::refused(
                 operation,
                 "the selected transition no longer reaches the planned destination",

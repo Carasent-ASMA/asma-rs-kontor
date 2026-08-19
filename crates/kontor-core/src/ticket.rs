@@ -1000,6 +1000,34 @@ pub struct TransitionPlan {
     pub assignment_prerequisite: bool,
 }
 
+impl TransitionPlan {
+    /// The status *this attempt* lands on.
+    ///
+    /// Equal to [`Self::target`] for a direct convergence. When the pinned
+    /// specification had to route through its declared intermediate, this is that
+    /// intermediate — so every check about the attempt (was the route still
+    /// offered, did the status arrive) is stated against where the attempt was
+    /// actually going, rather than against a milestone it was never going to
+    /// reach in one hop.
+    #[must_use]
+    pub fn destination(&self) -> &StatusSelector {
+        self.transition
+            .as_ref()
+            .map_or(&self.target, |transition| &transition.to)
+    }
+
+    /// Whether this attempt stops short of the milestone on purpose.
+    ///
+    /// A staged hop is progress, not convergence: the milestone is reached by the
+    /// observation that follows it.
+    #[must_use]
+    pub fn is_staged_hop(&self) -> bool {
+        self.transition
+            .as_ref()
+            .is_some_and(|transition| transition.to.status_id != self.target.status_id)
+    }
+}
+
 closed_enum! {
     /// Why reconciliation could not produce a plan.
     StatusConflictKind, "StatusConflictKind" {
@@ -1082,6 +1110,54 @@ pub struct ReconciliationInput<'a> {
     pub live_transitions: &'a [LiveTransition],
     /// The principal Kontor acts as.
     pub principal: &'a TicketPrincipal,
+}
+
+/// The one intermediate status Kontor may route through, and only when the
+/// pinned specification already named it.
+///
+/// Deliberately **not** a path search. A shortest-path walk over whatever
+/// transitions happen to be live would let the evaluator invent a route nobody
+/// declared, and route a ticket through a status the workflow owner never
+/// approved. The only status this will route through is the one the
+/// specification declares as its reopen selector, and only when that status is
+/// directly reachable from where the ticket is standing right now.
+///
+/// Every other shape is fail-closed — an absent selector, a selector that is not
+/// a declared status, a selector that is not currently offered, or the ticket
+/// already standing on it — and the caller raises the ordinary typed conflict.
+///
+/// # Errors
+/// [`StatusConflictKind::MultipleLiveTransitions`] when several live transitions
+/// reach the hop: which one runs would not be determined by the specification.
+fn staged_hop<'live>(
+    input: &'live ReconciliationInput<'_>,
+    target: &StatusSelector,
+) -> Result<Option<&'live LiveTransition>, StatusConflictKind> {
+    let Some(hop) = input.spec.reopen.as_ref() else {
+        return Ok(None);
+    };
+    // Standing on the hop already, or a hop that *is* the target, cannot make
+    // progress — and re-planning it after the next observation is exactly how a
+    // hop would become a loop between two statuses.
+    if hop.status_id == input.observation.status.status_id || hop.status_id == target.status_id {
+        return Ok(None);
+    }
+    // Routing through a status the pinned specification does not classify would
+    // leave the next observation unable to say what the ticket now means.
+    if input.spec.class_of(&hop.status_id).is_none() {
+        return Ok(None);
+    }
+    let mut matching = input
+        .live_transitions
+        .iter()
+        .filter(|live| live.to.status_id == hop.status_id);
+    let Some(selected) = matching.next() else {
+        return Ok(None);
+    };
+    if matching.next().is_some() {
+        return Err(StatusConflictKind::MultipleLiveTransitions);
+    }
+    Ok(Some(selected))
 }
 
 /// Reconcile Kontor's state with an external ticket.
@@ -1184,12 +1260,22 @@ pub fn reconcile(input: &ReconciliationInput<'_>) -> ReconciliationOutcome {
         .live_transitions
         .iter()
         .filter(|t| t.to.status_id == rule.target.status_id);
-    let Some(selected) = matching.next() else {
-        return Conflict(StatusConflictKind::NoLiveTransition);
+    let selected = if let Some(direct) = matching.next() {
+        if matching.next().is_some() {
+            return Conflict(StatusConflictKind::MultipleLiveTransitions);
+        }
+        direct
+    } else {
+        // The target is not reachable in one move. A real Jira workflow routinely
+        // refuses `DRAFT -> In Development` while offering
+        // `DRAFT -> Ready for Development`, and the honest answer is neither to
+        // force the move nor to call an unconverged ticket converged.
+        match staged_hop(input, &rule.target) {
+            Ok(Some(hop)) => hop,
+            Ok(None) => return Conflict(StatusConflictKind::NoLiveTransition),
+            Err(kind) => return Conflict(kind),
+        }
     };
-    if matching.next().is_some() {
-        return Conflict(StatusConflictKind::MultipleLiveTransitions);
-    }
 
     Transition(Box::new(TransitionPlan {
         milestone: rule.milestone.clone(),

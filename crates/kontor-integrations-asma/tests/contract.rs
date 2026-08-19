@@ -37,8 +37,9 @@ use kontor_core::state::{GateState, TaskState, TerminalOutcome};
 use kontor_core::ticket::{
     AssignmentPlan, CommentPolicy, ExternalTicketObservation, ExternalWorkflowSpec, FieldOwner,
     FieldValue, InternalTaskFacts, LiveTransition, OwnershipAction, ProjectedField,
-    ReconciliationOutcome, SelectedTransition, StatusConflictKind, StatusSelector, TicketFieldKey,
-    TicketPrincipal, TicketSyncProjection, TransitionPlan,
+    ReconciliationInput, ReconciliationOutcome, SelectedTransition, StatusConflictKind,
+    StatusSelector, TicketFieldKey, TicketPrincipal, TicketSyncProjection, TransitionPlan,
+    reconcile,
 };
 use kontor_integrations_asma::jira::{
     AmbiguityVerdict, ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, FieldSpecKey,
@@ -1936,4 +1937,93 @@ async fn probe_boundary(asma: &AsmaExecutable) -> Result<Observed, AsmaError> {
     delegate(asma, &workflow, &field, &projection, &facts, link_id, &key)
         .observe()
         .await
+}
+
+/// The exact live failure ASMA-7877 hit, against the specification this build
+/// ships.
+///
+/// A reconcile plan targeted `In Development` for a ticket standing in `DRAFT`.
+/// The assignment prerequisite applied cleanly, and the follow-up then had
+/// nowhere to go: this Jira workflow offers no direct `DRAFT -> In Development`
+/// route. It offers `DRAFT -> READY FOR DEVELOPMENT`, which is the status the
+/// shipped specification already declares as its reopen selector.
+///
+/// Forcing the move or reporting convergence would both be lies. The plan hops
+/// to the declared intermediate, keeps naming `In Development` as the milestone,
+/// and the next observation finishes. The ids here are the ones the live run
+/// reported, read from the shipped specification rather than retyped.
+#[test]
+fn a_draft_ticket_reaches_in_development_through_ready_for_development() {
+    let workflow = SpecCatalog::bundled()
+        .expect("the bundled specifications load")
+        .select_workflow_spec(&asma_workflow_key().workflow())
+        .expect("the shipped workflow specification is selectable")
+        .clone();
+    let spec = workflow.spec();
+
+    let draft = spec
+        .inbound_compatible
+        .iter()
+        .find(|status| status.status_name.as_str() == "DRAFT")
+        .cloned()
+        .expect("the shipped specification accepts DRAFT as a starting point");
+    let ready = spec
+        .reopen
+        .clone()
+        .expect("the shipped specification declares a reopen selector");
+    let in_development = spec
+        .milestones
+        .iter()
+        .find(|rule| rule.milestone == milestone("implementation_active"))
+        .expect("the shipped specification declares implementation_active")
+        .target
+        .clone();
+
+    assert_eq!(draft.status_id.as_str(), "10237", "the live DRAFT id");
+    assert_eq!(
+        ready.status_id.as_str(),
+        "10213",
+        "the live READY FOR DEVELOPMENT id"
+    );
+    assert_eq!(
+        in_development.status_id.as_str(),
+        "10214",
+        "the live In Development id"
+    );
+
+    let principal = TicketPrincipal {
+        account_id: external("acct-igor"),
+    };
+    let facts = implementing();
+    // What Jira actually offered from DRAFT: transition 15, to 10213. Nothing
+    // reaches 10214 in one move.
+    let offered = vec![route("15", &ready)];
+
+    let outcome = reconcile(&ReconciliationInput {
+        spec,
+        observation: &core_observation(
+            TicketLinkId::generate(),
+            &draft,
+            Some(&principal.account_id),
+        ),
+        freshness: kontor_core::state::Freshness::Fresh,
+        facts: &facts,
+        live_transitions: &offered,
+        principal: &principal,
+    });
+
+    let ReconciliationOutcome::Transition(plan) = outcome else {
+        panic!("DRAFT has a declared route onward; this is a plan: {outcome:?}");
+    };
+    assert_eq!(plan.target.status_id, in_development.status_id);
+    assert_eq!(plan.destination().status_id, ready.status_id);
+    assert!(plan.is_staged_hop());
+    assert_eq!(
+        plan.transition
+            .as_ref()
+            .expect("the hop invokes a transition")
+            .transition_id,
+        external("15"),
+        "the hop uses transition 15, the one this observation offered"
+    );
 }
