@@ -740,6 +740,12 @@ pub struct Task {
     pub module: Option<ModuleKey>,
     /// Lifecycle state.
     pub state: TaskState,
+    /// The source lifecycle fact this task was imported with, until the first
+    /// native lifecycle transition takes ownership of the state.
+    ///
+    /// In particular, historical `Completed` distinguishes imported
+    /// terminality from a native [`TaskState::Done`] closure certificate.
+    pub imported_state: Option<crate::state::ImportedTaskState>,
     /// Optimistic-concurrency revision.
     pub revision: AggregateRevision,
     /// When it was created.

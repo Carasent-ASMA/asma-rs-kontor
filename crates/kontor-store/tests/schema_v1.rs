@@ -319,7 +319,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 41);
+    assert_eq!(SCHEMA_VERSION, 42);
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.
@@ -561,6 +561,82 @@ fn the_deployed_consultation_v36_lineage_upgrades_forward() {
         )
         .expect("the recovery shape is readable");
     assert_eq!(escalation_columns, 3);
+}
+
+/// OP-12 owns schema 41. OP-14 must append its provenance column as schema 42
+/// without renumbering or replaying the merged open-question migration.
+#[test]
+fn the_merged_op12_v41_lineage_upgrades_to_imported_lifecycle_v42() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000f5";
+    const PROJECT: &str = "0193f000-0000-7000-8000-0000000000f6";
+    const TASK: &str = "0193f000-0000-7000-8000-0000000000f7";
+
+    {
+        let connection = Connection::open(&path).expect("a raw connection opens");
+        migrate_through_v33(&connection);
+        for migration in [
+            include_str!("../migrations/0034_consultation_profiles.sql"),
+            include_str!("../migrations/0035_epic_completion.sql"),
+            include_str!("../migrations/0036_consultation_runs.sql"),
+            include_str!("../migrations/0037_escalation_brief.sql"),
+            include_str!("../migrations/0038_publish_trigger_command.sql"),
+            include_str!("../migrations/0039_committee_remediation.sql"),
+            include_str!("../migrations/0040_advisor_advice.sql"),
+            include_str!("../migrations/0041_open_questions.sql"),
+        ] {
+            connection
+                .execute_batch(migration)
+                .expect("the merged schema-41 lineage runs");
+        }
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("schema 41 is readable");
+        assert_eq!(version, 41);
+        connection
+            .execute(
+                "INSERT INTO realm_metadata
+                     (singleton, realm_id, schema_version, created_at, display_label)
+                 VALUES (1, ?1, 1, '2026-08-19T12:00:00Z', NULL)",
+                [REALM],
+            )
+            .expect("the deployed Realm identity is written");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, root_path, revision, created_at)
+                 VALUES (?1, 'P', '/tmp/op12-v41', 1, '2026-08-19T12:00:00Z')",
+                [PROJECT],
+            )
+            .expect("the deployed project is written");
+        connection
+            .execute(
+                "INSERT INTO tasks
+                     (id, project_id, mini_project_id, title, module_key, state,
+                      revision, created_at, updated_at)
+                 VALUES (?1, ?2, NULL, 'Existing ready task', NULL, 'ready', 1,
+                         '2026-08-19T12:00:00Z', '2026-08-19T12:00:00Z')",
+                rusqlite::params![TASK, PROJECT],
+            )
+            .expect("the deployed task is written without future provenance");
+    }
+
+    let store = SqliteStore::open(&path).expect("the merged v41 lineage upgrades once");
+    assert_eq!(store.schema_version().expect("readable"), 42);
+    assert_eq!(store.realm_id().to_string(), REALM);
+    let connection = raw(&directory);
+    let (state, imported_state): (String, Option<String>) = connection
+        .query_row(
+            "SELECT state, imported_state FROM tasks WHERE id = ?1",
+            [TASK],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the upgraded task reads");
+    assert_eq!(state, "ready");
+    assert_eq!(
+        imported_state, None,
+        "migration 0042 must not invent historical provenance for an existing task"
+    );
 }
 
 /// A database left at schema v1 is brought forward on open, keeping the Realm it

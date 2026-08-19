@@ -1141,9 +1141,13 @@ fn park_task(
     }
     let next = apply_task_transition(current, &TaskTransition::to(TaskState::Parked))?;
     let revision = revision_of(revision)?;
+    // A guardrail park is a native lifecycle transition, so it takes ownership
+    // of the state exactly like `transition_task` does: the imported historical
+    // fact is cleared, because it described the source system's task and no
+    // longer describes this one.
     let changed = transaction
         .execute(
-            "UPDATE tasks SET state = ?1, revision = ?2, updated_at = ?3
+            "UPDATE tasks SET state = ?1, imported_state = NULL, revision = ?2, updated_at = ?3
              WHERE project_id = ?4 AND id = ?5 AND revision = ?6",
             params![
                 next.as_str(),

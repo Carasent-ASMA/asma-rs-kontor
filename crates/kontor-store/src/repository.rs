@@ -74,13 +74,13 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{
     AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
-    GateVerdict, NativeContainerBinding, NativeRuntimeIdentity, ObservedContainerKind,
-    ObservedRunState, PlacementState, RunLifecycle, RunProjection, SeatAttachment,
-    SeatAttachmentObservation, SeatBinding, SessionTopologyNode, TaskProgressEvidence,
-    TaskReopenAuthority, TaskState, TaskTeamClosure, TaskTransition, TeamChildEvidence,
-    TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence, TerminalEvidenceSource,
-    TerminalOutcome, TopologyLifecycle, certify_task_progress, evaluate_seat_attachment,
-    plan_team_advance, plan_team_closure,
+    GateVerdict, ImportedTaskState, NativeContainerBinding, NativeRuntimeIdentity,
+    ObservedContainerKind, ObservedRunState, PlacementState, RunLifecycle, RunProjection,
+    SeatAttachment, SeatAttachmentObservation, SeatBinding, SessionTopologyNode,
+    TaskProgressEvidence, TaskReopenAuthority, TaskState, TaskTeamClosure, TaskTransition,
+    TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
+    TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle, certify_task_progress,
+    evaluate_seat_attachment, plan_team_advance, plan_team_closure,
 };
 use kontor_core::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -556,6 +556,7 @@ pub(crate) fn read_project(row: &Row<'_>) -> RepositoryResult<Project> {
 pub(crate) fn read_task(row: &Row<'_>) -> RepositoryResult<Task> {
     let mini_project: Option<String> = row.get(2).map_err(backend)?;
     let module: Option<String> = row.get(4).map_err(backend)?;
+    let imported_state: Option<String> = row.get(9).map_err(backend)?;
     Ok(Task {
         id: TaskId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
         project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
@@ -566,14 +567,18 @@ pub(crate) fn read_task(row: &Row<'_>) -> RepositoryResult<Task> {
         title: ExternalName::parse(&row.get::<_, String>(3).map_err(backend)?)?,
         module: module.as_deref().map(ModuleKey::parse).transpose()?,
         state: TaskState::parse(&row.get::<_, String>(5).map_err(backend)?)?,
+        imported_state: imported_state
+            .as_deref()
+            .map(ImportedTaskState::parse)
+            .transpose()?,
         revision: revision_of(row.get::<_, i64>(6).map_err(backend)?)?,
         created_at: read_timestamp(&row.get::<_, String>(7).map_err(backend)?)?,
         updated_at: read_timestamp(&row.get::<_, String>(8).map_err(backend)?)?,
     })
 }
 
-pub(crate) const TASK_COLUMNS: &str =
-    "id, project_id, mini_project_id, title, module_key, state, revision, created_at, updated_at";
+pub(crate) const TASK_COLUMNS: &str = "id, project_id, mini_project_id, title, module_key, state, revision, created_at, updated_at, \
+     imported_state";
 
 const ACCOUNT_PROFILE_COLUMNS: &str = "id, project_id, label, external_account_id, created_at, \
      harness, credential_ref_kind, credential_ref_alias, environment_refs, environment_refs_hash, \
@@ -784,6 +789,7 @@ impl ProjectRepository for SqliteStore {
             title: request.title.clone(),
             module: request.module.clone(),
             state: request.state,
+            imported_state: None,
             revision: AggregateRevision::INITIAL,
             created_at: request.created_at,
             updated_at: request.created_at,
@@ -6197,7 +6203,7 @@ impl WorkflowRepository for SqliteStore {
         let next_revision = revision.next()?;
         let changed = transaction
             .execute(
-                "UPDATE tasks SET state = ?1, revision = ?2, updated_at = ?3
+                "UPDATE tasks SET state = ?1, imported_state = NULL, revision = ?2, updated_at = ?3
                  WHERE project_id = ?4 AND id = ?5 AND revision = ?6",
                 params![
                     next_state.as_str(),

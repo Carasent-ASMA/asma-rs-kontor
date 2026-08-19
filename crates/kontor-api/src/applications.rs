@@ -2142,6 +2142,21 @@ pub struct TicketLinkRequest {
     pub external_issue_key: String,
 }
 
+/// The deliberately narrow source lifecycle accepted by an epic import.
+///
+/// This is not the native task lifecycle. In particular, `completed` is a
+/// historical fact from the source system and carries no Kontor gate, artifact,
+/// run, team or epic-closure evidence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EpicImportStateDto {
+    /// The source task still has work to do. Also the compatibility default.
+    #[default]
+    Ready,
+    /// The source system says the task completed before Kontor owned it.
+    Completed,
+}
+
 /// One task in a declarative epic.
 ///
 /// `title` is the stable caller key: dependencies name it, a reapply matches on
@@ -2153,6 +2168,12 @@ pub struct EpicTaskRequest {
     pub title: ExternalName,
     /// The module the task contends for, if any.
     pub module: Option<String>,
+    /// The source lifecycle to preserve during this import.
+    ///
+    /// Omission remains backward-compatible with the original apply contract
+    /// and means `ready`.
+    #[serde(default)]
+    pub import_state: EpicImportStateDto,
     /// The titles of the sibling tasks that must finish first.
     #[serde(default)]
     #[schema(value_type = Vec<String>)]
@@ -2279,6 +2300,46 @@ pub struct AppliedEpicDto {
     pub bundle_hash: String,
     /// The tasks, in the order they were stated.
     pub tasks: Vec<AppliedTaskDto>,
+}
+
+/// One task as an epic preview judges it, without committing prospective ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PreviewEpicTaskDto {
+    /// The title it was addressed by.
+    #[schema(value_type = String)]
+    pub title: ExternalName,
+    /// The durable task id when this preview matched an existing task.
+    ///
+    /// `None` means apply would create the task. Transaction-local ids used to
+    /// validate a new graph are deliberately not exposed as authority.
+    #[schema(value_type = Option<String>)]
+    pub task_id: Option<TaskId>,
+    /// Whether apply would create it or find it unchanged.
+    pub applied: AppliedDto,
+    /// The lifecycle projection apply would persist.
+    pub state: String,
+}
+
+/// The result of judging an epic with the exact apply rules and no writes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PreviewEpicDto {
+    /// The Realm that judged the graph.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The durable epic id when this preview matched an existing epic.
+    #[schema(value_type = Option<String>)]
+    pub epic_id: Option<MiniProjectId>,
+    /// Whether apply would create the epic or find it unchanged.
+    pub applied: AppliedDto,
+    /// The work-profile revision that would be frozen onto every task.
+    pub work_profile: RevisionRefDto,
+    /// The team revision the profile pins, when it prescribes one.
+    pub team_template: Option<RevisionRefDto>,
+    /// Every task, in request order.
+    pub tasks: Vec<PreviewEpicTaskDto>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4046,6 +4107,13 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         request: &ApplyEpicRequest,
     ) -> Result<AppliedEpicDto, ApiError>;
+
+    /// Judge one whole epic with the exact apply rules and commit nothing.
+    async fn preview_epic(
+        &self,
+        project_id: ProjectId,
+        request: &ApplyEpicRequest,
+    ) -> Result<PreviewEpicDto, ApiError>;
 
     /// The whole of one epic, read at one control-plane position.
     fn read_epic(
@@ -6131,6 +6199,33 @@ pub async fn apply_epic(
         state
             .applications()
             .apply_epic(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Judge one whole epic with the exact apply rules and commit nothing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics:preview", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    request_body = ApplyEpicRequest,
+    responses(
+        (status = 200, body = PreviewEpicDto, description = "Valid and applicable without writes"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "Drift or a stale revision")
+    )
+)]
+pub async fn preview_epic(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ApplyEpicRequest>,
+) -> Result<Json<PreviewEpicDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_epic(project_id, &request)
             .await?,
     ))
 }

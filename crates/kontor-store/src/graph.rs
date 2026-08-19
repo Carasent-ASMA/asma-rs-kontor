@@ -40,7 +40,7 @@ use kontor_core::repository::{
     validate_dependency_graph,
 };
 use kontor_core::spec::{ResolvedWorkProfileSnapshot, TeamTemplateRevision, WorkProfileSpec};
-use kontor_core::state::TaskState;
+use kontor_core::state::{ImportedTaskState, TaskState};
 use kontor_core::ticket::StatusConflictKind;
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -84,8 +84,8 @@ pub struct EpicTask {
     pub title: ExternalName,
     /// The module the task contends for, if any. Immutable.
     pub module: Option<ModuleKey>,
-    /// The lifecycle state a newly created task starts in.
-    pub state: TaskState,
+    /// The historical source lifecycle state this import declares.
+    pub imported_state: ImportedTaskState,
     /// The titles of the sibling tasks this one depends on.
     pub depends_on: BTreeSet<ExternalName>,
     /// The external tickets to link. Immutable as a set.
@@ -504,6 +504,28 @@ impl SqliteStore {
     /// and [`DomainError::Invalid`] for a duplicate title, a dependency naming no
     /// sibling, and a cyclic graph.
     pub fn apply_epic(&self, request: &EpicApplication<'_>) -> RepositoryResult<AppliedEpic> {
+        self.evaluate_epic(request, true)
+    }
+
+    /// Judge one whole epic with the exact apply rules, then roll every
+    /// prospective write back.
+    ///
+    /// Existing matching rows retain their durable ids in the answer. Rows that
+    /// would be created receive transaction-local ids so dependency, link and
+    /// workflow validation can run normally; the API deliberately withholds
+    /// those ids because rollback makes them non-authoritative.
+    ///
+    /// # Errors
+    /// The same conflicts and invalid graph shapes as [`Self::apply_epic`].
+    pub fn preview_epic(&self, request: &EpicApplication<'_>) -> RepositoryResult<AppliedEpic> {
+        self.evaluate_epic(request, false)
+    }
+
+    fn evaluate_epic(
+        &self,
+        request: &EpicApplication<'_>,
+        commit: bool,
+    ) -> RepositoryResult<AppliedEpic> {
         request.profile.verify()?;
         ensure_titles_unique(request.tasks)?;
         ensure_dependencies_named(request.tasks)?;
@@ -545,8 +567,7 @@ impl SqliteStore {
             outcome.links = ensure_links(&transaction, request, outcome.task_id, plan)?;
         }
 
-        transaction.commit().map_err(backend)?;
-        Ok(AppliedEpic {
+        let outcome = AppliedEpic {
             mini_project_id: mini_project.id,
             applied: epic_applied,
             revision: mini_project.revision,
@@ -555,7 +576,13 @@ impl SqliteStore {
                 .team
                 .map(|revision| (revision.template_id, revision.version)),
             tasks: applied,
-        })
+        };
+        if commit {
+            transaction.commit().map_err(backend)?;
+        } else {
+            transaction.rollback().map_err(backend)?;
+        }
+        Ok(outcome)
     }
 
     /// Read one goal inside a project.
@@ -1449,6 +1476,32 @@ fn ensure_task(
                     "already exists in this epic contending for a different module",
                 ));
             }
+            let requested_state = plan.imported_state.task_state();
+            if task.state != requested_state {
+                return Err(conflict(
+                    "epic task import state",
+                    "the task already exists in this epic with a different lifecycle state",
+                ));
+            }
+            if task
+                .imported_state
+                .is_some_and(|state| state != plan.imported_state)
+            {
+                return Err(conflict(
+                    "epic task import state",
+                    "the task already exists with a contradictory historical lifecycle fact",
+                ));
+            }
+            // A pre-v42 ready task has no provenance column. Treating that one
+            // legacy shape as imported-ready preserves compatible reapply; a
+            // legacy `done` row is not accepted as historical completion,
+            // because that would relabel native closure after the fact.
+            if task.imported_state.is_none() && plan.imported_state != ImportedTaskState::Ready {
+                return Err(conflict(
+                    "epic task import state",
+                    "an existing task without import provenance cannot be relabelled historical",
+                ));
+            }
             (task, Applied::Unchanged)
         }
         None => {
@@ -1457,16 +1510,17 @@ fn ensure_task(
                 .execute(
                     "INSERT INTO tasks
                          (id, project_id, mini_project_id, title, module_key, state,
-                          revision, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)",
+                          revision, created_at, updated_at, imported_state)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7, ?8)",
                     params![
                         id.to_string(),
                         request.project_id.to_string(),
                         mini_project_id.to_string(),
                         plan.title.as_str(),
                         plan.module.as_ref().map(ModuleKey::as_str),
-                        plan.state.as_str(),
-                        text(request.applied_at)
+                        plan.imported_state.task_state().as_str(),
+                        text(request.applied_at),
+                        plan.imported_state.as_str()
                     ],
                 )
                 .map_err(backend)?;
@@ -1477,7 +1531,8 @@ fn ensure_task(
                     mini_project_id: Some(mini_project_id),
                     title: plan.title.clone(),
                     module: plan.module.clone(),
-                    state: plan.state,
+                    state: plan.imported_state.task_state(),
+                    imported_state: Some(plan.imported_state),
                     revision: AggregateRevision::INITIAL,
                     created_at: request.applied_at,
                     updated_at: request.applied_at,
