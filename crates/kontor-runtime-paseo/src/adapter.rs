@@ -880,6 +880,16 @@ impl PaseoAdapter {
         transport: Box<dyn PaseoTransport>,
         checkpoint: PaseoCheckpoint,
     ) -> RuntimeResult<Self> {
+        // `mini_project_id` selects which durable epic may receive this
+        // plane's legacy rendering overrides. Validate that boundary even for
+        // embedders that construct an adapter without the daemon fleet loader;
+        // otherwise a Jira key remains latent until the first admission.
+        kontor_core::id::MiniProjectId::parse(config.mini_project_id.as_str()).map_err(|_| {
+            RuntimeError::Domain(DomainError::invalid(
+                "PaseoConfig.mini_project_id",
+                "must be a durable Kontor MiniProjectId",
+            ))
+        })?;
         if checkpoint.host_key != config.host_key {
             return Err(RuntimeError::Domain(DomainError::invalid(
                 "PaseoCheckpoint.host_key",
@@ -5141,11 +5151,8 @@ mod task_scope_tests {
         TaskId::parse(value).expect("a canonical task id")
     }
 
-    #[test]
-    fn one_epic_runtime_routes_each_task_to_its_own_worktree() {
-        let first = task("01a0074f-671a-7420-b395-163d160d9792");
-        let second = task("01a0074f-671d-7560-8a66-6a21972e78ae");
-        let mut scope = PaseoExecutionScope {
+    fn scope() -> PaseoExecutionScope {
+        PaseoExecutionScope {
             jira_epic_key: ExternalId::parse("ASMA-7869").expect("epic"),
             mini_project_short_title: ExternalName::parse("Kontor Operational MVP").expect("title"),
             plan_item_key: ExternalId::parse("OP-01").expect("plan item"),
@@ -5156,7 +5163,39 @@ mod task_scope_tests {
             canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-01").expect("worktree"),
             task_scopes: BTreeMap::new(),
             orchestrator_agent_id: ExternalId::parse("orchestrator").expect("agent"),
-        };
+        }
+    }
+
+    #[test]
+    fn a_direct_adapter_refuses_a_non_kontor_epic_selector() {
+        let error = PaseoAdapter::new(
+            PaseoConfig {
+                runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("runtime kind"),
+                host_key: ExternalName::parse("fixture-host").expect("host"),
+                mini_project_id: ExternalId::parse("ASMA-7869").expect("legacy selector"),
+                scope: scope(),
+                max_concurrent_sessions: 8,
+                adopted_containers: BTreeMap::new(),
+                seat_mcp: None,
+            },
+            Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
+            PaseoCheckpoint::fresh(
+                1,
+                ExternalName::parse("fixture-host").expect("checkpoint host"),
+            ),
+        )
+        .expect_err("the invalid selector is refused during composition");
+        assert!(
+            matches!(error, RuntimeError::Domain(_)),
+            "the refusal stays at the typed adapter boundary: {error:?}"
+        );
+    }
+
+    #[test]
+    fn one_epic_runtime_routes_each_task_to_its_own_worktree() {
+        let first = task("01a0074f-671a-7420-b395-163d160d9792");
+        let second = task("01a0074f-671d-7560-8a66-6a21972e78ae");
+        let mut scope = scope();
         scope.task_scopes.insert(
             first,
             PaseoTaskScope {
@@ -5266,6 +5305,40 @@ mod task_scope_tests {
             effective.require_task().expect("task").short_code.as_str(),
             "OP-01",
             "the existing visible seat spelling remains compatible"
+        );
+
+        let dynamic_task = task("01a01b8e-3ea7-74e0-a12e-5fb86d347984");
+        let dynamic_root =
+            WorkspaceRoot::parse("/repo/.worktrees/feat/ASMA-7952-kontor-remaining-admin-controls")
+                .expect("the OP-18 worktree");
+        let dynamic = ExecutionScope::for_task(
+            EpicScope {
+                mini_project_id: configured_epic,
+                external_epic_key: ExternalId::parse("legacy-epic").expect("legacy epic"),
+                short_title: ExternalName::parse("Legacy title").expect("legacy title"),
+            },
+            TaskScope {
+                task_id: dynamic_task,
+                external_issue_key: ExternalId::parse("ASMA-7952").expect("OP-18 issue"),
+                short_code: ExternalId::parse("ASMA-7952").expect("OP-18 code"),
+                worktree: dynamic_root.clone(),
+            },
+        );
+        let effective = adapter
+            .effective_scope(&dynamic)
+            .expect("a dynamic task under the configured epic");
+        assert_eq!(
+            effective.require_task().expect("task").worktree,
+            dynamic_root,
+            "a task absent from runtimes.json keeps its durable worktree"
+        );
+        assert_eq!(
+            adapter
+                .scoped_plan_item_key(&effective)
+                .expect("the dynamic plan item")
+                .as_str(),
+            "ASMA-7952",
+            "a task absent from the static overrides uses its durable issue key"
         );
     }
 }

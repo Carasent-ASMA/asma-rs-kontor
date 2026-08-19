@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "admitted": {
+    "account_profile_id": null,
+    "authorization_id": "01a01b23-1f13-7f21-b083-2441f195939e",
+    "calendar": {
+      "next_opening": null,
+      "override_id": null,
+      "policy": null,
+      "state": "unrestricted"
+    },
+    "capacity": {
+      "binding": "arming_authorization",
+      "effective": 4,
+      "remaining": {
+        "adaptive_window": 4,
+        "arming_authorization": 4,
+        "global": 16,
+        "mission": 7,
+        "project": 8,
+        "runtime": 8,
+        "runtime_sessions": 64
+      }
+    },
+    "intake_receipt_id": null,
+    "module": "shared.asma-core-helpers",
+    "ordering": {
+      "created_at": "2026-08-19T11:21:09.60267Z",
+      "priority": 0,
+      "task_id": "01a019c0-eee7-72a1-a8a7-8006a40be8c1"
+    },
+    "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+    "revision": 1,
+    "runtime_generation": 1,
+    "runtime_kind": "paseo.agent",
+    "task_id": "01a019c0-eee7-72a1-a8a7-8006a40be8c1",
+    "workflow_id": "01a019c0-eee8-7d20-aeae-a843aed92d3f",
+    "worktree": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-7676-qnr-v2-grid-column-ops-atomic-layout-question-ownership-invariant"
+  }
+}

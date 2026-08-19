@@ -506,6 +506,49 @@ fn an_admission_writes_the_run_the_lease_the_intent_and_the_decision_together() 
     );
 }
 
+/// The exact 2026-08-19 QNR admission evidence shape remains readable by the
+/// supported exact-resume lookup.
+///
+/// This fixture is intentionally copied from the immutable live event rather
+/// than regenerated from today's Rust type. It proves the legacy record itself
+/// carries no `MiniProjectId`; the incident's invariant error came from runtime
+/// fleet selection after recovery, not from decoding this evidence.
+#[test]
+fn exact_recovery_decodes_the_durable_qnr_admission_shape() {
+    let harness = Harness::new();
+    let scope = harness.scope("qnr-recovery-fixture");
+    let task = harness.task(&scope, "Recovery fixture host", TaskState::Ready);
+    let admitted = harness.admitted(&scope, task, None, None);
+    let peers = BTreeSet::new();
+    let parts = Parts::new("qnr-recovery-fixture");
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/scheduler/qnr-v2-2026-08-19-admission.json"
+    ))
+    .expect("the copied QNR admission is JSON");
+    let mut request = commit(&scope, &admitted, &peers, &parts, &scope.template, now());
+    request.evidence = CanonicalDocument::from_value(&fixture)
+        .expect("the copied QNR admission is a canonical document");
+    harness
+        .store
+        .admit_candidate(&request)
+        .expect("the fixture-hosting admission commits");
+
+    let recovered = harness
+        .store
+        .recoverable_admission(scope.project, parts.team_run, parts.agent_run)
+        .expect("the immutable event is readable")
+        .expect("the exact run pair resolves");
+    assert_eq!(
+        recovered.admitted.task_id,
+        TaskId::parse("01a019c0-eee7-72a1-a8a7-8006a40be8c1").expect("the durable task id")
+    );
+    assert_eq!(recovered.launch_key, parts.launch_key);
+    assert_eq!(
+        recovered.admitted.runtime_kind,
+        RuntimeKindKey::parse("paseo.agent").expect("the durable runtime kind")
+    );
+}
+
 #[test]
 fn a_refused_admission_writes_nothing_at_all() {
     let harness = Harness::new();

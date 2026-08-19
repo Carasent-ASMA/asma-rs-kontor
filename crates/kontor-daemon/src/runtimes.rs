@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
-    ExternalId, ExternalName, RoleSlotId, RuntimeKindKey, TaskId, TopologyNodeId,
+    ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeKindKey, TaskId, TopologyNodeId,
 };
 use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::workspace::WorkspaceRoot;
@@ -450,10 +450,16 @@ fn compose_paseo(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, FleetError>>()?;
+    // This value selects the one durable epic that receives the legacy display
+    // overrides below. Keeping it as a merely-open external id lets a Jira key
+    // compose successfully and then fail inside admission the first time the
+    // adapter compares it with an actual Kontor epic id.
+    let mini_project_id =
+        MiniProjectId::parse(&setting.mini_project_id).map_err(|_| refuse("mini_project_id"))?;
     let config = PaseoConfig {
         runtime_kind: runtime_kind.clone(),
         host_key: host_key.clone(),
-        mini_project_id: ExternalId::parse(&setting.mini_project_id)
+        mini_project_id: ExternalId::parse(&mini_project_id.to_string())
             .map_err(|_| refuse("mini_project_id"))?,
         scope: PaseoExecutionScope {
             jira_epic_key: ExternalId::parse(&setting.jira_epic_key)
@@ -512,7 +518,7 @@ mod tests {
         RuntimeSetting::Paseo(PaseoSetting {
             runtime_kind: runtime_kind.to_owned(),
             host_key: "paseo-host".to_owned(),
-            mini_project_id: "mini-1".to_owned(),
+            mini_project_id: "01890000-0000-7000-8000-000000000001".to_owned(),
             jira_epic_key: "ASMA-1".to_owned(),
             mini_project_short_title: "Epic".to_owned(),
             plan_item_key: "KON-MVP-15".to_owned(),
@@ -671,12 +677,42 @@ mod tests {
         );
     }
 
+    /// A configured plane is selected by Kontor's durable epic identity.
+    ///
+    /// The live ASMA-7869 document historically wrote its Jira key here. That
+    /// is a valid [`ExternalId`], so composition accepted it and the first
+    /// dynamic admission failed much later when the adapter needed a
+    /// [`MiniProjectId`]. Refuse that latent mismatch while loading the fleet,
+    /// before any scheduler call can commit or contact a runtime.
+    #[test]
+    fn a_paseo_plane_refuses_a_jira_key_as_its_kontor_epic_identity() {
+        let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
+        setting.mini_project_id = "ASMA-7869".to_owned();
+        let settings = RuntimeSettings {
+            schema_version: RUNTIMES_SCHEMA,
+            runtimes: vec![RuntimeSetting::Paseo(setting)],
+        };
+
+        let error = build_registry(&settings, None)
+            .expect_err("a Jira key is not a durable Kontor MiniProjectId");
+        assert!(
+            matches!(
+                error,
+                FleetError::Invalid {
+                    rule: "mini_project_id",
+                    ..
+                }
+            ),
+            "the refusal names the misconfigured identity field: {error:?}"
+        );
+    }
+
     #[test]
     fn a_paseo_host_target_is_redacted_in_debug() {
         let setting = PaseoSetting {
             runtime_kind: "paseo.agent".to_owned(),
             host_key: "paseo-host".to_owned(),
-            mini_project_id: "mini-1".to_owned(),
+            mini_project_id: "01890000-0000-7000-8000-000000000001".to_owned(),
             jira_epic_key: "ASMA-1".to_owned(),
             mini_project_short_title: "Epic".to_owned(),
             plan_item_key: "KON-MVP-15".to_owned(),
