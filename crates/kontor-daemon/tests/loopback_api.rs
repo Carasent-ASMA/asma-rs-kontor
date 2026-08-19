@@ -3647,6 +3647,14 @@ fn well_formed_body(uri: &str) -> serde_json::Value {
         })
     } else if uri.ends_with("scheduler:start") {
         serde_json::json!({"plan_hash": "0".repeat(64)})
+    } else if uri.ends_with("scheduler:resume") {
+        serde_json::json!({
+            "expected_revision": 1,
+            "admissions": [{
+                "team_run_id": TeamRunId::generate().to_string(),
+                "agent_run_id": kontor_core::id::AgentRunId::generate().to_string(),
+            }],
+        })
     } else if uri.ends_with("lifecycle") {
         serde_json::json!({"action": "block", "expected_revision": 1, "reason": "x"})
     } else if uri.ends_with("projects:ensure") {
@@ -3676,6 +3684,7 @@ async fn every_application_operation_refuses_an_unauthenticated_or_under_privile
         format!("/v1/projects/{project}/epics/{epic}/execution:disarm"),
         format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
         format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
         format!("/v1/projects/{project}/epics/{epic}/lifecycle"),
     ];
     for uri in &mutations {
@@ -3734,6 +3743,7 @@ async fn the_contract_document_lists_every_application_route_and_no_unsafe_surfa
         "/v1/projects/{project_id}/epics/{epic_id}/execution:disarm",
         "/v1/projects/{project_id}/epics/{epic_id}/scheduler:plan",
         "/v1/projects/{project_id}/epics/{epic_id}/scheduler:start",
+        "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume",
         "/v1/projects/{project_id}/epics/{epic_id}/lifecycle",
         "/v1/projects/{project_id}/tasks/{task_id}/context:resolve",
         "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/record",
@@ -3876,7 +3886,7 @@ fn collect_property_names(schemas: &serde_json::Value, into: &mut Vec<String>) {
 }
 
 #[tokio::test]
-async fn starting_a_named_plan_creates_one_seat_through_admission_and_reuses_it_on_replay() {
+async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key() {
     let world = World::open_empty().await;
     world.script(HISTORY_LIVE);
     world.daemon.reconcile().await;
@@ -4005,17 +4015,87 @@ async fn starting_a_named_plan_creates_one_seat_through_admission_and_reuses_it_
         "the failed native call preserves exactly one durable admission"
     );
 
-    // The same scheduler command resumes that admission. A fresh plan would
-    // reject it as already in flight, so recovery must use the stored decision.
+    let preserved = &after_failure.json()["tasks"][0]["team_runs"][0];
+    let preserved_team_run = preserved["team_run_id"]
+        .as_str()
+        .expect("a team run id")
+        .to_owned();
+    let preserved_agent_run = preserved["seats"][0]["agent_run_id"]
+        .as_str()
+        .expect("an agent run id")
+        .to_owned();
+
+    // Exact recovery is a set, not a multiset: naming one durable admission
+    // twice is a contradictory command and reaches no runtime.
+    let duplicate = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "admissions": [
+                {"team_run_id": preserved_team_run, "agent_run_id": preserved_agent_run},
+                {"team_run_id": preserved_team_run, "agent_run_id": preserved_agent_run},
+            ],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resume-duplicate")
+    .send(&world)
+    .await;
+    assert_eq!(duplicate.status, 400, "{}", duplicate.body);
+
+    // Nor may a caller splice the real AgentRun into another TeamRun. The
+    // supplied pair is the address, and both halves have to agree with the
+    // immutable admission event before a native effect is attempted.
+    let drifted = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "admissions": [{
+                "team_run_id": TeamRunId::generate().to_string(),
+                "agent_run_id": preserved_agent_run,
+            }],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resume-drifted")
+    .send(&world)
+    .await;
+    assert_eq!(drifted.status, 404, "{}", drifted.body);
+
+    let stale_revision = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision + 1,
+            "admissions": [{
+                "team_run_id": preserved_team_run,
+                "agent_run_id": preserved_agent_run,
+            }],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resume-stale-revision")
+    .send(&world)
+    .await;
+    assert_eq!(stale_revision.status, 409, "{}", stale_revision.body);
+
+    // The caller no longer has `start-run`, the original scheduler key. The
+    // exact pair is sufficient because Kontor resolves its immutable launch
+    // intent internally; a fresh plan would correctly reject it as in flight.
     world.fake.verifying_placement_at(
         kontor_runtime::workspace::WorkspaceRoot::parse("/w/started-epic/0").expect("a valid root"),
     );
     let started = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
-        &serde_json::json!({"plan_hash": plan_hash}),
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "admissions": [{
+                "team_run_id": preserved_team_run,
+                "agent_run_id": preserved_agent_run,
+            }],
+        }),
     )
     .signed_as(&world, "operator")
-    .with_key("start-run")
+    .with_key("resume-exact")
     .send(&world)
     .await;
     assert_eq!(started.status, 200, "{}", started.body);
@@ -4035,7 +4115,7 @@ async fn starting_a_named_plan_creates_one_seat_through_admission_and_reuses_it_
     assert_eq!(slots.len(), seats.len(), "no role slot is seated twice");
     for seat in &seats {
         assert_eq!(seat["applied"], "created");
-        assert_eq!(seat["team_run_id"], seats[0]["team_run_id"], "one team run");
+        assert_eq!(seat["team_run_id"], preserved_team_run, "the same team run");
     }
     let agent_run = seats[0]["agent_run_id"]
         .as_str()
@@ -4045,6 +4125,53 @@ async fn starting_a_named_plan_creates_one_seat_through_admission_and_reuses_it_
         .as_str()
         .expect("a team run id")
         .to_owned();
+    assert_eq!(agent_run, preserved_agent_run, "the same first AgentRun");
+    assert_eq!(team_run, preserved_team_run, "the same TeamRun");
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "admissions": [{
+                "team_run_id": preserved_team_run,
+                "agent_run_id": preserved_agent_run,
+            }],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resume-exact")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert!(
+        replayed.json()["started"]
+            .as_array()
+            .expect("seats")
+            .iter()
+            .all(|seat| seat["applied"] == "unchanged"),
+        "a replay reuses every preserved seat: {}",
+        replayed.body
+    );
+
+    // Once attached, the pair is no longer an unbound recovery candidate. A
+    // different command key must not turn the exact-resume surface into a
+    // second launch authority.
+    let already_resumed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "admissions": [{
+                "team_run_id": preserved_team_run,
+                "agent_run_id": preserved_agent_run,
+            }],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resume-again-under-another-key")
+    .send(&world)
+    .await;
+    assert_eq!(already_resumed.status, 409, "{}", already_resumed.body);
 
     // The seat is a real, addressable session — created by admission, never by a
     // public session-create route, because there is no such route.
@@ -16309,6 +16436,166 @@ async fn a_later_core_team_edit_leaves_a_promoted_epic_frozen() {
         "the explicit upgrade did not add the new role: {}",
         upgraded.body
     );
+}
+
+/// An epic imported before Core Team publication has no frozen roster row.
+/// Its explicit preview/apply path must therefore bootstrap that first pin,
+/// without replacing the already-durable ESW/ECP or duplicating leadership.
+#[tokio::test]
+async fn a_legacy_epic_bootstraps_one_frozen_roster_and_one_leadership_pair() {
+    let composed = compose_realm("/tmp/kontor-op17-bootstrap-roster").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", false)]),
+    )
+    .await;
+
+    let ensured = Call::post(
+        format!("/v1/projects/{project}/topology:ensure"),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": epic},
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("bootstrap-roster-topology")
+    .send(world)
+    .await;
+    assert_eq!(ensured.status, 200, "{}", ensured.body);
+    let before: std::collections::BTreeMap<String, String> = ensured.json()["projection"]["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .iter()
+        .filter_map(|node| {
+            Some((
+                node["kind_key"].as_str()?.to_owned(),
+                node["topology_node_id"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    assert!(before.contains_key("ESW"), "{}", ensured.body);
+    assert!(before.contains_key("ECP"), "{}", ensured.body);
+
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-preview"),
+        &serde_json::json!({
+            "target": {"id": SEEDED_CATALOG, "version": 1},
+        }),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let preview = previewed.json();
+    let effects = preview["effects"].as_array().expect("effects");
+    for role in ["lsa", "tpm"] {
+        assert!(
+            effects.iter().any(|effect| {
+                effect["subject"]
+                    .as_str()
+                    .is_some_and(|subject| subject.contains(role))
+                    && effect["effect"] == "seat_created"
+            }),
+            "the bootstrap preview must name the missing {role} seat: {}",
+            previewed.body
+        );
+    }
+
+    let body = serde_json::json!({
+        "preview_hash": preview["preview_hash"].as_str().expect("a preview hash"),
+        "expected_revision": 1,
+    });
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("bootstrap-roster-apply")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["receipt"]["applied"], "created");
+
+    let leadership: Vec<(String, String)> = applied.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core team seats")
+        .iter()
+        .filter_map(|seat| {
+            let code = seat["role"]["role_code"].as_str()?;
+            (code == "LSA" || code == "TPM").then(|| {
+                (
+                    code.to_owned(),
+                    seat["seat_binding_id"]
+                        .as_str()
+                        .expect("required leadership is materially seated")
+                        .to_owned(),
+                )
+            })
+        })
+        .collect();
+    assert_eq!(leadership.len(), 2, "{}", applied.body);
+    assert_ne!(
+        leadership[0].1, leadership[1].1,
+        "distinct leadership seats"
+    );
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("bootstrap-roster-apply")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    let replayed_leadership: Vec<String> = replayed.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core team seats")
+        .iter()
+        .filter(|seat| seat["role"]["role_code"] == "LSA" || seat["role"]["role_code"] == "TPM")
+        .map(|seat| {
+            seat["seat_binding_id"]
+                .as_str()
+                .expect("leadership stays seated")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        replayed_leadership,
+        leadership
+            .iter()
+            .map(|(_, id)| id.clone())
+            .collect::<Vec<_>>(),
+        "a replay must not duplicate or replace leadership: {}",
+        replayed.body
+    );
+
+    let inspected = Call::get(format!(
+        "/v1/projects/{project}/topology:inspect?epic_id={epic}"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(inspected.status, 200, "{}", inspected.body);
+    let after: std::collections::BTreeMap<String, String> = inspected.json()["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .iter()
+        .filter_map(|node| {
+            Some((
+                node["kind_key"].as_str()?.to_owned(),
+                node["topology_node_id"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    assert_eq!(after.get("ESW"), before.get("ESW"), "the ESW is preserved");
+    assert_eq!(after.get("ECP"), before.get("ECP"), "the ECP is preserved");
 }
 
 // ---------------------------------------------------------------------------

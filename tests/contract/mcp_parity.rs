@@ -531,7 +531,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        121,
+        122,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -541,7 +541,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        122,
+        123,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -593,6 +593,7 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_account_select", CallerTier::Admin),
         ("kontor_scheduler_plan", CallerTier::Operator),
         ("kontor_scheduler_start", CallerTier::Operator),
+        ("kontor_scheduler_resume", CallerTier::Operator),
         ("kontor_lifecycle_transition", CallerTier::Operator),
         ("kontor_context_resolve", CallerTier::Operator),
         ("kontor_gate_record", CallerTier::Operator),

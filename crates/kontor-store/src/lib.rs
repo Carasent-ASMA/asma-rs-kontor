@@ -75,7 +75,7 @@ pub use reconciliation::{
 };
 pub use scheduler::{
     AdmissionCommit, AdmissionOutcome, LeaseEventKind, LeaseKind, LeaseRelease, LeaseRenewal,
-    RecordedRejection, ResourceLease,
+    RecordedRejection, RecoverableAdmission, ResourceLease,
 };
 pub use teams::{StoredTeamDraft, StoredTeamRevision, StoredTeamsProjection};
 

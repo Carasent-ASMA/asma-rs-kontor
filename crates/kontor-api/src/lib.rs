@@ -563,6 +563,10 @@ pub fn router(state: ApiState) -> Router {
             post(applications::start),
         )
         .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume",
+            post(applications::resume_admissions),
+        )
+        .route(
             "/v1/projects/{project_id}/epics/{epic_id}/lifecycle",
             post(applications::lifecycle),
         )

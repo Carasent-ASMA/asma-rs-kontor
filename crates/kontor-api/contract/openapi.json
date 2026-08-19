@@ -3156,6 +3156,84 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Resume exact queued, unbound admissions without the original scheduler key.",
+        "operationId": "resume_admissions",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable recovery key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeAdmissionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchedulerResumeDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is empty or duplicates an identity"
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "Revision or admission state drifted"
+          },
+          "503": {
+            "description": "Startup reconciliation has not finished"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/scheduler:start": {
       "post": {
         "tags": [
@@ -7076,6 +7154,24 @@
           }
         },
         "additionalProperties": false
+      },
+      "AdmissionResumeRefDto": {
+        "type": "object",
+        "description": "One exact durable admission a caller asks Kontor to resume.\n\nBoth identities are required. Kontor resolves the original launch receipt\ninternally; callers neither know nor recreate its idempotency key.",
+        "required": [
+          "team_run_id",
+          "agent_run_id"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The preserved first AgentRun committed with that admission."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "The preserved TeamRun envelope."
+          }
+        }
       },
       "AdvanceCompletionRequest": {
         "type": "object",
@@ -12381,6 +12477,29 @@
           }
         }
       },
+      "ResumeAdmissionsRequest": {
+        "type": "object",
+        "description": "What `scheduler:resume` is asked for.",
+        "required": [
+          "expected_revision",
+          "admissions"
+        ],
+        "properties": {
+          "admissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdmissionResumeRefDto"
+            },
+            "description": "Exact queued admissions to resume. This is a set: duplicate ids refuse\nthe whole request before a runtime is contacted."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epic revision the caller observed before authorizing recovery.",
+            "minimum": 0
+          }
+        }
+      },
       "RevisionRefDto": {
         "type": "object",
         "description": "One immutable specification revision, as a caller pins it.",
@@ -12912,6 +13031,32 @@
             "type": "string",
             "format": "date-time",
             "description": "When it was taken."
+          }
+        }
+      },
+      "SchedulerResumeDto": {
+        "type": "object",
+        "description": "What exact admission recovery produced.",
+        "required": [
+          "realm_id",
+          "started",
+          "receipt"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the recovery ran in."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The authority-bearing recovery receipt."
+          },
+          "started": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StartedSeatDto"
+            },
+            "description": "The preserved seats now attached to their runtime."
           }
         }
       },

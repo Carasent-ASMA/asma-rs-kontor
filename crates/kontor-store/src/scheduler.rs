@@ -82,7 +82,7 @@ use kontor_core::DomainError;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, CommandReceiptId,
     ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId, ResourceLeaseId, TaskId,
-    Timestamp,
+    TeamRunId, Timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceipt};
 use kontor_core::repository::{
@@ -388,6 +388,20 @@ struct RejectionDocument {
     evidence: Vec<RejectionEvidence>,
 }
 
+/// The immutable admission facts required to resume one queued native launch.
+///
+/// The public recovery operation addresses a durable TeamRun/AgentRun pair. The
+/// launch key stays internal: it is recovered from the receipt that the original
+/// admission event cites, so losing the scheduler command key cannot force a
+/// caller to guess or recreate any identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverableAdmission {
+    /// The scheduler decision committed with the run.
+    pub admitted: AdmittedCandidate,
+    /// The original per-task launch key whose replay preserves the AgentRun.
+    pub launch_key: IdempotencyKey,
+}
+
 // ---------------------------------------------------------------------------
 // Reads for the snapshot
 // ---------------------------------------------------------------------------
@@ -428,6 +442,53 @@ impl SqliteStore {
         evidence
             .map(|value| from_json::<StoredAdmission>(&value).map(|stored| stored.admitted))
             .transpose()
+    }
+
+    /// Resolve one exact queued admission through its immutable event.
+    ///
+    /// Both ids participate in the lookup. A real AgentRun paired with a
+    /// different TeamRun therefore reads as absent instead of borrowing the
+    /// original launch authority.
+    pub fn recoverable_admission(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        agent_run_id: AgentRunId,
+    ) -> RepositoryResult<Option<RecoverableAdmission>> {
+        #[derive(serde::Deserialize)]
+        struct StoredAdmission {
+            admitted: AdmittedCandidate,
+        }
+
+        let row: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT event.evidence, receipt.idempotency_key
+                 FROM scheduler_admission_events AS event
+                 JOIN command_receipts AS receipt
+                   ON receipt.project_id = event.project_id
+                  AND receipt.id = event.launch_receipt_id
+                 WHERE event.project_id = ?1
+                   AND event.decision = 'admitted'
+                   AND event.team_run_id = ?2
+                   AND event.agent_run_id = ?3",
+                params![
+                    project_id.to_string(),
+                    team_run_id.to_string(),
+                    agent_run_id.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|(evidence, launch_key)| {
+            let stored = from_json::<StoredAdmission>(&evidence)?;
+            Ok(RecoverableAdmission {
+                admitted: stored.admitted,
+                launch_key: IdempotencyKey::parse(&launch_key)?,
+            })
+        })
+        .transpose()
     }
 
     /// Every module currently claimed by an unlapsed lease, across the Realm.

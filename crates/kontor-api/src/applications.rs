@@ -30,9 +30,10 @@
 //! There is no route that creates a native session, names a runtime endpoint,
 //! carries a credential value, or writes a store row the domain did not decide
 //! on. A seat exists because the scheduler admitted work and the runtime agreed
-//! to fill it; `scheduler:start` is the only operation in this module that
-//! reaches a runtime at all, and it reaches it through the same admission path a
-//! background scheduler would.
+//! to fill it; `scheduler:start` and its exact recovery companion
+//! `scheduler:resume` are the only operations in this module that reach a
+//! runtime, and both use the same durable admission path a background scheduler
+//! would.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -45,7 +46,7 @@ use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
     ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
     ProjectId, QuickSessionId, RoleCatalogId, RoleCode, RuntimeKindKey, SeatBindingId, SpecVersion,
-    TaskId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
+    TaskId, TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
 use kontor_core::spec::{
     CodeCategory, CodeLifecycle, EpicPresence, RoleSegment, ShareabilityClass,
@@ -2696,6 +2697,43 @@ pub struct SchedulerStartDto {
     pub blocked: Vec<BlockedTaskDto>,
 }
 
+/// One exact durable admission a caller asks Kontor to resume.
+///
+/// Both identities are required. Kontor resolves the original launch receipt
+/// internally; callers neither know nor recreate its idempotency key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct AdmissionResumeRefDto {
+    /// The preserved TeamRun envelope.
+    #[schema(value_type = String)]
+    pub team_run_id: TeamRunId,
+    /// The preserved first AgentRun committed with that admission.
+    #[schema(value_type = String)]
+    pub agent_run_id: AgentRunId,
+}
+
+/// What `scheduler:resume` is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct ResumeAdmissionsRequest {
+    /// The epic revision the caller observed before authorizing recovery.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact queued admissions to resume. This is a set: duplicate ids refuse
+    /// the whole request before a runtime is contacted.
+    pub admissions: Vec<AdmissionResumeRefDto>,
+}
+
+/// What exact admission recovery produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SchedulerResumeDto {
+    /// The Realm the recovery ran in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The preserved seats now attached to their runtime.
+    pub started: Vec<StartedSeatDto>,
+    /// The authority-bearing recovery receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -4178,6 +4216,15 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &StartRequest,
     ) -> Result<SchedulerStartDto, ApiError>;
+
+    /// Resume exact queued admissions through their durable launch receipts.
+    async fn resume_admissions(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &ResumeAdmissionsRequest,
+    ) -> Result<SchedulerResumeDto, ApiError>;
 
     /// Move a task or the epic through one legal, evidenced transition.
     async fn lifecycle(
@@ -6388,6 +6435,40 @@ pub async fn start(
         state
             .applications()
             .start(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Resume exact queued, unbound admissions without the original scheduler key.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable recovery key")
+    ),
+    request_body = ResumeAdmissionsRequest,
+    responses(
+        (status = 200, body = SchedulerResumeDto),
+        (status = 400, description = "The request is empty or duplicates an identity"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "Revision or admission state drifted"),
+        (status = 503, description = "Startup reconciliation has not finished")
+    )
+)]
+pub async fn resume_admissions(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ResumeAdmissionsRequest>,
+) -> Result<Json<SchedulerResumeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let (project_id, epic_id, key) = scope(&state, &project_id, &epic_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .resume_admissions(&key, project_id, epic_id, &request)
             .await?,
     ))
 }

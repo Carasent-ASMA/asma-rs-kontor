@@ -1050,6 +1050,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume exact queued, unbound admissions without the original scheduler key. */
+        post: operations["resume_admissions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/scheduler:start": {
         parameters: {
             query?: never;
@@ -2320,6 +2337,18 @@ export interface components {
              * @description Where a fresh window starts.
              */
             initial: number;
+        };
+        /**
+         * @description One exact durable admission a caller asks Kontor to resume.
+         *
+         *     Both identities are required. Kontor resolves the original launch receipt
+         *     internally; callers neither know nor recreate its idempotency key.
+         */
+        AdmissionResumeRefDto: {
+            /** @description The preserved first AgentRun committed with that admission. */
+            agent_run_id: string;
+            /** @description The preserved TeamRun envelope. */
+            team_run_id: string;
         };
         /** @description Advance one epic's completion. */
         AdvanceCompletionRequest: {
@@ -4885,6 +4914,19 @@ export interface components {
             /** @description The catalog's standard title for that code. */
             standard_title: string;
         };
+        /** @description What `scheduler:resume` is asked for. */
+        ResumeAdmissionsRequest: {
+            /**
+             * @description Exact queued admissions to resume. This is a set: duplicate ids refuse
+             *     the whole request before a runtime is contacted.
+             */
+            admissions: components["schemas"]["AdmissionResumeRefDto"][];
+            /**
+             * Format: int64
+             * @description The epic revision the caller observed before authorizing recovery.
+             */
+            expected_revision: number;
+        };
         /** @description One immutable specification revision, as a caller pins it. */
         RevisionRefDto: {
             /** @description The specification's stable id. */
@@ -5158,6 +5200,15 @@ export interface components {
              * @description When it was taken.
              */
             taken_at: string;
+        };
+        /** @description What exact admission recovery produced. */
+        SchedulerResumeDto: {
+            /** @description The Realm the recovery ran in. */
+            realm_id: string;
+            /** @description The authority-bearing recovery receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The preserved seats now attached to their runtime. */
+            started: components["schemas"]["StartedSeatDto"][];
         };
         /** @description What starting a plan produced. */
         SchedulerStartDto: {
@@ -9013,6 +9064,76 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resume_admissions: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable recovery key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResumeAdmissionsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulerResumeDto"];
+                };
+            };
+            /** @description The request is empty or duplicates an identity */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or admission state drifted */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Startup reconciliation has not finished */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
