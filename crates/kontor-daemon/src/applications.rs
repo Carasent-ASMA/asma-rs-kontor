@@ -11931,6 +11931,14 @@ impl ApplicationOperations for Services {
                     }
                 }
                 self.mark_started_tasks_in_progress(project_id, &started)?;
+                // A previous partial admission may have let an already-bound
+                // predecessor settle while a downstream seat was still
+                // unbound. Its handoff is durable and deliberately
+                // undelivered. Once this exact replay finishes binding the
+                // missing seat, complete that existing dispatch now; waiting
+                // for a daemon restart would leave a successfully recovered
+                // team idle indefinitely.
+                self.retry_undelivered_dispatches().await?;
                 state.signals().appended();
                 return Ok(SchedulerStartDto {
                     realm_id: state.realm_id(),
