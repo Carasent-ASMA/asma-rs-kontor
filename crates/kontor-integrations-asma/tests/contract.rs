@@ -2027,3 +2027,85 @@ fn a_draft_ticket_reaches_in_development_through_ready_for_development() {
         "the hop uses transition 15, the one this observation offered"
     );
 }
+
+/// A staged hop's request names the status it is actually going to.
+///
+/// `destination` and `transition` travel together in one document, so a request
+/// that named the milestone while carrying a route to the intermediate would be
+/// internally inconsistent — it tells the connector to reach `10214` and hands it
+/// the transition that lands on `10213`. That inconsistency is how a hop becomes
+/// the false-success receipt this checkpoint exists to prevent, and it is
+/// asserted on the bytes that actually cross the boundary.
+#[tokio::test]
+#[cfg(unix)]
+async fn a_staged_hop_request_declares_the_hop_not_the_milestone() {
+    let (workflow, field) = projects().remove(0);
+    let spec = workflow.spec();
+    let target = target_of(spec, IMPLEMENTATION_ACTIVE);
+    let hop = spec
+        .reopen
+        .clone()
+        .expect("the fixture declares a reopen selector");
+    let standing = spec
+        .inbound_compatible
+        .iter()
+        .find(|status| status.status_id != hop.status_id && status.status_id != target.status_id)
+        .cloned()
+        .expect("the fixture declares a third inbound status");
+
+    let link_id = TicketLinkId::generate();
+    let projection = projection(&field, Vec::new());
+    let facts = implementing();
+    let key = idempotency();
+    let fake = FakeAsma::answering(&response_for(
+        JiraOperation::DryRun,
+        JiraOutcome::Planned,
+        &hop,
+        None,
+    ));
+    let asma = fake.resolved();
+    let delegation = delegate(&asma, &workflow, &field, &projection, &facts, link_id, &key);
+
+    // Exactly what `reconcile` produces for a target two moves away: the plan
+    // still names the milestone, the attempt goes to the declared intermediate.
+    let plan = TransitionPlan {
+        milestone: milestone(IMPLEMENTATION_ACTIVE),
+        target: target.clone(),
+        transition: Some(SelectedTransition {
+            transition_id: external("15"),
+            to: hop.clone(),
+        }),
+        assignment: None,
+        assignment_prerequisite: false,
+    };
+    assert!(plan.is_staged_hop(), "the fixture plan is a hop");
+
+    let seen = observed(
+        link_id,
+        &standing,
+        Some(&principal().account_id),
+        vec![route("15", &hop)],
+    );
+    delegation
+        .dry_run(&seen, &plan)
+        .await
+        .expect("the offered route is planned");
+
+    let sent: serde_json::Value =
+        serde_json::from_str(&fake.stdin()).expect("the recorded request is one JSON document");
+    assert_eq!(
+        sent["destination"]["status_id"],
+        serde_json::Value::from(hop.status_id.as_str()),
+        "the request declares the hop it is performing"
+    );
+    assert_eq!(
+        sent["transition"]["to_status_id"],
+        serde_json::Value::from(hop.status_id.as_str()),
+        "the route and the declared destination agree"
+    );
+    assert_ne!(
+        sent["destination"]["status_id"],
+        serde_json::Value::from(target.status_id.as_str()),
+        "a hop never claims the milestone it has not reached"
+    );
+}

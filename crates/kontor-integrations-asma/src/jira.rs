@@ -1161,7 +1161,13 @@ impl TicketDelegation<'_> {
                 observation_hash: Some(observed.observation.payload_hash.clone()),
             }),
             field_writes: compile_field_writes(self.projection, self.field_spec)?,
-            destination: Some(plan.target.clone()),
+            // The destination this request declares travels with the transition
+            // below it, so it is *this attempt's* destination rather than the
+            // milestone. A staged hop that declared the milestone here would hand
+            // the connector a route to one status while naming another — the
+            // internally inconsistent request that turns a hop into a
+            // false-success receipt.
+            destination: Some(plan.destination().clone()),
             ownership_action,
             transition,
             authorized_apply: authority.is_some(),
