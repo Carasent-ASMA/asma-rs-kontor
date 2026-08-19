@@ -13534,7 +13534,7 @@
       },
       "StreamRefusalDto": {
         "type": "object",
-        "description": "A frame the live-content stream emits instead of an item when the timeline can\nno longer be followed.",
+        "description": "A frame the live-content stream emits instead of an item when the timeline can\nno longer be followed or its runtime can no longer be reached.",
         "required": [
           "realm_id",
           "code",
@@ -13543,7 +13543,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Always `timeline_refetch_required`."
+            "description": "The stable refusal code."
           },
           "realm_id": {
             "type": "string",

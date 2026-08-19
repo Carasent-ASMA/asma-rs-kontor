@@ -32,6 +32,7 @@
 mod harness;
 
 use std::collections::BTreeSet;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
@@ -39,12 +40,14 @@ use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
     AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ContentHash, ExternalName,
-    MiniProjectId, ProjectId, QuickSessionId, SeatBindingId, TaskId, TeamRunId, TopologyNodeId,
+    MiniProjectId, ProjectId, QuickSessionId, SeatBindingId, TaskId, TeamRunId, TicketLinkId,
+    TopologyNodeId,
 };
 use kontor_core::repository::{
-    NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunClosure,
-    RunRepository, SourceDisposition, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
-    StoredQuickSession, TopologyRepository, WorkflowRepository,
+    NewObservation, NewProject, NewRuntimeEvent, NewTask, NewTaskWorkflow, NewTicketLink,
+    ProjectRepository, RealmRepository, RunClosure, RunRepository, SourceDisposition,
+    StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession, TicketRepository,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::state::{
     Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
@@ -387,7 +390,7 @@ async fn every_answer_a_receipt_and_every_frame_name_the_realm() {
         .to_owned();
     let stream = Call::get(format!("/v1/sessions/{run}/stream?after={anchor}"))
         .signed_as(&world, "observer")
-        .send(&world)
+        .send_stream(&world, 2, std::time::Duration::from_millis(100))
         .await;
     let content = stream.frames();
     assert!(!content.is_empty(), "the live stream delivered content");
@@ -1006,7 +1009,7 @@ async fn the_timeline_and_the_strict_after_stream_have_no_gap_or_duplicate() {
 
     let stream = Call::get(format!("/v1/sessions/{run}/stream?after={anchor}"))
         .signed_as(&world, "observer")
-        .send(&world)
+        .send_stream(&world, 2, std::time::Duration::from_millis(100))
         .await;
     let live: Vec<u64> = stream
         .frames()
@@ -1087,7 +1090,7 @@ async fn an_epoch_change_ends_the_stream_with_a_refetch() {
 
     let stream = Call::get(format!("/v1/sessions/{run}/stream?after={anchor}"))
         .signed_as(&world, "observer")
-        .send(&world)
+        .send_stream(&world, 2, std::time::Duration::from_millis(100))
         .await;
     let frames = stream.frames();
     let (event, _, data) = frames.last().expect("the stream said something");
@@ -1107,6 +1110,40 @@ async fn an_epoch_change_ends_the_stream_with_a_refetch() {
             .count()
             < 2,
         "nothing past the break is delivered: {frames:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_caught_up_live_stream_waits_instead_of_claiming_it_ended() {
+    let world = World::open().await;
+    world.script(
+        r#"{
+          "history": [
+            {"kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:01:00Z", "body": "one"}
+          ],
+          "live": []
+        }"#,
+    );
+    let (run, _) = world.launch().await;
+    let timeline = Call::get(format!("/v1/sessions/{run}/timeline"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let anchor = timeline.json()["anchor"]
+        .as_str()
+        .expect("an anchor")
+        .to_owned();
+
+    let began = std::time::Instant::now();
+    let stream = Call::get(format!("/v1/sessions/{run}/stream?after={anchor}"))
+        .signed_as(&world, "observer")
+        .send_stream(&world, 1, std::time::Duration::from_millis(150))
+        .await;
+
+    assert!(stream.frames().is_empty());
+    assert!(
+        began.elapsed() >= std::time::Duration::from_millis(125),
+        "the bounded reader, not an immediately closed server stream, ended the wait"
     );
 }
 
@@ -1488,7 +1525,7 @@ async fn a_configured_adapter_backs_every_session_route() {
 
     let stream = Call::get(format!("/v1/sessions/{run}/stream?after={anchor}"))
         .signed_as(&world, "observer")
-        .send(&world)
+        .send_stream(&world, 1, std::time::Duration::from_millis(100))
         .await;
     assert_eq!(stream.status, 200);
 
@@ -4094,6 +4131,153 @@ async fn ticket_reconciliation_is_a_typed_dry_run_that_names_its_plan() {
     assert_eq!(
         applied.json()["projection_hash"],
         plan.json()["projection_hash"]
+    );
+}
+
+#[tokio::test]
+async fn a_configured_jira_boundary_plans_applies_and_refetches_one_closed_ticket() {
+    let connector_dir = tempfile::TempDir::new().expect("a connector directory");
+    let executable = connector_dir.path().join("asma-jira-fixture");
+    let external_state = connector_dir.path().join("closed");
+    let script = format!(
+        r#"#!/usr/bin/env python3
+import json, os, sys
+request = json.load(sys.stdin)
+state = {state:?}
+closed = os.path.exists(state)
+def observation(is_closed):
+    return {{
+        "status_id": "10228" if is_closed else "10214",
+        "status_name": "Closed" if is_closed else "In Development",
+        "status_category": "Done" if is_closed else "In Progress",
+        "issue_type": "User Story",
+        "assignee_account_id": "acct-igor",
+        "assignee_display": "Igor",
+        "update_token": "2" if is_closed else "1",
+        "observation_hash": ("b" if is_closed else "a") * 64,
+    }}
+operation = request["operation"]
+before = observation(closed)
+response = {{
+    "schema_version": 1,
+    "operation": operation,
+    "effective_operation": operation,
+    "issue_key": request["issue_key"],
+    "idempotency_key": request["idempotency_key"],
+    "intent_hash": request.get("intent_hash"),
+    "requested_at": "2026-08-19T10:00:00Z",
+    "completed_at": "2026-08-19T10:00:01Z",
+    "outcome": "observed" if operation in ("observe", "refetch") else "planned",
+    "observation": before,
+    "principal_account_id": "acct-igor",
+    "live_transitions": [] if closed else [{{
+        "transition_id": "3", "to_status_id": "10228", "to_status_name": "Closed",
+        "to_status_category": "Done"
+    }}],
+    "effects": {{"field_ids": [], "assignment": None, "transition": request.get("transition")}},
+    "notes": [],
+}}
+if operation == "apply":
+    open(state, "w").close()
+    response["outcome"] = "applied"
+    response["confirmation"] = {{
+        "observation": observation(True),
+        "confirmed_at": "2026-08-19T10:00:01Z",
+    }}
+print(json.dumps(response, sort_keys=True))
+"#,
+        state = external_state.to_string_lossy()
+    );
+    std::fs::write(&executable, script).expect("the connector fixture is written");
+    let mut permissions = std::fs::metadata(&executable)
+        .expect("the connector fixture exists")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions)
+        .expect("the connector fixture is executable");
+
+    let world = World::open_empty_with_asma(&executable).await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "jira-composed").await;
+    let project = ProjectId::parse(&seed.project).expect("a project id");
+    let epic = MiniProjectId::parse(&seed.epic).expect("an epic id");
+    let seed_task = TaskId::parse(&seed.task).expect("a task id");
+    let done_task = TaskId::generate();
+    world.daemon.state().with_store(|store| {
+        let workflow = store
+            .get_active_task_workflow(project, seed_task)
+            .expect("the workflow reads")
+            .expect("the workflow exists");
+        store
+            .create_task(&NewTask {
+                id: done_task,
+                project_id: project,
+                mini_project_id: Some(epic),
+                title: name("Already completed"),
+                module: None,
+                state: kontor_core::state::TaskState::Done,
+                created_at: at("2026-08-19T09:00:00Z"),
+            })
+            .expect("the completed fixture task is created");
+        store
+            .create_task_workflow(&NewTaskWorkflow {
+                id: kontor_core::id::TaskWorkflowId::generate(),
+                project_id: project,
+                task_id: done_task,
+                snapshot: workflow.snapshot,
+                current_phase: workflow.current_phase,
+                created_at: at("2026-08-19T09:00:00Z"),
+            })
+            .expect("the completed fixture workflow is created");
+        store
+            .create_ticket_link(&NewTicketLink {
+                id: TicketLinkId::generate(),
+                project_id: project,
+                task_id: done_task,
+                connector: kontor_core::id::ConnectorKey::parse("jira").expect("a connector key"),
+                external_issue_key: kontor_core::id::ExternalId::parse("ASMA-7874")
+                    .expect("an issue key"),
+                created_at: at("2026-08-19T09:00:00Z"),
+            })
+            .expect("the completed fixture ticket is linked");
+    });
+
+    let plan_uri = format!("/v1/projects/{project}/tasks/{done_task}/ticket:reconcile-plan");
+    let plan = Call::post(&plan_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert!(!plan.json()["converged"].as_bool().expect("a flag"));
+    assert_eq!(plan.json()["diff"][0]["milestone"], "terminal_done");
+    assert_eq!(plan.json()["diff"][0]["kontor"], "Closed");
+    assert_eq!(plan.json()["diff"][0]["external"], "In Development");
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/tasks/{done_task}/ticket:reconcile-apply"),
+        &serde_json::json!({"projection_hash": plan.json()["projection_hash"]}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("jira-composed-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert!(
+        external_state.is_file(),
+        "the validated apply reached the boundary"
+    );
+
+    let readback = Call::post(&plan_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(readback.status, 200, "{}", readback.body);
+    assert!(readback.json()["converged"].as_bool().expect("a flag"));
+    assert!(
+        readback.json()["diff"]
+            .as_array()
+            .expect("a diff")
+            .is_empty()
     );
 }
 

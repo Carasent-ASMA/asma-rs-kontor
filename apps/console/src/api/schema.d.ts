@@ -5457,10 +5457,10 @@ export interface components {
         };
         /**
          * @description A frame the live-content stream emits instead of an item when the timeline can
-         *     no longer be followed.
+         *     no longer be followed or its runtime can no longer be reached.
          */
         StreamRefusalDto: {
-            /** @description Always `timeline_refetch_required`. */
+            /** @description The stable refusal code. */
             code: string;
             /** @description The Realm the session belongs to. */
             realm_id: string;
