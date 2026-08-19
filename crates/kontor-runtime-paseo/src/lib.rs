@@ -28,11 +28,13 @@
 //! * [`fixture`] — a recorded daemon with a call ledger, so a claim about the
 //!   wire is a count rather than an inference.
 //! * [`adapter`] — hierarchy, admission, continuity and session content.
+//! * [`seat_mcp`] — worktree-local MCP composition for Claude seats.
 
 pub mod adapter;
 pub mod client;
 pub mod fixture;
 pub mod mcp;
+pub mod seat_mcp;
 pub mod wire;
 
 pub use adapter::{
@@ -42,6 +44,7 @@ pub use adapter::{
 };
 pub use client::{PaseoCommand, PaseoLiveTransport, PaseoRpc, PaseoTransport};
 pub use fixture::RecordedPaseo;
+pub use seat_mcp::SeatMcp;
 pub use wire::{
     PASEO_APP_VERSION, PASEO_WS_PROTOCOL_VERSION, PaseoFeature, PaseoProjection, version_at_least,
 };

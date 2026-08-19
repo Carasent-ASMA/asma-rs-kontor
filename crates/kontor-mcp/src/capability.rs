@@ -73,6 +73,18 @@ pub enum Denied {
         /// This server's authority.
         configured: CallerTier,
     },
+    /// The active serve profile excludes this tool.
+    ///
+    /// Distinct from [`Denied::Authority`] on purpose: the credential reaches
+    /// this tool, the profile just does not present it. The remedy is a
+    /// registry edit — add the tool to the profile — never a wider credential.
+    #[error("tool `{tool}` is not served under the `{profile}` serve profile")]
+    ProfileExcluded {
+        /// The tool that was called.
+        tool: String,
+        /// The profile this server was started with.
+        profile: &'static str,
+    },
     /// The arguments are not an object at all.
     #[error("tool `{tool}` takes an object of arguments")]
     NotAnObject {
@@ -136,7 +148,9 @@ impl Denied {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::Authority { .. } => "forbidden",
+            // A profile exclusion is a policy refusal, not a malformed call and
+            // not a missing tool: the tool exists, this server will not serve it.
+            Self::Authority { .. } | Self::ProfileExcluded { .. } => "forbidden",
             Self::NoSuchTool { .. } => "not_found",
             _ => "invalid_request",
         }

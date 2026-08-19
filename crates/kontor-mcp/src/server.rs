@@ -298,12 +298,95 @@ pub async fn serve_stdio(server: KontorMcp) -> Result<(), Box<dyn std::error::Er
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+    use crate::capability::Denied;
     use crate::fake::RecordingTransport;
-    use crate::registry::REGISTRY;
+    use crate::registry::{REGISTRY, ServeProfile};
 
     fn server(tier: CallerTier) -> KontorMcp {
         KontorMcp::new(Dispatcher::new(Box::new(RecordingTransport::new(tier))))
+    }
+
+    fn profiled(tier: CallerTier, profile: &str) -> KontorMcp {
+        KontorMcp::new(
+            Dispatcher::new(Box::new(RecordingTransport::new(tier)))
+                .with_profile(ServeProfile::find(profile).expect("a declared profile")),
+        )
+    }
+
+    /// TEST-001: the worker profile at operator authority serves exactly the
+    /// profile's sixteen tools — no more, no fewer.
+    #[test]
+    fn the_worker_profile_at_operator_serves_exactly_the_profile() {
+        let served: BTreeSet<&str> = profiled(CallerTier::Operator, "worker")
+            .served()
+            .iter()
+            .map(|tool| tool.name)
+            .collect();
+        let declared: BTreeSet<&str> = ServeProfile::find("worker")
+            .expect("the worker profile")
+            .tools
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(
+            served, declared,
+            "the served list is exactly the profile ∩ operator, which is the whole profile"
+        );
+        assert_eq!(served.len(), 16, "worker v1 is sixteen tools");
+    }
+
+    /// TEST-002: a tool the tier reaches but the profile excludes is refused at
+    /// call time with a distinct error, and nothing is dispatched. A narrowed
+    /// list with open calls would be a defect (REQ-003).
+    #[tokio::test]
+    async fn a_tool_excluded_by_the_profile_is_refused_at_call_time() {
+        let recorder = std::sync::Arc::new(RecordingTransport::new(CallerTier::Operator));
+        let dispatcher = Dispatcher::new(Box::new(std::sync::Arc::clone(&recorder)))
+            .with_profile(ServeProfile::find("worker").expect("the worker profile"));
+        let failure = dispatcher
+            .call("kontor_topology_ensure", &serde_json::json!({}))
+            .await
+            .expect_err("an operator tool outside the profile is refused");
+        assert!(
+            matches!(
+                failure,
+                Failure::Denied(Denied::ProfileExcluded { profile, .. }) if profile == "worker"
+            ),
+            "the refusal is the profile's own, not an authority or schema one: {failure}"
+        );
+        assert_eq!(recorder.count(), 0, "nothing reached the wire");
+    }
+
+    /// TEST-003: a profile intersects the tier and never widens it. At observer
+    /// authority the worker profile serves only its read tools.
+    #[test]
+    fn a_profile_never_widens_what_the_tier_allows() {
+        let served: BTreeSet<&str> = profiled(CallerTier::Observer, "worker")
+            .served()
+            .iter()
+            .map(|tool| tool.name)
+            .collect();
+        let observer_reads: BTreeSet<&str> = ServeProfile::find("worker")
+            .expect("the worker profile")
+            .tools
+            .iter()
+            .copied()
+            .filter(|name| {
+                ToolSpec::find(name).expect("a registry tool").tier == CallerTier::Observer
+            })
+            .collect();
+        assert_eq!(
+            served, observer_reads,
+            "an observer server under the worker profile serves profile ∩ observer only"
+        );
+        assert_eq!(served.len(), 8, "the worker profile holds eight reads");
+        assert!(
+            !served.contains("kontor_ticket_claim"),
+            "a profile entry above the tier is not served"
+        );
     }
 
     #[test]

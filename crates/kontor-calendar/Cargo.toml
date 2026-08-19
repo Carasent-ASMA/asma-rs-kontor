@@ -14,12 +14,12 @@ workspace = true
 [dependencies]
 # The calendar model, its identifiers and the repository ports live in the
 # domain crate; this crate decides with them and never restates them.
-kontor-core = { path = "../kontor-core", version = "=0.1.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.0" }
 # KON-MVP-09 owns the shape a resolved calendar reaches the scheduler in
 # (`CalendarAdmission`). Resolution produces that exact value rather than a
 # second vocabulary the scheduler would have to translate — a translation is
 # where the two would eventually disagree.
-kontor-scheduler = { path = "../kontor-scheduler", version = "=0.1.0" }
+kontor-scheduler = { path = "../kontor-scheduler", version = "=0.2.0" }
 jiff = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

@@ -16,13 +16,13 @@ workspace = true
 # contract, and it is handed a concrete open store by the composition root. It
 # deliberately declares no second abstraction over either: a trait here would be
 # one more thing to keep in agreement with the seam it wraps.
-kontor-core = { path = "../kontor-core", version = "=0.1.0" }
-kontor-runtime = { path = "../kontor-runtime", version = "=0.1.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.0" }
+kontor-runtime = { path = "../kontor-runtime", version = "=0.2.0" }
 # KON-MVP-16: the scheduling explanation route runs `kontor_scheduler::plan` over a
 # snapshot assembled from stored rows. The decision stays in the scheduler; this
 # crate only assembles its input and reports its answer.
-kontor-scheduler = { path = "../kontor-scheduler", version = "=0.1.0" }
-kontor-store = { path = "../kontor-store", version = "=0.1.0" }
+kontor-scheduler = { path = "../kontor-scheduler", version = "=0.2.0" }
+kontor-store = { path = "../kontor-store", version = "=0.2.0" }
 async-trait = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

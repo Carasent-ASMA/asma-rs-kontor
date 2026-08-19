@@ -27,7 +27,7 @@ path = "pilot_live.rs"
 # writer that needed the whole control plane to link would be a second place for
 # the proof to live.
 [dependencies]
-kontor-core = { path = "../../crates/kontor-core", version = "=0.1.0", features = ["deterministic-test-ids"] }
+kontor-core = { path = "../../crates/kontor-core", version = "=0.2.0", features = ["deterministic-test-ids"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -37,20 +37,20 @@ hex = { workspace = true }
 # The driver composes the merged seams rather than restating them, so it depends
 # on the same crates the daemon's composition root does, plus the reusable
 # adapter contract in `tests/contract`.
-kontor-tests-contract = { path = "../contract", version = "=0.1.0" }
-kontor-accounts = { path = "../../crates/kontor-accounts", version = "=0.1.0" }
-kontor-api = { path = "../../crates/kontor-api", version = "=0.1.0" }
-kontor-context = { path = "../../crates/kontor-context", version = "=0.1.0" }
-kontor-daemon = { path = "../../crates/kontor-daemon", version = "=0.1.0" }
-kontor-integrations-asma = { path = "../../crates/kontor-integrations-asma", version = "=0.1.0" }
-kontor-intake = { path = "../../crates/kontor-intake", version = "=0.1.0" }
-kontor-mcp = { path = "../../crates/kontor-mcp", version = "=0.1.0" }
-kontor-policy = { path = "../../crates/kontor-policy", version = "=0.1.0" }
-kontor-profiles = { path = "../../crates/kontor-profiles", version = "=0.1.0" }
-kontor-runtime = { path = "../../crates/kontor-runtime", version = "=0.1.0" }
-kontor-scheduler = { path = "../../crates/kontor-scheduler", version = "=0.1.0" }
-kontor-store = { path = "../../crates/kontor-store", version = "=0.1.0" }
-kontor-teams = { path = "../../crates/kontor-teams", version = "=0.1.0" }
+kontor-tests-contract = { path = "../contract", version = "=0.2.0" }
+kontor-accounts = { path = "../../crates/kontor-accounts", version = "=0.2.0" }
+kontor-api = { path = "../../crates/kontor-api", version = "=0.2.0" }
+kontor-context = { path = "../../crates/kontor-context", version = "=0.2.0" }
+kontor-daemon = { path = "../../crates/kontor-daemon", version = "=0.2.0" }
+kontor-integrations-asma = { path = "../../crates/kontor-integrations-asma", version = "=0.2.0" }
+kontor-intake = { path = "../../crates/kontor-intake", version = "=0.2.0" }
+kontor-mcp = { path = "../../crates/kontor-mcp", version = "=0.2.0" }
+kontor-policy = { path = "../../crates/kontor-policy", version = "=0.2.0" }
+kontor-profiles = { path = "../../crates/kontor-profiles", version = "=0.2.0" }
+kontor-runtime = { path = "../../crates/kontor-runtime", version = "=0.2.0" }
+kontor-scheduler = { path = "../../crates/kontor-scheduler", version = "=0.2.0" }
+kontor-store = { path = "../../crates/kontor-store", version = "=0.2.0" }
+kontor-teams = { path = "../../crates/kontor-teams", version = "=0.2.0" }
 async-trait = { workspace = true }
 axum = { workspace = true }
 futures = { workspace = true }

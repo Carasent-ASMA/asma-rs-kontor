@@ -78,6 +78,37 @@ fn each_seat_selects_exactly_the_tier_it_is_named_for() {
     }
 }
 
+/// TEST-005: the worker seat is pinned to (operator, `worker` profile), and no
+/// other seat names a profile. A profile in a seat file must be one the registry
+/// declares — the name enforces nothing by itself; the binary refuses an unknown
+/// one at startup, and this test catches it before anyone starts anything.
+#[test]
+fn the_worker_seat_serves_the_worker_profile_and_the_others_serve_none() {
+    for (file, expected_tier, expected_profile) in [
+        ("paseo-lead.json", "admin", None),
+        ("worker.json", "operator", Some("worker")),
+        ("reviewer.json", "observer", None),
+    ] {
+        let (_, args) = seat(file);
+        assert_eq!(
+            flag(&args, "--credential-tier").as_deref(),
+            Some(expected_tier),
+            "{file} configures the wrong authority"
+        );
+        let profile = flag(&args, "--serve-profile");
+        assert_eq!(
+            profile.as_deref(),
+            expected_profile,
+            "{file} names the wrong serve profile"
+        );
+        if let Some(profile) = profile {
+            kontor_mcp::ServeProfile::find(&profile).unwrap_or_else(|| {
+                panic!("{file} names `{profile}`, which the registry does not declare")
+            });
+        }
+    }
+}
+
 #[test]
 fn only_the_lead_seat_is_admin_scoped() {
     let admin_seats: Vec<&str> = ["paseo-lead.json", "worker.json", "reviewer.json"]
@@ -134,7 +165,7 @@ fn the_seat_flags_are_the_ones_the_binary_declares() {
             assert!(
                 matches!(
                     argument.as_str(),
-                    "--state-root" | "--credential-tier" | "--base-url"
+                    "--state-root" | "--credential-tier" | "--base-url" | "--serve-profile"
                 ),
                 "{file} passes {argument}, which `kontor-mcp` does not declare"
             );

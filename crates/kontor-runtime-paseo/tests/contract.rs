@@ -315,6 +315,9 @@ fn config() -> PaseoConfig {
         scope: scope(),
         max_concurrent_sessions: 8,
         adopted_containers: BTreeMap::new(),
+        // No seat MCP composition in the contract fixtures: the cwds here are
+        // symbolic paths, not real worktrees.
+        seat_mcp: None,
     }
 }
 
