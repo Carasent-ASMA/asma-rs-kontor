@@ -1350,7 +1350,7 @@ fn fleet_settings() -> serde_json::Value {
                 "family": "paseo",
                 "runtime_kind": "paseo.agent",
                 "host_key": "paseo-host",
-                "mini_project_id": "mini-1",
+                "mini_project_id": "01890000-0000-7000-8000-000000000001",
                 "jira_epic_key": "ASMA-7759",
                 "mini_project_short_title": "Kontor MVP",
                 "plan_item_key": "KON-MVP-15",
