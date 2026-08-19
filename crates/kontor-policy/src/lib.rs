@@ -50,8 +50,9 @@ pub mod model;
 pub mod recovery;
 
 pub use completion::{
-    CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload, TicketEvidence,
-    TicketGateBlocker, TicketRequirement, closeout_blockers, ticket_gate_blockers,
+    CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload,
+    OpenQuestionBlocker, TicketEvidence, TicketGateBlocker, TicketRequirement, closeout_blockers,
+    open_question_blockers, ticket_gate_blockers,
 };
 pub use evaluator::{
     REJECTIONS_BEFORE_PARK, decide, evaluate, module_isolated_by_worktree, rejections_since_pass,

@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 40;
+pub const SCHEMA_VERSION: i64 = 41;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -183,6 +183,7 @@ const MIGRATIONS: &[&str] = &[
     // Schema v40. One immutable Advisor advice artifact, authored by the exact
     // attested seat before a Realm operator records the requester's disposition.
     include_str!("../migrations/0040_advisor_advice.sql"),
+    include_str!("../migrations/0041_open_questions.sql"),
 ];
 
 const _: () = assert!(
@@ -350,6 +351,7 @@ fn apply_pending(
             MIGRATIONS[37],
             MIGRATIONS[38],
             MIGRATIONS[39],
+            MIGRATIONS[40],
         ] {
             transaction.execute_batch(migration)?;
         }

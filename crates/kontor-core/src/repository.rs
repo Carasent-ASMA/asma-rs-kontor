@@ -27,11 +27,14 @@ use crate::id::{
     CommandReceiptId, ConnectorKey, ContentHash, CredentialAlias, EventCursor,
     ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
     GateKey, GuardrailEvaluationId, IdempotencyKey, IntakeDecisionId, IntakeReceiptId,
-    MiniProjectId, ModuleKey, PersonaScenarioId, PhaseKey, ProjectId, QuickSessionId, RealmId,
-    RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId,
-    SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
-    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
-    TriggerKey, WorkCalendarId, WorkProfileKey,
+    MiniProjectId, ModuleKey, OpenQuestionId, PersonaScenarioId, PhaseKey, ProjectId,
+    QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
+    ScheduleOverrideId, SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId,
+    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+};
+use crate::open_question::{
+    AmbiguityRound, Disposition, OpenQuestion, OpenQuestionSummary, TriggerFiring,
 };
 use crate::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use crate::receipt::{
@@ -3163,6 +3166,119 @@ pub trait TicketRepository {
         project_id: ProjectId,
         receipt: &StatusTransitionReceipt,
     ) -> RepositoryResult<()>;
+}
+
+/// The open-question ledger.
+///
+/// Deliberately narrow. There is no `update_question`, no `delete_question` and
+/// no generic "save the aggregate" here: every mutating operation below appends
+/// one immutable child row and moves the head revision, and that is the only
+/// shape of change this ledger has. A port with a general update would let a
+/// later caller rewrite a round or drop a disposition without the schema ever
+/// getting the chance to refuse it.
+pub trait OpenQuestionRepository {
+    /// Raise a question, storing its header and first round.
+    ///
+    /// # Errors
+    /// Refuses a dangling or cross-project epic, author seat or attachment, and
+    /// a question id that already exists.
+    fn raise_question(
+        &self,
+        project_id: ProjectId,
+        question: &OpenQuestion,
+    ) -> RepositoryResult<()>;
+
+    /// Read one question with its whole append-only history.
+    ///
+    /// # Errors
+    /// Propagates storage failures. A question belonging to another project
+    /// resolves to `None` rather than to somebody else's row.
+    fn get_question(
+        &self,
+        project_id: ProjectId,
+        question_id: OpenQuestionId,
+    ) -> RepositoryResult<Option<OpenQuestion>>;
+
+    /// Every question attached to one epic, in creation order.
+    ///
+    /// # Errors
+    /// Propagates storage failures.
+    fn list_questions_for_epic(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<OpenQuestion>>;
+
+    /// The identity, subject and derived status of one epic's questions.
+    ///
+    /// This is the read the completion gate takes immediately before `MarkDone`.
+    /// It exists as its own operation because the gate must not be tempted to
+    /// reuse a snapshot: a question may be raised, or a deferral's trigger may
+    /// fire, during a later completion phase.
+    ///
+    /// # Errors
+    /// Propagates storage failures.
+    fn summarize_questions_for_epic(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<OpenQuestionSummary>>;
+
+    /// Append a correcting round, leaving every earlier round untouched.
+    ///
+    /// Returns the head revision the append wrote.
+    ///
+    /// # Errors
+    /// Refuses a stale `expected` revision, an unknown or cross-project
+    /// question, a duplicate ordinal and a predecessor that does not exist.
+    fn append_question_round(
+        &self,
+        project_id: ProjectId,
+        question_id: OpenQuestionId,
+        expected: AggregateRevision,
+        round: &AmbiguityRound,
+    ) -> RepositoryResult<AggregateRevision>;
+
+    /// Append a disposition.
+    ///
+    /// One operation records both a first closing and a correction: a
+    /// supersede *is* an appended disposition that names the one it replaces.
+    /// Splitting them into two operations would imply the second could edit the
+    /// first, which is exactly what this ledger does not do.
+    ///
+    /// Returns the head revision the append wrote.
+    ///
+    /// # Errors
+    /// Refuses a stale `expected` revision, an unknown or cross-project
+    /// question, a duplicate ordinal and a superseded ordinal that does not
+    /// exist.
+    fn append_question_disposition(
+        &self,
+        project_id: ProjectId,
+        question_id: OpenQuestionId,
+        expected: AggregateRevision,
+        disposition: &Disposition,
+    ) -> RepositoryResult<AggregateRevision>;
+
+    /// Record that a deferral's named trigger fired, reopening the question.
+    ///
+    /// The deferred disposition is not deleted or rewritten; the firing stands
+    /// alongside it.
+    ///
+    /// Returns the head revision the append wrote.
+    ///
+    /// # Errors
+    /// Refuses a stale `expected` revision, an unknown or cross-project
+    /// question, a firing against a disposition that is not the current
+    /// deferral, a trigger the deferral did not name, and a second firing
+    /// against one deferral.
+    fn fire_deferred_trigger(
+        &self,
+        project_id: ProjectId,
+        question_id: OpenQuestionId,
+        expected: AggregateRevision,
+        firing: &TriggerFiring,
+    ) -> RepositoryResult<AggregateRevision>;
 }
 
 /// Calendars, authorizations and overrides.

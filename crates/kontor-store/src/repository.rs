@@ -26,17 +26,22 @@ use kontor_core::id::{
     CalendarExceptionId, CalendarProfileId, CanonicalDocument, CapacityObservationId,
     CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode, EventCursor,
     ExternalId, ExternalName, GateKey, GuardrailEvaluationId, HolidaySourceId, IdempotencyKey,
-    IntakeReceiptId, MiniProjectId, ModuleKey, Money, PersonaScenarioId, PhaseKey, ProjectId,
-    QuickSessionId, RealmId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId,
-    RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion,
-    StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
-    TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
-    format_utc_timestamp, parse_utc_timestamp,
+    IntakeReceiptId, MiniProjectId, ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey,
+    ProjectId, QuickSessionId, RealmId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId,
+    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SignedDuration,
+    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
+    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
+    WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+};
+use kontor_core::open_question::{
+    AmbiguityRound, Disposition, DispositionKind, DispositionOutcome, OpenQuestion,
+    OpenQuestionAttachment, OpenQuestionSummary, QuestionScope, TriggerFiring,
 };
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
     AggregateRef, CommandKind, CommandOutboxEntry, CommandReceipt, ReceiptAuthority,
 };
+use kontor_core::repository::OpenQuestionRepository;
 use kontor_core::repository::{
     AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AvailabilityOverride,
     CalendarRepository, CapacityObservation, CapacityRepository, CommandRepository,
@@ -9754,4 +9759,549 @@ impl RealmRepository for SqliteStore {
         let revision = found.map(revision_of).transpose()?;
         Ok(SnapshotEnvelope::new(self.realm_id(), newest, revision))
     }
+}
+
+// ---------------------------------------------------------------------------
+// The open-question ledger
+// ---------------------------------------------------------------------------
+
+/// An open question is project knowledge, on the same footing as a published
+/// decision or a glossary entry.
+const OPEN_QUESTION_TIER: ShareabilityTier = ShareabilityTier::ProjectKnowledge;
+
+/// The head columns, in one place so every read decodes the same shape.
+const OPEN_QUESTION_COLUMNS: &str = "question_id, mini_project_id, subject, scope, attachment, \
+     author_seat_id, shareability_class, shareability_classifier, shareability_provenance, \
+     created_at, revision";
+
+/// One question header exactly as its columns arrive from SQLite.
+///
+/// The row is drained into owned values before anything is parsed, so the row
+/// borrow is over by the time the child reads want the same transaction.
+type OpenQuestionRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    i64,
+);
+
+fn open_question_row(row: &Row<'_>) -> rusqlite::Result<OpenQuestionRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+    ))
+}
+
+/// Rebuild one question header from its row, then load its history.
+fn read_open_question(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    row: OpenQuestionRow,
+) -> RepositoryResult<OpenQuestion> {
+    let (
+        question_id,
+        mini_project_id,
+        subject,
+        scope,
+        attachment,
+        author,
+        class,
+        classifier,
+        provenance,
+        created_at,
+        revision,
+    ) = row;
+    let question_id = OpenQuestionId::parse(&question_id)?;
+    let attachment: OpenQuestionAttachment = serde_json::from_str(&attachment).map_err(|_| {
+        DomainError::invalid(
+            "OpenQuestion attachment",
+            "the stored attachment cannot be read by this build",
+        )
+    })?;
+    Ok(OpenQuestion {
+        question_id,
+        project_id,
+        mini_project_id: MiniProjectId::parse(&mini_project_id)?,
+        subject: BoundedText::parse(&subject)?,
+        scope: QuestionScope::parse(&scope)?,
+        attachment,
+        author: SeatBindingId::parse(&author)?,
+        shareability: stored_shareability((class, classifier, provenance))?,
+        created_at: parse_utc_timestamp(&created_at)?,
+        revision: AggregateRevision::parse(u64::try_from(revision).map_err(|_| {
+            DomainError::invalid("OpenQuestion", "the stored revision is out of range")
+        })?)?,
+        rounds: read_open_question_rounds(transaction, project_id, question_id)?,
+        dispositions: read_open_question_dispositions(transaction, project_id, question_id)?,
+        firings: read_open_question_firings(transaction, project_id, question_id)?,
+    })
+}
+
+fn read_open_question_rounds(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question_id: OpenQuestionId,
+) -> RepositoryResult<Vec<AmbiguityRound>> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT ordinal, author_seat_id, why_ambiguous, options, supersedes, recorded_at
+             FROM open_question_rounds
+             WHERE project_id = ?1 AND question_id = ?2
+             ORDER BY ordinal",
+        )
+        .map_err(backend)?;
+    let rows = statement
+        .query_map(
+            params![project_id.to_string(), question_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .map_err(backend)?;
+    let mut rounds = Vec::new();
+    for row in rows {
+        let (ordinal, author, why, options, supersedes, recorded_at) = row.map_err(backend)?;
+        let options: Vec<String> = serde_json::from_str(&options).map_err(|_| {
+            DomainError::invalid(
+                "OpenQuestion round",
+                "the stored options cannot be read by this build",
+            )
+        })?;
+        rounds.push(AmbiguityRound {
+            ordinal: ordinal_value("OpenQuestion round", ordinal)?,
+            author: SeatBindingId::parse(&author)?,
+            why_ambiguous: BoundedText::parse(&why)?,
+            options: options
+                .iter()
+                .map(|option| BoundedText::parse(option))
+                .collect::<Result<Vec<_>, _>>()?,
+            supersedes: supersedes
+                .map(|value| ordinal_value("OpenQuestion round", value))
+                .transpose()?,
+            recorded_at: parse_utc_timestamp(&recorded_at)?,
+        });
+    }
+    Ok(rounds)
+}
+
+fn read_open_question_dispositions(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question_id: OpenQuestionId,
+) -> RepositoryResult<Vec<Disposition>> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT ordinal, author_seat_id, kind, payload, supersedes, recorded_at
+             FROM open_question_dispositions
+             WHERE project_id = ?1 AND question_id = ?2
+             ORDER BY ordinal",
+        )
+        .map_err(backend)?;
+    let rows = statement
+        .query_map(
+            params![project_id.to_string(), question_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .map_err(backend)?;
+    let mut dispositions = Vec::new();
+    for row in rows {
+        let (ordinal, author, kind, payload, supersedes, recorded_at) = row.map_err(backend)?;
+        let outcome: DispositionOutcome = serde_json::from_str(&payload).map_err(|_| {
+            DomainError::invalid(
+                "OpenQuestion disposition",
+                "the stored disposition cannot be read by this build",
+            )
+        })?;
+        // The discriminator column and the payload are written together and must
+        // still agree on the way out: a row edited around this repository does
+        // not get to read back as a different kind of closing.
+        if outcome.kind() != DispositionKind::parse(&kind)? {
+            return Err(RepositoryError::Conflict {
+                subject: "OpenQuestion disposition",
+                rule: "the stored kind and payload disagree",
+            });
+        }
+        dispositions.push(Disposition {
+            ordinal: ordinal_value("OpenQuestion disposition", ordinal)?,
+            author: SeatBindingId::parse(&author)?,
+            outcome,
+            supersedes: supersedes
+                .map(|value| ordinal_value("OpenQuestion disposition", value))
+                .transpose()?,
+            recorded_at: parse_utc_timestamp(&recorded_at)?,
+        });
+    }
+    Ok(dispositions)
+}
+
+fn read_open_question_firings(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question_id: OpenQuestionId,
+) -> RepositoryResult<Vec<TriggerFiring>> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT ordinal, disposition_ordinal, trigger_key, observed_by_seat_id, recorded_at
+             FROM open_question_trigger_firings
+             WHERE project_id = ?1 AND question_id = ?2
+             ORDER BY ordinal",
+        )
+        .map_err(backend)?;
+    let rows = statement
+        .query_map(
+            params![project_id.to_string(), question_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .map_err(backend)?;
+    let mut firings = Vec::new();
+    for row in rows {
+        let (ordinal, disposition_ordinal, trigger, observed_by, recorded_at) =
+            row.map_err(backend)?;
+        firings.push(TriggerFiring {
+            ordinal: ordinal_value("OpenQuestion trigger", ordinal)?,
+            disposition_ordinal: ordinal_value("OpenQuestion trigger", disposition_ordinal)?,
+            trigger: TriggerKey::parse(&trigger)?,
+            observed_by: SeatBindingId::parse(&observed_by)?,
+            recorded_at: parse_utc_timestamp(&recorded_at)?,
+        });
+    }
+    Ok(firings)
+}
+
+/// Narrow a stored ordinal without silently wrapping it.
+fn ordinal_value(subject: &'static str, stored: i64) -> RepositoryResult<u32> {
+    u32::try_from(stored)
+        .map_err(|_| DomainError::invalid(subject, "the stored ordinal is out of range").into())
+}
+
+/// Advance the head revision under compare-and-swap.
+///
+/// Every append goes through this, so an appended child and a moved head are one
+/// atomic step: a caller working from a stale revision writes neither.
+fn bump_open_question(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question_id: OpenQuestionId,
+    expected: AggregateRevision,
+) -> RepositoryResult<AggregateRevision> {
+    let changed = transaction
+        .execute(
+            "UPDATE open_questions SET revision = revision + 1
+             WHERE project_id = ?1 AND question_id = ?2 AND revision = ?3",
+            params![
+                project_id.to_string(),
+                question_id.to_string(),
+                i64::try_from(expected.get()).unwrap_or(i64::MAX),
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(RepositoryError::Conflict {
+            subject: "OpenQuestion",
+            rule: "only the current revision of a question in this project may be appended to",
+        });
+    }
+    Ok(expected.next()?)
+}
+
+impl OpenQuestionRepository for SqliteStore {
+    fn raise_question(
+        &self,
+        project_id: ProjectId,
+        question: &OpenQuestion,
+    ) -> RepositoryResult<()> {
+        if question.project_id != project_id {
+            return Err(RepositoryError::Conflict {
+                subject: "OpenQuestion",
+                rule: "a question is raised in the project it names",
+            });
+        }
+        question.shareability.validate_for(OPEN_QUESTION_TIER)?;
+        let Some(first) = question.rounds.first() else {
+            return Err(DomainError::invalid(
+                "OpenQuestion",
+                "a raised question carries its first round",
+            )
+            .into());
+        };
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO open_questions
+                     (question_id, project_id, mini_project_id, subject, scope, attachment,
+                      author_seat_id, shareability_class, shareability_classifier,
+                      shareability_provenance, created_at, revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    question.question_id.to_string(),
+                    project_id.to_string(),
+                    question.mini_project_id.to_string(),
+                    question.subject.as_str(),
+                    question.scope.as_str(),
+                    serde_json::to_string(&question.attachment).map_err(|_| {
+                        DomainError::invalid("OpenQuestion attachment", "does not serialize")
+                    })?,
+                    question.author.to_string(),
+                    question.shareability.class.as_str(),
+                    question
+                        .shareability
+                        .classifier
+                        .identity()
+                        .map(ExternalName::as_str),
+                    question.shareability.provenance.as_str(),
+                    text(question.created_at),
+                    i64::try_from(question.revision.get()).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        insert_open_question_round(&transaction, project_id, question.question_id, first)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn get_question(
+        &self,
+        project_id: ProjectId,
+        question_id: OpenQuestionId,
+    ) -> RepositoryResult<Option<OpenQuestion>> {
+        let transaction = self.begin()?;
+        let row: Option<OpenQuestionRow> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {OPEN_QUESTION_COLUMNS} FROM open_questions
+                     WHERE project_id = ?1 AND question_id = ?2"
+                ),
+                params![project_id.to_string(), question_id.to_string()],
+                open_question_row,
+            )
+            .optional()
+            .map_err(backend)?;
+        let found = row
+            .map(|row| read_open_question(&transaction, project_id, row))
+            .transpose()?;
+        transaction.commit().map_err(backend)?;
+        Ok(found)
+    }
+
+    fn list_questions_for_epic(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<OpenQuestion>> {
+        let transaction = self.begin()?;
+        let rows: Vec<OpenQuestionRow> = {
+            let mut statement = transaction
+                .prepare(&format!(
+                    "SELECT {OPEN_QUESTION_COLUMNS} FROM open_questions
+                     WHERE project_id = ?1 AND mini_project_id = ?2
+                     ORDER BY created_at, question_id"
+                ))
+                .map_err(backend)?;
+            statement
+                .query_map(
+                    params![project_id.to_string(), mini_project_id.to_string()],
+                    open_question_row,
+                )
+                .map_err(backend)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(backend)?
+        };
+        let mut questions = Vec::with_capacity(rows.len());
+        for row in rows {
+            questions.push(read_open_question(&transaction, project_id, row)?);
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(questions)
+    }
+
+    fn summarize_questions_for_epic(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<OpenQuestionSummary>> {
+        // Derived from the same loaded aggregates rather than from a status
+        // column: a stored status could disagree with the history that produced
+        // it, and this is the read a completion gate trusts.
+        Ok(self
+            .list_questions_for_epic(project_id, mini_project_id)?
+            .iter()
+            .map(OpenQuestion::summary)
+            .collect())
+    }
+
+    fn append_question_round(
+        &self,
+        project_id: ProjectId,
+        question_id: OpenQuestionId,
+        expected: AggregateRevision,
+        round: &AmbiguityRound,
+    ) -> RepositoryResult<AggregateRevision> {
+        let transaction = self.begin()?;
+        insert_open_question_round(&transaction, project_id, question_id, round)?;
+        let revision = bump_open_question(&transaction, project_id, question_id, expected)?;
+        transaction.commit().map_err(backend)?;
+        Ok(revision)
+    }
+
+    fn append_question_disposition(
+        &self,
+        project_id: ProjectId,
+        question_id: OpenQuestionId,
+        expected: AggregateRevision,
+        disposition: &Disposition,
+    ) -> RepositoryResult<AggregateRevision> {
+        disposition.outcome.validate()?;
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO open_question_dispositions
+                     (project_id, question_id, ordinal, author_seat_id, kind, trigger_key,
+                      payload, supersedes, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    project_id.to_string(),
+                    question_id.to_string(),
+                    i64::from(disposition.ordinal),
+                    disposition.author.to_string(),
+                    disposition.outcome.kind().as_str(),
+                    disposition
+                        .outcome
+                        .deferred_trigger()
+                        .map(|trigger| trigger.key.as_str()),
+                    serde_json::to_string(&disposition.outcome).map_err(|_| {
+                        DomainError::invalid("OpenQuestion disposition", "does not serialize")
+                    })?,
+                    disposition.supersedes.map(i64::from),
+                    text(disposition.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        let revision = bump_open_question(&transaction, project_id, question_id, expected)?;
+        transaction.commit().map_err(backend)?;
+        Ok(revision)
+    }
+
+    fn fire_deferred_trigger(
+        &self,
+        project_id: ProjectId,
+        question_id: OpenQuestionId,
+        expected: AggregateRevision,
+        firing: &TriggerFiring,
+    ) -> RepositoryResult<AggregateRevision> {
+        let transaction = self.begin()?;
+        // The schema refuses a firing that names a trigger its deferral did not,
+        // and refuses a second firing against one deferral. What it cannot see is
+        // whether that deferral is still the *current* disposition, so that is
+        // checked here.
+        let current: Option<i64> = transaction
+            .query_row(
+                "SELECT MAX(ordinal) FROM open_question_dispositions
+                 WHERE project_id = ?1 AND question_id = ?2",
+                params![project_id.to_string(), question_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .flatten();
+        if current != Some(i64::from(firing.disposition_ordinal)) {
+            return Err(RepositoryError::Conflict {
+                subject: "OpenQuestion trigger",
+                rule: "only the question's current deferral can be reopened",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO open_question_trigger_firings
+                     (project_id, question_id, ordinal, disposition_ordinal, trigger_key,
+                      observed_by_seat_id, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    project_id.to_string(),
+                    question_id.to_string(),
+                    i64::from(firing.ordinal),
+                    i64::from(firing.disposition_ordinal),
+                    firing.trigger.as_str(),
+                    firing.observed_by.to_string(),
+                    text(firing.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        let revision = bump_open_question(&transaction, project_id, question_id, expected)?;
+        transaction.commit().map_err(backend)?;
+        Ok(revision)
+    }
+}
+
+fn insert_open_question_round(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question_id: OpenQuestionId,
+    round: &AmbiguityRound,
+) -> RepositoryResult<()> {
+    let options: Vec<&str> = round
+        .options
+        .iter()
+        .map(kontor_core::id::BoundedText::as_str)
+        .collect();
+    transaction
+        .execute(
+            "INSERT INTO open_question_rounds
+                 (project_id, question_id, ordinal, author_seat_id, why_ambiguous, options,
+                  supersedes, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                project_id.to_string(),
+                question_id.to_string(),
+                i64::from(round.ordinal),
+                round.author.to_string(),
+                round.why_ambiguous.as_str(),
+                serde_json::to_string(&options).map_err(|_| {
+                    DomainError::invalid("OpenQuestion round", "the options do not serialize")
+                })?,
+                round.supersedes.map(i64::from),
+                text(round.recorded_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
 }

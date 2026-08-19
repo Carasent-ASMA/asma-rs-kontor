@@ -3084,6 +3084,20 @@ export interface components {
             blocker: "closeout";
             /** @description Which prerequisite. */
             requirement: components["schemas"]["CloseoutRequirementDto"];
+        } | {
+            /** @enum {string} */
+            blocker: "open_question_undispositioned";
+            /** @description The question. */
+            question_id: string;
+            /** @description What it is about. */
+            subject: string;
+        } | {
+            /** @enum {string} */
+            blocker: "open_question_reopened";
+            /** @description The question. */
+            question_id: string;
+            /** @description What it is about. */
+            subject: string;
         };
         /** @description What a completion write produced. */
         CompletionOutcomeDto: {

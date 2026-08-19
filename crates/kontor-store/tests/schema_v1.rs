@@ -97,6 +97,10 @@ const EXPECTED_TABLES: &[&str] = &[
     "memory_tombstones",
     "mini_projects",
     "mini_project_topology_snapshots",
+    "open_questions",
+    "open_question_dispositions",
+    "open_question_rounds",
+    "open_question_trigger_firings",
     "persona_scenarios",
     "policy_evaluations",
     "projects",
@@ -315,7 +319,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 40);
+    assert_eq!(SCHEMA_VERSION, 41);
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.

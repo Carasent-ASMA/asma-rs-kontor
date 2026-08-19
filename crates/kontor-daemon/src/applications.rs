@@ -143,8 +143,8 @@ use kontor_integrations_asma::jira::{
     PinnedProfile, SpecCatalog, TicketDelegation, WorkflowSpecKey,
 };
 use kontor_policy::{
-    CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload, TicketEvidence,
-    TicketGateBlocker, TicketRequirement,
+    CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload,
+    OpenQuestionBlocker, TicketEvidence, TicketGateBlocker, TicketRequirement,
 };
 use kontor_profiles::pack::{
     OperationalDomainPack, PackAvailability, PackCategoryKey, ProfilePackSpec,
@@ -5663,15 +5663,32 @@ fn slot_prompt(
     slot: &RoleSlotId,
     roots: &BTreeSet<RoleSlotId>,
 ) -> kontor_core::DomainResult<kontor_core::id::BoundedText> {
-    if roots.contains(slot) {
-        kontor_core::id::BoundedText::parse("begin the admitted task")
+    let instruction = if roots.contains(slot) {
+        "begin the admitted task."
     } else {
-        kontor_core::id::BoundedText::parse(
-            "wait: this seat is downstream of a handoff. Do no work until you are \
-             handed the artifacts your role requires.",
-        )
-    }
+        "wait: this seat is downstream of a handoff. Do no work until you are \
+         handed the artifacts your role requires."
+    };
+    kontor_core::id::BoundedText::parse(&format!("{instruction}{OPEN_QUESTION_DUTY}"))
 }
+
+/// The open-question duty every ordinary team seat is launched with (OP-REQ-038).
+///
+/// A duty, not a mechanism: this adds no scanner, no capability, no role and no
+/// standing run. The seat that trips over an ambiguity is the only one that
+/// knows it did, so an instruction is the only surface that can catch it — a
+/// service scanning for ambiguity would be looking for something that only
+/// exists in somebody's reasoning.
+///
+/// It is appended to *both* branches. A downstream seat is told to wait and is
+/// still given the duty, because the ambiguity it has to record is frequently in
+/// what it was just handed, and a seat that waits silently over a contradiction
+/// is the exact failure this requirement exists to stop. The wait instruction
+/// itself is unchanged.
+const OPEN_QUESTION_DUTY: &str = " If you must proceed on an assumption you cannot \
+     evidence, record an open question before you do — its subject, the record or \
+     document it attaches to, why the state is ambiguous and the options you saw. \
+     An unresolved ambiguity belongs in the ledger, not in this transcript.";
 
 /// Freeze the context-window policy one seat launches under, before its session
 /// exists.
@@ -7065,6 +7082,20 @@ fn completion_blocker_dto(blocker: &CompletionBlocker) -> CompletionBlockerDto {
         }
         CompletionBlocker::Closeout(requirement) => CompletionBlockerDto::Closeout {
             requirement: closeout_requirement_dto(*requirement),
+        },
+        CompletionBlocker::OpenQuestion(OpenQuestionBlocker::Undispositioned {
+            question_id,
+            subject,
+        }) => CompletionBlockerDto::OpenQuestionUndispositioned {
+            question_id: *question_id,
+            subject: subject.clone(),
+        },
+        CompletionBlocker::OpenQuestion(OpenQuestionBlocker::Reopened {
+            question_id,
+            subject,
+        }) => CompletionBlockerDto::OpenQuestionReopened {
+            question_id: *question_id,
+            subject: subject.clone(),
         },
     }
 }

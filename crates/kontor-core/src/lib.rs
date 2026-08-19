@@ -94,6 +94,7 @@ pub mod calendar;
 pub mod compaction;
 pub mod consultation;
 pub mod id;
+pub mod open_question;
 pub mod realm;
 pub mod receipt;
 pub mod repository;
