@@ -1,13 +1,12 @@
 # KON-OP-09 / ASMA-7878 — release notes
 
 > **Date:** 2026-08-19 12:13 CEST
-> **Status:** 🟡 In Review — release blocked by current-`master` contract integration
+> **Status:** 🟢 Approved
 > **Author:** Architect · OP-09 successor seat
 > **Category:** report
 > **Scope:** `KON-OP-09` Operational diagnostic UI/UX release unit
-> **Summary:** Release evidence for the accepted OP-09 console revision and its
-> independent code-review and QA gates, plus the current-`master` contract
-> incompatibility that blocks the release gate.
+> **Summary:** Release evidence for the accepted OP-09 current-`master`
+> integration and its renewed independent code-review and QA gates.
 
 ---
 
@@ -26,21 +25,20 @@ already closed by the accepted remediation.
 
 ## Release verdict
 
-**BLOCKED: do not record `release-gate` passed.** The frozen `code@1` profile
-reserves that verdict for `architect` and requires the `release-notes` artifact.
-The accepted OP-09 revision passes its frozen prerequisite gates, but it cannot
-be integrated into current `master` without new production behavior and a new
-review/QA cycle.
+**PASS for `release-gate` evaluation.** The frozen `code@1` profile reserves
+this verdict for `architect` and requires the `release-notes` artifact. The
+current-`master` integration has now completed that required new production,
+review and QA cycle.
 
-The accepted production revision is
-`ffeffc3f23844228437cf3f27ece216e10489da2`. The two later commits are
-evidence-only and do not alter production code:
+The accepted current production revision is
+`a24758714244762170da17e7604718086aac4a8b`. The two later tester commits are
+QA-only and do not alter production code:
 
 | Purpose | Revision | Durable result |
 | --- | --- | --- |
-| Accepted production remediation | `ffeffc3f23844228437cf3f27ece216e10489da2` | closes idempotency replay and independent-projection findings |
-| Independent round-3 code review | `4f3242b9526a3512d2b83453958d16cba2fa624f` | passed |
-| Independent round-2 QA | `3f4ec94454e5182476e1c3acba04077feae475bf` | passed; `qa-report@ffeffc3:3f4ec94` |
+| Accepted current-master integration | `a24758714244762170da17e7604718086aac4a8b` | resolves the generated contract and production behavior incompatibilities |
+| Focused QA behavior test and report | `0d1a9e66aebf8862e9a80ce10b3532a5a033014e` | adds one receipt-absence assertion and round-3 QA evidence |
+| QA receipt readback | `df6fa688d7e70ca28a97b14fa07c8180cffeb3d0` | records the renewed durable Kontor QA receipt |
 
 The accepted branch range is rooted at seed
 `3d2dfca293f1cb252c8a14d92f9f07cb26ddb324`. Its release history preserves the
@@ -55,6 +53,9 @@ earlier gate rounds rather than rewriting them:
 | `ffeffc3f23844228437cf3f27ece216e10489da2` | clears both QA acceptance findings |
 | `4f3242b9526a3512d2b83453958d16cba2fa624f` | round-3 code review passed |
 | `3f4ec94454e5182476e1c3acba04077feae475bf` | round-2 QA passed |
+| `a24758714244762170da17e7604718086aac4a8b` | integrates current master and clears its typed-contract failures |
+| `0d1a9e66aebf8862e9a80ce10b3532a5a033014e` | adds the focused QA-only receipt-absence assertion |
+| `df6fa688d7e70ca28a97b14fa07c8180cffeb3d0` | records renewed QA receipt `01a019ce-5478-7592-b8d1-bc63e56f0a3c` |
 
 ## Released behavior
 
@@ -86,9 +87,9 @@ Kontor project `01a0064a-e056-7603-9968-ef64fdaacb75`, task
 
 | Gate | Evidence | Result |
 | --- | --- | --- |
-| `code-review-gate` | `docs/evidence/KON-OP-09/REVIEW.md` at `4f3242b` | passed at accepted production head `ffeffc3` |
-| `qa-gate` | `docs/evidence/KON-OP-09/QA.md` at `3f4ec94`; receipt `01a01978-638c-77e3-b190-4e1decaa582f`, sequence `2` | passed |
-| `release-gate` | this `release-notes` artifact | not recorded; blocked by current-`master` integration |
+| `code-review-gate` | accepted production head `a247587`; receipt `01a019bd-f9b8-71e0-9542-080700d325e9` | renewed pass |
+| `qa-gate` | `docs/evidence/KON-OP-09/QA.md` through `df6fa68`; receipt `01a019ce-5478-7592-b8d1-bc63e56f0a3c` | renewed pass |
+| `release-gate` | this `release-notes` artifact | eligible for architect pass after green PR readback |
 
 The accepted QA run reports:
 
@@ -96,52 +97,52 @@ The accepted QA run reports:
 | --- | --- |
 | Generated API drift | pass |
 | Console type check | pass |
-| Console component/contract tests | 16 files, 290 passed |
-| Browser QA | 4 passed: Project Operations and Delivery Teams at desktop and phone widths |
+| Console component/contract tests | 16 files, 295 passed |
+| Browser QA | 4 passed: Project Operations and Teams at desktop and phone widths |
 | Rust format and clippy | pass |
 | Full workspace verification | pass, including `pilot` and `pilot_live` |
 
 The committed visual evidence has these SHA-256 digests:
 
 - `evidence/ASMA-7878-PROJECT-DESKTOP.png`:
-  `2905a8fc4fc257af080f550e49ded0a9e6cf1b9a3d41cb8a48cbf0b92e56d418`
+  `de5a98d8bb5506d12413a7700f09967ebb7131726dd9bc009962d2ebb3239ba6`
 - `evidence/ASMA-7878-PROJECT-PHONE.png`:
-  `bbaba81a138e013efc60bf35b1cd29df6105c07298c1d29a09980fa13f53b0b1`
+  `46dc03a0a2f6f27babbe71284ae14fdf1e311590fde46888e214abece663abf2`
 
 ## Data, compatibility and rollout
 
 This is a console-only release. It adds no database migration, Rust service,
-server route, public contract or generated schema. The current TeamRun,
-workspaces, seats, native sessions and bindings are preserved. OP-09 creates no
-topology and performs no direct Jira or runtime mutation.
+server route or public contract; its TypeScript schema is regenerated from the
+merged authoritative contract. The current TeamRun, workspaces, seats, native
+sessions and bindings are preserved. OP-09 creates no topology and performs no
+direct Jira or runtime mutation.
 
 The release branch is `feat/ASMA-7878-kontor-diagnostic-ui`; PR 44 targets the
-`asma-rs-kontor` default branch and is currently conflicting. Jira must remain
-at the authoritative Kontor `in_progress` state until a corrected revision is
-reviewed, QA passes again and the release gate is durable.
+`asma-rs-kontor` default branch. Current-master integration is complete, GitHub
+reports the PR mergeable, and its Rust and Console checks are green. Jira status
+follows the authoritative Kontor task state through typed reconciliation after
+the release gate and merge are durable.
 
-## Current-master integration refusal
+## Current-master integration resolution
 
-PR 44 was opened from evidence commit
-`847c934d7745fcc372701fed422fe3cb564987fd`. Merging current `origin/master`
-produced one conflict in generated `apps/console/src/api/schema.d.ts`.
-Regenerating that file from the merged authoritative `openapi.json` resolved
-the generated artifact cleanly: `verify:api` passed and all 290 Vitest
-assertions passed. TypeScript then refused the merged production source:
+The prior release rejection receipt `01a0198a-92ab-72b1-b241-030f81104e72`
+correctly held the gate when current `master` first exposed contract failures.
+The accepted integration `a24758714244762170da17e7604718086aac4a8b`
+regenerated `apps/console/src/api/schema.d.ts` from authoritative
+`openapi.json`, then implemented every required typed behavior:
 
-- Advisor and Committee invocation now require `caller_seat_binding_id`.
-- The invocation receipt may be `undefined`, while the existing view accepts
-  only a receipt or `null`.
-- Completion phase is now a typed discriminated object rather than a string.
-- The old `outstanding` field no longer exists on the completion projection.
-- Completion remediation now requires a typed `action` rather than a free-form
-  `reason`.
+- Advisor and Committee invocation selects the exact caller seat binding from
+  the server projection and lets the daemon enforce policy.
+- An absent consultation receipt renders no fabricated confirmation.
+- Completion renders its tagged phase and typed blockers.
+- Completion remediation sends the selected closed tagged action instead of a
+  free-form reason.
 
-These are contract and workflow decisions, not conflict-marker choices. The
-architect release seat therefore aborted the local merge, left PR 44 open, did
-not record the release gate, did not complete the task and did not reconcile
-Jira. Remediation must return through the existing attached implementation,
-inspection and tester seats; no replacement topology is needed.
+Independent review then passed at that exact production head under receipt
+`01a019bd-f9b8-71e0-9542-080700d325e9`. Independent QA passed under receipt
+`01a019ce-5478-7592-b8d1-bc63e56f0a3c` after generated drift, type check,
+295 component tests, four browser flows, formatting, clippy and the workspace
+suite all passed. The old rejection is therefore resolved, not erased.
 
 ## Deliberate limitations
 
@@ -154,6 +155,10 @@ inspection and tester seats; no replacement topology is needed.
 - The horizontally scrolling topology table does not yet expose an explicit
   focusable labelled scroll region. The responsive browser evidence is green,
   but this keyboard affordance remains a recorded non-blocking follow-up.
+- The merged Completion projection also carries rounds, closeout, wakes and a
+  `needs_human` payload that this integration does not yet render. The accepted
+  integration replaces the removed `outstanding` field with typed blockers and
+  does not claim a broader completion-console expansion.
 
 These limitations are visible in `REVIEW.md`; none weakens the accepted
 idempotency, independent-projection, generated-contract, authority-boundary or
