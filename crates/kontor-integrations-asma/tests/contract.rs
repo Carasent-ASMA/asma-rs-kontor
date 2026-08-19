@@ -1868,6 +1868,11 @@ fn the_bundled_specifications_are_the_seed_this_build_ships() {
         spec.class_of(&hold.status_id),
         Some(kontor_core::ticket::SemanticStatusClass::Hold)
     );
+    assert_eq!(
+        spec.class_of(&external("10237")),
+        Some(kontor_core::ticket::SemanticStatusClass::Active),
+        "the live ASMA Jira workflow's DRAFT state is known even when no Kontor milestone applies"
+    );
 
     // The seed contains no transition id: routes are discovered, never declared.
     let json = workflow.document().json();

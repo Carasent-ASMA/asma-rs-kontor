@@ -70,6 +70,10 @@
   ],
   "statuses": [
     {
+      "selector": { "status_id": "10237", "status_name": "DRAFT" },
+      "class": "active"
+    },
+    {
       "selector": { "status_id": "10213", "status_name": "READY FOR DEVELOPMENT" },
       "class": "active"
     },
