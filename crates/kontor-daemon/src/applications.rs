@@ -141,8 +141,8 @@ use kontor_core::state::{
     TopologyLifecycle,
 };
 use kontor_core::ticket::{
-    CommentPolicy, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, TicketSyncProjection,
-    TransitionPlan,
+    CommentPolicy, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, StatusConflictKind,
+    TicketSyncProjection, TransitionPlan,
 };
 use kontor_integrations_asma::AsmaExecutable;
 use kontor_integrations_asma::jira::{
@@ -1463,10 +1463,9 @@ impl Services {
     fn refuse_asma(&self, error: &kontor_integrations_asma::AsmaError) -> ApiError {
         tracing::warn!(detail = %error, "the configured Jira connector refused reconciliation");
         match error {
-            kontor_integrations_asma::AsmaError::Conflict { .. } => self.deny(
-                ApiErrorCode::RevisionConflict,
-                "fresh Jira evidence conflicts with the pinned external-workflow policy",
-            ),
+            kontor_integrations_asma::AsmaError::Conflict { kind, .. } => {
+                self.deny(ApiErrorCode::RevisionConflict, jira_conflict_rule(*kind))
+            }
             kontor_integrations_asma::AsmaError::Domain(_)
             | kontor_integrations_asma::AsmaError::Selection { .. }
             | kontor_integrations_asma::AsmaError::Refused { .. } => self.deny(
@@ -7737,6 +7736,53 @@ impl Services {
             }
         }
         Ok(next)
+    }
+}
+
+/// The static rule sentence for one typed reconciliation conflict.
+///
+/// Reconciliation has always produced a *typed* conflict; this surface used to
+/// collapse every one of them into a single sentence about "the pinned
+/// external-workflow policy". That told an operator that a policy refused without
+/// saying which, and the live ASMA-7877 run is what it costs: a ticket that could
+/// not move from `DRAFT` to `In Development` reported the same prose as an
+/// ownership dispute or a stale read.
+///
+/// An error's `rule` is `&'static str` by contract — never a stored value — so the
+/// kind is surfaced by choosing a sentence per kind rather than by formatting one.
+/// The match is exhaustive over a closed enum, so a new conflict kind cannot be
+/// added without deciding what it tells a caller.
+const fn jira_conflict_rule(kind: StatusConflictKind) -> &'static str {
+    match kind {
+        StatusConflictKind::StaleObservation => {
+            "the newest Jira observation is too old to act on; observe again"
+        }
+        StatusConflictKind::NoLiveTransition => {
+            "this Jira workflow offers no route Kontor may take to the target status"
+        }
+        StatusConflictKind::MultipleLiveTransitions => {
+            "several Jira transitions reach the target status; the pinned specification does not \
+             say which"
+        }
+        StatusConflictKind::IncompatibleHumanMove => {
+            "the ticket was moved to a status the pinned specification cannot start from"
+        }
+        StatusConflictKind::ExternalTerminalBeforeInternalEvidence => {
+            "the ticket is closed in Jira while Kontor holds no closure evidence"
+        }
+        StatusConflictKind::UnknownStatusClass => {
+            "the observed Jira status is not declared by the pinned specification"
+        }
+        StatusConflictKind::UnknownTransitionPath => {
+            "the target status is not declared by the pinned specification"
+        }
+        StatusConflictKind::OwnershipUnresolved => {
+            "Kontor should hold this ticket but no Jira assignee could be resolved"
+        }
+        StatusConflictKind::OwnershipMismatch => "somebody else holds this Jira ticket",
+        StatusConflictKind::TerminalOwnershipViolation => {
+            "a closed ticket's owner changed while the pinned policy preserves it"
+        }
     }
 }
 
