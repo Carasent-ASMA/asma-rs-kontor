@@ -1256,6 +1256,7 @@ impl Services {
                 })
             })
             .map_err(|error| self.refuse(&error))?;
+        self.release_team_seats(project_id, run.team_run_id, now)?;
         Ok(Some(run.team_run_id.to_string()))
     }
 
@@ -1277,6 +1278,7 @@ impl Services {
             ));
         };
         if team.lifecycle.is_terminal() {
+            self.release_team_seats(project_id, run.team_run_id, now)?;
             return Ok((Some(run.team_run_id.to_string()), None));
         }
         let certificate = match self.certify_team(project_id, run.team_run_id)? {
@@ -1307,6 +1309,7 @@ impl Services {
                 })
             })
             .map_err(|error| self.refuse(&error))?;
+        self.release_team_seats(project_id, run.team_run_id, now)?;
         state.signals().appended();
         Ok((Some(run.team_run_id.to_string()), None))
     }
@@ -2152,12 +2155,20 @@ impl Services {
         let runs = state
             .with_store(|store| store.list_team_runs_for_task(project_id, task_id))
             .map_err(|error| self.refuse(&error))?;
-        for (team_run_id, _) in runs {
+        for (team_run_id, lifecycle) in runs {
+            if lifecycle.is_terminal() {
+                continue;
+            }
             let seats = state
                 .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
                 .map_err(|error| self.refuse(&error))?;
-            if let Some(seat) = seats.into_iter().next() {
-                return Ok(Some(seat.agent_run_id));
+            for seat in seats {
+                let run = state
+                    .with_store(|store| store.get_agent_run(project_id, seat.agent_run_id))
+                    .map_err(|error| self.refuse(&error))?;
+                if run.is_some_and(|run| !run.projection.lifecycle.is_terminal()) {
+                    return Ok(Some(seat.agent_run_id));
+                }
             }
         }
         Ok(None)
@@ -9007,9 +9018,14 @@ impl ApplicationOperations for Services {
             // that is a native root hosts nothing, and opening a seat on one
             // would be Kontor placing work where the vocabulary says it cannot
             // go.
-            if declared
-                .projection_capabilities
-                .contains(&NodeProjectionCapability::SessionHost)
+            // Ticket materialization binds the durable TSW container but does
+            // not admit a TeamRun or pre-create a delivery seat. Scheduler
+            // start owns delivery-seat creation. Structural session hosts keep
+            // their control seat.
+            if scope.task_id.is_none()
+                && declared
+                    .projection_capabilities
+                    .contains(&NodeProjectionCapability::SessionHost)
             {
                 let slot = self.control_slot()?;
                 let held = state
@@ -14515,6 +14531,7 @@ impl ApplicationOperations for Services {
             .map_err(|error| self.refuse(&error))?
             .is_some_and(|team| team.lifecycle.is_terminal());
         if already {
+            self.release_team_seats(project_id, team_run_id, now)?;
             return Ok(self.waiver_dto(state.realm_id(), stored, applied, Some(team_run_id)));
         }
         let team_run_closed = match self.certify_team(project_id, team_run_id)? {
@@ -14541,6 +14558,7 @@ impl ApplicationOperations for Services {
                         })
                     })
                     .map_err(|error| self.refuse(&error))?;
+                self.release_team_seats(project_id, team_run_id, now)?;
                 state.signals().appended();
                 Some(team_run_id.to_string())
             }
@@ -17695,6 +17713,60 @@ impl Services {
         Ok(())
     }
 
+    /// Retire every topology seat owned by one terminal TeamRun.
+    ///
+    /// The rows remain historical evidence; retiring them only releases the
+    /// active `(node, role slot)` key so a later admitted generation receives
+    /// fresh bindings instead of adopting the old team's seats.
+    fn release_team_seats(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        released_at: Timestamp,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let Some(team) = state
+            .with_store(|store| store.get_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(());
+        };
+        if !team.lifecycle.is_terminal() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a non-terminal TeamRun's seats cannot be released",
+            ));
+        }
+        let Some(node) = state
+            .with_store(|store| store.get_task_topology_node(project_id, team.task_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(());
+        };
+        let bindings = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?;
+        for binding in bindings
+            .into_iter()
+            .filter(|binding| binding.team_run_id == Some(team_run_id) && binding.is_non_terminal())
+        {
+            state
+                .with_store(|store| {
+                    store.observe_seat_binding(
+                        project_id,
+                        binding.id,
+                        &SeatLivenessObservation {
+                            released_at: Some(released_at),
+                            ..SeatLivenessObservation::default()
+                        },
+                        released_at,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        Ok(())
+    }
+
     /// Release the seat that owns one epic's delivery seats.
     ///
     /// The live half of parent-derived orphanhood. Until something closes the
@@ -17801,11 +17873,17 @@ impl Services {
         let held = state
             .with_store(|store| store.list_seat_bindings(project_id, node.id))
             .map_err(|error| self.refuse(&error))?;
-        if held
+        if let Some(binding) = held
             .iter()
-            .any(|binding| &binding.role_slot_id == slot && binding.is_non_terminal())
+            .find(|binding| &binding.role_slot_id == slot && binding.is_non_terminal())
         {
-            return Ok(());
+            if binding.task_id == Some(task_id) && binding.team_run_id == Some(team_run_id) {
+                return Ok(());
+            }
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this role slot is held by another live task or TeamRun",
+            ));
         }
         let now = kontor_api::now();
         let deadline = now
