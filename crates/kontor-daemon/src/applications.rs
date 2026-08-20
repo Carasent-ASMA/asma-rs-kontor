@@ -113,7 +113,7 @@ use kontor_core::id::{
     SpecVersion, StatusConflictId, TaskId, TeamRunId, TicketProjectionId, Timestamp,
     TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
 };
-use kontor_core::naming::NativeNameValues;
+use kontor_core::naming::{NativeNameTemplate, NativeNameValues};
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
@@ -5009,8 +5009,26 @@ impl Services {
         epic_id: Option<MiniProjectId>,
     ) -> Result<TopologyProjectionDto, ApiError> {
         let state = self.state()?;
-        let topology = self.project_topology(project_id)?;
-        let spec = self.pinned_spec(project_id)?;
+        // An epic-scoped projection reports the epic's immutable pin, not the
+        // project's default. The two intentionally diverge after an authorized
+        // per-epic upgrade; reading the default here made a successful apply
+        // appear to remain on the old revision and interpreted every node
+        // through the wrong vocabulary.
+        let topology = match epic_id {
+            Some(epic_id) => self.epic_pin(project_id, epic_id)?,
+            None => self.project_topology(project_id)?,
+        };
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, topology.spec_id, topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the projected topology revision is not published in this project",
+                )
+            })?;
         let nodes = state
             .with_store(|store| store.list_project_topology_nodes(project_id))
             .map_err(|error| self.refuse(&error))?;
@@ -18955,6 +18973,10 @@ impl Services {
                     "a node's kind is not declared by its pinned topology revision",
                 )
             })?;
+        if let NativeNameTemplate::Legacy(template) = template {
+            return render_legacy_container_name(template, scope)
+                .map_err(|error| self.refuse_domain(&error));
+        }
         let mut values = NativeNameValues::new().with_area_code(node.kind.as_str());
         if let Some(scope) = scope {
             if let Some(task) = scope.task.as_ref() {
@@ -19607,6 +19629,37 @@ impl Services {
     }
 }
 
+/// Render a pre-v47 immutable template only when it names the old closed scope
+/// placeholders explicitly. Opaque legacy prose remains read-only: it cannot be
+/// guessed into a native identity after the typed naming contract exists.
+fn render_legacy_container_name(
+    template: &ExternalName,
+    scope: Option<&ExecutionScope>,
+) -> kontor_core::DomainResult<ExternalName> {
+    let scope = scope.ok_or_else(|| {
+        kontor_core::DomainError::invalid(
+            "NativeNameTemplate",
+            "a legacy placeholder template needs an explicit execution scope",
+        )
+    })?;
+    let mut rendered = template
+        .as_str()
+        .replace("<Jira epic>", scope.epic.external_epic_key.as_str())
+        .replace("<short title>", scope.epic.short_title.as_str());
+    if let Some(task) = scope.task.as_ref() {
+        rendered = rendered
+            .replace("<Jira issue>", task.external_issue_key.as_str())
+            .replace("<short ticket code>", task.short_code.as_str());
+    }
+    if rendered == template.as_str() || rendered.contains(['<', '>']) {
+        return Err(kontor_core::DomainError::invalid(
+            "NativeNameTemplate",
+            "a legacy template must use only the recognized scope placeholders",
+        ));
+    }
+    ExternalName::parse(&rendered)
+}
+
 /// One profile pack, as the catalogue advertises it.
 fn pack_dto(
     pack: &ProfilePackSpec,
@@ -19744,8 +19797,38 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{counts_towards_completion, eligible_roots, slot_prompt};
+    use super::{
+        counts_towards_completion, eligible_roots, render_legacy_container_name, slot_prompt,
+    };
+    use kontor_core::id::{ExternalId, ExternalName, MiniProjectId};
     use kontor_core::state::TaskState;
+    use kontor_runtime::scope::{EpicScope, ExecutionScope};
+
+    #[test]
+    fn a_pre_v47_placeholder_template_renders_from_the_exact_epic_scope() {
+        let template = ExternalName::parse("ESW · <Jira epic> · <short title>")
+            .expect("the historical immutable template");
+        let scope = ExecutionScope::for_epic(EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-7675").expect("the Jira epic"),
+            short_title: ExternalName::parse("QNR-P1").expect("the short title"),
+        });
+
+        assert_eq!(
+            render_legacy_container_name(&template, Some(&scope))
+                .expect("the explicit historical placeholders render")
+                .as_str(),
+            "ESW · ASMA-7675 · QNR-P1"
+        );
+        assert!(
+            render_legacy_container_name(
+                &ExternalName::parse("Epic Session Workspace").expect("legacy prose"),
+                Some(&scope),
+            )
+            .is_err(),
+            "opaque legacy prose stays read-only"
+        );
+    }
 
     #[test]
     fn withdrawal_alone_leaves_the_epic_completion_census() {

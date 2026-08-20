@@ -7978,6 +7978,12 @@ async fn an_applied_task_materializes_and_replays_without_a_startup_task_scope()
             "work_profile_category": category,
             "runtime_family": "fake.runtime",
             "account_profile_id": account_id,
+            "execution_scope": {
+                "external_epic_key": "ASMA-7877",
+                "short_title": "Operational control surfaces",
+                "kontor_backlog_code": "OP-08",
+                "ai_short_name": "Operational Control"
+            },
             "tasks": [{
                 "title": "OP-08",
                 "short_code": "OP-08",
@@ -8038,7 +8044,7 @@ async fn an_applied_task_materializes_and_replays_without_a_startup_task_scope()
     .expect("a topology node id");
     assert_eq!(
         world.fake.container_title(task_node_id).as_deref(),
-        Some("TSW · ASMA-7877 · OP-08"),
+        Some("TSW • ASMA-7877 • OP-08"),
         "the runtime rendered the workspace from durable task scope"
     );
     assert!(
@@ -18262,17 +18268,52 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(ensured.status, 200, "{}", ensured.body);
     let pinned_before = ensured.json()["projection"]["pinned_spec"].clone();
+    let materialized = Call::post(
+        format!("/v1/projects/{}/topology:materialize", composed.project),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": composed.epic},
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("upgrade-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
 
-    // Publish a second revision of the *bundled* lineage: a vocabulary that
-    // keeps the root and the epic kind but drops the control plane.
+    // Publish a second revision of the *bundled* lineage whose sole semantic
+    // change is the ESW native-name template. Existing kinds, hierarchy,
+    // capabilities, nodes, containers and seats remain valid in place.
     let bundled = pinned_before["id"].as_str().expect("a spec id").to_owned();
+    let current = Call::get(format!(
+        "/v1/projects/{}/topology-specs/{bundled}/{}",
+        composed.project, pinned_before["version"]
+    ))
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(current.status, 200, "{}", current.body);
+    let mut node_kinds = current.json()["document"]["node_kinds"].clone();
+    node_kinds
+        .as_array_mut()
+        .expect("node kinds")
+        .iter_mut()
+        .find(|kind| kind["kind"] == "ESW")
+        .expect("the ESW kind")["name_template"] = serde_json::json!({
+        "segments": [
+            {"kind": "literal", "value": "Upgraded ESW"},
+            {"kind": "token", "value": "JIRA_CODE"},
+            {"kind": "token", "value": "KONTOR_BACKLOG_CODE"}
+        ]
+    });
     let drafted = Call::post(
         format!("/v1/projects/{}/topology-specs:draft", composed.project),
         &serde_json::json!({
             "base": {"id": bundled, "version": pinned_before["version"]},
-            "name": "Narrowed vocabulary",
+            "name": "Retitled epic workspace vocabulary",
             "root_kind": "PSW",
-            "node_kinds": vocabulary("PSW", Some("ESW")),
+            "node_kinds": node_kinds,
+            "historical_codes": current.json()["document"]["historical_codes"],
         }),
     )
     .signed_as(world, "admin")
@@ -18326,15 +18367,8 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
         .expect("effects")
         .clone();
     assert!(
-        effects.iter().any(|effect| effect["effect"] == "withdrawn"),
-        "dropping a kind is named: {}",
-        preview.body
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|effect| effect["subject"] == "node" && effect["effect"] == "orphaned"),
-        "the control-plane node standing on the dropped kind is named: {}",
+        effects.is_empty(),
+        "a name-template-only upgrade preserves every topology subject: {}",
         preview.body
     );
     let preview_hash = preview.json()["preview_hash"]
@@ -18409,7 +18443,81 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     assert_eq!(applied.json()["pinned_spec"]["version"], 2);
+    assert_eq!(
+        applied.json()["projection"]["pinned_spec"]["version"],
+        2,
+        "the embedded epic projection reports the epic pin: {}",
+        applied.body
+    );
     assert_eq!(applied.json()["receipt"]["applied"], "created");
+
+    let project_id = ProjectId::parse(&composed.project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&composed.epic).expect("an epic id");
+    let nodes = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+        .expect("the epic nodes read");
+    assert!(
+        nodes.iter().all(|node| node.topology.version.get() == 2),
+        "the exact existing nodes move to the target revision in place"
+    );
+
+    let epic_node = applied.json()["projection"]["nodes"]
+        .as_array()
+        .expect("projected nodes")
+        .iter()
+        .find(|node| node["kind_key"] == "ESW")
+        .expect("the ESW node")
+        .clone();
+    let epic_node_id = epic_node["topology_node_id"]
+        .as_str()
+        .expect("the ESW node id");
+    let parsed_epic_node = TopologyNodeId::parse(epic_node_id).expect("a topology node id");
+    let old_title = world
+        .fake
+        .container_title(parsed_epic_node)
+        .expect("the existing ESW native container keeps its identity");
+    let preview_retitle = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{epic_node_id}/container:retitle-preview",
+            composed.project
+        ),
+        &serde_json::json!({"expected_revision": composed.project_revision}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview_retitle.status, 200, "{}", preview_retitle.body);
+    let desired_title = preview_retitle.json()["desired_title"]
+        .as_str()
+        .expect("a desired title")
+        .to_owned();
+    assert!(
+        desired_title.starts_with("Upgraded ESW • ")
+            && !desired_title.contains('<')
+            && desired_title != old_title,
+        "the v2 template is rendered from typed scope: {}",
+        preview_retitle.body
+    );
+    let retitled = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{epic_node_id}/container:retitle-apply",
+            composed.project
+        ),
+        &serde_json::json!({"expected_revision": composed.project_revision}),
+    )
+    .signed_as(world, "admin")
+    .with_key("upgrade-retitle-apply")
+    .send(world)
+    .await;
+    assert_eq!(retitled.status, 200, "{}", retitled.body);
+    assert_eq!(retitled.json()["observed_title"], desired_title);
+    assert_eq!(
+        world.fake.container_title(parsed_epic_node).as_deref(),
+        Some(desired_title.as_str()),
+        "retitle preserves the exact native container and reads the new title back"
+    );
 
     // The replay answers from what is durable and moves nothing again.
     let replayed = Call::post(
