@@ -58,7 +58,7 @@ use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
     HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
     HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
-    RuntimeAdapter, RuntimeError, RuntimeResult,
+    RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, ClaimedSeat, OccupiedSeat, RoleSlotKey,
@@ -227,76 +227,12 @@ impl PaseoExecutionScope {
         self.task_scopes.get(&task_id).cloned()
     }
 
+    #[cfg(test)]
     fn task_scope(&self, task_id: TaskId) -> RuntimeResult<PaseoTaskScope> {
         self.configured_task_scope(task_id)
             .ok_or(RuntimeError::WorkspaceMismatch {
                 rule: "the task has no configured Paseo workspace scope",
             })
-    }
-
-    /// `Epic · {jira_epic_key} · {mini_project_short_title}`.
-    #[must_use]
-    pub fn project_display_name(&self) -> String {
-        format!(
-            "Epic · {} · {}",
-            self.jira_epic_key.as_str(),
-            self.mini_project_short_title.as_str()
-        )
-    }
-
-    /// `TSW · {jira_issue_key} · {ticket_short_code}`.
-    #[must_use]
-    pub fn workspace_display_name(&self) -> String {
-        format!(
-            "TSW · {} · {}",
-            self.jira_issue_key.as_str(),
-            self.ticket_short_code.as_str()
-        )
-    }
-
-    /// `{role} · {ticket_short_code} [· {stable_slot_suffix}]`.
-    ///
-    /// # Errors
-    /// Returns [`RuntimeError::LaunchNotAdmitted`] when the configured ticket
-    /// did not provide a visible name for the requested role slot.
-    pub fn agent_display_name(&self, role_slot_id: &RoleSlotId) -> RuntimeResult<String> {
-        self.agent_display_name_for(role_slot_id, None)
-    }
-
-    fn agent_display_name_for(
-        &self,
-        role_slot_id: &RoleSlotId,
-        task_id: Option<TaskId>,
-    ) -> RuntimeResult<String> {
-        let display =
-            self.seat_display_roles
-                .get(role_slot_id)
-                .ok_or(RuntimeError::LaunchNotAdmitted {
-                    rule: "role slot has no canonical seat display name",
-                })?;
-        if self
-            .seat_display_roles
-            .iter()
-            .any(|(other_id, other)| other_id != role_slot_id && other == display)
-        {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "two role slots have the same canonical seat display name",
-            });
-        }
-        let (role, suffix) = display;
-        let ticket_short_code = match task_id {
-            Some(task_id) => self.task_scope(task_id)?.ticket_short_code,
-            None => self.ticket_short_code.clone(),
-        };
-        Ok(match suffix {
-            Some(suffix) => format!(
-                "{} · {} · {}",
-                role.as_str(),
-                ticket_short_code.as_str(),
-                suffix.as_str()
-            ),
-            None => format!("{} · {}", role.as_str(), ticket_short_code.as_str()),
-        })
     }
 }
 
@@ -1412,45 +1348,6 @@ impl PaseoAdapter {
         Ok(effective)
     }
 
-    fn scoped_agent_display_name(
-        &self,
-        role_slot_id: &RoleSlotId,
-        scope: &ExecutionScope,
-    ) -> RuntimeResult<String> {
-        let scope = self.effective_scope(scope)?;
-        let task = scope.require_task()?;
-        let (role, suffix) = self
-            .config
-            .scope
-            .seat_display_roles
-            .get(role_slot_id)
-            .ok_or(RuntimeError::LaunchNotAdmitted {
-                rule: "role slot has no canonical seat display name",
-            })?;
-        if self
-            .config
-            .scope
-            .seat_display_roles
-            .iter()
-            .any(|(other_id, other)| {
-                other_id != role_slot_id && other == &(role.clone(), suffix.clone())
-            })
-        {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "two role slots have the same canonical seat display name",
-            });
-        }
-        Ok(match suffix {
-            Some(suffix) => format!(
-                "{} · {} · {}",
-                role.as_str(),
-                task.short_code.as_str(),
-                suffix.as_str()
-            ),
-            None => format!("{} · {}", role.as_str(), task.short_code.as_str()),
-        })
-    }
-
     fn scoped_plan_item_key(&self, scope: &ExecutionScope) -> RuntimeResult<ExternalId> {
         if scope.epic.mini_project_id == self.configured_epic_id()?
             && let Some(configured) = self
@@ -2082,17 +1979,6 @@ impl PaseoAdapter {
 // ---------------------------------------------------------------------------
 
 impl PaseoAdapter {
-    /// The correlation id the plane's own preparation carries.
-    ///
-    /// It is derived from the mini-project this plane serves and is therefore
-    /// the *same string* on every startup, every retry and every process. That
-    /// is the whole point: `project.add` carries no label, so the request id is
-    /// the only correlation a redelivery has, and a fresh id per attempt would
-    /// make two attempts look like two intents.
-    fn plane_command_id(&self) -> String {
-        format!("kontor-plane-{}", self.config.mini_project_id)
-    }
-
     /// Make the epic project exist, idempotently, and say whether its name
     /// drifted.
     ///
@@ -2106,9 +1992,11 @@ impl PaseoAdapter {
     ///   persisted binding no longer names a project it holds.
     /// * [`RuntimeError::WorkspaceMismatch`] — the daemon answered about another
     ///   project.
-    pub async fn prepare_project(&self, command_id: &str) -> RuntimeResult<PaseoProjectOutcome> {
-        let desired = self.config.scope.project_display_name();
-
+    pub async fn prepare_project(
+        &self,
+        command_id: &str,
+        desired: &ExternalName,
+    ) -> RuntimeResult<PaseoProjectOutcome> {
         // A persisted binding is authoritative, and it is attested by exact id
         // rather than re-derived. Re-deriving would re-open the very question
         // the binding exists to close.
@@ -2123,7 +2011,7 @@ impl PaseoAdapter {
                 self.config.mini_project_id.clone(),
                 binding.project_id,
                 project.display_name,
-                desired,
+                desired.as_str().to_owned(),
             ));
         }
 
@@ -2135,7 +2023,7 @@ impl PaseoAdapter {
         // must not become a second project.
         let mut correlated = projects
             .iter()
-            .filter(|project| project.display_name == desired)
+            .filter(|project| project.display_name == desired.as_str())
             .collect::<Vec<_>>();
         let project = match correlated.len() {
             1 => correlated.remove(0).clone(),
@@ -2167,7 +2055,7 @@ impl PaseoAdapter {
             self.config.mini_project_id.clone(),
             project_id,
             project.display_name,
-            desired,
+            desired.as_str().to_owned(),
         ))
     }
 
@@ -2322,16 +2210,11 @@ impl PaseoAdapter {
         let scope = self.effective_scope(&request.scope)?;
         let project = self.read_project_by_id(native_id.as_str()).await?;
         let epic_id = Self::external_epic_id(&scope)?;
-        let desired = format!(
-            "Epic · {} · {}",
-            scope.epic.external_epic_key.as_str(),
-            scope.epic.short_title.as_str()
-        );
         let _ = self.settle_project(
             epic_id,
             ExternalId::parse(&project.id)?,
             project.display_name,
-            desired,
+            request.display_name.as_str().to_owned(),
         );
         Ok(())
     }
@@ -2347,11 +2230,15 @@ impl PaseoAdapter {
         project_id: &ExternalId,
         generation: u64,
     ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
-        let title = self.container_title(
-            Some(&request.scope),
-            request.task_id,
-            request.display_name.as_str(),
-        )?;
+        if let Some(task_id) = request.task_id {
+            let scope = self.effective_scope(&request.scope)?;
+            if scope.require_task()?.task_id != task_id {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the container task does not match its durable execution scope",
+                });
+            }
+        }
+        let title = request.display_name.as_str().to_owned();
         let cwd = request
             .cwd
             .as_ref()
@@ -2413,59 +2300,10 @@ impl PaseoAdapter {
         Ok((identity, correlation, created))
     }
 
-    /// The human-readable title one native container must carry.
+    /// Read one project by exact native id.
     ///
-    /// **The one renderer.** Both entry points that decide a container's name go
-    /// through it — the bind path that creates one and the retitle path that
-    /// corrects one — so they cannot disagree about what a single workspace is
-    /// called. A retitle computing its own answer is how a repair renames a
-    /// container that was already right.
-    ///
-    /// A container that names a delivery task **is** that task's session
-    /// workspace, so its title comes from the authoritative scope
-    /// `prepare_workspace` renders from — `TSW · {jira issue} · {short code}`.
-    /// The `structural` name the control plane derived from the node kind's
-    /// template is deliberately not used for one: admission builds it from that
-    /// template and the topology node id, and a node id is an identity, which is
-    /// unreadable to the humans a title exists for.
-    ///
-    /// A container that names no task keeps the structural name. Those are the
-    /// project and epic roots, whose titles are structural rather than
-    /// ticket-scoped, and there is no task scope to render them from.
-    ///
-    /// # Errors
-    /// Returns [`RuntimeError::WorkspaceMismatch`] when a named task has no
-    /// matching durable request scope. Refusing is the whole point: falling back
-    /// to the structural name would produce exactly the title this rule exists
-    /// to prevent.
-    fn container_title(
-        &self,
-        scope: Option<&ExecutionScope>,
-        task_id: Option<TaskId>,
-        structural: &str,
-    ) -> RuntimeResult<String> {
-        Ok(match task_id {
-            Some(task_id) => {
-                let scope = scope.ok_or(RuntimeError::WorkspaceMismatch {
-                    rule: "a task-scoped container must carry its durable execution scope",
-                })?;
-                let scope = self.effective_scope(scope)?;
-                let task = scope.require_task()?;
-                if task.task_id != task_id {
-                    return Err(RuntimeError::WorkspaceMismatch {
-                        rule: "the container task does not match its durable execution scope",
-                    });
-                }
-                format!(
-                    "TSW · {} · {}",
-                    task.external_issue_key.as_str(),
-                    task.short_code.as_str()
-                )
-            }
-            None => structural.to_owned(),
-        })
-    }
-
+    /// Display names are deliberately ignored for selection: the daemon owns
+    /// their rendered value and may be repairing it in place.
     async fn read_project_by_id(&self, project_id: &str) -> RuntimeResult<PaseoProject> {
         self.fetch_projects()
             .await?
@@ -3056,12 +2894,7 @@ impl PaseoAdapter {
                 identity.clone(),
                 request.requested_at,
             );
-            let desired = ExternalName::parse(&self.container_title(
-                request.scope.as_ref(),
-                request.task_id,
-                request.structural_name.as_str(),
-            )?)
-            .map_err(RuntimeError::Domain)?;
+            let desired = request.desired_title.clone();
             let changed = before.display_name != desired.as_str();
             return Ok(PaseoRetitlePlan {
                 snapshot: ContainerBindingSnapshot {
@@ -3115,12 +2948,7 @@ impl PaseoAdapter {
             identity.clone(),
             request.requested_at,
         );
-        let desired = ExternalName::parse(&self.container_title(
-            request.scope.as_ref(),
-            request.task_id,
-            request.structural_name.as_str(),
-        )?)
-        .map_err(RuntimeError::Domain)?;
+        let desired = request.desired_title.clone();
         let changed = before.visible_title() != desired.as_str();
         Ok(PaseoRetitlePlan {
             snapshot: ContainerBindingSnapshot {
@@ -3353,14 +3181,12 @@ impl PaseoAdapter {
             }
         })?;
 
-        let agent_display_name =
-            self.scoped_agent_display_name(request.role_slot_id(), &effective_scope)?;
         let command = PaseoCommand::agent_run(
             &workspace_id,
             task_scope.worktree.as_str(),
             request.model_rung(),
             request.autonomy(),
-            &agent_display_name,
+            request.display_name().as_str(),
             &labels,
             self.config.scope.orchestrator_agent_id.as_str(),
             request.prompt().as_str(),
@@ -3935,7 +3761,11 @@ impl RuntimeAdapter for PaseoAdapter {
     }
 
     async fn prepare_plane(&self) -> RuntimeResult<()> {
-        self.prepare_project(&self.plane_command_id()).await?;
+        // Project creation belongs to `prepare_container`, whose request carries
+        // the daemon-rendered title from the pinned topology specification.
+        // Startup may verify that the runtime answers, but it has no naming
+        // authority and therefore emits no project mutation.
+        self.discover_capabilities().await?;
         Ok(())
     }
 
@@ -4475,11 +4305,7 @@ impl RuntimeAdapter for PaseoAdapter {
         .await?;
         let project = self.require_project_for(&effective_scope)?;
 
-        let workspace_title = format!(
-            "TSW · {} · {}",
-            task_scope.external_issue_key.as_str(),
-            task_scope.short_code.as_str()
-        );
+        let workspace_title = request.display_name.as_str();
         let existing = self.fetch_workspaces(project.project_id.as_str()).await?;
         let same_path = existing
             .iter()
@@ -4511,7 +4337,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 let command = PaseoCommand::workspace_create(
                     request.root.as_str(),
                     project.project_id.as_str(),
-                    &workspace_title,
+                    workspace_title,
                 );
                 let output = self.transport.run(&command).await?;
                 let created: PaseoCliWorkspaceCreated = output.parse("PaseoCliWorkspaceCreated")?;
@@ -4894,7 +4720,7 @@ impl RuntimeAdapter for PaseoAdapter {
             &project,
             &workspace_id,
         )?;
-        let title = self.scoped_agent_display_name(&request.role_slot_id, &scope)?;
+        let title = request.desired_title.as_str().to_owned();
         let changed =
             !before.matches_labels(&labels) || before.title.as_deref() != Some(title.as_str());
         if changed {
@@ -4926,6 +4752,76 @@ impl RuntimeAdapter for PaseoAdapter {
             labels: after.labels,
             changed,
             observed_at: request.requested_at,
+        })
+    }
+
+    async fn preview_retitle_seat(
+        &self,
+        request: &RetitleSeatRequest,
+    ) -> RuntimeResult<RetitleSeatOutcome> {
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation > self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persistent seat belongs to a runtime generation this plane has not reached",
+            });
+        }
+        let before = self
+            .fetch_agent(request.identity.native_id.as_str())
+            .await?;
+        let provider_session_id = before
+            .provider_session_id()
+            .map(ExternalId::parse)
+            .transpose()?;
+        if before.id != request.identity.native_id.as_str()
+            || request
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|expected| provider_session_id.as_ref() != Some(expected))
+            || before.workspace_id.as_deref() != Some(request.container_native_id.as_str())
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(RetitleSeatOutcome {
+            identity: request.identity.clone(),
+            provider_session_id,
+            container_native_id: request.container_native_id.clone(),
+            observed_title: before.title.clone().unwrap_or_default(),
+            changed: before.title.as_deref() != Some(request.desired_title.as_str()),
+        })
+    }
+
+    async fn retitle_seat(
+        &self,
+        request: &RetitleSeatRequest,
+    ) -> RuntimeResult<RetitleSeatOutcome> {
+        let preview = self.preview_retitle_seat(request).await?;
+        if preview.changed {
+            let output = self
+                .transport
+                .run(&PaseoCommand::agent_update(
+                    request.identity.native_id.as_str(),
+                    Some(request.desired_title.as_str()),
+                    &BTreeMap::new(),
+                ))
+                .await?;
+            let updated: PaseoCliAgentUpdated = output.parse("PaseoCliAgentUpdated")?;
+            if updated.agent_id != request.identity.native_id.as_str() {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        }
+        let after = self.preview_retitle_seat(request).await?;
+        if after.identity != request.identity
+            || after.provider_session_id != request.provider_session_id
+            || after.container_native_id != request.container_native_id
+            || after.observed_title != request.desired_title.as_str()
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(RetitleSeatOutcome {
+            changed: preview.changed,
+            ..after
         })
     }
 

@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use kontor_core::id::{AccountProfileId, ProjectId};
+use kontor_core::id::{AccountProfileId, CanonicalDocument, ProjectId};
 use kontor_core::repository::{ProjectRepository, RepositoryError};
 use kontor_store::{SCHEMA_VERSION, SqliteStore, StoreError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
@@ -57,6 +57,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "epic_completion",
     "epic_completion_remediation_proposals",
     "epic_completion_wakes",
+    "epic_native_name_tokens",
     "epic_execution_scopes",
     "epic_rosters",
     "execution_authorization_revocations",
@@ -139,6 +140,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "status_transition_receipts",
     "seat_bindings",
     "task_account_selections",
+    "task_ai_short_names",
     "task_dependencies",
     "task_gate_evaluations",
     "task_persona_snapshots",
@@ -157,6 +159,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "trigger_specs",
     "topology_node_containers",
     "topology_nodes",
+    "topology_spec_canonicalization_receipts",
     "topology_specs",
     "turn_dispatches",
     "work_calendars",
@@ -300,6 +303,127 @@ fn migrate_through_v33(connection: &Connection) {
     }
 }
 
+fn migrate_through_v46(connection: &Connection) {
+    migrate_through_v33(connection);
+    for migration in [
+        include_str!("../migrations/0034_consultation_profiles.sql"),
+        include_str!("../migrations/0035_epic_completion.sql"),
+        include_str!("../migrations/0036_consultation_runs.sql"),
+        include_str!("../migrations/0037_escalation_brief.sql"),
+        include_str!("../migrations/0038_publish_trigger_command.sql"),
+        include_str!("../migrations/0039_committee_remediation.sql"),
+        include_str!("../migrations/0040_advisor_advice.sql"),
+        include_str!("../migrations/0041_open_questions.sql"),
+        include_str!("../migrations/0042_imported_task_lifecycle.sql"),
+        include_str!("../migrations/0043_epic_execution_scopes.sql"),
+        include_str!("../migrations/0044_hosted_topology_seats.sql"),
+        include_str!("../migrations/0045_admin_workflow_install_and_withdrawal.sql"),
+        include_str!("../migrations/0046_task_short_codes_and_hosted_route_history.sql"),
+    ] {
+        connection
+            .execute_batch(migration)
+            .expect("the canonical migrations through v46 run");
+    }
+}
+
+fn legacy_operational_topology() -> CanonicalDocument {
+    let domain: serde_json::Value = serde_json::from_str(include_str!(
+        "../../kontor-profiles/fixtures/operational-domain.json"
+    ))
+    .expect("the bundled domain JSON parses");
+    let mut spec = domain["topology_specs"][0].clone();
+    let object = spec.as_object_mut().expect("the topology is an object");
+    object.remove("name_separator");
+    for node in object["node_kinds"]
+        .as_array_mut()
+        .expect("the node kinds are an array")
+    {
+        let kind = node["kind"].as_str().expect("a kind");
+        let legacy = match kind {
+            "PSW" => "Project Session Workspace",
+            "QSW" => "Quick Session Workspace",
+            "ESW" => "Epic Session Workspace",
+            "ECP" => "ECP · <Jira epic> · <short title>",
+            "TSW" => "Ticket Session Workspace",
+            "ASW" => "Advisor Session Workspace",
+            "CSW" => "Committee Session Workspace",
+            other => panic!("unexpected bundled kind {other}"),
+        };
+        let node = node.as_object_mut().expect("a node is an object");
+        node.insert("name_template".to_owned(), serde_json::json!(legacy));
+        node.remove("seat_name_template");
+    }
+    CanonicalDocument::from_value(&spec).expect("the known legacy spec canonicalizes")
+}
+
+fn seed_v46_operational_topology(connection: &Connection, definition: &CanonicalDocument) {
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000a1";
+    const PROJECT: &str = "0193f000-0000-7000-8000-0000000000a2";
+    const EPIC: &str = "0193f000-0000-7000-8000-0000000000a3";
+    const NODE: &str = "0193f000-0000-7000-8000-0000000000a4";
+    const SPEC: &str = "01936f5a-1000-7000-8000-000000000001";
+    connection
+        .execute(
+            "INSERT INTO realm_metadata
+                 (singleton, realm_id, schema_version, created_at, display_label)
+             VALUES (1, ?1, 1, '2026-08-20T18:00:00Z', NULL)",
+            [REALM],
+        )
+        .expect("the v46 Realm is seeded");
+    connection
+        .execute(
+            "INSERT INTO projects (id, name, root_path, revision, created_at)
+             VALUES (?1, 'P', '/tmp/v46-naming', 1, '2026-08-20T18:00:00Z')",
+            [PROJECT],
+        )
+        .expect("the project is seeded");
+    connection
+        .execute(
+            "INSERT INTO mini_projects (id, project_id, name, revision, created_at)
+             VALUES (?1, ?2, 'ASMA-7675 · QNR v2 Nonprod Delivery', 1,
+                     '2026-08-20T18:00:00Z')",
+            rusqlite::params![EPIC, PROJECT],
+        )
+        .expect("the epic is seeded");
+    connection
+        .execute(
+            "INSERT INTO topology_specs
+                 (project_id, spec_id, version, name, root_kind, definition,
+                  definition_hash, published_at, shareability_class,
+                  shareability_classifier, shareability_provenance)
+             VALUES (?1, ?2, 1, 'Operational project session topology', 'PSW',
+                     ?3, ?4, '2026-08-20T18:00:00Z', 'project_shared', NULL, 'type_default')",
+            rusqlite::params![PROJECT, SPEC, definition.json(), definition.hash().as_str()],
+        )
+        .expect("the old topology is seeded");
+    connection
+        .execute(
+            "INSERT INTO project_topology_defaults
+                 (project_id, spec_id, version, canonical_hash, selected_at)
+             VALUES (?1, ?2, 1, ?3, '2026-08-20T18:00:00Z')",
+            rusqlite::params![PROJECT, SPEC, definition.hash().as_str()],
+        )
+        .expect("the project pin is seeded");
+    connection
+        .execute(
+            "INSERT INTO mini_project_topology_snapshots
+                 (mini_project_id, project_id, spec_id, version, canonical_hash, pinned_at)
+             VALUES (?1, ?2, ?3, 1, ?4, '2026-08-20T18:00:00Z')",
+            rusqlite::params![EPIC, PROJECT, SPEC, definition.hash().as_str()],
+        )
+        .expect("the epic pin is seeded");
+    connection
+        .execute(
+            "INSERT INTO topology_nodes
+                 (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
+                  kind, parent_id, lifecycle, placement, revision, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, 'ESW', NULL, 'active', 'bound', 1,
+                     '2026-08-20T18:00:00Z', '2026-08-20T18:00:00Z')",
+            rusqlite::params![NODE, PROJECT, EPIC, SPEC, definition.hash().as_str()],
+        )
+        .expect("the pinned node is seeded");
+}
+
 fn table_names(connection: &Connection) -> BTreeSet<String> {
     let mut statement = connection
         .prepare(
@@ -325,7 +449,121 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 46);
+    assert_eq!(SCHEMA_VERSION, 47);
+}
+
+#[test]
+fn v46_to_v47_canonicalizes_only_the_known_builtin_hash_and_every_reference() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    let legacy = legacy_operational_topology();
+    assert_eq!(
+        legacy.hash().as_str(),
+        "36551ae60f0d354cfe5093b48f482f42227ce99d7cc704a02a3afa92e302dbf1"
+    );
+    {
+        let connection = Connection::open(&path).expect("the v46 database opens");
+        migrate_through_v46(&connection);
+        seed_v46_operational_topology(&connection, &legacy);
+    }
+
+    let store = SqliteStore::open(&path).expect("the known v46 topology upgrades");
+    assert_eq!(store.schema_version().expect("the version reads"), 47);
+    drop(store);
+    let connection = raw(&directory);
+    const CANONICAL: &str = "c112faff3f0ad0d8893bd41a1a53215816e0bd93cd9d65ed359ba74d0822254b";
+    for (table, column) in [
+        ("topology_specs", "definition_hash"),
+        ("project_topology_defaults", "canonical_hash"),
+        ("mini_project_topology_snapshots", "canonical_hash"),
+        ("topology_nodes", "spec_hash"),
+    ] {
+        let query = format!("SELECT {column} FROM {table} LIMIT 1");
+        let hash: String = connection
+            .query_row(&query, [], |row| row.get(0))
+            .unwrap_or_else(|error| panic!("{table}.{column} reads: {error}"));
+        assert_eq!(hash, CANONICAL, "{table}.{column} moved atomically");
+    }
+    let receipt: (String, String) = connection
+        .query_row(
+            "SELECT prior_hash, canonical_hash
+             FROM topology_spec_canonicalization_receipts",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the canonicalization receipt reads");
+    assert_eq!(receipt.0, legacy.hash().as_str());
+    assert_eq!(receipt.1, CANONICAL);
+}
+
+#[test]
+fn v47_refuses_the_builtin_identity_when_its_prior_hash_is_unknown() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    let mut unknown: serde_json::Value =
+        serde_json::from_str(legacy_operational_topology().json()).expect("the old spec parses");
+    unknown["name"] = serde_json::json!("Unexpected legacy variant");
+    let unknown = CanonicalDocument::from_value(&unknown).expect("the variant canonicalizes");
+    {
+        let connection = Connection::open(&path).expect("the v46 database opens");
+        migrate_through_v46(&connection);
+        seed_v46_operational_topology(&connection, &unknown);
+    }
+
+    let error = SqliteStore::open(&path).expect_err("an unknown prior hash must fail closed");
+    assert!(error.to_string().contains("unknown prior hash"), "{error}");
+    let connection = Connection::open(path).expect("the rolled-back v46 database reopens");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the rolled-back version reads");
+    assert_eq!(version, 46, "the failed migration wrote nothing");
+}
+
+#[test]
+fn v47_refuses_an_unknown_reference_hash_before_rewriting_the_builtin() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    let legacy = legacy_operational_topology();
+    {
+        let connection = Connection::open(&path).expect("the v46 database opens");
+        migrate_through_v46(&connection);
+        seed_v46_operational_topology(&connection, &legacy);
+        connection
+            .execute(
+                "UPDATE project_topology_defaults
+                 SET canonical_hash = ?1",
+                ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+            )
+            .expect("the inconsistent v46 reference is seeded");
+    }
+
+    let error = SqliteStore::open(&path).expect_err("an unknown reference hash must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown built-in topology reference hash"),
+        "{error}"
+    );
+    let connection = Connection::open(path).expect("the rolled-back v46 database reopens");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the rolled-back version reads");
+    assert_eq!(version, 46, "the failed migration wrote nothing");
+    let definition_hash: String = connection
+        .query_row("SELECT definition_hash FROM topology_specs", [], |row| {
+            row.get(0)
+        })
+        .expect("the built-in definition remains readable");
+    assert_eq!(definition_hash, legacy.hash().as_str());
+    let receipt_count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'topology_spec_canonicalization_receipts'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the schema catalogue reads");
+    assert_eq!(receipt_count, 0, "schema 47 rolled back as one transaction");
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.

@@ -1679,9 +1679,11 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("observe_seat", "project", "witness", None),
     ("retire_seat", "project", "witness", None),
     // Publication is authority over the project's vocabulary; an upgrade moves
-    // one epic's pin, so the epic is what it names.
+    // one epic's pin, so the epic is what it names. Whole-estate native-name
+    // reconciliation is likewise authorized against exactly that epic.
     ("publish_topology_spec", "project", "witness", None),
     ("upgrade_topology", "mini_project", "witness", None),
+    ("reconcile_native_names", "mini_project", "witness", None),
     // A native container is not an aggregate a command may name, and the node it
     // belongs to is not one either. The project is what the authority is over.
     ("retitle_container", "project", "witness", None),

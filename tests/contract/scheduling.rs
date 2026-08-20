@@ -280,6 +280,8 @@ impl World {
                 team_run_id: TeamRunId::generate(),
                 task_id: task,
                 workspace_binding_id: WorkspaceBindingId::generate(),
+                display_name: kontor_core::id::ExternalName::parse("TSW • ASMA-1 • TEST-1")
+                    .expect("a native name"),
                 scope: execution_scope(task, workspace_root.clone()),
                 root: workspace_root,
                 requested_at: at("2026-08-12T08:59:00Z"),
@@ -595,6 +597,8 @@ async fn a_lost_launch_and_a_restart_still_leave_exactly_one_durable_admission()
         .reserve(&world.slot, parts.agent_run)
         .expect("a vacant seat reserves");
     let launch = SlotLaunch {
+        display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
+            .expect("display name"),
         task_id: world.task,
         scope: execution_scope(world.task, world.workspace.root().clone()),
         binding_id: RuntimeBindingId::generate(),

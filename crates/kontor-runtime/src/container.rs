@@ -423,12 +423,9 @@ pub struct ContainerBinding {
 /// value that cannot identify it — and not by working directory, which several
 /// containers can share.
 ///
-/// It carries no finished title either. `structural_name` is what the control
-/// plane can render on its own — the node kind's declared template — and
-/// `scope` carries the durable epic/task identity the runtime renders the rest
-/// from. The control plane holds the template and the node. Neither half can
-/// write this title alone, and a request carrying a finished one would let a
-/// caller supply it.
+/// The daemon has already rendered `desired_title` from the pinned topology
+/// revision and durable token records. A runtime adapter must apply those exact
+/// bytes; it owns no naming templates or fallback formatter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetitleContainerRequest {
     /// The node whose container is being retitled.
@@ -453,20 +450,8 @@ pub struct RetitleContainerRequest {
     /// something found under a *different* generation would be renaming
     /// whatever replaced it after a restart.
     pub generation: u64,
-    /// Durable execution identity used to render a task-scoped title.
-    ///
-    /// A project-level structural node has no epic scope and carries `None`.
-    pub scope: Option<ExecutionScope>,
-    /// The delivery task whose typed scope names the container, when it has one.
-    ///
-    /// `None` is a structural container — a project or an epic root — which is
-    /// not ticket-scoped and is titled from its template alone.
-    pub task_id: Option<TaskId>,
-    /// The name the node's own pinned kind template renders to.
-    ///
-    /// The floor, not the answer: a plane with a task scope renders over it, and
-    /// the same one the bind path uses.
-    pub structural_name: ExternalName,
+    /// Complete, daemon-rendered desired title. Applied verbatim.
+    pub desired_title: ExternalName,
     /// When the retitle was requested.
     pub requested_at: Timestamp,
 }

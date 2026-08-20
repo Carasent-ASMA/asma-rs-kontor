@@ -1750,6 +1750,8 @@ impl Engine {
                 team_run_id,
                 task_id,
                 workspace_binding_id: WorkspaceBindingId::generate(),
+                display_name: kontor_core::id::ExternalName::parse("TSW • ASMA-1 • TEST-1")
+                    .expect("a native name"),
                 root: WorkspaceRoot::parse(root).expect("an absolute pilot workspace root"),
                 requested_at: at(PREPARED_AT),
             })
@@ -1776,6 +1778,8 @@ impl Engine {
         account_profile_id: Option<AccountProfileId>,
     ) -> RuntimeResult<LaunchOutcome> {
         let parts = LaunchParts {
+            display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
+                .expect("display name"),
             scope: execution_scope(self.task_id, self.workspace.root().clone()),
             agent_run_id,
             team_run_id: self.team_run_id,

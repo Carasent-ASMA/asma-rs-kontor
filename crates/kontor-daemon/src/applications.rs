@@ -67,12 +67,14 @@ use kontor_api::applications::{
     RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
-    AppliedContainerRetitleDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
-    ContainerRetitlePreviewDto, ContainerRetitleRequest, DesiredBindingDto, PinnedSpecDto,
-    SemanticTopologyRequest, SemanticTopologyTargetDto, SessionLabelsReconcileRequest,
-    SessionLabelsReconciledDto, ShareabilityDto, TopologyMutationDto, TopologyNodeDto,
-    TopologyNodeRequest, TopologyProjectionDto, TopologyUpgradeApplyRequest,
-    TopologyUpgradeEffectDto, TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
+    AppliedContainerRetitleDto, AppliedNativeNamesDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
+    ContainerRetitlePreviewDto, ContainerRetitleRequest, DesiredBindingDto,
+    NativeNameSubjectKindDto, NativeNameTargetDto, NativeNamesApplyRequest, NativeNamesPreviewDto,
+    NativeNamesPreviewRequest, PinnedSpecDto, SemanticTopologyRequest, SemanticTopologyTargetDto,
+    SessionLabelsReconcileRequest, SessionLabelsReconciledDto, ShareabilityDto,
+    TopologyMutationDto, TopologyNodeDto, TopologyNodeRequest, TopologyProjectionDto,
+    TopologyUpgradeApplyRequest, TopologyUpgradeEffectDto, TopologyUpgradePreviewDto,
+    TopologyUpgradePreviewRequest,
 };
 use kontor_api::applications::{
     AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
@@ -111,6 +113,7 @@ use kontor_core::id::{
     SpecVersion, StatusConflictId, TaskId, TeamRunId, TicketProjectionId, Timestamp,
     TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
 };
+use kontor_core::naming::NativeNameValues;
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
@@ -159,8 +162,8 @@ use kontor_profiles::pack::{
 };
 use kontor_runtime::adapter::{
     ConsultationCredential, ConsultationLaunchRequest, ConsultationMessageRequest,
-    HostedSeatLaunchRequest, HostedSeatMessageRequest, HostedSeatRetireRequest, RuntimeAdapter,
-    RuntimeError,
+    HostedSeatLaunchRequest, HostedSeatMessageRequest, HostedSeatRetireRequest, RetitleSeatRequest,
+    RuntimeAdapter, RuntimeError,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
@@ -250,6 +253,22 @@ struct PreparedEpic {
     bundle: ResolvedProfileBundle,
     execution_scope: Option<EpicExecutionScopeDeclaration>,
     tasks: Vec<EpicTask>,
+}
+
+enum NativeNameAction {
+    Container {
+        request: RetitleContainerRequest,
+        adapter: Arc<dyn RuntimeAdapter>,
+    },
+    Seat {
+        request: RetitleSeatRequest,
+        adapter: Arc<dyn RuntimeAdapter>,
+    },
+}
+
+struct PreparedNativeNames {
+    preview: NativeNamesPreviewDto,
+    actions: Vec<NativeNameAction>,
 }
 
 struct CoreTeamRoutePlan {
@@ -784,6 +803,7 @@ impl Services {
                     .as_ref()
                     .map(|code| self.validate_task_short_code(code, &links))
                     .transpose()?,
+                ai_short_name: task.ai_short_name.clone(),
                 module,
                 imported_state,
                 depends_on: task.depends_on.clone(),
@@ -799,6 +819,8 @@ impl Services {
                 .map(|scope| EpicExecutionScopeDeclaration {
                     external_epic_key: scope.external_epic_key.clone(),
                     short_title: scope.short_title.clone(),
+                    kontor_backlog_code: scope.kontor_backlog_code.clone(),
+                    ai_short_name: scope.ai_short_name.clone(),
                 });
 
         Ok(PreparedEpic {
@@ -865,6 +887,9 @@ impl Services {
                 short_code: state
                     .with_store(|store| store.task_short_code(project_id, task.id))
                     .map_err(|error| self.refuse(&error))?,
+                ai_short_name: state
+                    .with_store(|store| store.task_ai_short_name(project_id, task.id))
+                    .map_err(|error| self.refuse(&error))?,
                 applied: AppliedDto::Unchanged,
                 state: task.state.as_str().to_owned(),
                 revision: task.revision,
@@ -896,6 +921,8 @@ impl Services {
             execution_scope: execution_scope.map(|scope| EpicExecutionScopeDto {
                 external_epic_key: scope.external_epic_key,
                 short_title: scope.short_title,
+                kontor_backlog_code: scope.kontor_backlog_code,
+                ai_short_name: scope.ai_short_name,
             }),
             work_profile: RevisionRefDto {
                 id: bundle.profile.definition.id.as_str().to_owned(),
@@ -934,6 +961,78 @@ impl Services {
             }
         }
         Ok(runs)
+    }
+
+    /// Resolve the one current run at the leaf of a delivery role's replacement
+    /// chain. Repository enumeration is oldest-first, so selecting the first
+    /// same-role row would target an archived predecessor after replacement.
+    fn current_delivery_role_leaf(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role: &RoleKey,
+    ) -> Result<Option<kontor_core::repository::AgentRun>, ApiError> {
+        let state = self.state()?;
+        let rows = state
+            .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?;
+        let mut runs = Vec::new();
+        for row in rows.into_iter().filter(|row| &row.role == role) {
+            let run = state
+                .with_store(|store| store.get_agent_run(project_id, row.agent_run_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "a delivery role census row names a missing AgentRun",
+                    )
+                })?;
+            if run.team_run_id != team_run_id || &run.role != role {
+                return Err(self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "a delivery role census row drifted from its team or role slot",
+                ));
+            }
+            runs.push(run);
+        }
+
+        // A logical role slot is created before its first AgentRun. It has no
+        // native title target yet; absence here is not a broken replacement
+        // chain and must not block repair of the epic's existing containers.
+        if runs.is_empty() {
+            return Ok(None);
+        }
+
+        let named_parents: BTreeSet<AgentRunId> = runs
+            .iter()
+            .filter_map(|run| run.parent_agent_run_id)
+            .collect();
+        let mut leaves = runs
+            .into_iter()
+            .filter(|run| !named_parents.contains(&run.id));
+        let leaf = leaves.next().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "a delivery role has no current replacement-chain leaf",
+            )
+        })?;
+        if leaves.next().is_some() {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "a delivery role has ambiguous current replacement-chain leaves",
+            ));
+        }
+        if leaf
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.agent_run_id != leaf.id)
+        {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the current delivery role leaf's native binding names another AgentRun",
+            ));
+        }
+        Ok(Some(leaf))
     }
 
     /// Certify one team run's closure from its declared slots, or say why not.
@@ -4527,13 +4626,258 @@ impl Services {
                 bound_native_id: binding.identity.native_id.clone(),
                 bound_project_native_id,
                 generation: binding.identity.generation,
-                scope: scope.clone(),
-                task_id: node.task_id,
-                structural_name: self.container_name(&spec, &node, scope.as_ref())?,
+                desired_title: self.container_name(&spec, &node, scope.as_ref())?,
                 requested_at: kontor_api::now(),
             },
             adapter,
         ))
+    }
+
+    /// Preflight every existing native container and persistent seat in one
+    /// epic. The returned actions are usable only after the whole loop has
+    /// completed. Persisted seats that have no native session yet are omitted;
+    /// exact seats whose runtime session is temporarily unavailable remain in
+    /// the plan as `rename_pending` and produce no native action. Structural
+    /// ambiguity and identity drift still refuse the complete plan before any
+    /// write.
+    async fn prepare_native_names(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        expected_revision: AggregateRevision,
+    ) -> Result<PreparedNativeNames, ApiError> {
+        let state = self.state()?;
+        let project = self.project_at(project_id, expected_revision)?;
+        state
+            .with_store(|store| store.get_mini_project(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such epic exists in this project",
+                )
+            })?;
+
+        let nodes = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?;
+        let mut targets = Vec::new();
+        let mut actions = Vec::new();
+
+        for node in nodes {
+            if state
+                .with_store(|store| store.get_topology_node_container(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?
+                .is_some()
+            {
+                let (request, adapter) = self.retitle_request(
+                    project_id,
+                    node.id,
+                    &ContainerRetitleRequest { expected_revision },
+                )?;
+                let outcome = adapter
+                    .preview_retitle_container(&request)
+                    .await
+                    .map_err(|error| {
+                        if request.projection == ContainerProjection::NativeRoot
+                            && matches!(error, RuntimeError::UnsupportedCapability { .. })
+                        {
+                            self.deny(
+                                ApiErrorCode::RenamePending,
+                                "the native root requires an identity-preserving project rename this runtime cannot prove",
+                            )
+                        } else {
+                            ApiError::from_runtime(state.realm_id(), &error)
+                        }
+                    })?;
+                if outcome.snapshot.binding.identity.native_id != request.bound_native_id
+                    || outcome.desired_title != request.desired_title
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "container-name preflight read back another identity or desired title",
+                    ));
+                }
+                targets.push(NativeNameTargetDto {
+                    subject_kind: NativeNameSubjectKindDto::Container,
+                    topology_node_id: node.id,
+                    seat_binding_id: None,
+                    agent_run_id: None,
+                    native_id: request.bound_native_id.clone(),
+                    provider_session_id: None,
+                    observed_title: Some(outcome.observed_title),
+                    desired_title: request.desired_title.clone(),
+                    would_change: outcome.changed,
+                    capability: if outcome.changed {
+                        "ready".to_owned()
+                    } else {
+                        "unchanged".to_owned()
+                    },
+                });
+                if outcome.changed {
+                    actions.push(NativeNameAction::Container { request, adapter });
+                }
+            }
+
+            let seats = state
+                .with_store(|store| store.list_seat_bindings(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?;
+            for seat in seats {
+                if seat.lifecycle != TopologyLifecycle::Active {
+                    continue;
+                }
+                let hosted = state
+                    .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))
+                    .map_err(|error| self.refuse(&error))?;
+                let consultation = if hosted.is_none() {
+                    state
+                        .with_store(|store| {
+                            store.get_consultation_seat_by_binding(project_id, seat.id)
+                        })
+                        .map_err(|error| self.refuse(&error))?
+                } else {
+                    None
+                };
+                let delivery = if hosted.is_none() && consultation.is_none() {
+                    seat.team_run_id
+                        .map(|team_run_id| {
+                            self.current_delivery_role_leaf(
+                                project_id,
+                                team_run_id,
+                                seat.role_slot_id.as_role_key(),
+                            )
+                        })
+                        .transpose()?
+                        .flatten()
+                } else {
+                    None
+                };
+                let (identity, provider_session_id, agent_run_id) = if let Some(hosted) = hosted {
+                    (hosted.native_identity, hosted.provider_session_id, None)
+                } else if let Some(consultation) = consultation {
+                    let Some(identity) = consultation.native_identity else {
+                        continue;
+                    };
+                    (identity, consultation.provider_session_id, None)
+                } else if let Some(delivery) = delivery {
+                    let agent_run_id = delivery.id;
+                    let Some(binding) = delivery.binding else {
+                        // Only the unique current leaf may be genuinely
+                        // unbound. A bound predecessor never substitutes for it.
+                        continue;
+                    };
+                    (binding.identity, None, Some(agent_run_id))
+                } else {
+                    // A declared but not-yet-materialized seat has no native
+                    // title to repair and therefore is not an apply target.
+                    continue;
+                };
+                let container = state
+                    .with_store(|store| store.get_topology_node_container(project_id, node.id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "a native seat has no persisted native host container",
+                        )
+                    })?;
+                let adapter = state
+                    .runtimes()
+                    .get(&identity.runtime_kind)
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "a persistent seat's runtime is not configured in this daemon",
+                        )
+                    })?;
+                let scope =
+                    self.execution_scope(project_id, epic_id, node.task_id, adapter.as_ref())?;
+                let desired_title =
+                    self.seat_name(project_id, &node, &scope, &seat.role.role_code)?;
+                let mut request = RetitleSeatRequest {
+                    identity,
+                    provider_session_id,
+                    container_native_id: container.identity.native_id,
+                    desired_title,
+                    requested_at: kontor_api::now(),
+                };
+                let outcome = match adapter.preview_retitle_seat(&request).await {
+                    Ok(outcome) => outcome,
+                    Err(
+                        RuntimeError::StaleBinding { .. }
+                        | RuntimeError::ProviderUnavailable { .. },
+                    ) => {
+                        targets.push(NativeNameTargetDto {
+                            subject_kind: NativeNameSubjectKindDto::Seat,
+                            topology_node_id: node.id,
+                            seat_binding_id: Some(seat.id),
+                            agent_run_id,
+                            native_id: request.identity.native_id.clone(),
+                            provider_session_id: request.provider_session_id.clone(),
+                            observed_title: None,
+                            desired_title: request.desired_title.clone(),
+                            would_change: false,
+                            capability: "rename_pending".to_owned(),
+                        });
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(ApiError::from_runtime(state.realm_id(), &error));
+                    }
+                };
+                if outcome.identity != request.identity
+                    || outcome.container_native_id != request.container_native_id
+                    || outcome.observed_title == request.desired_title.as_str() && outcome.changed
+                    || outcome.observed_title != request.desired_title.as_str() && !outcome.changed
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "seat-name preflight returned inconsistent identity or change evidence",
+                    ));
+                }
+                // A provider id learned on readback is part of the exact apply
+                // correlation. The caller never supplies or changes it.
+                request.provider_session_id = outcome.provider_session_id.clone();
+                targets.push(NativeNameTargetDto {
+                    subject_kind: NativeNameSubjectKindDto::Seat,
+                    topology_node_id: node.id,
+                    seat_binding_id: Some(seat.id),
+                    agent_run_id,
+                    native_id: request.identity.native_id.clone(),
+                    provider_session_id: outcome.provider_session_id,
+                    observed_title: Some(outcome.observed_title),
+                    desired_title: request.desired_title.clone(),
+                    would_change: outcome.changed,
+                    capability: if outcome.changed {
+                        "ready".to_owned()
+                    } else {
+                        "unchanged".to_owned()
+                    },
+                });
+                if outcome.changed {
+                    actions.push(NativeNameAction::Seat { request, adapter });
+                }
+            }
+        }
+
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "project_revision": project.revision.get(),
+            "targets": targets,
+        }))?;
+        Ok(PreparedNativeNames {
+            preview: NativeNamesPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                epic_id,
+                targets,
+                preview_hash,
+                snapshot_cursor: self.cursor()?,
+            },
+            actions,
+        })
     }
 
     fn move_node_lifecycle(
@@ -5669,8 +6013,17 @@ impl Services {
             seat.seat_binding_id,
         ))
         .map_err(|error| self.refuse_domain(&error))?;
-        let display_name = ExternalName::parse(&format!("Advisor · {}", run.id.as_text()))
-            .map_err(|error| self.refuse_domain(&error))?;
+        let topology_seat = state
+            .with_store(|store| store.get_seat_binding(run.project_id, seat.seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Advisor native seat has no persistent topology binding",
+                )
+            })?;
+        let display_name =
+            self.seat_name(run.project_id, &node, &scope, &topology_seat.role.role_code)?;
         let outcome = adapter
             .launch_consultation(&ConsultationLaunchRequest {
                 scope,
@@ -6027,9 +6380,17 @@ impl Services {
                 seat.seat_binding_id,
             ))
             .map_err(|error| self.refuse_domain(&error))?;
+            let topology_seat = state
+                .with_store(|store| store.get_seat_binding(run.project_id, seat.seat_binding_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the Committee native seat has no persistent topology binding",
+                    )
+                })?;
             let display_name =
-                ExternalName::parse(&format!("{} · {}", slot.id.as_str(), run.id.as_text()))
-                    .map_err(|error| self.refuse_domain(&error))?;
+                self.seat_name(run.project_id, &node, &scope, &topology_seat.role.role_code)?;
             let outcome = adapter
                 .launch_consultation(&ConsultationLaunchRequest {
                     scope: scope.clone(),
@@ -9483,6 +9844,123 @@ impl ApplicationOperations for Services {
         })
     }
 
+    async fn preview_native_names(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &NativeNamesPreviewRequest,
+    ) -> Result<NativeNamesPreviewDto, ApiError> {
+        Ok(self
+            .prepare_native_names(project_id, epic_id, request.expected_revision)
+            .await?
+            .preview)
+    }
+
+    async fn apply_native_names(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &NativeNamesApplyRequest,
+    ) -> Result<AppliedNativeNamesDto, ApiError> {
+        let state = self.state()?;
+        let project = self.project_at(project_id, request.expected_revision)?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "reconcile_native_names",
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+        let prepared = self
+            .prepare_native_names(project_id, epic_id, request.expected_revision)
+            .await?;
+
+        if !replayed && prepared.preview.preview_hash != request.preview_hash {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "native names or identities changed since the caller's complete preview",
+            ));
+        }
+
+        // Persist the exact authorization before the first external effect.
+        // If an acknowledgement is lost after a rename commits, the same key
+        // re-enters through `replayed`, re-preflights the entire epic and only
+        // dispatches targets whose fresh readback is still stale.
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::ReconcileNativeNames,
+            target,
+            project.revision,
+            &intent,
+        )?;
+        let mut changed = 0_u64;
+        for action in prepared.actions {
+            match action {
+                NativeNameAction::Container { request, adapter } => {
+                    let outcome = adapter
+                        .retitle_container(&request)
+                        .await
+                        .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                    if outcome.snapshot.binding.identity.native_id != request.bound_native_id
+                        || outcome.observed_title != request.desired_title.as_str()
+                    {
+                        return Err(self.deny(
+                            ApiErrorCode::StaleBinding,
+                            "container retitle did not preserve identity and read back the requested name",
+                        ));
+                    }
+                    changed += u64::from(outcome.changed);
+                }
+                NativeNameAction::Seat { request, adapter } => {
+                    let outcome = adapter
+                        .retitle_seat(&request)
+                        .await
+                        .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                    if outcome.identity != request.identity
+                        || outcome.provider_session_id != request.provider_session_id
+                        || outcome.container_native_id != request.container_native_id
+                        || outcome.observed_title != request.desired_title.as_str()
+                    {
+                        return Err(self.deny(
+                            ApiErrorCode::StaleBinding,
+                            "seat retitle did not preserve every native identity and host",
+                        ));
+                    }
+                    changed += u64::from(outcome.changed);
+                }
+            }
+        }
+        // A replay and a first apply both answer from fresh runtime readback.
+        // The new plan hash may differ because its observed titles are now the
+        // desired titles; it is evidence of current state, not an echo of the
+        // authorization hash.
+        let readback = self
+            .prepare_native_names(project_id, epic_id, request.expected_revision)
+            .await?
+            .preview;
+        Ok(AppliedNativeNamesDto {
+            readback,
+            changed,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: project.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
     async fn reconcile_session_labels(
         &self,
         key: &IdempotencyKey,
@@ -9558,6 +10036,18 @@ impl ApplicationOperations for Services {
         let scope = self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
         let role_slot_id =
             RoleSlotId::parse(run.role.as_str()).map_err(|error| self.refuse_domain(&error))?;
+        let team_snapshot = state
+            .with_store(|store| store.get_team_run(project_id, run.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the run's frozen team snapshot is unavailable",
+                )
+            })?
+            .snapshot;
+        let desired_title =
+            self.delivery_seat_name(project_id, task_id, &scope, &team_snapshot, &role_slot_id)?;
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "reconcile_session_labels",
@@ -9584,6 +10074,7 @@ impl ApplicationOperations for Services {
                 scope,
                 team_run_id: run.team_run_id,
                 role_slot_id,
+                desired_title,
                 container,
                 requested_at: kontor_api::now(),
             })
@@ -10322,12 +10813,8 @@ impl ApplicationOperations for Services {
                         },
                     ));
                 }
-                let display_name = ExternalName::parse(&format!(
-                    "{} · {}",
-                    seat.role.role_code.as_str(),
-                    scope.epic.external_epic_key.as_str()
-                ))
-                .map_err(|error| self.refuse_domain(&error))?;
+                let display_name =
+                    self.seat_name(project_id, &control, &scope, &seat.role.role_code)?;
                 let prompt = BoundedText::parse(&format!(
                     "Persistent {} seat for epic {}. Continue only work authorized through Kontor. Await or act on the bounded handoff supplied with this launch, then remain reusable under SeatBinding {}.",
                     seat.role.role_code.as_str(),
@@ -10505,12 +10992,8 @@ impl ApplicationOperations for Services {
                 kontor_api::now(),
             )
             .map_err(|error| self.refuse_domain(&error))?;
-            let display_name = ExternalName::parse(&format!(
-                "{} · {}",
-                plan.binding.role.role_code.as_str(),
-                scope.epic.external_epic_key.as_str()
-            ))
-            .map_err(|error| self.refuse_domain(&error))?;
+            let display_name =
+                self.seat_name(project_id, &control, &scope, &plan.binding.role.role_code)?;
             let prompt = BoundedText::parse(&format!(
                 "Persistent {} seat for epic {}. This native session replaces archived predecessor {} under the same Kontor SeatBinding {}. Continue only bounded work authorized through Kontor.",
                 plan.binding.role.role_code.as_str(),
@@ -11031,6 +11514,26 @@ impl ApplicationOperations for Services {
                 .map_err(|error| self.refuse(&error))?;
         }
 
+        // Promotion creates the epic outside declarative `epics:apply`, so its
+        // caller must carry the same explicit, immutable runtime-facing tokens
+        // that import would store. Older bodies remain decodable; if they omit
+        // the declaration, the pinned topology renderer below fails closed
+        // before contacting the runtime rather than deriving a name from the
+        // Quick-session purpose or generated epic id.
+        if let Some(scope) = &request.execution_scope {
+            let declaration = EpicExecutionScopeDeclaration {
+                external_epic_key: scope.external_epic_key.clone(),
+                short_title: scope.short_title.clone(),
+                kontor_backlog_code: scope.kontor_backlog_code.clone(),
+                ai_short_name: scope.ai_short_name.clone(),
+            };
+            state
+                .with_store(|store| {
+                    store.declare_epic_execution_scope(project_id, epic_id, &declaration, now)
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
         // ESW as its own native project, then exactly one ECP inside it, both
         // through the OP-02 chain that owns placement.
         self.ensure_scope_chain(
@@ -11074,6 +11577,19 @@ impl ApplicationOperations for Services {
         }
 
         let epic = self.epic_row(project_id, epic_id)?;
+        let mut receipt_intent = serde_json::json!({
+            "schema_version": 1,
+            "operation": "promotion_apply",
+            "project": project_id.to_string(),
+            "source": quick_session_id.to_string(),
+            "preview": request.preview_hash.as_str(),
+        });
+        if let Some(scope) = &request.execution_scope {
+            receipt_intent
+                .as_object_mut()
+                .expect("a promotion intent is an object")
+                .insert("execution_scope".to_owned(), serde_json::json!(scope));
+        }
         let receipt_id = self.record(
             key,
             project_id,
@@ -11082,13 +11598,7 @@ impl ApplicationOperations for Services {
                 mini_project_id: epic_id,
             },
             epic.revision,
-            &self.intent(&serde_json::json!({
-                "schema_version": 1,
-                "operation": "promotion_apply",
-                "project": project_id.to_string(),
-                "source": quick_session_id.to_string(),
-                "preview": request.preview_hash.as_str(),
-            }))?,
+            &self.intent(&receipt_intent)?,
         )?;
         Ok(PromotedSessionDto {
             epic_id,
@@ -12806,6 +13316,21 @@ impl ApplicationOperations for Services {
                                 serde_json::json!(task.import_state),
                             );
                     }
+                    if let Some(short_code) = &task.short_code {
+                        intent
+                            .as_object_mut()
+                            .expect("an epic task intent is an object")
+                            .insert("short_code".to_owned(), serde_json::json!(short_code));
+                    }
+                    if let Some(ai_short_name) = &task.ai_short_name {
+                        intent
+                            .as_object_mut()
+                            .expect("an epic task intent is an object")
+                            .insert(
+                                "ai_short_name".to_owned(),
+                                serde_json::json!(ai_short_name),
+                            );
+                    }
                     intent
                 })
                 .collect::<Vec<_>>(),
@@ -12813,16 +13338,29 @@ impl ApplicationOperations for Services {
         // Preserve old receipt bytes when the new declaration is omitted. A
         // replay created before schema 43 must remain the same operation.
         if let Some(scope) = &request.execution_scope {
+            let mut scope_intent = serde_json::json!({
+                "external_epic_key": scope.external_epic_key.as_str(),
+                "short_title": scope.short_title.as_str(),
+            });
+            if let Some(backlog_code) = &scope.kontor_backlog_code {
+                scope_intent
+                    .as_object_mut()
+                    .expect("an execution-scope intent is an object")
+                    .insert(
+                        "kontor_backlog_code".to_owned(),
+                        serde_json::json!(backlog_code),
+                    );
+            }
+            if let Some(ai_short_name) = &scope.ai_short_name {
+                scope_intent
+                    .as_object_mut()
+                    .expect("an execution-scope intent is an object")
+                    .insert("ai_short_name".to_owned(), serde_json::json!(ai_short_name));
+            }
             intent_document
                 .as_object_mut()
                 .expect("an epic intent is an object")
-                .insert(
-                    "execution_scope".to_owned(),
-                    serde_json::json!({
-                        "external_epic_key": scope.external_epic_key.as_str(),
-                        "short_title": scope.short_title.as_str(),
-                    }),
-                );
+                .insert("execution_scope".to_owned(), scope_intent);
         }
         let intent = self.intent(&intent_document)?;
         if let Some(receipt) = self.replayed(key, &intent, None)? {
@@ -12900,6 +13438,8 @@ impl ApplicationOperations for Services {
             execution_scope: applied.execution_scope.map(|scope| EpicExecutionScopeDto {
                 external_epic_key: scope.external_epic_key,
                 short_title: scope.short_title,
+                kontor_backlog_code: scope.kontor_backlog_code,
+                ai_short_name: scope.ai_short_name,
             }),
             work_profile: RevisionRefDto {
                 id: applied.profile.0.as_str().to_owned(),
@@ -12917,6 +13457,7 @@ impl ApplicationOperations for Services {
                     title: task.title,
                     task_id: task.task_id,
                     short_code: task.short_code,
+                    ai_short_name: task.ai_short_name,
                     applied: applied_dto(task.applied),
                     state: task.state.as_str().to_owned(),
                     revision: task.revision,
@@ -12973,6 +13514,8 @@ impl ApplicationOperations for Services {
             execution_scope: preview.execution_scope.map(|scope| EpicExecutionScopeDto {
                 external_epic_key: scope.external_epic_key,
                 short_title: scope.short_title,
+                kontor_backlog_code: scope.kontor_backlog_code,
+                ai_short_name: scope.ai_short_name,
             }),
             work_profile: RevisionRefDto {
                 id: preview.profile.0.as_str().to_owned(),
@@ -12989,6 +13532,7 @@ impl ApplicationOperations for Services {
                     title: task.title,
                     task_id: (task.applied != Applied::Created).then_some(task.task_id),
                     short_code: task.short_code,
+                    ai_short_name: task.ai_short_name,
                     applied: applied_dto(task.applied),
                     state: task.state.as_str().to_owned(),
                 })
@@ -13148,6 +13692,9 @@ impl ApplicationOperations for Services {
                 short_code: state
                     .with_store(|store| store.task_short_code(project_id, task.id))
                     .map_err(|error| self.refuse(&error))?,
+                ai_short_name: state
+                    .with_store(|store| store.task_ai_short_name(project_id, task.id))
+                    .map_err(|error| self.refuse(&error))?,
                 worktree,
                 state: task.state.as_str().to_owned(),
                 revision: task.revision,
@@ -13195,6 +13742,8 @@ impl ApplicationOperations for Services {
             execution_scope: execution_scope.map(|scope| EpicExecutionScopeDto {
                 external_epic_key: scope.external_epic_key,
                 short_title: scope.short_title,
+                kontor_backlog_code: scope.kontor_backlog_code,
+                ai_short_name: scope.ai_short_name,
             }),
             work_profile: profile,
             team_template: team,
@@ -15303,6 +15852,13 @@ impl ApplicationOperations for Services {
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let launch = SlotLaunch {
+            display_name: self.delivery_seat_name(
+                project_id,
+                task_id,
+                &scope,
+                &team.snapshot,
+                &role_slot,
+            )?,
             scope,
             task_id,
             binding_id,
@@ -17261,10 +17817,10 @@ impl Services {
         let owner = self.ensure_epic_control_seat(project_id, &placement)?;
         for slot in &ordered {
             self.ensure_seat_binding(
-                project_id,
                 &placement,
                 admitted.task_id,
                 team_run_id,
+                &team_snapshot,
                 slot,
                 owner,
             )?;
@@ -17306,6 +17862,13 @@ impl Services {
             let outcome = adapter
                 .launch(&authority.into_request(LaunchParts {
                     scope: scope.clone(),
+                    display_name: self.delivery_seat_name(
+                        project_id,
+                        admitted.task_id,
+                        &scope,
+                        &team_snapshot,
+                        &slot,
+                    )?,
                     agent_run_id,
                     team_run_id,
                     role_slot_id: slot.clone(),
@@ -18072,15 +18635,16 @@ impl Services {
     /// entry is a gap in that data — not a reason the work cannot run.
     fn ensure_seat_binding(
         &self,
-        project_id: ProjectId,
         node: &SessionTopologyNode,
         task_id: TaskId,
         team_run_id: TeamRunId,
+        team_snapshot: &TeamRunSnapshot,
         slot: &RoleSlotId,
         parent: Option<SeatBindingId>,
     ) -> Result<(), ApiError> {
         let state = self.state()?;
-        let Some(role) = self.catalog_role(slot)? else {
+        let project_id = node.project_id;
+        let Some(role) = self.catalog_role(team_snapshot, slot)? else {
             tracing::warn!(
                 role_slot = %slot.as_str(),
                 "no seeded standard role for this slot, so its seat is not recorded in the topology"
@@ -18131,8 +18695,20 @@ impl Services {
 
     /// The standard catalog role one Foundation slot is recorded under, when the
     /// seeded delivery data spells one for it.
-    fn catalog_role(&self, slot: &RoleSlotId) -> Result<Option<CatalogRoleRef>, ApiError> {
-        let Some(code) = self.domain.delivery.role_code(slot.as_role_key()) else {
+    fn catalog_role(
+        &self,
+        snapshot: &TeamRunSnapshot,
+        slot: &RoleSlotId,
+    ) -> Result<Option<CatalogRoleRef>, ApiError> {
+        let team = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let logical_role = team.slot(slot).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the frozen team snapshot does not declare this role slot",
+            )
+        })?;
+        let Some(code) = self.domain.delivery.role_code(&logical_role.role.role) else {
             return Ok(None);
         };
         self.catalog_role_for_code(code).map(Some)
@@ -18372,37 +18948,171 @@ impl Services {
             .node_kinds
             .iter()
             .find(|declared| declared.kind == node.kind)
-            .map(|declared| declared.name_template.as_str())
+            .map(|declared| &declared.name_template)
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
                     "a node's kind is not declared by its pinned topology revision",
                 )
             })?;
-        let rendered = match scope {
-            Some(scope) if node.kind == self.domain.delivery.epic_kind => format!(
-                "Epic · {} · {}",
-                scope.epic.external_epic_key.as_str(),
-                scope.epic.short_title.as_str()
-            ),
-            Some(scope) if node.kind == self.domain.delivery.control_kind => format!(
-                "ECP · {} · {}",
-                scope.epic.external_epic_key.as_str(),
-                scope.epic.short_title.as_str()
-            ),
-            Some(scope) if node.kind == self.domain.delivery.task_kind => {
-                let task = scope
-                    .require_task()
-                    .map_err(|error| ApiError::from_runtime(self.realm_id, &error))?;
-                format!(
-                    "TSW · {} · {}",
-                    task.external_issue_key.as_str(),
-                    task.short_code.as_str()
-                )
+        let mut values = NativeNameValues::new().with_area_code(node.kind.as_str());
+        if let Some(scope) = scope {
+            if let Some(task) = scope.task.as_ref() {
+                values = values
+                    .with_jira_code(task.external_issue_key.as_str())
+                    .with_kontor_backlog_code(task.short_code.as_str());
+                let ai_short_name = self
+                    .state()?
+                    .with_store(|store| store.task_ai_short_name(node.project_id, task.task_id))
+                    .map_err(|error| self.refuse(&error))?;
+                if let Some(ai_short_name) = ai_short_name.as_ref() {
+                    values = values.with_ai_short_name(ai_short_name);
+                }
+            } else {
+                values = values.with_jira_code(scope.epic.external_epic_key.as_str());
+                let durable = self
+                    .state()?
+                    .with_store(|store| {
+                        store.get_epic_execution_scope(node.project_id, scope.epic.mini_project_id)
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the epic has no durable native-name tokens",
+                        )
+                    })?;
+                if let Some(backlog_code) = durable.kontor_backlog_code.as_ref() {
+                    values = values.with_kontor_backlog_code(backlog_code.as_str());
+                }
+                if let Some(ai_short_name) = durable.ai_short_name.as_ref() {
+                    values = values.with_ai_short_name(ai_short_name);
+                }
             }
-            _ => format!("{template} · {}", node.id),
-        };
-        ExternalName::parse(&rendered).map_err(|error| self.refuse_domain(&error))
+        }
+        template
+            .render(&spec.name_separator, &values)
+            .map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Render one delivery seat from the exact template pinned by its TSW.
+    fn delivery_seat_name(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        scope: &ExecutionScope,
+        team_snapshot: &TeamRunSnapshot,
+        slot: &RoleSlotId,
+    ) -> Result<ExternalName, ApiError> {
+        let node = self
+            .state()?
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the delivery seat has no pinned task topology node",
+                )
+            })?;
+        let team = kontor_teams::spec::TeamTemplateSpec::from_snapshot(team_snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let logical_role = team.slot(slot).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the frozen team snapshot does not declare this role slot",
+            )
+        })?;
+        let area_code = self
+            .domain
+            .delivery
+            .role_code(&logical_role.role.role)
+            .map_or_else(
+                || logical_role.role.role.as_str(),
+                kontor_core::id::RoleCode::as_str,
+            );
+        self.seat_name_with_area_code(project_id, &node, scope, area_code)
+    }
+
+    /// Render any persistent seat from its host kind's pinned seat template.
+    fn seat_name(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        scope: &ExecutionScope,
+        role_code: &kontor_core::id::RoleCode,
+    ) -> Result<ExternalName, ApiError> {
+        self.seat_name_with_area_code(project_id, node, scope, role_code.as_str())
+    }
+
+    /// Render a persistent seat from an explicit code frozen by its owning
+    /// catalog or Team template. Custom Team roles do not have an Operational
+    /// catalog projection, but their published logical role key remains a
+    /// durable display code; descriptions, slots and native ids never stand in
+    /// for it.
+    fn seat_name_with_area_code(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        scope: &ExecutionScope,
+        area_code: &str,
+    ) -> Result<ExternalName, ApiError> {
+        let state = self.state()?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the delivery seat's pinned topology revision is unavailable",
+                )
+            })?;
+        let template = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == node.kind)
+            .and_then(|declared| declared.seat_name_template.as_ref())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the delivery seat's pinned kind has no seat-name template",
+                )
+            })?;
+        let mut values = NativeNameValues::new().with_area_code(area_code);
+        if let Some(task) = scope.task.as_ref() {
+            values = values
+                .with_jira_code(task.external_issue_key.as_str())
+                .with_kontor_backlog_code(task.short_code.as_str());
+            let ai_short_name = state
+                .with_store(|store| store.task_ai_short_name(project_id, task.task_id))
+                .map_err(|error| self.refuse(&error))?;
+            if let Some(ai_short_name) = ai_short_name.as_ref() {
+                values = values.with_ai_short_name(ai_short_name);
+            }
+        } else {
+            values = values.with_jira_code(scope.epic.external_epic_key.as_str());
+            let durable = state
+                .with_store(|store| {
+                    store.get_epic_execution_scope(project_id, scope.epic.mini_project_id)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the epic seat has no durable native-name tokens",
+                    )
+                })?;
+            if let Some(backlog_code) = durable.kontor_backlog_code.as_ref() {
+                values = values.with_kontor_backlog_code(backlog_code.as_str());
+            }
+            if let Some(ai_short_name) = durable.ai_short_name.as_ref() {
+                values = values.with_ai_short_name(ai_short_name);
+            }
+        }
+        template
+            .render(&spec.name_separator, &values)
+            .map_err(|error| self.refuse_domain(&error))
     }
 
     /// Persist the native container a runtime read back for one node.
@@ -18543,6 +19253,13 @@ impl Services {
         let outcome = adapter
             .launch(&authority.into_request(LaunchParts {
                 scope: scope.clone(),
+                display_name: self.delivery_seat_name(
+                    project_id,
+                    admitted.task_id,
+                    scope,
+                    &team_snapshot,
+                    slot,
+                )?,
                 agent_run_id,
                 team_run_id,
                 role_slot_id: slot.clone(),

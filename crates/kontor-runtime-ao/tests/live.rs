@@ -151,6 +151,7 @@ async fn live_admitted_launch(ao: &AoAdapter, config: &LiveEnv) -> LaunchRequest
                 worktree: config.project_path.clone(),
             },
         ),
+        display_name: ExternalName::parse("Implement • KON-19").expect("display name"),
         agent_run_id,
         team_run_id: TeamRunId::generate(),
         role_slot_id: RoleSlotId::parse(&format!("slot-{agent_run_id}"))

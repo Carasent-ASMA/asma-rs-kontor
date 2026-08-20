@@ -2287,12 +2287,23 @@ fn epic_body(
             if task.get("short_code").is_none() {
                 task["short_code"] = serde_json::json!(format!("TEST-{}", index + 1));
             }
+            if task.get("ticket_links").is_none() {
+                task["ticket_links"] = serde_json::json!([{
+                    "connector": "jira",
+                    "external_issue_key": format!("ASMA-TEST-{}", index + 1),
+                }]);
+            }
             task
         })
         .collect::<Vec<_>>();
     serde_json::json!({
         "expected_revision": revision,
         "name": name,
+        "execution_scope": {
+            "external_epic_key": "ASMA-TEST",
+            "short_title": "Test Epic",
+            "kontor_backlog_code": "TEST",
+        },
         "work_profile_category": category,
         "runtime_family": "fake.runtime",
         "tasks": tasks,
@@ -5419,19 +5430,24 @@ async fn bootstrap(world: &World, slug: &'static str) -> Bootstrapped {
     .await;
     assert_eq!(account.status, 200, "{}", account.body);
 
-    let applied = Call::post(
-        format!("/v1/projects/{project}/epics:apply"),
-        &epic_body(
-            revision,
-            "Control epic",
-            &category,
-            serde_json::json!([{"title": "The task"}]),
-        ),
-    )
-    .signed_as(world, "admin")
-    .with_key(format!("{slug}-epic"))
-    .send(world)
-    .await;
+    // Task-control fixtures deliberately have no external ticket. The shared
+    // runnable-epic helper adds a Jira identity because native TSW naming needs
+    // one, so remove it here to retain the zero-link reconciliation contract.
+    let mut body = epic_body(
+        revision,
+        "Control epic",
+        &category,
+        serde_json::json!([{"title": "The task"}]),
+    );
+    body["tasks"][0]
+        .as_object_mut()
+        .expect("the task request is an object")
+        .remove("ticket_links");
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key(format!("{slug}-epic"))
+        .send(world)
+        .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     Bootstrapped {
         project,
@@ -15691,27 +15707,8 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
     let project_revision = created.json()["revision"]
         .as_u64()
         .expect("the project revision");
-    let account = Call::post(
-        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
-        &serde_json::json!({
-            "label": "QNR Codex fallback",
-            "harness": "fake.runtime",
-            "credential_alias": "qnr-codex",
-            "enabled": true
-        }),
-    )
-    .signed_as(&world, "admin")
-    .with_key("legacy-naming-account")
-    .send(&world)
-    .await;
-    assert_eq!(account.status, 200, "{}", account.body);
-    let account_id = account.json()["account_profile_id"]
-        .as_str()
-        .expect("the account id")
-        .to_owned();
-
     let category = first_category(&world).await;
-    let legacy_body = epic_body(
+    let mut legacy_body = epic_body(
         project_revision,
         "ASMA-7675 · QNR v2 Nonprod Delivery",
         &category,
@@ -15722,6 +15719,10 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
             "worktree": "/tmp/kontor-legacy-naming/asma-7676"
         }]),
     );
+    legacy_body
+        .as_object_mut()
+        .expect("the epic request is an object")
+        .remove("execution_scope");
     let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &legacy_body)
         .signed_as(&world, "admin")
         .with_key("legacy-naming-epic")
@@ -15767,6 +15768,12 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
     // The supported migration adds only the explicit mapping and preserves the
     // epic/task/ticket identities before admission is retried.
     let mut mapped_body = legacy_body.clone();
+    mapped_body["execution_scope"] = serde_json::json!({
+        "external_epic_key": "ASMA-7675",
+        "short_title": "QNR v2 Nonprod Delivery",
+        "kontor_backlog_code": "QNR-P1",
+        "ai_short_name": "Nonprod Delivery",
+    });
     mapped_body["tasks"][0]["short_code"] = serde_json::json!("QNR-NP-01");
     let mapped = Call::post(format!("/v1/projects/{project}/epics:apply"), &mapped_body)
         .signed_as(&world, "admin")
@@ -15778,56 +15785,27 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
     assert_eq!(mapped.json()["epic_id"], epic);
     assert_eq!(mapped.json()["tasks"][0]["task_id"], task);
     assert_eq!(mapped.json()["tasks"][0]["short_code"], "QNR-NP-01");
-    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
-        .signed_as(&world, "observer")
-        .send(&world)
-        .await;
-    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
-    let armed = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+    let mapped_epic_revision = mapped.json()["revision"]
+        .as_u64()
+        .expect("the updated epic revision");
+    let materialized_ticket = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
         &serde_json::json!({
-            "expected_revision": epic_read.json()["revision"],
-            "tasks": [],
-            "allowed_start": "2020-01-01T00:00:00Z",
-            "allowed_end": "2099-01-01T00:00:00Z",
-            "max_concurrency": 1,
-            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
-                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
-            "granted_by": account_id,
-            "reason": "Prove canonical legacy-import placement"
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision,
         }),
     )
-    .signed_as(&world, "admin")
-    .with_key("legacy-naming-arm")
-    .send(&world)
-    .await;
-    assert_eq!(armed.status, 200, "{}", armed.body);
-    let plan = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
-        &serde_json::json!({}),
-    )
     .signed_as(&world, "operator")
+    .with_key("legacy-naming-ticket")
     .send(&world)
     .await;
-    assert_eq!(plan.status, 200, "{}", plan.body);
-    let started = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
-        &serde_json::json!({"plan_hash": plan.json()["plan_hash"]}),
-    )
-    .signed_as(&world, "operator")
-    .with_key("legacy-naming-start")
-    .send(&world)
-    .await;
-    assert_eq!(started.status, 200, "{}", started.body);
-    assert!(
-        started.json()["started"]
-            .as_array()
-            .is_some_and(|started| !started.is_empty()),
-        "the task's declared seats are admitted: {}",
-        started.body
+    assert_eq!(
+        materialized_ticket.status, 200,
+        "{}",
+        materialized_ticket.body
     );
 
-    // Ticket admission binds ESW + TSW. The ECP is a sibling and is bound by
+    // Ticket materialization binds ESW + TSW. The ECP is a sibling and is bound by
     // its own supported materialization operation; doing it here also proves
     // the canonical title reaches a real native control workspace.
     let materialized_control = Call::post(
@@ -15872,15 +15850,707 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
             .unwrap_or_else(|| panic!("the {kind} native container is bound"))
     };
 
+    assert_eq!(title_for("ESW"), "ESW • ASMA-7675 • QNR-P1");
+    assert_eq!(title_for("ECP"), "ECP • ASMA-7675 • QNR-P1");
+    assert_eq!(title_for("TSW"), "TSW • ASMA-7676 • QNR-NP-01");
+
+    let node = |kind: &str| {
+        topology_json["nodes"]
+            .as_array()
+            .expect("the topology nodes")
+            .iter()
+            .find(|node| node["kind_key"] == kind)
+            .unwrap_or_else(|| panic!("the {kind} node exists: {}", topology.body))
+    };
+    let node_id = |kind: &str| {
+        kontor_core::id::TopologyNodeId::parse(
+            node(kind)["topology_node_id"]
+                .as_str()
+                .expect("the topology node id"),
+        )
+        .expect("a canonical topology node id")
+    };
+    let native_id = |kind: &str| {
+        node(kind)["observed_binding"]["native_id"]
+            .as_str()
+            .expect("the native container id")
+            .to_owned()
+    };
+    let mut identities_before = vec![native_id("ESW"), native_id("ECP"), native_id("TSW")];
+    identities_before.sort();
+
+    // Reproduce the Paseo defect against the already-bound native containers:
+    // both epic-level names ended with the descriptive title. The ticket title
+    // is already correct and must remain untouched.
+    world
+        .fake
+        .set_container_title(node_id("ESW"), "ESW • ASMA-7675 • QNR v2 Nonprod Delivery");
+    world
+        .fake
+        .set_container_title(node_id("ECP"), "ECP • ASMA-7675 • QNR v2 Nonprod Delivery");
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:preview"),
+        &serde_json::json!({"expected_revision": project_revision}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let preview_json = preview.json();
+    let targets = preview_json["targets"]
+        .as_array()
+        .expect("the complete name plan");
+    assert_eq!(targets.len(), 3, "all three bound containers are read");
+    assert_eq!(
+        targets
+            .iter()
+            .filter(|target| target["would_change"] == true)
+            .count(),
+        2,
+        "only ESW and ECP are stale: {}",
+        preview.body
+    );
+    let stale_preview_hash = preview_json["preview_hash"]
+        .as_str()
+        .expect("an identity-bound preview hash")
+        .to_owned();
+    world
+        .fake
+        .set_container_title(node_id("TSW"), "externally drifted after preview");
+    let stale_apply = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:apply"),
+        &serde_json::json!({
+            "expected_revision": project_revision,
+            "preview_hash": stale_preview_hash,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-native-name-stale-preview")
+    .send(&world)
+    .await;
+    assert_eq!(stale_apply.status, 409, "{}", stale_apply.body);
+    assert_eq!(stale_apply.code(), "revision_conflict");
     assert_eq!(
         title_for("ESW"),
-        "Epic · ASMA-7675 · QNR v2 Nonprod Delivery"
+        "ESW • ASMA-7675 • QNR v2 Nonprod Delivery",
+        "a stale complete plan writes no earlier target"
     );
     assert_eq!(
         title_for("ECP"),
-        "ECP · ASMA-7675 · QNR v2 Nonprod Delivery"
+        "ECP • ASMA-7675 • QNR v2 Nonprod Delivery",
+        "a stale complete plan writes no later target"
     );
-    assert_eq!(title_for("TSW"), "TSW · ASMA-7676 · QNR-NP-01");
+    world
+        .fake
+        .set_container_title(node_id("TSW"), "TSW • ASMA-7676 • QNR-NP-01");
+    let fresh_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:preview"),
+        &serde_json::json!({"expected_revision": project_revision}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(fresh_preview.status, 200, "{}", fresh_preview.body);
+    let preview_hash = fresh_preview.json()["preview_hash"]
+        .as_str()
+        .expect("the refreshed identity-bound preview hash")
+        .to_owned();
+    let first_stale_node = TopologyNodeId::parse(
+        fresh_preview.json()["targets"]
+            .as_array()
+            .expect("the complete target census")
+            .iter()
+            .find(|target| target["would_change"] == true)
+            .and_then(|target| target["topology_node_id"].as_str())
+            .expect("at least one stale target"),
+    )
+    .expect("a canonical topology node id");
+    let apply_body = serde_json::json!({
+        "expected_revision": project_revision,
+        "preview_hash": preview_hash,
+    });
+    world.fake.take_calls();
+    world.fake.lose_next_retitle_ack(first_stale_node);
+    let interrupted = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:apply"),
+        &apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-native-name-repair")
+    .send(&world)
+    .await;
+    assert!(
+        interrupted.status.is_server_error(),
+        "the fixture must lose the acknowledgement after its first effect: {}",
+        interrupted.body
+    );
+
+    // The exact-key retry reads every target again. The already-renamed first
+    // target is omitted from the effect plan, so the retry completes the
+    // remaining repair without issuing a duplicate native mutation.
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:apply"),
+        &apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-native-name-repair")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["changed"], 1);
+    assert_eq!(applied.json()["receipt"]["applied"], "unchanged");
+    let retitle_calls: Vec<TopologyNodeId> = world
+        .fake
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            AdapterCall::RetitleContainer(node) => Some(node),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        retitle_calls.len(),
+        2,
+        "the two stale targets receive exactly two total native mutations"
+    );
+    assert_eq!(
+        retitle_calls.iter().copied().collect::<BTreeSet<_>>().len(),
+        retitle_calls.len(),
+        "an acknowledgement loss must not duplicate a target mutation"
+    );
+    assert_eq!(title_for("ESW"), "ESW • ASMA-7675 • QNR-P1");
+    assert_eq!(title_for("ECP"), "ECP • ASMA-7675 • QNR-P1");
+    assert_eq!(title_for("TSW"), "TSW • ASMA-7676 • QNR-NP-01");
+
+    let replay = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:apply"),
+        &apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-native-name-repair")
+    .send(&world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["changed"], 0);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    let mut identities_after: Vec<String> = replay.json()["readback"]["targets"]
+        .as_array()
+        .expect("fresh runtime readback")
+        .iter()
+        .map(|target| {
+            target["native_id"]
+                .as_str()
+                .expect("a preserved native id")
+                .to_owned()
+        })
+        .collect();
+    identities_after.sort();
+    assert_eq!(identities_after, identities_before);
+
+    // Materialize both classes of persistent seat that whole-epic repair must
+    // census. The Core Team path first bootstraps a frozen roster, then launches
+    // an LSA in the already-bound ECP using the pinned ECP seat template.
+    publish_core_team(
+        &world,
+        &project,
+        serde_json::json!([seat("SA", "default", false)]),
+    )
+    .await;
+    let roster_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-preview"),
+        &serde_json::json!({"target": {"id": SEEDED_CATALOG, "version": 1}}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(roster_preview.status, 200, "{}", roster_preview.body);
+    let roster = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-apply"),
+        &serde_json::json!({
+            "preview_hash": roster_preview.json()["preview_hash"],
+            "expected_revision": mapped_epic_revision,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-roster-bootstrap")
+    .send(&world)
+    .await;
+    assert_eq!(roster.status, 200, "{}", roster.body);
+    let hosted = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": mapped_epic_revision,
+            "routes": [{
+                "role_code": "LSA",
+                "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}
+            }],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-hosted-lsa")
+    .send(&world)
+    .await;
+    assert_eq!(hosted.status, 200, "{}", hosted.body);
+    let lsa = hosted.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the Core Team seats")
+        .iter()
+        .find(|seat| seat["role"]["role_code"] == "LSA")
+        .expect("the LSA seat")
+        .clone();
+    let lsa_binding = SeatBindingId::parse(
+        lsa["seat_binding_id"]
+            .as_str()
+            .expect("the durable LSA SeatBinding"),
+    )
+    .expect("a canonical SeatBinding id");
+    let lsa_predecessor_native = kontor_core::id::ExternalId::parse(
+        lsa["native_seat"]["native_id"]
+            .as_str()
+            .expect("the hosted native id"),
+    )
+    .expect("a canonical native id");
+    let lsa_predecessor_generation = lsa["native_seat"]["generation"]
+        .as_u64()
+        .expect("the hosted generation");
+    assert_eq!(
+        world.fake.seat_title(&lsa_predecessor_native).as_deref(),
+        Some("LSA • ASMA-7675 • QNR-P1"),
+        "initial leadership materialization must consume the pinned ECP seat template"
+    );
+
+    // A provider-route replacement keeps the logical SeatBinding, records the
+    // exact predecessor, and gives the successor the same spec-owned title.
+    let route_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &serde_json::json!({
+            "expected_revision": mapped_epic_revision,
+            "seat_binding_id": lsa_binding,
+            "expected_native_id": lsa_predecessor_native,
+            "expected_generation": lsa_predecessor_generation,
+            "desired_model_route": {"provider": "opencode", "model": "deepseek/deepseek-v4-flash", "effort": "high"}
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(route_preview.status, 200, "{}", route_preview.body);
+    let routed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &serde_json::json!({
+            "expected_revision": mapped_epic_revision,
+            "seat_binding_id": lsa_binding,
+            "expected_native_id": lsa_predecessor_native,
+            "expected_generation": lsa_predecessor_generation,
+            "desired_model_route": {"provider": "opencode", "model": "deepseek/deepseek-v4-flash", "effort": "high"},
+            "preview_hash": route_preview.json()["preview_hash"],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-hosted-lsa-route")
+    .send(&world)
+    .await;
+    assert_eq!(routed.status, 200, "{}", routed.body);
+    assert_eq!(routed.json()["seat_binding_id"], lsa_binding.to_string());
+    assert_eq!(
+        routed.json()["predecessor_native_id"],
+        lsa_predecessor_native.as_str()
+    );
+    let lsa_native = kontor_core::id::ExternalId::parse(
+        routed.json()["successor_native_id"]
+            .as_str()
+            .expect("the routed successor native id"),
+    )
+    .expect("a canonical successor native id");
+    assert_eq!(
+        world.fake.seat_title(&lsa_native).as_deref(),
+        Some("LSA • ASMA-7675 • QNR-P1"),
+        "provider-route replacement must consume the pinned ECP seat template"
+    );
+
+    // Start a real delivery team, then replace one role so the repository's
+    // oldest-first enumeration contains a bound predecessor and bound leaf.
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "QNR lead", "harness": "fake.runtime",
+            "credential_alias": "qnr-lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("the account id")
+        .to_owned();
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": mapped_epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Exercise native-name repair"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan.json()["plan_hash"]}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("qnr-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let started_seats = started.json()["started"]
+        .as_array()
+        .expect("the delivery seats")
+        .clone();
+    assert!(
+        !started_seats.is_empty(),
+        "at least one delivery seat: plan={} start={}",
+        plan.body,
+        started.body,
+    );
+    let delivery = started_seats[0].clone();
+    let predecessor_id = AgentRunId::parse(
+        delivery["agent_run_id"]
+            .as_str()
+            .expect("the predecessor AgentRun"),
+    )
+    .expect("a canonical predecessor id");
+    let role_slot = delivery["role_slot"]
+        .as_str()
+        .expect("the delivery role slot")
+        .to_owned();
+    let project_id = ProjectId::parse(&project).expect("a canonical project id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let predecessor_binding = predecessor
+        .binding
+        .clone()
+        .expect("the predecessor is natively bound");
+    finish_natively(&world, predecessor_id.to_string().as_str()).await;
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("qnr-delivery-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    let epic_view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = epic_view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": predecessor_binding.identity.generation,
+            "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-delivery-successor")
+    .send(&world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the successor AgentRun"),
+    )
+    .expect("a canonical successor id");
+    let successor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor_id)
+            .expect("the successor reads")
+            .expect("the successor exists")
+    });
+    assert_eq!(successor.parent_agent_run_id, Some(predecessor_id));
+    let successor_binding = successor
+        .binding
+        .clone()
+        .expect("the current leaf is natively bound");
+
+    // Reproduce a durable logical delivery slot declared before any AgentRun
+    // exists. It has no native title target and must not make the replacement
+    // resolver diagnose an empty chain as stale.
+    let task_id = TaskId::parse(&task).expect("a canonical task id");
+    let task_node = world.daemon.state().with_store(|store| {
+        store
+            .get_task_topology_node(project_id, task_id)
+            .expect("the task topology reads")
+            .expect("the task topology exists")
+    });
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    let catalog = domain
+        .role_catalogs
+        .first()
+        .expect("the bundled role catalog");
+    let declared_role = catalog
+        .role(&RoleCode::parse("SWE").expect("a standard role code"))
+        .expect("the catalog has SWE");
+    let declared_unbound = SeatBindingId::generate();
+    world.daemon.state().with_store(|store| {
+        store
+            .create_seat_binding(&NewSeatBinding {
+                id: declared_unbound,
+                project_id,
+                topology_node_id: task_node.id,
+                role_slot_id: kontor_core::id::RoleSlotId::parse("declared-unbound")
+                    .expect("a role slot"),
+                role: CatalogRoleRef {
+                    catalog_id: catalog.catalog_id,
+                    catalog_revision: catalog.version,
+                    role_code: declared_role.role_code.clone(),
+                    standard_title: declared_role.standard_title.clone(),
+                    custom_display_name: None,
+                },
+                task_id: Some(task_id),
+                team_run_id: Some(successor.team_run_id),
+                attach_deadline: at("2099-01-01T00:00:00Z"),
+                parent_seat_binding_id: None,
+                created_at: at("2026-08-20T00:00:00Z"),
+            })
+            .expect("the logical role slot is declared without an AgentRun");
+    });
+
+    // Drift only the current delivery leaf and the current hosted successor.
+    // The archived predecessor remains deliberately distinct so an oldest-first
+    // resolver is observable as the wrong target.
+    world.fake.set_seat_title(
+        &predecessor_binding.identity.native_id,
+        "ARCHIVED PREDECESSOR",
+    );
+    world.fake.set_seat_title(
+        &successor_binding.identity.native_id,
+        "Delivery descriptive title",
+    );
+    world
+        .fake
+        .set_seat_title(&lsa_native, "LSA descriptive title");
+    world.fake.restart();
+    assert_eq!(
+        world.fake.generation(),
+        successor_binding.identity.generation + 1,
+        "the repair runs after the native runtime generation advances"
+    );
+    let mixed_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:preview"),
+        &serde_json::json!({"expected_revision": project_revision}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(mixed_preview.status, 200, "{}", mixed_preview.body);
+    let mixed_targets = mixed_preview.json()["targets"]
+        .as_array()
+        .expect("the mixed whole-epic census")
+        .clone();
+    assert!(
+        !mixed_targets
+            .iter()
+            .any(|target| target["agent_run_id"] == predecessor_id.to_string()),
+        "the archived oldest-first predecessor entered the census: {}",
+        mixed_preview.body
+    );
+    assert!(
+        !mixed_targets
+            .iter()
+            .any(|target| target["seat_binding_id"] == declared_unbound.to_string()),
+        "a declared seat without an AgentRun is not a native title target: {}",
+        mixed_preview.body
+    );
+    let delivery_target = mixed_targets
+        .iter()
+        .find(|target| target["agent_run_id"] == successor_id.to_string())
+        .expect("the current delivery leaf is targeted")
+        .clone();
+    assert_eq!(
+        delivery_target["native_id"],
+        successor_binding.identity.native_id.as_str()
+    );
+    let delivery_seat_id = SeatBindingId::parse(
+        delivery_target["seat_binding_id"]
+            .as_str()
+            .expect("the delivery SeatBinding"),
+    )
+    .expect("a canonical delivery SeatBinding id");
+    let delivery_seat = world.daemon.state().with_store(|store| {
+        store
+            .get_seat_binding(project_id, delivery_seat_id)
+            .expect("the delivery SeatBinding reads")
+            .expect("the delivery SeatBinding exists")
+    });
+    assert_eq!(
+        delivery_target["desired_title"],
+        format!("{} • QNR-NP-01", delivery_seat.role.role_code.as_str())
+    );
+    let hosted_target = mixed_targets
+        .iter()
+        .find(|target| target["seat_binding_id"] == lsa_binding.to_string())
+        .expect("the current hosted LSA is targeted")
+        .clone();
+    assert_eq!(hosted_target["native_id"], lsa_native.as_str());
+    assert_eq!(hosted_target["desired_title"], "LSA • ASMA-7675 • QNR-P1");
+    let mixed_body = serde_json::json!({
+        "expected_revision": project_revision,
+        "preview_hash": mixed_preview.json()["preview_hash"],
+    });
+    let mixed_applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:apply"),
+        &mixed_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-mixed-seat-name-repair")
+    .send(&world)
+    .await;
+    assert_eq!(mixed_applied.status, 200, "{}", mixed_applied.body);
+    assert_eq!(mixed_applied.json()["changed"], 2);
+    assert_eq!(
+        world
+            .fake
+            .seat_title(&successor_binding.identity.native_id)
+            .as_deref(),
+        delivery_target["desired_title"].as_str()
+    );
+    assert_eq!(
+        world.fake.seat_title(&lsa_native).as_deref(),
+        Some("LSA • ASMA-7675 • QNR-P1")
+    );
+    assert_eq!(
+        world
+            .fake
+            .seat_title(&predecessor_binding.identity.native_id)
+            .as_deref(),
+        Some("ARCHIVED PREDECESSOR"),
+        "repair must not retitle the archived predecessor"
+    );
+    let current_runs = world.daemon.state().with_store(|store| {
+        (
+            store
+                .get_agent_run(project_id, predecessor_id)
+                .expect("the predecessor reads")
+                .expect("the predecessor remains"),
+            store
+                .get_agent_run(project_id, successor_id)
+                .expect("the successor reads")
+                .expect("the successor remains"),
+            store
+                .get_seat_binding(project_id, delivery_seat_id)
+                .expect("the delivery binding reads")
+                .expect("the delivery binding remains"),
+        )
+    });
+    assert_eq!(current_runs.0.id, predecessor_id);
+    assert_eq!(current_runs.0.binding, Some(predecessor_binding));
+    assert_eq!(current_runs.1.id, successor_id);
+    assert_eq!(current_runs.1.parent_agent_run_id, Some(predecessor_id));
+    assert_eq!(current_runs.1.binding, Some(successor_binding));
+    assert_eq!(current_runs.2.id, delivery_seat_id);
+    assert_eq!(current_runs.2.id, delivery_seat.id);
+    let mixed_applied_json = mixed_applied.json();
+    let mixed_readback = mixed_applied_json["readback"]["targets"]
+        .as_array()
+        .expect("fresh mixed readback");
+    for before in [&delivery_target, &hosted_target] {
+        let after = mixed_readback
+            .iter()
+            .find(|target| target["seat_binding_id"] == before["seat_binding_id"])
+            .expect("the same logical seat remains in readback");
+        assert_eq!(after["agent_run_id"], before["agent_run_id"]);
+        assert_eq!(after["native_id"], before["native_id"]);
+        assert_eq!(after["provider_session_id"], before["provider_session_id"]);
+        assert_eq!(after["topology_node_id"], before["topology_node_id"]);
+        assert_eq!(after["would_change"], false);
+    }
+
+    // An exact persisted seat may become unreachable after materialization.
+    // It stays visible as typed pending evidence, while an independent stale
+    // container in the same epic remains actionable and is repaired in place.
+    world.fake.forget_seat(&lsa_native);
+    world
+        .fake
+        .set_container_title(node_id("TSW"), "stale beside unavailable seat");
+    let pending_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:preview"),
+        &serde_json::json!({"expected_revision": project_revision}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(pending_preview.status, 200, "{}", pending_preview.body);
+    let pending_targets = pending_preview.json()["targets"]
+        .as_array()
+        .expect("the pending native-name census")
+        .clone();
+    let pending_lsa = pending_targets
+        .iter()
+        .find(|target| target["seat_binding_id"] == lsa_binding.to_string())
+        .expect("the unavailable seat remains explicit");
+    assert_eq!(pending_lsa["native_id"], lsa_native.as_str());
+    assert_eq!(pending_lsa["observed_title"], serde_json::Value::Null);
+    assert_eq!(pending_lsa["capability"], "rename_pending");
+    assert_eq!(pending_lsa["would_change"], false);
+    let pending_apply = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:apply"),
+        &serde_json::json!({
+            "expected_revision": project_revision,
+            "preview_hash": pending_preview.json()["preview_hash"],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-native-name-repair-with-pending-seat")
+    .send(&world)
+    .await;
+    assert_eq!(pending_apply.status, 200, "{}", pending_apply.body);
+    assert_eq!(pending_apply.json()["changed"], 1);
+    assert_eq!(
+        title_for("TSW"),
+        "TSW • ASMA-7676 • QNR-NP-01",
+        "an unavailable seat must not block an independent container repair"
+    );
+    let pending_readback = pending_apply.json()["readback"]["targets"]
+        .as_array()
+        .expect("the fresh pending readback")
+        .iter()
+        .find(|target| target["seat_binding_id"] == lsa_binding.to_string())
+        .expect("the same unavailable seat remains in readback")
+        .clone();
+    assert_eq!(pending_readback["native_id"], lsa_native.as_str());
+    assert_eq!(pending_readback["capability"], "rename_pending");
+    assert_eq!(pending_readback["observed_title"], serde_json::Value::Null);
 }
 
 /// Ensuring a scope creates the chain the specification declares.
@@ -17104,7 +17774,11 @@ fn vocabulary(root: &str, child: Option<&str>) -> serde_json::Value {
         "cardinality": {"minimum": 1, "maximum": 1},
         "projection_capabilities": ["native_root"],
         "read_only": false,
-        "name_template": "Project Session Workspace",
+        "name_template": {
+            "segments": [
+                {"kind": "literal", "value": "Project Session Workspace"}
+            ]
+        },
         "code_help": {
             "full_name": "Project Session Workspace",
             "meaning": "Logical root grouping every session scope of one project.",
@@ -17119,7 +17793,16 @@ fn vocabulary(root: &str, child: Option<&str>) -> serde_json::Value {
             "cardinality": {"minimum": 0},
             "projection_capabilities": ["native_child", "session_host"],
             "read_only": false,
-            "name_template": "Epic Session Workspace",
+            "name_template": {
+                "segments": [
+                    {"kind": "literal", "value": "Epic Session Workspace"}
+                ]
+            },
+            "seat_name_template": {
+                "segments": [
+                    {"kind": "token", "value": "AREA_CODE"}
+                ]
+            },
             "code_help": {
                 "full_name": "Epic Session Workspace",
                 "meaning": "One epic's own session scope.",
@@ -18063,6 +18746,21 @@ async fn publish_core_team(world: &World, project: &str, seats: serde_json::Valu
         .expect("a revision")
 }
 
+/// Explicit runtime-facing identity for a promoted test epic. Promotion may
+/// not derive these values from purpose text or generated ids.
+fn promotion_apply_body(preview_hash: impl serde::Serialize) -> serde_json::Value {
+    serde_json::json!({
+        "preview_hash": preview_hash,
+        "expected_revision": 1,
+        "execution_scope": {
+            "external_epic_key": "ASMA-PROMOTION",
+            "short_title": "Promoted epic",
+            "kontor_backlog_code": "PROMO",
+            "ai_short_name": "Promoted Epic",
+        }
+    })
+}
+
 /// Quick roles are exactly the ad-hoc-eligible Core Team entries.
 #[tokio::test]
 async fn quick_roles_are_the_ad_hoc_eligible_core_team_entries() {
@@ -18276,7 +18974,7 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         previewed.body
     );
 
-    let body = serde_json::json!({"preview_hash": preview_hash, "expected_revision": 1});
+    let body = promotion_apply_body(&preview_hash);
     let applied = Call::post(
         format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
         &body,
@@ -18626,10 +19324,7 @@ async fn a_later_core_team_edit_leaves_a_promoted_epic_frozen() {
     assert_eq!(previewed.status, 200, "{}", previewed.body);
     let applied = Call::post(
         format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
-        &serde_json::json!({
-            "preview_hash": previewed.json()["preview_hash"].as_str().expect("hash"),
-            "expected_revision": 1,
-        }),
+        &promotion_apply_body(previewed.json()["preview_hash"].as_str().expect("hash")),
     )
     .signed_as(world, "operator")
     .with_key("promote-frozen")
@@ -18997,7 +19692,7 @@ async fn a_promotion_interrupted_after_authorization_resumes_to_completion() {
     // The next attempt has to finish it, against the epic already frozen.
     let resumed = Call::post(
         format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
-        &serde_json::json!({"preview_hash": preview_hash, "expected_revision": 1}),
+        &promotion_apply_body(&preview_hash),
     )
     .signed_as(world, "operator")
     .with_key("promote-resume")
@@ -19554,7 +20249,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         quick_session_ready_to_promote(world, project, "Drive completion", "op06-quick").await;
     let promoted = Call::post(
         format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
-        &serde_json::json!({"preview_hash": hash, "expected_revision": 1}),
+        &promotion_apply_body(&hash),
     )
     .signed_as(world, "operator")
     .with_key("op06-promote")
@@ -19922,7 +20617,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .await;
     let promoted = Call::post(
         format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
-        &serde_json::json!({"preview_hash": preview_hash, "expected_revision": 1}),
+        &promotion_apply_body(&preview_hash),
     )
     .signed_as(world, "operator")
     .with_key("committee-promote")

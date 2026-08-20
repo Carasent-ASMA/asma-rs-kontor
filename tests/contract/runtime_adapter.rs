@@ -210,6 +210,8 @@ impl Team {
     /// What a launch for one role of this team run names, in the verified place.
     fn launch_parts(&self, agent_run_id: AgentRunId) -> LaunchParts {
         LaunchParts {
+            display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
+                .expect("display name"),
             scope: execution_scope(self.task_id, self.workspace.root().clone()),
             agent_run_id,
             team_run_id: self.team_run_id,
@@ -268,6 +270,7 @@ async fn prepare(
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
             root: at_root.clone(),
             requested_at: at("2026-08-10T08:59:00Z"),
         })
@@ -356,6 +359,8 @@ async fn grade_c_cannot_autonomously_dispatch() {
     let request = admitted(
         &fake,
         LaunchParts {
+            display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
+                .expect("display name"),
             scope: execution_scope(task_id, root("/w/task-1")),
             agent_run_id: advisory_run,
             team_run_id,
@@ -549,6 +554,7 @@ async fn workspace_prepare_is_idempotent_for_one_team_run() {
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
             root: place.clone(),
             requested_at: at("2026-08-10T08:59:00Z"),
         })
@@ -564,6 +570,7 @@ async fn workspace_prepare_is_idempotent_for_one_team_run() {
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
             root: place.clone(),
             requested_at: at("2026-08-10T08:59:30Z"),
         })
@@ -580,6 +587,7 @@ async fn workspace_prepare_is_idempotent_for_one_team_run() {
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
             root: root("/w/somewhere-else"),
             requested_at: at("2026-08-10T09:00:00Z"),
         })
@@ -605,6 +613,7 @@ async fn workspace_prepare_retry_returns_the_frozen_capability_snapshot() {
         team_run_id,
         task_id,
         workspace_binding_id,
+        display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
         root: place.clone(),
         requested_at: at("2026-08-10T08:59:00Z"),
     };
@@ -669,6 +678,7 @@ async fn workspace_prepare_retry_returns_the_frozen_capability_snapshot() {
             team_run_id: new_team_run_id,
             task_id: new_task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
             root: new_root,
             requested_at: at("2026-08-10T09:00:00Z"),
         })
@@ -706,6 +716,8 @@ async fn team_run_roles_share_one_verified_workspace_binding() {
     let request = admitted(
         &team.fake,
         LaunchParts {
+            display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
+                .expect("display name"),
             scope: execution_scope(team.task_id, team.workspace.root().clone()),
             agent_run_id: other_run,
             team_run_id: other_team,
@@ -824,6 +836,7 @@ async fn task_workspace_must_not_be_the_runtime_root() {
             team_run_id: TeamRunId::generate(),
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
             root: runtime_root,
             requested_at: at("2026-08-10T08:59:00Z"),
         })

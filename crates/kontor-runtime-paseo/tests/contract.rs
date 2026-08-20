@@ -42,8 +42,8 @@ use kontor_core::id::{
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
 use kontor_runtime::adapter::{
-    HostedSeatLaunchRequest, HostedSeatRetireRequest, LaunchOutcome, RuntimeAdapter, RuntimeError,
-    RuntimeResult,
+    HostedSeatLaunchRequest, HostedSeatRetireRequest, LaunchOutcome, RetitleSeatRequest,
+    RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
@@ -184,6 +184,14 @@ fn external(text: &str) -> ExternalId {
 
 fn name(text: &str) -> ExternalName {
     ExternalName::parse(text).expect("a valid external name")
+}
+
+fn project_name() -> ExternalName {
+    // Match the immutable Paseo 0.3.1 project-list recording so legacy
+    // contracts bind that project instead of exercising project creation.
+    // Caller-rendered bullet naming is covered independently at the request
+    // boundary and must not be smuggled into this correlation fixture.
+    name("Epic · ASMA-7744 · Kontor MVP")
 }
 
 fn slot(text: &str) -> RoleSlotId {
@@ -513,7 +521,7 @@ impl Plane {
         let plane = Self::fresh(recorded);
         plane
             .adapter
-            .prepare_project("cmd-prepare-1")
+            .prepare_project("cmd-prepare-1", &project_name())
             .await
             .expect("the epic project is prepared");
         let snapshot = plane.prepare_workspace().await.expect("a task workspace");
@@ -527,6 +535,7 @@ impl Plane {
                 team_run_id: team_run(),
                 task_id: task(),
                 workspace_binding_id: WorkspaceBindingId::generate(),
+                display_name: name("TSW · ASMA-7755 · KON-11"),
                 root: root(),
                 requested_at: at("2026-08-10T09:00:00Z"),
             })
@@ -566,6 +575,7 @@ impl Plane {
             .into_authority()?;
         Ok(authority.into_request(LaunchParts {
             scope: execution_scope(),
+            display_name: name("Implement • KON-19"),
             agent_run_id,
             team_run_id: team_run(),
             role_slot_id: slot_id.clone(),
@@ -682,62 +692,11 @@ async fn hierarchy_is_one_project_one_workspace_one_agent_per_slot() {
 }
 
 #[tokio::test]
-async fn hierarchy_names_are_compact_and_derived_from_validated_fields() {
-    let scope = scope();
-    assert_eq!(
-        scope.project_display_name(),
-        "Epic · ASMA-7744 · Kontor MVP"
-    );
-    assert_eq!(scope.workspace_display_name(), "TSW · ASMA-7755 · KON-11");
-    assert_eq!(
-        scope
-            .agent_display_name(&slot("implement-a"))
-            .expect("the slot has a canonical display role"),
-        "Implement · KON-11 · A"
-    );
-    assert_eq!(
-        scope
-            .agent_display_name(&slot("implement-b"))
-            .expect("the slot has a canonical display role"),
-        "Implement · KON-11 · B"
-    );
-    assert_eq!(
-        scope
-            .agent_display_name(&slot("qa-a"))
-            .expect("the slot has a canonical display role"),
-        "QA · KON-11"
-    );
-}
-
-#[tokio::test]
-async fn hierarchy_refuses_a_slot_without_a_canonical_display_role() {
-    let error = scope()
-        .agent_display_name(&slot("undeclared"))
-        .expect_err("an unknown slot must not get an invented title");
-    assert!(matches!(error, RuntimeError::LaunchNotAdmitted { .. }));
-}
-
-#[tokio::test]
-async fn hierarchy_refuses_duplicate_visible_seat_names() {
-    let mut scope = scope();
-    scope
-        .seat_display_roles
-        .insert(slot("implement-a"), (name("Implement"), None));
-    scope
-        .seat_display_roles
-        .insert(slot("implement-b"), (name("Implement"), None));
-    let error = scope
-        .agent_display_name(&slot("implement-a"))
-        .expect_err("two tabs must not receive the same visible title");
-    assert!(matches!(error, RuntimeError::LaunchNotAdmitted { .. }));
-}
-
-#[tokio::test]
 async fn hierarchy_reuses_one_epic_project_across_two_task_worktrees() {
     let first = Plane::fresh(daemon());
     let outcome = first
         .adapter
-        .prepare_project("cmd-1")
+        .prepare_project("cmd-1", &project_name())
         .await
         .expect("the epic project is prepared");
     assert_eq!(first.daemon.count("rpc project.add.request"), 0);
@@ -749,7 +708,7 @@ async fn hierarchy_reuses_one_epic_project_across_two_task_worktrees() {
     let second = Plane::build(daemon(), checkpoint);
     let again = second
         .adapter
-        .prepare_project("cmd-2")
+        .prepare_project("cmd-2", &project_name())
         .await
         .expect("the persisted binding is authoritative");
     assert_eq!(again.binding().project_id, outcome.binding().project_id);
@@ -803,7 +762,7 @@ async fn capacity_counts_active_processes_not_persistent_idle_seats() {
     );
     plane
         .adapter
-        .prepare_project("capacity-project")
+        .prepare_project("capacity-project", &project_name())
         .await
         .expect("the project is prepared");
     let workspace = plane
@@ -831,7 +790,7 @@ async fn provider_outage_refuses_before_launch_instead_of_waking_the_seat() {
     );
     plane
         .adapter
-        .prepare_project("provider-outage-project")
+        .prepare_project("provider-outage-project", &project_name())
         .await
         .expect("the project is prepared");
     let workspace = plane
@@ -1023,7 +982,7 @@ async fn preparation_creates_an_absent_declared_git_worktree_before_registering_
     )
     .expect("a fresh adapter");
     adapter
-        .prepare_project("cmd-absent-worktree")
+        .prepare_project("cmd-absent-worktree", &project_name())
         .await
         .expect("the epic project is prepared");
 
@@ -1042,6 +1001,7 @@ async fn preparation_creates_an_absent_declared_git_worktree_before_registering_
             team_run_id: team_run(),
             task_id: task(),
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: name("TSW • ASMA-9000 • DYNAMIC"),
             root: WorkspaceRoot::parse(
                 worktree.to_str().expect("the temporary path remains UTF-8"),
             )
@@ -1143,7 +1103,7 @@ async fn preparation_refuses_branch_drift_before_registering_a_workspace() {
     )
     .expect("a fresh adapter");
     adapter
-        .prepare_project("cmd-branch-drift")
+        .prepare_project("cmd-branch-drift", &project_name())
         .await
         .expect("the epic project is prepared");
     let error = adapter
@@ -1160,6 +1120,7 @@ async fn preparation_refuses_branch_drift_before_registering_a_workspace() {
             team_run_id: team_run(),
             task_id: task(),
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: name("TSW • ASMA-9000 • DYNAMIC"),
             root: worktree_root,
             requested_at: at("2026-08-10T09:00:00Z"),
         })
@@ -1194,7 +1155,7 @@ async fn preparation_reports_rename_pending_and_writes_nothing() {
 
     let outcome = plane
         .adapter
-        .prepare_project("cmd-1")
+        .prepare_project("cmd-1", &project_name())
         .await
         .expect("a drifted name is still a usable project");
     match outcome {
@@ -1204,7 +1165,7 @@ async fn preparation_reports_rename_pending_and_writes_nothing() {
             observed_name,
         } => {
             assert_eq!(binding.project_id.as_str(), PROJECT_ID);
-            assert_eq!(desired_name, "Epic · ASMA-7744 · Kontor MVP");
+            assert_eq!(desired_name, project_name().as_str());
             assert_eq!(observed_name, "kontor mvp (old name)");
         }
         other => panic!("display drift must be reported, got {other:?}"),
@@ -1242,7 +1203,7 @@ async fn preparation_adds_one_project_and_reads_it_back_by_exact_id() {
 
     let outcome = plane
         .adapter
-        .prepare_project("cmd-durable-1")
+        .prepare_project("cmd-durable-1", &project_name())
         .await
         .expect("a project is created");
     assert!(!outcome.rename_pending());
@@ -1256,7 +1217,11 @@ async fn preparation_refuses_two_projects_carrying_one_epic_name() {
     let plane = Plane::fresh(recorded);
 
     assert!(
-        plane.adapter.prepare_project("cmd-1").await.is_err(),
+        plane
+            .adapter
+            .prepare_project("cmd-1", &project_name())
+            .await
+            .is_err(),
         "an ambiguous prior effect must not become a second project"
     );
     assert!(plane.daemon.mutations().is_empty());
@@ -1273,7 +1238,7 @@ async fn preparation_refuses_duplicate_canonical_workspace_aliases() {
     let plane = Plane::fresh(recorded);
     plane
         .adapter
-        .prepare_project("cmd-1")
+        .prepare_project("cmd-1", &project_name())
         .await
         .expect("the project is prepared");
 
@@ -1296,7 +1261,7 @@ async fn preparation_refuses_a_workspace_readback_from_another_project() {
     let plane = Plane::fresh(recorded);
     plane
         .adapter
-        .prepare_project("cmd-1")
+        .prepare_project("cmd-1", &project_name())
         .await
         .expect("project");
 
@@ -1317,6 +1282,7 @@ async fn preparation_refuses_a_second_root_for_one_team_run() {
             team_run_id: team_run(),
             task_id: task(),
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: name("TSW · ASMA-7755 · KON-11"),
             root: WorkspaceRoot::parse("/w/epic/task-99").expect("absolute"),
             requested_at: at("2026-08-10T09:00:00Z"),
         })
@@ -1335,7 +1301,7 @@ async fn preparation_survives_a_lost_create_ack_without_a_second_create() {
     let plane = Plane::fresh(recorded);
     plane
         .adapter
-        .prepare_project("cmd-1")
+        .prepare_project("cmd-1", &project_name())
         .await
         .expect("project");
 
@@ -1385,7 +1351,7 @@ async fn assert_prelaunch_refusal(recorded: RecordedPaseo) -> RuntimeError {
     let plane = Plane::fresh(recorded);
     plane
         .adapter
-        .prepare_project("cmd-1")
+        .prepare_project("cmd-1", &project_name())
         .await
         .expect("project");
     let workspace = plane.prepare_workspace().await;
@@ -1646,6 +1612,7 @@ async fn role_slot_a_same_slot_race_yields_one_permit_and_one_agent() {
         .expect("the first caller holds the authority")
         .into_request(LaunchParts {
             scope: execution_scope(),
+            display_name: name("Implement • KON-19"),
             agent_run_id: run(RUN_IMPLEMENT),
             team_run_id: team_run(),
             role_slot_id: slot("implement-a"),
@@ -2024,9 +1991,11 @@ async fn freshness_a_stopped_agent_is_reloaded_and_keeps_its_identity() {
     plane
         .daemon
         .queue_answer_rpc("fetch_agent_request", v(AGENT_STOPPED));
+    let mut corrected = v(AGENT);
+    corrected["agent"]["title"] = serde_json::json!("Implement • KON-11");
     plane
         .daemon
-        .queue_answer_rpc("fetch_agent_request", v(AGENT));
+        .queue_answer_rpc("fetch_agent_request", corrected);
     plane
         .adapter
         .resume(&ResumeRequest {
@@ -3757,7 +3726,7 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
     let plane = Plane::fresh(daemon());
     plane
         .adapter
-        .prepare_project("prepare-label-repair-project")
+        .prepare_project("prepare-label-repair-project", &project_name())
         .await
         .expect("the epic project is prepared");
     let container = plane
@@ -3784,6 +3753,7 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
         .adapter
         .launch(&authority.into_request(LaunchParts {
             scope: execution_scope(),
+            display_name: name("Implement • KON-19"),
             agent_run_id: run(RUN_IMPLEMENT),
             team_run_id: team_run(),
             role_slot_id: slot("implement-a"),
@@ -3806,11 +3776,13 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
     leaked["agent"]["title"] =
         serde_json::json!("SWE · grid-column-ops-and-question-ownership-invariant");
     plane.daemon.queue_answer_rpc("fetch_agent_request", leaked);
+    let mut corrected = v(AGENT);
+    corrected["agent"]["title"] = serde_json::json!("Implement • KON-11");
     plane
         .daemon
-        .queue_answer_rpc("fetch_agent_request", v(AGENT));
+        .queue_answer_rpc("fetch_agent_request", corrected);
     plane.daemon.set_answer(
-        &PaseoCommand::agent_update_labels(AGENT_ID, &BTreeMap::new()),
+        &PaseoCommand::agent_update(AGENT_ID, Some("Implement • KON-11"), &BTreeMap::new()),
         r#"{"agentId":"agt_implement"}"#,
     );
 
@@ -3819,6 +3791,7 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
         scope: execution_scope(),
         team_run_id: team_run(),
         role_slot_id: slot("implement-a"),
+        desired_title: name("Implement • KON-11"),
         container,
         requested_at: at("2026-08-20T05:01:00Z"),
     };
@@ -3829,7 +3802,7 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
         .expect("the stale labels are repaired");
     assert!(repaired.changed);
     assert_eq!(repaired.identity, *launched.snapshot.identity());
-    assert_eq!(repaired.title, "Implement · KON-11 · A");
+    assert_eq!(repaired.title, "Implement • KON-11");
     assert_eq!(
         repaired.labels.get(label::JIRA_EPIC).map(String::as_str),
         Some("ASMA-7744")
@@ -3841,10 +3814,17 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
     assert_eq!(plane.daemon.count("agent update agt_implement"), 1);
     assert_eq!(
         plane.daemon.titles("agent update agt_implement"),
-        ["Implement · KON-11 · A"],
+        ["Implement • KON-11"],
         "the same mutation repairs the canonical seat title"
     );
 
+    for _ in 0..2 {
+        let mut corrected = v(AGENT);
+        corrected["agent"]["title"] = serde_json::json!("Implement • KON-11");
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agent_request", corrected);
+    }
     let replayed = plane
         .adapter
         .reconcile_session_labels(&request)
@@ -3856,6 +3836,86 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
         plane.daemon.count("agent update agt_implement"),
         1,
         "an idempotent repair performs no second mutation"
+    );
+}
+
+#[tokio::test]
+async fn seat_retitle_accepts_an_older_persisted_generation_and_refuses_a_future_one() {
+    let mut stale = v(AGENT);
+    stale["agent"]["title"] = serde_json::json!("LSA descriptive title");
+    let mut corrected = stale.clone();
+    corrected["agent"]["title"] = serde_json::json!("LSA • ASMA-7675 • QNR-P1");
+    let recorded = Arc::new(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(
+                &PaseoCommand::agent_update(
+                    AGENT_ID,
+                    Some("LSA • ASMA-7675 • QNR-P1"),
+                    &BTreeMap::new(),
+                ),
+                r#"{"agentId":"agt_implement"}"#,
+            )
+            .then_answering_rpc("fetch_agent_request", stale)
+            .answering_rpc("fetch_agent_request", corrected),
+    );
+    let adapter = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(2, name(HOST_KEY)),
+    )
+    .expect("the restarted adapter builds");
+    let durable_identity = NativeRuntimeIdentity {
+        runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+        host: name(HOST_KEY),
+        generation: 1,
+        native_id: external(AGENT_ID),
+    };
+    let request = RetitleSeatRequest {
+        identity: durable_identity.clone(),
+        provider_session_id: Some(external("prov_sess_1")),
+        container_native_id: external(WORKSPACE_ID),
+        desired_title: name("LSA • ASMA-7675 • QNR-P1"),
+        requested_at: at("2026-08-20T05:02:00Z"),
+    };
+
+    let applied = adapter
+        .retitle_seat(&request)
+        .await
+        .expect("the generation-one seat is repaired by generation two");
+    assert_eq!(applied.identity, durable_identity);
+    assert_eq!(applied.provider_session_id, request.provider_session_id);
+    assert_eq!(applied.container_native_id, request.container_native_id);
+    assert_eq!(applied.observed_title, request.desired_title.as_str());
+
+    let current = RetitleSeatRequest {
+        identity: NativeRuntimeIdentity {
+            generation: 2,
+            ..durable_identity.clone()
+        },
+        ..request.clone()
+    };
+    let current_preview = adapter
+        .preview_retitle_seat(&current)
+        .await
+        .expect("the current runtime generation is inside the accepted bound");
+    assert_eq!(current_preview.identity, current.identity);
+    assert!(!current_preview.changed);
+
+    let future = RetitleSeatRequest {
+        identity: NativeRuntimeIdentity {
+            generation: 3,
+            ..durable_identity
+        },
+        desired_title: name("must not apply"),
+        ..request
+    };
+    let refused = adapter.retitle_seat(&future).await;
+    assert!(matches!(refused, Err(RuntimeError::StaleBinding { .. })));
+    assert_eq!(
+        recorded.count("agent update agt_implement"),
+        1,
+        "a future generation is refused before mutation"
     );
 }
 
@@ -3902,7 +3962,7 @@ async fn transport_an_unrecognized_app_version_refuses_every_driving_operation()
     let plane = Plane::fresh(recorded);
     plane
         .adapter
-        .prepare_project("cmd-1")
+        .prepare_project("cmd-1", &project_name())
         .await
         .expect("reading the project list is not driving anything");
     plane.daemon.take_calls();
@@ -4298,9 +4358,7 @@ fn retitle(node_id: TopologyNodeId) -> RetitleContainerRequest {
         bound_native_id: external(WORKSPACE_ID),
         bound_project_native_id: Some(external(PROJECT_ID)),
         generation: 1,
-        scope: Some(execution_scope()),
-        task_id: Some(task()),
-        structural_name: name(&format!("Ticket Session Workspace · {node_id}")),
+        desired_title: name(CANONICAL_NODE_TITLE),
         requested_at: at("2026-08-17T09:00:00Z"),
     }
 }
@@ -4547,7 +4605,7 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
     let plane = Plane::fresh(recorded);
     plane
         .adapter
-        .prepare_project("cmd-hosted-ecp")
+        .prepare_project("cmd-hosted-ecp", &project_name())
         .await
         .expect("the epic project is prepared");
     let container = plane
@@ -4934,6 +4992,7 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
             team_run_id: TeamRunId::generate(),
             task_id: second_task,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: name("TSW • ASMA-9001 • QNR-2"),
             root: second_root,
             requested_at: at("2026-08-19T09:02:00Z"),
         })
@@ -4942,6 +5001,14 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
     assert_eq!(
         workspace.snapshot.binding.identity.native_id.as_str(),
         WORKSPACE_ID
+    );
+    assert_eq!(
+        recorded
+            .titles("workspace create")
+            .last()
+            .map(String::as_str),
+        Some("TSW • ASMA-9001 • QNR-2"),
+        "the adapter must pass the caller-rendered title verbatim"
     );
 
     let checkpoint = adapter.checkpoint();
@@ -5154,19 +5221,13 @@ async fn ticket_materialization_creates_the_absent_checkout_before_workspace_reg
     assert_eq!(recorded.count("workspace create"), 1);
 }
 
-/// A topology-created TSW is named from its task's scope, not from its node id.
+/// A topology-created TSW consumes the complete daemon-rendered name verbatim.
 ///
-/// The daemon builds `display_name` from the node kind's `name_template` and
-/// the topology node id, because that is the only name it *can* build: the Jira
-/// issue and the short ticket code are this plane's configuration, not the
-/// control plane's. So the title is the adapter's to render, from the same
-/// scope `prepare_workspace` renders from — and the caller's name is ignored
-/// for a child that names a task.
-///
-/// The regression this pins is a workspace called `Task Session Workspace ·
-/// 0189…` or one exposing an internal correlation id in a live Realm.
+/// The runtime adapter owns placement and correlation, not naming policy. The
+/// regression this pins is either an adapter-local formatter overriding the
+/// pinned topology template or an internal node id leaking into a live title.
 #[tokio::test]
-async fn a_task_scoped_child_is_titled_from_its_ticket_and_not_from_its_node_id() {
+async fn a_task_scoped_child_uses_the_caller_rendered_title_without_a_node_id() {
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
         .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
@@ -5177,10 +5238,10 @@ async fn a_task_scoped_child_is_titled_from_its_ticket_and_not_from_its_node_id(
     let plane = Plane::fresh(recorded);
     let node_id = node(NODE_A);
 
-    // Exactly what topology admission sends: a kind template, a node id, and
-    // the task the node serves.
+    // Exactly what topology admission sends: the finished external name plus
+    // the durable identities used only for correlation.
     let request = ContainerRequest {
-        display_name: name(&format!("Task Session Workspace · {node_id}")),
+        display_name: name("TSW • ASMA-7755 • KON-11"),
         task_id: Some(task()),
         ..child_request(node_id, Some(bound_root(node(NODE_B))))
     };
@@ -5192,7 +5253,7 @@ async fn a_task_scoped_child_is_titled_from_its_ticket_and_not_from_its_node_id(
 
     let titles = plane.daemon.titles("workspace create");
     assert_eq!(titles.len(), 1, "one container, one title: {titles:?}");
-    assert_eq!(titles[0], "TSW · ASMA-7755 · KON-11");
+    assert_eq!(titles[0], request.display_name.as_str());
     assert!(
         !titles[0].contains(&node_id.to_string()),
         "machine identity stays in Kontor's binding: {}",
@@ -5238,8 +5299,8 @@ async fn a_child_that_names_no_task_keeps_the_structural_name() {
     );
 }
 
-/// A task absent from the fleet compatibility map is named from the durable
-/// execution scope carried by the container request.
+/// A task absent from the fleet compatibility map is placed from the durable
+/// execution scope while retaining the caller-rendered title.
 ///
 /// Static task scopes preserve old display spellings; they are not an admission
 /// allowlist. Treating them as one strands every task created after the daemon
@@ -5276,9 +5337,10 @@ async fn a_dynamic_task_uses_its_durable_scope_without_a_static_task_entry() {
     .expect("a consistent checkpoint restores");
 
     let node_id = node(NODE_A);
+    let display_name = name("TSW • ASMA-7755 • KON-11");
     let outcome = adapter
         .prepare_container(&ContainerRequest {
-            display_name: name(&format!("Task Session Workspace · {node_id}")),
+            display_name: display_name.clone(),
             task_id: Some(task()),
             ..child_request(node_id, Some(bound_root(node(NODE_B))))
         })
@@ -5291,8 +5353,8 @@ async fn a_dynamic_task_uses_its_durable_scope_without_a_static_task_entry() {
     );
     assert_eq!(
         daemon.titles("workspace create"),
-        ["TSW · ASMA-7755 · KON-11"],
-        "the durable request scope names the workspace"
+        [display_name.as_str()],
+        "the durable request scope places the caller-named workspace"
     );
 }
 
@@ -5357,9 +5419,7 @@ async fn a_native_project_retitle_refuses_without_treating_the_project_as_a_work
         projection: ContainerProjection::NativeRoot,
         bound_native_id: external(PROJECT_ID),
         bound_project_native_id: None,
-        task_id: None,
-        scope: Some(epic_execution_scope()),
-        structural_name: name("Epic · ASMA-7744 · Kontor MVP"),
+        desired_title: name("ESW • ASMA-7744 • OP"),
         ..retitle(node(NODE_B))
     };
 
@@ -5408,9 +5468,7 @@ async fn a_native_project_retitle_uses_project_rename_and_preserves_identity() {
         projection: ContainerProjection::NativeRoot,
         bound_native_id: external(PROJECT_ID),
         bound_project_native_id: None,
-        task_id: None,
-        scope: Some(epic_execution_scope()),
-        structural_name: name("Epic · ASMA-7744 · Kontor MVP"),
+        desired_title: name("Epic · ASMA-7744 · Kontor MVP"),
         ..retitle(node(NODE_B))
     };
 
@@ -5536,7 +5594,7 @@ async fn a_retitle_renames_the_bound_workspace_and_reads_the_title_back() {
     let plane = Plane::with_facade(recorded, std::sync::Arc::clone(&facade));
     plane
         .adapter
-        .prepare_project("cmd-prepare-1")
+        .prepare_project("cmd-prepare-1", &project_name())
         .await
         .expect("the epic project is bound");
 
@@ -5606,7 +5664,7 @@ async fn a_retitle_of_an_already_correct_container_changes_nothing() {
     let plane = Plane::with_facade(recorded, std::sync::Arc::clone(&facade));
     plane
         .adapter
-        .prepare_project("cmd-prepare-1")
+        .prepare_project("cmd-prepare-1", &project_name())
         .await
         .expect("the epic project is bound");
 
@@ -5679,7 +5737,7 @@ async fn a_preview_reports_the_correction_without_making_it() {
     let plane = Plane::with_facade(recorded, std::sync::Arc::clone(&facade));
     plane
         .adapter
-        .prepare_project("cmd-prepare-1")
+        .prepare_project("cmd-prepare-1", &project_name())
         .await
         .expect("the epic project is bound");
 
@@ -5724,7 +5782,7 @@ async fn a_retitle_refuses_a_native_id_the_bound_project_does_not_hold() {
     let plane = Plane::with_facade(recorded, std::sync::Arc::clone(&facade));
     plane
         .adapter
-        .prepare_project("cmd-prepare-1")
+        .prepare_project("cmd-prepare-1", &project_name())
         .await
         .expect("the epic project is bound");
 
@@ -5793,7 +5851,7 @@ async fn a_rename_the_daemon_did_not_perform_is_never_reported_as_done() {
     let plane = Plane::with_facade(recorded, facade);
     plane
         .adapter
-        .prepare_project("cmd-prepare-1")
+        .prepare_project("cmd-prepare-1", &project_name())
         .await
         .expect("the epic project is bound");
 
@@ -5823,7 +5881,7 @@ async fn the_retitle_and_the_bind_path_agree_on_what_a_container_is_called() {
     let plane = Plane::with_facade(recorded, std::sync::Arc::clone(&facade));
     plane
         .adapter
-        .prepare_project("cmd-prepare-1")
+        .prepare_project("cmd-prepare-1", &project_name())
         .await
         .expect("the epic project is bound");
 

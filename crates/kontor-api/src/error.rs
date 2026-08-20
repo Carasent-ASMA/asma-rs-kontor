@@ -40,6 +40,9 @@ closed_enum! {
         IdempotencyConflict => "idempotency_conflict",
         /// The binding's frozen capability set does not cover this operation.
         UnsupportedCapability => "unsupported_capability",
+        /// An identity-preserving native-root rename is required but the
+        /// configured runtime cannot prove it can perform one.
+        RenamePending => "rename_pending",
         /// The binding no longer names a session this runtime will act on.
         StaleBinding => "stale_binding",
         /// The requested position is outside the retained control-plane history.
@@ -107,7 +110,7 @@ impl ApiErrorCode {
             | Self::TimelineRefetchRequired => StatusCode::CONFLICT,
             // The request is well formed and understood; this runtime simply
             // cannot do it. That is not a server defect, so it is not a 5xx.
-            Self::UnsupportedCapability | Self::HandoffUnsettled => {
+            Self::UnsupportedCapability | Self::RenamePending | Self::HandoffUnsettled => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             // The position the caller wants is genuinely gone.
@@ -149,6 +152,9 @@ impl ApiErrorCode {
             }
             Self::UnsupportedCapability => {
                 "read the runtime's capabilities and use an operation it declares"
+            }
+            Self::RenamePending => {
+                "upgrade or enable the runtime's identity-preserving project rename, then retry the preview"
             }
             Self::StaleBinding => "settle the run to learn what its runtime now reports",
             Self::ResnapshotRequired => "read a fresh snapshot and resume from its cursor",

@@ -408,6 +408,7 @@ async fn prepared_workspace(
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
             root: worktree(),
             requested_at: at("2026-08-10T09:00:00Z"),
         })
@@ -485,6 +486,7 @@ async fn admitted(adapter: &CodexAdapter<'_>, seat: &Seat, parts: &Parts) -> Lau
         .expect("the seat was free")
         .into_request(LaunchParts {
             scope: execution_scope(seat.task_id, parts.cwd.clone()),
+            display_name: ExternalName::parse("Implement • KON-19").expect("display name"),
             agent_run_id: parts.agent_run_id,
             team_run_id: seat.slot.team_run_id,
             role_slot_id: seat.slot.role_slot_id.clone(),
@@ -833,6 +835,7 @@ async fn preparing_a_workspace_verifies_the_worktree_and_creates_nothing() {
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
             root: worktree(),
             requested_at: at("2026-08-10T09:00:00Z"),
         })
@@ -851,6 +854,7 @@ async fn preparing_a_workspace_verifies_the_worktree_and_creates_nothing() {
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
             root: worktree(),
             requested_at: at("2026-08-10T09:05:00Z"),
         })
@@ -870,6 +874,7 @@ async fn preparing_a_workspace_verifies_the_worktree_and_creates_nothing() {
                 team_run_id: TeamRunId::generate(),
                 task_id: missing_task_id,
                 workspace_binding_id: WorkspaceBindingId::generate(),
+                display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
                 root: missing,
                 requested_at: at("2026-08-10T09:06:00Z"),
             })
