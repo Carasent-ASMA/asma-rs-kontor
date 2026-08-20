@@ -1,7 +1,7 @@
 # OP-08 Message Acknowledgement Reconciliation
 
 > **Date:** 2026-08-20 19:42
-> **Status:** 🟡 In Review
+> **Status:** 🟢 Deployed; OP-08 delivery active
 > **Category:** report
 > **Scope:** ASMA-7869 / KON-OP-08 / Paseo session-message delivery
 > **Summary:** Records the live false-negative acknowledgement that occurred while resuming the exact OP-08 builder, its backward-timeline reconciliation repair, and the evidence that no replacement or duplicate message was authorized.
@@ -96,11 +96,58 @@ pnpm audit --prod                                       passed (no known vulnera
 cargo build --release --workspace                     passed
 ```
 
-PR/CI, deployment, same-key live reconciliation, and the final OP-08 inspector
-handoff receipt will be appended before this report is approved.
+The merge, CI, deployment and live legacy-replay disposition are recorded
+below. The final OP-08 inspector handoff remains part of the owning task's gate
+evidence rather than a prerequisite for this adapter repair receipt.
 
 The gated implementation commit is
 `e313059ea8d56e6f14fe7fb4ec7e59b132bb60e0`. The first ASMA PR-flow attempt
 correctly left that commit intact but found no pending staged commit from which
 to publish the newly created branch. This evidence update is the next durable
 checkpoint and publishes the complete branch through the same ASMA workflow.
+
+## Merge, CI and deployment receipt
+
+PR #65 merged the two owned commits as
+`290a4617ac9dde5566db68294e227827aa8e975d`. Both independently triggered CI
+runs completed successfully: `32400935923` and `32400935794`; each passed the
+Rust workspace and console jobs, including formatting, clippy, workspace tests,
+advisories, license/ban checks, generated API parity, typecheck and all console
+tests.
+
+The exact merge commit was checked out in a clean detached worktree and built
+again. The installed artifacts are:
+
+```text
+kontor-daemon 4191916a68c3dffa79ad91c59f7e782a71f93f36e83edd46e36cc9e461165a1f
+kontor        ed1a8ea40d49cbf507542987d76160a0e46740a4d498e48f1fd175069f0a4ff0
+kontor-mcp    1c29165fe70fc21a699ecc835df6da46010bdf6449c97eec6d77d3838f0fff7b
+```
+
+The previous fleet is recoverable from
+`/Users/igor/.local/state/kontor/asma/backups/pre-pr65-20260820T182041Z`.
+Launchd restarted `com.asma.kontor.daemon` as PID `7300`, serving schema 46 on
+`127.0.0.1:7717`. Startup re-attested the fleet, retained `findings=126`, opened
+the reconciliation barrier, and logged zero post-boot `refused to restore`
+lines.
+
+## Live legacy-replay disposition
+
+The original idempotency key was replayed with the exact original body after
+deployment. It changed nothing and returned the safe HTTP 503 unavailable
+result. Two supported `session-timeline-get` reads then exposed the independent
+reason: this persisted session returns typed HTTP 409
+`timeline_refetch_required`, so its current native epoch cannot be used to
+prove content written under the earlier epoch. Kontor must not treat a
+renumbered transcript as proof that the old message landed, and this repair
+deliberately does not weaken that rule.
+
+One bounded, read-only Paseo status/activity check was required because the
+Kontor send result contradicted the runtime. It proved the exact native agent
+`1743804b-f9b9-4167-98ad-e39b3f402a01` remains `running` in the exact workspace
+and worktree on `codex/gpt-5.6-sol` at pinned `xhigh`; no new message, seat,
+binding, TeamRun or replacement was created. The builder is actively finishing
+the OP-08 branch through the original delivered turn. The backward-paging
+regression and mutation proof therefore close the lost-ack paging defect, while
+the historical epoch discontinuity remains preserved evidence rather than an
+unsafe live acknowledgement.
