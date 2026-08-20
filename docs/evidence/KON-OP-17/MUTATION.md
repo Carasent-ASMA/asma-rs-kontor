@@ -36,6 +36,7 @@ Both focused tests were then rerun green on the restored tree.
 | M21 | Put the internal Kontor `MiniProjectId` in the public `jira.epic` label | `a_second_epics_seat_labels_keep_external_and_internal_project_identity_distinct` | killed: readback was the QNR UUID instead of `ASMA-7675` while `kontor.project_id` correctly remained internal |
 | M22 | Skip the exact AgentRun correlation check before provider-outage retirement | `provider_outage_retires_only_the_exact_idle_provider_seat` | killed: a recycled native id carrying another run label was archived instead of refused before mutation |
 | M23 | Reuse the Jira issue key as a legacy task's short code | `a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titles` | killed: the TSW regressed to `TSW · ASMA-7676 · ASMA-7676` instead of the stable semantic code |
+| M24 | Restore the restart-unsafe workspace lookup through the adapter's in-memory prepared-project cache | `a_retitle_reads_the_persisted_parent_project_after_restart` | killed: the preserved workspace returned `StaleBinding` after restart instead of resolving by its persisted native project ancestor |
 
 ## Restoration receipt
 
@@ -82,7 +83,9 @@ No mutant remains:
 - provider-outage retirement requires the exact binding, native id, provider,
   AgentRun correlation and queued/no-intent state before archive; and
 - legacy task naming derives a distinct stable semantic short code rather than
-  repeating the Jira issue key.
+  repeating the Jira issue key; and
+- retitle readback resolves the exact workspace inside the persisted native
+  project ancestor, independent of the adapter's in-memory preparation cache.
 
 After restoration:
 
@@ -110,7 +113,26 @@ test a_hosted_core_team_seat_launches_in_the_exact_local_ecp ... ok
 test a_second_epics_seat_labels_keep_external_and_internal_project_identity_distinct ... ok
 test provider_outage_retires_only_the_exact_idle_provider_seat ... ok
 test a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titles ... ok
+test a_retitle_reads_the_persisted_parent_project_after_restart ... ok
 ```
 
 The full format, lint, Rust workspace, generated-contract, console, and release
 build gates are recorded in the associated deployment report and commit/PR.
+
+## Restart-safe retitle follow-up
+
+The M24 restoration was reverified on 2026-08-20 before release:
+
+```text
+cargo fmt --all -- --check                                      passed
+cargo clippy --workspace --all-targets -- -D warnings           passed
+cargo test --workspace                                           passed
+pnpm --dir apps/console verify:api                               passed
+pnpm typecheck                                                   passed
+pnpm test                                                        passed (295 tests)
+cargo audit && cargo deny check                                  passed
+```
+
+No schema migration or generated contract changed. The live proof after deploy
+must resolve the preserved OP-18 workspace by its persisted native project
+ancestor without preparing the project again or changing either native id.

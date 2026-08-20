@@ -3037,12 +3037,26 @@ impl PaseoAdapter {
             });
         }
 
+        let project_id =
+            request
+                .bound_project_native_id
+                .as_ref()
+                .ok_or(RuntimeError::WorkspaceMismatch {
+                    rule: "a native child retitle names no persisted native project",
+                })?;
         let before = self
-            .fetch_workspace(request.bound_native_id.as_str())
-            .await
-            .map_err(|_| RuntimeError::StaleBinding {
+            .fetch_workspaces(project_id.as_str())
+            .await?
+            .into_iter()
+            .find(|workspace| workspace.id == request.bound_native_id.as_str())
+            .ok_or(RuntimeError::StaleBinding {
                 rule: "the bound project no longer holds the addressed native container",
             })?;
+        if before.project_id != project_id.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the addressed native container came back under another project",
+            });
+        }
 
         let identity = self.identity(ExternalId::parse(&before.id)?, generation);
         let correlation = ContainerCorrelationEvidence::by_exact_id(
@@ -3091,14 +3105,22 @@ impl PaseoAdapter {
         &self,
         request: &RetitleContainerRequest,
     ) -> RuntimeResult<PaseoWorkspace> {
+        let project_id =
+            request
+                .bound_project_native_id
+                .as_ref()
+                .ok_or(RuntimeError::WorkspaceMismatch {
+                    rule: "a native child retitle names no persisted native project",
+                })?;
         let after = self
-            .fetch_workspace(request.bound_native_id.as_str())
-            .await
-            .map_err(|_| RuntimeError::StaleBinding {
+            .fetch_workspaces(project_id.as_str())
+            .await?
+            .into_iter()
+            .find(|workspace| workspace.id == request.bound_native_id.as_str())
+            .ok_or(RuntimeError::StaleBinding {
                 rule: "the addressed native container is gone after the rename",
             })?;
-        let project = self.project_for_native_id(&after.project_id)?;
-        if after.project_id != project.project_id.as_str() {
+        if after.project_id != project_id.as_str() {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the renamed container came back under another project",
             });

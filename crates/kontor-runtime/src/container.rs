@@ -409,11 +409,14 @@ pub struct ContainerBinding {
 /// Change one already-bound container's visible title.
 ///
 /// Every field is an identity Kontor already holds. There is deliberately no
-/// parent or working directory. It does carry the projection Kontor persisted:
-/// a native root is a project while a native child is a workspace, and treating
-/// the former as the latter is an attempt to rename a session that does not
-/// exist. The projection is evidence about the addressed identity, not authority
-/// to move it.
+/// working directory or caller-selected parent. A native child carries the
+/// exact durable native project id of its persisted root ancestor so a runtime
+/// rebuilt since binding can read the workspace inside the right project without
+/// depending on an in-memory preparation ledger. It also carries the projection
+/// Kontor persisted: a native root is a project while a native child is a
+/// workspace, and treating the former as the latter is an attempt to rename a
+/// session that does not exist. The projection is evidence about the addressed
+/// identity, not authority to move it.
 ///
 /// The native container is addressed by `bound_native_id` and by nothing else.
 /// Not by title — which is the very thing being corrected and therefore the one
@@ -439,6 +442,11 @@ pub struct RetitleContainerRequest {
     pub projection: ContainerProjection,
     /// The exact native container to address. The only handle in this request.
     pub bound_native_id: ExternalId,
+    /// The exact native project that persisted ancestry places this child in.
+    ///
+    /// Required for [`ContainerProjection::NativeChild`] and absent for a native
+    /// root. This is readback scope, not a requested move or re-parenting.
+    pub bound_project_native_id: Option<ExternalId>,
     /// The generation `bound_native_id` is meaningful in.
     ///
     /// A native id names one container inside one generation. Retitling

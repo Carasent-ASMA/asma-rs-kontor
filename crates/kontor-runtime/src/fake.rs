@@ -630,6 +630,13 @@ impl FakeState {
         call: AdapterCall,
     ) -> RuntimeResult<(ContainerBindingSnapshot, ExternalName, String)> {
         self.require_plane()?;
+        if request.projection == ContainerProjection::NativeChild
+            && request.bound_project_native_id.is_none()
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "a native child retitle must name its persisted native project",
+            });
+        }
         // Judged against the capabilities this container was *bound* under, the
         // same rule every other operation on it follows: a later upgrade cannot
         // retroactively license work on an older placement.

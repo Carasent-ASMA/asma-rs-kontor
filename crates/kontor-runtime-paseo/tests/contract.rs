@@ -4096,6 +4096,7 @@ fn retitle(node_id: TopologyNodeId) -> RetitleContainerRequest {
         container_binding_id: ContainerBindingId::generate(),
         projection: ContainerProjection::NativeChild,
         bound_native_id: external(WORKSPACE_ID),
+        bound_project_native_id: Some(external(PROJECT_ID)),
         generation: 1,
         scope: Some(execution_scope()),
         task_id: Some(task()),
@@ -5100,6 +5101,7 @@ async fn a_native_project_retitle_refuses_without_treating_the_project_as_a_work
     let request = RetitleContainerRequest {
         projection: ContainerProjection::NativeRoot,
         bound_native_id: external(PROJECT_ID),
+        bound_project_native_id: None,
         task_id: None,
         scope: Some(epic_execution_scope()),
         structural_name: name("Epic · ASMA-7744 · Kontor MVP"),
@@ -5265,6 +5267,45 @@ async fn a_retitle_of_an_already_correct_container_changes_nothing() {
         facade.calls().is_empty(),
         "a replay must not rename anything: {:?}",
         facade.calls()
+    );
+}
+
+/// A daemon restart clears the adapter's prepared-project cache, but it does not
+/// invalidate a container binding. The durable ancestor project carried on the
+/// request is sufficient to locate the exact workspace again.
+#[tokio::test]
+async fn a_retitle_reads_the_persisted_parent_project_after_restart() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let facade = std::sync::Arc::new(RecordedMcp::new());
+    let plane = Plane::with_facade(recorded, std::sync::Arc::clone(&facade));
+
+    // Deliberately do not prepare the project. This is the state immediately
+    // after Kontor restarts with the binding still present in its store.
+    let preview = plane
+        .adapter
+        .preview_retitle_container(&retitle(node(NODE_A)))
+        .await
+        .expect("the persisted project ancestry survives an adapter restart");
+
+    assert!(
+        !preview.changed,
+        "the existing workspace is already canonical"
+    );
+    assert_eq!(
+        preview.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID,
+        "the exact persisted workspace identity is read back"
+    );
+    assert!(
+        facade.calls().is_empty(),
+        "a read-only preview cannot rename the workspace"
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "the restart-safe lookup cannot recreate or archive topology"
     );
 }
 

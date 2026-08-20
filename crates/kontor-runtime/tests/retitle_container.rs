@@ -88,6 +88,9 @@ fn retitle(
         container_binding_id: ContainerBindingId::generate(),
         projection: kontor_runtime::container::ContainerProjection::NativeChild,
         bound_native_id: kontor_core::id::ExternalId::parse(native_id).expect("a native id"),
+        bound_project_native_id: Some(
+            kontor_core::id::ExternalId::parse("native-project-1").expect("a native project id"),
+        ),
         generation,
         scope: None,
         task_id: None,
