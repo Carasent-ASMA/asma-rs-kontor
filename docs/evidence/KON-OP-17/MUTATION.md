@@ -156,6 +156,7 @@ by the named test, and immediately restored:
 | M27 | Reconcile delivery labels without sending the canonical seat title | `security_session_label_reconcile_repairs_the_external_epic_key_in_place_once` | killed: the recorded in-place `agent update` carried no `Implement · KON-11 · A` title |
 | M28 | Report hosted-seat retirement without removing the exact predecessor from the runtime | `a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa` | killed: the corrected TPM route reused the predecessor native id instead of preserving the logical SeatBinding with a causally new native session |
 | M29 | Omit `retire` from Paseo's declared full-capability set | `an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved` | killed: the exact idle predecessor returned `UnsupportedCapability { capability: Retire }` before the supported archive/readback path |
+| M30 | Move the unadvertised Paseo project-rename introduction floor from 0.4.0 to 0.4.1 | `paseo_040_declares_project_retitle_without_the_missing_feature_flag` | killed: the live-shaped 0.4.0 hello no longer declared `RetitleContainer`, reproducing the deployed 422 refusal before runtime contact |
 
 Restored invariants:
 
@@ -166,3 +167,6 @@ Restored invariants:
   exact idle predecessor and recording a distinct active successor; and
 - retirement is advertised, capability-gated, exact-id read back and
   idempotent after the archive stamp is already present.
+- the correlated project-rename envelope is recognized on Paseo 0.4.0 even
+  though that release omits `projectRename` from `status/server_info`; 0.3.1,
+  pre-release and unparseable builds remain unsupported.

@@ -5190,16 +5190,16 @@ async fn a_native_project_retitle_refuses_without_treating_the_project_as_a_work
     assert!(plane.daemon.mutations().is_empty());
 }
 
-/// A daemon advertising the supported project-rename envelope repairs the ESW
-/// project in place. The project id and root path are read back unchanged; no
-/// workspace facade call or replacement project is involved.
+/// Paseo 0.4.0 implements the supported project-rename envelope but omits the
+/// optional `projectRename` server-info flag. Kontor recognizes the release
+/// that introduced the envelope and repairs the ESW project in place. The
+/// project id and root path are read back unchanged; no workspace facade call
+/// or replacement project is involved.
 #[tokio::test]
 async fn a_native_project_retitle_uses_project_rename_and_preserves_identity() {
-    let mut server_info = v(SERVER_INFO);
-    server_info["features"]["projectRename"] = serde_json::json!(true);
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
-        .announcing(&server_info)
+        .announcing(&v(SERVER_INFO_NEWER_VERSION))
         .then_answering_rpc("project.list.request", v(PROJECT_LIST_RENAMED))
         .answering_rpc("project.list.request", v(PROJECT_LIST))
         .answering_rpc(
@@ -5288,6 +5288,36 @@ async fn the_retitle_capability_is_declared_only_with_a_facade_route() {
             .expect("the plane answers its capabilities")
             .supports(RuntimeCapability::RetitleContainer),
         "a plane that can reach the facade must declare what it can do"
+    );
+}
+
+/// The live 0.4.0 hello omits `projectRename` even though its daemon bundle
+/// handles the correlated request. The operation is therefore declared from
+/// the introduction release, without widening support to the 0.3.1 fixture.
+#[tokio::test]
+async fn paseo_040_declares_project_retitle_without_the_missing_feature_flag() {
+    let newer = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO_NEWER_VERSION));
+    assert!(
+        Plane::fresh(newer)
+            .adapter
+            .discover_capabilities()
+            .await
+            .expect("the 0.4.0 plane answers its capabilities")
+            .supports(RuntimeCapability::RetitleContainer)
+    );
+
+    let baseline = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO));
+    assert!(
+        !Plane::fresh(baseline)
+            .adapter
+            .discover_capabilities()
+            .await
+            .expect("the 0.3.1 plane answers its capabilities")
+            .supports(RuntimeCapability::RetitleContainer)
     );
 }
 

@@ -102,12 +102,15 @@ async fn live_hello_is_accepted_and_the_daemon_pushes_a_pinned_identity() {
         "the qualified daemon advertises every required feature, missing {:?}",
         identity.missing_required()
     );
-    for feature in [PaseoFeature::ProjectRename, PaseoFeature::Compaction] {
-        assert!(
-            !identity.supports(feature),
-            "{feature:?} is not a supported 0.3.1 operation and must not be simulated"
-        );
-    }
+    assert!(
+        identity.supports_project_rename(),
+        "Paseo 0.4.0 implements the correlated project rename even though its \
+         server-info feature object omits projectRename"
+    );
+    assert!(
+        !identity.supports(PaseoFeature::Compaction),
+        "compaction is not supported and must not be simulated"
+    );
     assert_eq!(
         PASEO_WS_PROTOCOL_VERSION, 1,
         "the hello that was just accepted carried this protocol number"

@@ -715,8 +715,8 @@ impl PaseoRpc {
         )
     }
 
-    /// `project.rename.request`, available only when `projectRename` was
-    /// advertised by the exact daemon connection being driven.
+    /// `project.rename.request`, available only when the exact daemon
+    /// connection satisfies [`PaseoServerInfo::supports_project_rename`].
     #[must_use]
     pub fn project_rename(request_id: String, project_id: &str, custom_name: &str) -> Self {
         Self::mutate(

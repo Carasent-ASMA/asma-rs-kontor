@@ -2,7 +2,7 @@
 
 Date: 2026-08-20
 Branch: `fix/ASMA-7950-kontor-canonical-native-naming`
-Status: implementation and local verification complete; PR, merge and live deployment receipts pending
+Status: schema-46 repair deployed; Paseo 0.4.0 project-rename attestation follow-up locally verified
 Schema: 46 (`0045` remains KON-OP-18-owned; this repair adds `0046`)
 
 This receipt supersedes only the later operational conclusions in
@@ -32,7 +32,11 @@ mutated while this repair was developed or verified.
 
 4. Native ESW repair uses Paseo `project.rename`, while ECP/TSW repair uses the
    workspace retitle operation. Both paths read back the same native identity;
-   neither recreates topology or containers.
+   neither recreates topology or containers. Paseo 0.4.0 carries the correlated
+   project-rename envelope but omits `projectRename` from `status/server_info`;
+   Kontor therefore attests that one optional operation from the 0.4.0 release
+   floor while keeping the general recorded protocol floor at 0.3.1. Older,
+   pre-release and unparseable versions remain fail closed.
 5. Delivery-session reconciliation repairs the canonical seat title and
    labels in place. `jira.epic` means the external key (for example
    `ASMA-7675`); the already-published `kontor.project_id` contract remains the
@@ -79,7 +83,7 @@ Focused regressions prove explicit short-code migration, fail-closed legacy
 materialization, canonical project/workspace/seat naming, native project rename
 with identity preservation, external/internal label semantics, real Core Team
 placement in a local ECP, exact route correction, and capability-gated native
-retirement. Deliberate mutations M25–M29 and their killer tests are recorded in
+retirement. Deliberate mutations M25–M30 and their killer tests are recorded in
 `MUTATION.md`; no mutant remains.
 
 The release candidate passed:
@@ -96,8 +100,7 @@ cargo audit && cargo deny check && pnpm audit --prod         passed
 cargo build --release --workspace                           passed
 ```
 
-Pre-commit release-candidate hashes (the merged-source build is authoritative
-and will be recorded after CI):
+Merged-source schema-46 hashes installed from PR #62:
 
 ```text
 kontor-daemon fe22568ac81943517ae6342f71c18ad9b6193c413102249d9ea57d917c95b856
@@ -107,6 +110,16 @@ kontor-mcp    1c29165fe70fc21a699ecc835df6da46010bdf6449c97eec6d77d3838f0fff7b
 
 ## Release receipt
 
-PR, CI conclusion, merge commit, merged-tree hash, installed binary hashes,
-daemon PID/schema and post-boot restore evidence are appended here after the
-serialized merge and deployment.
+Canonical naming/session repair PR #62 passed all four required CI jobs and
+merged as `ecfe7c5a05594e81398cc298dd1b14b2dec7a8cc` at
+2026-08-20T16:19:59Z. Its exact merged tree was built and installed with the
+hashes above. Launchd started PID `16870`, the database remained at schema 46,
+the loopback API answered HTTP 200, startup crossed the reconciliation barrier,
+and the post-boot log contained zero `refused to restore` lines.
+
+The first live ESW retitle preview then exposed a distinct compatibility gap:
+Kontor returned 422 before runtime contact because Paseo 0.4.0 did not advertise
+the project-rename feature that its installed daemon bundle implements. The
+follow-up branch `fix/ASMA-7950-paseo-040-project-rename-attestation` adds the
+release-floor attestation and M30 regression without changing schema or any QNR
+identity. Its full fmt, clippy and workspace test gates passed before release.

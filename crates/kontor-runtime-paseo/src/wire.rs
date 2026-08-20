@@ -72,6 +72,15 @@ pub const PASEO_WS_PROTOCOL_VERSION: u64 = 1;
 /// degrades correctly without a version ever being named.
 pub const PASEO_APP_VERSION: &str = "0.3.1";
 
+/// The first Paseo release carrying the correlated project-rename envelope.
+///
+/// Paseo 0.4.0 implements `project.rename.request` but its server-info feature
+/// object does not advertise `projectRename`. Keep the general protocol floor
+/// at the recorded 0.3.1 fixture baseline while recognizing this one optional
+/// operation at the release that introduced it. An explicit future feature
+/// flag remains authoritative too.
+pub const PASEO_PROJECT_RENAME_VERSION: &str = "0.4.0";
+
 /// The client type this adapter announces in the hello.
 pub const PASEO_CLIENT_TYPE: &str = "cli";
 
@@ -266,6 +275,22 @@ impl PaseoServerInfo {
     #[must_use]
     pub fn supports(&self, feature: PaseoFeature) -> bool {
         self.features.get(feature.as_str()) == Some(&true)
+    }
+
+    /// Whether this exact daemon connection supports native project retitle.
+    ///
+    /// The explicit feature flag is preferred. Paseo 0.4.0 shipped the typed,
+    /// correlated request/response handler without adding that flag to
+    /// `status/server_info`, so the release floor is the compatibility evidence
+    /// for that build. Older, pre-release and unparseable versions still fail
+    /// closed.
+    #[must_use]
+    pub fn supports_project_rename(&self) -> bool {
+        self.supports(PaseoFeature::ProjectRename)
+            || self
+                .version
+                .as_deref()
+                .is_some_and(|version| version_at_least(version, PASEO_PROJECT_RENAME_VERSION))
     }
 
     /// Every required feature this daemon does not advertise, in policy order.
@@ -1533,6 +1558,12 @@ mod tests {
         assert!(at("0.4.0").is_supported_baseline());
         assert!(at("0.4.1").is_supported_baseline());
         assert!(at("1.0.0").is_supported_baseline());
+        assert!(!at(PASEO_APP_VERSION).supports_project_rename());
+        assert!(at("0.4.0").supports_project_rename());
+        assert!(at("0.4.1").supports_project_rename());
+        assert!(at("1.0.0").supports_project_rename());
+        assert!(!at("0.4.0-beta.2").supports_project_rename());
+        assert!(!at("not-a-version").supports_project_rename());
         assert!(
             !at("0.3.0").is_supported_baseline(),
             "a release below the recorded baseline is observed, never driven"
