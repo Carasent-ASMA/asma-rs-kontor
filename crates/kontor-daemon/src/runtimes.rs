@@ -208,6 +208,12 @@ pub struct PaseoSetting {
     pub orchestrator_agent_id: String,
     /// The most sessions Kontor holds open on this plane at once.
     pub max_concurrent_sessions: u32,
+    /// Provider keys temporarily excluded by an operational outage decision.
+    #[serde(default)]
+    pub unavailable_providers: BTreeSet<String>,
+    /// Temporary explicit model routes keyed by unavailable provider.
+    #[serde(default)]
+    pub provider_fallbacks: BTreeMap<String, kontor_core::spec::ModelRung>,
     /// The `paseo` executable to dispatch.
     pub executable: String,
     /// The complete `--host` argument, credential and all.
@@ -482,6 +488,8 @@ fn compose_paseo(
                 .map_err(|_| refuse("orchestrator_agent_id"))?,
         },
         max_concurrent_sessions: setting.max_concurrent_sessions,
+        unavailable_providers: setting.unavailable_providers.clone(),
+        provider_fallbacks: setting.provider_fallbacks.clone(),
         // An empty map means this plane adopts nothing and creates what it
         // needs, which is right for a topology with one root above the seat.
         adopted_containers,
@@ -537,6 +545,8 @@ mod tests {
             adopted_containers: BTreeMap::new(),
             orchestrator_agent_id: "agent-1".to_owned(),
             max_concurrent_sessions: 2,
+            unavailable_providers: BTreeSet::new(),
+            provider_fallbacks: BTreeMap::new(),
             executable: "paseo".to_owned(),
             host_target: "https://user:hunter2@paseo.example".to_owned(),
             // Composing a transport builds a client; it connects to nothing.
@@ -731,6 +741,8 @@ mod tests {
             adopted_containers: BTreeMap::new(),
             orchestrator_agent_id: "agent-1".to_owned(),
             max_concurrent_sessions: 2,
+            unavailable_providers: BTreeSet::new(),
+            provider_fallbacks: BTreeMap::new(),
             executable: "paseo".to_owned(),
             host_target: "https://user:hunter2@paseo.example".to_owned(),
             endpoint: "ws://127.0.0.1:6767/ws".to_owned(),

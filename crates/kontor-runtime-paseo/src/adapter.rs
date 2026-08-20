@@ -56,7 +56,8 @@ use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
-    LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
+    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest, LaunchOutcome,
+    MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, ClaimedSeat, OccupiedSeat, RoleSlotKey,
@@ -316,6 +317,13 @@ pub struct PaseoConfig {
     pub scope: PaseoExecutionScope,
     /// The most sessions Kontor will hold open on this plane at once.
     pub max_concurrent_sessions: u32,
+    /// Temporarily ineligible providers, selected by explicit fleet
+    /// configuration rather than inferred from a failed prompt.
+    pub unavailable_providers: BTreeSet<String>,
+    /// Temporary provider outage routes, keyed by the unavailable provider.
+    /// They are explicit fleet configuration, not a permanent model-policy
+    /// rewrite and not inferred from a failed prompt.
+    pub provider_fallbacks: BTreeMap<String, ModelRung>,
     /// Native containers this plane **adopts** rather than creates, by the
     /// topology node each one already belongs to.
     ///
@@ -770,6 +778,9 @@ struct PaseoState {
     /// The native census is the durable uniqueness proof; this closes the
     /// in-process race while that proof is being established.
     consultation_claims: BTreeSet<SeatBindingId>,
+    /// Persistent topology-seat launches currently between their exact-label
+    /// census and readback.
+    hosted_seat_claims: BTreeSet<SeatBindingId>,
     bindings: IssuedBindingRegistry,
     admissions: AdmissionLedger,
     records: BTreeMap<RuntimeBindingId, PaseoSeatRecord>,
@@ -856,6 +867,15 @@ pub struct PaseoAdapter {
 }
 
 impl PaseoAdapter {
+    fn ensure_provider_available(&self, provider: &str) -> RuntimeResult<()> {
+        if self.config.unavailable_providers.contains(provider) {
+            return Err(RuntimeError::ProviderUnavailable {
+                provider: provider.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     /// Build an adapter for `config` over `transport`, rehydrated from
     /// `checkpoint`.
     ///
@@ -980,6 +1000,7 @@ impl PaseoAdapter {
                 // the one path the restart fixture exists to exercise.
                 containers: BTreeMap::new(),
                 consultation_claims: BTreeSet::new(),
+                hosted_seat_claims: BTreeSet::new(),
                 placements: checkpoint.placements.iter().cloned().collect(),
                 bindings: {
                     let mut registry = IssuedBindingRegistry::new();
@@ -3099,29 +3120,8 @@ impl PaseoAdapter {
         request: &LaunchRequest,
         declared: &RuntimeCapabilities,
         generation: u64,
-        held: usize,
     ) -> RuntimeResult<LaunchOutcome> {
-        preflight(
-            declared,
-            &OperationContext {
-                operation: RuntimeCapability::Launch,
-                autonomous: true,
-                account_pinned: request.account_profile_id().is_some(),
-                binding: None,
-                // Paseo declares `PrepareWorkspace`, so this is what refuses a
-                // launch with no binding, another team run's binding, or a
-                // working directory that is not the bound root — before the
-                // session exists, because a wrong-tree edit is not recoverable
-                // by noticing it afterwards.
-                placement: Some(request.placement_claim()),
-                current_generation: Some(generation),
-                demand: Some(LimitDemand::ConcurrentSessions(
-                    u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
-                )),
-                context_policy: Some(request.context_policy()),
-            },
-        )?;
-
+        self.ensure_provider_available(request.model_rung().provider.0.as_str())?;
         let effective_scope = self.effective_scope(request.scope())?;
         let project = self.require_project_for(&effective_scope)?;
         // Whichever way the place was keyed, the presented binding must be the
@@ -3176,6 +3176,33 @@ impl PaseoAdapter {
                 rule: "a live Paseo agent already carries this role slot's labels",
             });
         }
+
+        // Capacity means processes executing now, not persistent seat
+        // identities. Idle and closed agents are resumable records and must not
+        // spend one slot forever. An exact-label recovery also adds no new
+        // process, so it is checked at the observed count rather than count+1.
+        let held = self
+            .fetch_project_agents(&project, false)
+            .await?
+            .into_iter()
+            .filter(|agent| !agent.is_archived() && agent.status.occupies_concurrent_capacity())
+            .count();
+        let demanded = u32::try_from(held)
+            .unwrap_or(u32::MAX)
+            .saturating_add(u32::from(recovered_id.is_none()));
+        preflight(
+            declared,
+            &OperationContext {
+                operation: RuntimeCapability::Launch,
+                autonomous: true,
+                account_pinned: request.account_profile_id().is_some(),
+                binding: None,
+                placement: Some(request.placement_claim()),
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::ConcurrentSessions(demanded)),
+                context_policy: Some(request.context_policy()),
+            },
+        )?;
 
         // Compose the seat's worktree-local MCP config before anything is
         // spawned, so a Claude seat starts with exactly one kontor server at
@@ -3364,6 +3391,7 @@ impl PaseoAdapter {
         &self,
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
         let declared = self.declared().await?;
         let effective_scope = self.effective_scope(&request.scope)?;
         let project = self.require_project_for(&effective_scope)?;
@@ -3372,7 +3400,7 @@ impl PaseoAdapter {
             .fetch_project_agents(&project, false)
             .await?
             .into_iter()
-            .filter(|agent| !agent.is_archived())
+            .filter(|agent| !agent.is_archived() && agent.status.occupies_concurrent_capacity())
             .count();
         preflight(
             &declared,
@@ -3472,10 +3500,167 @@ impl PaseoAdapter {
             created,
         })
     }
+
+    fn hosted_seat_labels(
+        &self,
+        request: &HostedSeatLaunchRequest,
+        project: &PaseoProjectBinding,
+        workspace_id: &str,
+    ) -> RuntimeResult<BTreeMap<String, String>> {
+        let scope = self.effective_scope(&request.scope)?;
+        Ok([
+            (
+                label::JIRA_EPIC,
+                scope.epic.external_epic_key.as_str().to_owned(),
+            ),
+            (
+                label::PROJECT_ID,
+                project.mini_project_id.as_str().to_owned(),
+            ),
+            (label::SEAT_BINDING, request.seat_binding_id.to_string()),
+            (label::HOSTED_SEAT, "true".to_owned()),
+            (label::ROLE, request.role_slot_id.as_str().to_owned()),
+            (label::ROLE_SLOT, request.role_slot_id.as_str().to_owned()),
+            (label::WORKSPACE_ID, workspace_id.to_owned()),
+            (label::WORKTREE, request.cwd.as_str().to_owned()),
+            (
+                label::PARENT_AGENT,
+                self.config.scope.orchestrator_agent_id.as_str().to_owned(),
+            ),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect())
+    }
+
+    async fn launch_hosted_seat_inner(
+        &self,
+        request: &HostedSeatLaunchRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
+        let declared = self.declared().await?;
+        let effective_scope = self.effective_scope(&request.scope)?;
+        let project = self.require_project_for(&effective_scope)?;
+        let generation = self.generation();
+
+        request.container.ensure_correlated()?;
+        request.container.ensure_generation(generation)?;
+        request.container.ensure_root(&request.cwd)?;
+        let prepared = self
+            .lock()
+            .containers
+            .get(&request.container.topology_node_id())
+            .cloned()
+            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+        if prepared != request.container {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "this is not the hosted seat container this runtime prepared",
+            });
+        }
+        let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
+        let workspace = self.fetch_workspace_in(&project, &workspace_id).await?;
+        self.verify_workspace_placement(&workspace, &project, &request.cwd)?;
+
+        let labels = self.hosted_seat_labels(request, &project, &workspace_id)?;
+        let seat_labels = [(
+            label::SEAT_BINDING.to_owned(),
+            request.seat_binding_id.to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let census = self.fetch_agents(&seat_labels, false).await?;
+        let exact = census
+            .iter()
+            .filter(|agent| agent.matches_labels(&labels) && !agent.is_archived())
+            .collect::<Vec<_>>();
+        let recovered_id = match exact.as_slice() {
+            [agent] => Some(agent.id.clone()),
+            [] if census.iter().any(|agent| !agent.is_archived()) => {
+                return Err(RuntimeError::SlotAlreadyAdmitted {
+                    rule: "a live Paseo agent already carries this hosted seat binding",
+                });
+            }
+            [] => None,
+            _ => return Err(RuntimeError::CorrelationFailed),
+        };
+
+        let active = self
+            .fetch_project_agents(&project, false)
+            .await?
+            .into_iter()
+            .filter(|agent| !agent.is_archived() && agent.status.occupies_concurrent_capacity())
+            .count();
+        let demanded = u32::try_from(active)
+            .unwrap_or(u32::MAX)
+            .saturating_add(u32::from(recovered_id.is_none()));
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Launch,
+                autonomous: true,
+                account_pinned: false,
+                binding: None,
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::ConcurrentSessions(demanded)),
+                context_policy: Some(&request.context_policy),
+            },
+        )?;
+
+        let (native_id, created) = match recovered_id {
+            Some(native_id) => (native_id, false),
+            None => {
+                let command = PaseoCommand::agent_run(
+                    &workspace_id,
+                    request.cwd.as_str(),
+                    &request.model_rung,
+                    SeatAutonomy::Supervised,
+                    request.display_name.as_str(),
+                    &labels,
+                    self.config.scope.orchestrator_agent_id.as_str(),
+                    request.prompt.as_str(),
+                )?;
+                let native_id = match self.transport.run(&command).await {
+                    Ok(output) => {
+                        output
+                            .parse::<PaseoCliAgentStarted>("PaseoCliAgentStarted")?
+                            .agent_id
+                    }
+                    Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
+                    Err(other) => return Err(other),
+                };
+                (native_id, true)
+            }
+        };
+        let agent = self.fetch_agent(&native_id).await?;
+        self.verify_agent_placement(&agent, &workspace_id, &labels)?;
+        Self::verify_agent_route(&agent, &request.model_rung, SeatAutonomy::Supervised)?;
+        Ok(ConsultationLaunchOutcome {
+            identity: self.identity(ExternalId::parse(&agent.id)?, generation),
+            provider_session_id: agent
+                .provider_session_id()
+                .map(ExternalId::parse)
+                .transpose()?,
+            observed_at: request.requested_at,
+            created,
+        })
+    }
 }
 
 #[async_trait]
 impl RuntimeAdapter for PaseoAdapter {
+    fn provider_available(&self, provider: &str) -> bool {
+        !self.config.unavailable_providers.contains(provider)
+    }
+
+    fn fallback_model_rung(&self, requested: &ModelRung) -> Option<ModelRung> {
+        self.config
+            .provider_fallbacks
+            .get(requested.provider.0.as_str())
+            .filter(|fallback| self.provider_available(fallback.provider.0.as_str()))
+            .cloned()
+    }
+
     fn configured_execution_scope(
         &self,
         epic_id: kontor_core::id::MiniProjectId,
@@ -3640,6 +3825,80 @@ impl RuntimeAdapter for PaseoAdapter {
             .consultation_claims
             .remove(&request.seat_binding_id);
         outcome
+    }
+
+    async fn launch_hosted_seat(
+        &self,
+        request: &HostedSeatLaunchRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        {
+            let state = &mut *self.lock();
+            if !state.hosted_seat_claims.insert(request.seat_binding_id) {
+                return Err(RuntimeError::SlotAlreadyAdmitted {
+                    rule: "this hosted topology seat already has a launch in flight",
+                });
+            }
+        }
+        let outcome = self.launch_hosted_seat_inner(request).await;
+        self.lock()
+            .hosted_seat_claims
+            .remove(&request.seat_binding_id);
+        outcome
+    }
+
+    async fn message_hosted_seat(
+        &self,
+        request: &HostedSeatMessageRequest,
+    ) -> RuntimeResult<HostedSeatMessageOutcome> {
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation != self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the hosted topology seat belongs to another runtime generation",
+            });
+        }
+        let native_id = request.identity.native_id.as_str();
+        let agent = self.fetch_agent(native_id).await?;
+        let expected_seat = request.seat_binding_id.to_string();
+        if agent.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
+            || agent.label(label::HOSTED_SEAT) != Some("true")
+            || agent.is_archived()
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        self.ensure_provider_available(&agent.provider)?;
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::SendMessage,
+                autonomous: true,
+                account_pinned: false,
+                binding: None,
+                placement: None,
+                current_generation: Some(self.generation()),
+                demand: Some(LimitDemand::MessageBytes(
+                    u64::try_from(request.body.as_str().len()).unwrap_or(u64::MAX),
+                )),
+                context_policy: None,
+            },
+        )?;
+        let rpc = PaseoRpc::send_message(
+            self.next_request_id(),
+            native_id,
+            &request.message_id.to_string(),
+            request.body.as_str(),
+        );
+        let frame = self.transport.request(&rpc).await?;
+        let accepted: PaseoSendAccepted = frame.resolve(&rpc, "PaseoSendAccepted")?;
+        if accepted.agent_id != native_id || !accepted.accepted {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(HostedSeatMessageOutcome {
+            message_id: request.message_id,
+            accepted_at: request.sent_at,
+        })
     }
 
     async fn message_consultation(
@@ -4054,7 +4313,7 @@ impl RuntimeAdapter for PaseoAdapter {
         // to, so a launch that had only *read* its reservation would leave the
         // seat reservable for the length of a native call and two callers would
         // each start an agent.
-        let (generation, held) = {
+        let generation = {
             let state = &mut *self.lock();
             state.admissions.claim(request)?;
             if state
@@ -4067,12 +4326,10 @@ impl RuntimeAdapter for PaseoAdapter {
                     rule: "recovery launches a successor run, never the same run twice",
                 });
             }
-            (state.generation, state.bindings.len())
+            state.generation
         };
 
-        let outcome = self
-            .launch_admitted(request, &declared, generation, held)
-            .await;
+        let outcome = self.launch_admitted(request, &declared, generation).await;
         if outcome.is_err() {
             self.lock().admissions.release(request);
         }
@@ -4102,6 +4359,7 @@ impl RuntimeAdapter for PaseoAdapter {
         let native_id = binding.identity().native_id.as_str().to_owned();
         let fresh = self.fetch_agent(&native_id).await?;
         self.verify_seat_placement(&binding, &fresh).await?;
+        self.ensure_provider_available(&fresh.provider)?;
         self.observe_permissions(binding.binding_id(), &fresh);
 
         if fresh.is_archived() {
@@ -4202,6 +4460,7 @@ impl RuntimeAdapter for PaseoAdapter {
         // it has no tree to be wrong about. What follows does.
         let fresh = self.fetch_agent(&native_id).await?;
         self.verify_seat_placement(&binding, &fresh).await?;
+        self.ensure_provider_available(&fresh.provider)?;
 
         let rpc = PaseoRpc::send_message(
             self.next_request_id(),
@@ -5199,6 +5458,8 @@ mod task_scope_tests {
                 mini_project_id: ExternalId::parse("ASMA-7869").expect("legacy selector"),
                 scope: scope(),
                 max_concurrent_sessions: 8,
+                unavailable_providers: BTreeSet::new(),
+                provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
                 seat_mcp: None,
             },
@@ -5270,6 +5531,8 @@ mod task_scope_tests {
                     .expect("configured epic"),
                 scope,
                 max_concurrent_sessions: 8,
+                unavailable_providers: BTreeSet::new(),
+                provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
                 seat_mcp: None,
             },

@@ -338,6 +338,23 @@ pub struct StoredConsultationSeat {
     pub observed_at: Option<Timestamp>,
 }
 
+/// Exact runtime readback filling a persistent non-delivery topology seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredHostedTopologySeat {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Logical seat identity preserved across native recovery.
+    pub seat_binding_id: SeatBindingId,
+    /// Frozen provider/model/effort route.
+    pub model_rung: crate::spec::ModelRung,
+    /// Exact native runtime identity.
+    pub native_identity: NativeRuntimeIdentity,
+    /// Provider conversation id, when exposed.
+    pub provider_session_id: Option<ExternalId>,
+    /// Runtime readback instant.
+    pub observed_at: Timestamp,
+}
+
 /// One immutable Committee finding or Judge aggregate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredCommitteeFinding {

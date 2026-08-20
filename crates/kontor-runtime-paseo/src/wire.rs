@@ -157,6 +157,8 @@ pub mod label {
     pub const CONSULTATION_RUN: &str = "kontor.consultation_run";
     /// Exact persistent consultation seat.
     pub const SEAT_BINDING: &str = "kontor.seat_binding_id";
+    /// Persistent non-delivery topology seat (for example LSA/TPM).
+    pub const HOSTED_SEAT: &str = "kontor.hosted_seat";
     /// Explicit non-mutating authority marker for consultation sessions.
     pub const READ_ONLY: &str = "kontor.read_only";
 
@@ -538,6 +540,17 @@ impl PaseoAgentStatus {
     #[must_use]
     pub const fn needs_reload(self) -> bool {
         matches!(self, Self::Closed)
+    }
+
+    /// Whether the native runtime is presently executing or retaining a live
+    /// process for this seat.
+    ///
+    /// Persistent `idle` seats are resumable identities, not simultaneous work.
+    /// Counting them against launch capacity makes every completed turn spend a
+    /// slot forever and eventually prevents unrelated epics from starting.
+    #[must_use]
+    pub const fn occupies_concurrent_capacity(self) -> bool {
+        matches!(self, Self::Initializing | Self::Running | Self::Error)
     }
 }
 
@@ -1405,6 +1418,16 @@ mod tests {
         agent.archived_at = Some("2026-08-10T09:00:00.000Z".to_owned());
         assert!(agent.is_archived(), "0.3.1 has no `archived` status");
         assert_eq!(agent.parent_agent_id(), Some("agt_orchestrator"));
+    }
+
+    #[test]
+    fn only_process_occupying_states_spend_concurrent_capacity() {
+        assert!(PaseoAgentStatus::Initializing.occupies_concurrent_capacity());
+        assert!(PaseoAgentStatus::Running.occupies_concurrent_capacity());
+        assert!(PaseoAgentStatus::Error.occupies_concurrent_capacity());
+        assert!(!PaseoAgentStatus::Idle.occupies_concurrent_capacity());
+        assert!(!PaseoAgentStatus::Closed.occupies_concurrent_capacity());
+        assert!(!PaseoAgentStatus::Unknown.occupies_concurrent_capacity());
     }
 
     #[test]

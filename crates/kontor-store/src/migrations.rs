@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 43;
+pub const SCHEMA_VERSION: i64 = 44;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -191,6 +191,10 @@ const MIGRATIONS: &[&str] = &[
     // Schema v43. Runtime-facing epic identity belongs to each epic rather than
     // one startup-loaded runtime plane, allowing several epics in one project.
     include_str!("../migrations/0043_epic_execution_scopes.sql"),
+    // Schema v44. Persistent leadership seats are not Delivery AgentRuns, but
+    // still need an exact native identity for idempotent messages and restart
+    // recovery. SeatBinding remains their logical identity.
+    include_str!("../migrations/0044_hosted_topology_seats.sql"),
 ];
 
 const _: () = assert!(
@@ -361,6 +365,7 @@ fn apply_pending(
             MIGRATIONS[40],
             MIGRATIONS[41],
             MIGRATIONS[42],
+            MIGRATIONS[43],
         ] {
             transaction.execute_batch(migration)?;
         }

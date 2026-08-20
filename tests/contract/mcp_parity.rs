@@ -531,7 +531,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        122,
+        123,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -541,7 +541,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        123,
+        124,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -605,6 +605,7 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_ticket_reconcile_plan", CallerTier::Operator),
         ("kontor_ticket_reconcile_apply", CallerTier::Operator),
         ("kontor_session_message_send", CallerTier::Operator),
+        ("kontor_topology_seat_message_send", CallerTier::Operator),
         ("kontor_session_permission_respond", CallerTier::Operator),
         // KON-15 route additions: the five new surface groups.
         ("kontor_work_profile_get", CallerTier::Observer),

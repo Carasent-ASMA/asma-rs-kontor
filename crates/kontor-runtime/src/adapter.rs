@@ -74,6 +74,12 @@ pub enum RuntimeError {
         /// The declared bound.
         limit: u64,
     },
+    /// An operator-declared temporary provider outage excludes this route.
+    #[error("provider {provider} is temporarily unavailable")]
+    ProviderUnavailable {
+        /// Provider catalog key. It is configuration, never a credential.
+        provider: String,
+    },
     /// A launch presented no verified task workspace binding at all.
     #[error("launch requires a prepared task workspace binding")]
     WorkspaceBindingRequired,
@@ -313,6 +319,55 @@ pub struct ConsultationLaunchOutcome {
     pub created: bool,
 }
 
+/// Launch one persistent leadership seat in its already-prepared ECP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatLaunchRequest {
+    /// Exact persistent SeatBinding being filled.
+    pub seat_binding_id: SeatBindingId,
+    /// Stable Core Team role slot.
+    pub role_slot_id: RoleSlotId,
+    /// Runtime-facing seat title.
+    pub display_name: ExternalName,
+    /// Exact ECP container prepared by this runtime.
+    pub container: ContainerBindingSnapshot,
+    /// Working directory read back on the ECP.
+    pub cwd: WorkspaceRoot,
+    /// Durable epic execution scope.
+    pub scope: ExecutionScope,
+    /// Initial leadership handoff.
+    pub prompt: BoundedText,
+    /// Exact provider/model/effort route authorized for this seat.
+    pub model_rung: ModelRung,
+    /// Immutable context policy.
+    pub context_policy: ContextPolicySnapshot,
+    /// Invocation instant.
+    pub requested_at: Timestamp,
+}
+
+/// Idempotently address an existing persistent leadership seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatMessageRequest {
+    /// Exact persistent SeatBinding.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact native identity frozen at launch/recovery.
+    pub identity: NativeRuntimeIdentity,
+    /// Stable caller message id.
+    pub message_id: MessageId,
+    /// Follow-up instruction.
+    pub body: BoundedText,
+    /// Dispatch instant.
+    pub sent_at: Timestamp,
+}
+
+/// Runtime acknowledgement for a persistent topology-seat message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatMessageOutcome {
+    /// Stable caller message id.
+    pub message_id: MessageId,
+    /// Acceptance instant.
+    pub accepted_at: Timestamp,
+}
+
 /// One idempotently addressed follow-up to an existing consultation seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsultationMessageRequest {
@@ -363,6 +418,21 @@ pub struct PermissionAck {
 /// One agent runtime, reduced to what Kontor is willing to depend on.
 #[async_trait]
 pub trait RuntimeAdapter: Send + Sync {
+    /// Whether an operator-declared provider route is currently eligible.
+    /// Runtimes with no provider concept accept every route.
+    fn provider_available(&self, _provider: &str) -> bool {
+        true
+    }
+
+    /// Resolve an explicitly configured temporary route when a frozen provider
+    /// is operationally unavailable. The default invents no fallback.
+    fn fallback_model_rung(
+        &self,
+        _requested: &kontor_core::spec::ModelRung,
+    ) -> Option<kontor_core::spec::ModelRung> {
+        None
+    }
+
     /// Recover the compatibility scope a legacy, single-epic adapter was
     /// configured with.
     ///
@@ -444,6 +514,26 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
+    /// Start or recover one persistent non-delivery topology seat.
+    async fn launch_hosted_seat(
+        &self,
+        _request: &HostedSeatLaunchRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
+    /// Deliver a bounded follow-up to a persistent topology seat.
+    async fn message_hosted_seat(
+        &self,
+        _request: &HostedSeatMessageRequest,
+    ) -> RuntimeResult<HostedSeatMessageOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::SendMessage,
         })
     }
 

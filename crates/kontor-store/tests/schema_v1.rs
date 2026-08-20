@@ -68,6 +68,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "gate_waivers",
     "guardrail_evaluations",
     "handoffs",
+    // Schema v44 (KON-OP-17): exact native identities for persistent Core Team
+    // topology seats.
+    "hosted_topology_seats",
     // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
@@ -320,7 +323,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 43);
+    assert_eq!(SCHEMA_VERSION, 44);
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.
@@ -634,7 +637,7 @@ fn the_merged_op12_v41_lineage_upgrades_through_epic_execution_scopes_v43() {
     }
 
     let store = SqliteStore::open(&path).expect("the merged v41 lineage upgrades once");
-    assert_eq!(store.schema_version().expect("readable"), 43);
+    assert_eq!(store.schema_version().expect("readable"), 44);
     assert_eq!(store.realm_id().to_string(), REALM);
     let connection = raw(&directory);
     let (state, imported_state): (String, Option<String>) = connection

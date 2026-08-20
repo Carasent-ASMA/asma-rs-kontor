@@ -427,6 +427,10 @@ pub fn router(state: ApiState) -> Router {
             post(applications::materialize_core_team),
         )
         .route(
+            "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/messages",
+            post(applications::message_hosted_seat),
+        )
+        .route(
             "/v1/projects/{project_id}/quick-roles",
             get(applications::quick_roles),
         )

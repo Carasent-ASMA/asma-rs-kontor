@@ -32,7 +32,7 @@
 //! * writing Paseo's internal state to fix a display name, or letting the host
 //!   target reach a ledger, a checkpoint, an error or a fixture.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use kontor_core::id::{
@@ -403,6 +403,8 @@ fn config() -> PaseoConfig {
         mini_project_id: external(MINI_PROJECT),
         scope: scope(),
         max_concurrent_sessions: 8,
+        unavailable_providers: BTreeSet::new(),
+        provider_fallbacks: BTreeMap::new(),
         adopted_containers: BTreeMap::new(),
         // No seat MCP composition in the contract fixtures: the cwds here are
         // symbolic paths, not real worktrees.
@@ -472,8 +474,16 @@ struct Plane {
 
 impl Plane {
     fn build(recorded: RecordedPaseo, checkpoint: PaseoCheckpoint) -> Self {
+        Self::build_with_config(recorded, checkpoint, config())
+    }
+
+    fn build_with_config(
+        recorded: RecordedPaseo,
+        checkpoint: PaseoCheckpoint,
+        config: PaseoConfig,
+    ) -> Self {
         let daemon = Arc::new(recorded);
-        let adapter = PaseoAdapter::new(config(), Box::new(Arc::clone(&daemon)), checkpoint)
+        let adapter = PaseoAdapter::new(config, Box::new(Arc::clone(&daemon)), checkpoint)
             .expect("a consistent checkpoint restores");
         Self { daemon, adapter }
     }
@@ -767,6 +777,73 @@ async fn hierarchy_role_slot_reconciliation_reuses_an_idle_seat_and_materializes
         "a seat with no agent is materialized exactly once, got {:?}",
         plans[1]
     );
+}
+
+#[tokio::test]
+async fn capacity_counts_active_processes_not_persistent_idle_seats() {
+    let mut idle_foreign = v(AGENT_LIST_IMPLEMENT);
+    idle_foreign["entries"][0]["agent"]["id"] = serde_json::json!("agt_idle_foreign");
+    idle_foreign["entries"][0]["agent"]["labels"][label::AGENT_RUN] =
+        serde_json::json!("kontor-run-01890000-0000-7000-8000-000000000099");
+    idle_foreign["entries"][0]["agent"]["labels"][label::TEAM_RUN] =
+        serde_json::json!("kontor-team-01890000-0000-7000-8000-000000000099");
+    idle_foreign["entries"][0]["agent"]["labels"][label::ROLE] = serde_json::json!("other-slot");
+    idle_foreign["entries"][0]["agent"]["labels"][label::ROLE_SLOT] =
+        serde_json::json!("other-slot");
+    let recorded = daemon().answering_rpc("fetch_agents_request", idle_foreign);
+    let mut runtime_config = config();
+    runtime_config.max_concurrent_sessions = 1;
+    let plane = Plane::build_with_config(
+        recorded,
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+        runtime_config,
+    );
+    plane
+        .adapter
+        .prepare_project("capacity-project")
+        .await
+        .expect("the project is prepared");
+    let workspace = plane
+        .prepare_workspace()
+        .await
+        .expect("the workspace is prepared");
+    let launched = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("one idle persistent seat spends no concurrent execution slot");
+    assert_eq!(launched.snapshot.agent_run_id(), run(RUN_IMPLEMENT));
+    assert_eq!(plane.daemon.count("agent run"), 1);
+}
+
+#[tokio::test]
+async fn provider_outage_refuses_before_launch_instead_of_waking_the_seat() {
+    let mut runtime_config = config();
+    runtime_config
+        .unavailable_providers
+        .insert("claude".to_owned());
+    let plane = Plane::build_with_config(
+        daemon(),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+        runtime_config,
+    );
+    plane
+        .adapter
+        .prepare_project("provider-outage-project")
+        .await
+        .expect("the project is prepared");
+    let workspace = plane
+        .prepare_workspace()
+        .await
+        .expect("the workspace is prepared");
+    let refusal = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect_err("an unavailable Claude provider must not be dispatched");
+    assert!(matches!(
+        refusal,
+        RuntimeError::ProviderUnavailable { provider } if provider == "claude"
+    ));
+    assert_eq!(plane.daemon.count("agent run"), 0);
 }
 
 #[tokio::test]
@@ -1534,6 +1611,9 @@ async fn lost_launch_ack_binds_the_one_correlated_agent_without_a_second_run() {
     // Paseo committed the effect, finds exactly one agent carrying this
     // launch's full label set.
     recorded.queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    // Capacity is a separate project-wide process census. It must not consume
+    // the post-effect recovery readback in this ordered recording.
+    recorded.queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
     recorded.queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
     let (plane, workspace) = Plane::prepared(recorded).await;
 
@@ -1589,6 +1669,9 @@ async fn lost_launch_ack_with_no_match_stays_unknown_rather_than_relaunching() {
 async fn lost_launch_ack_with_two_matches_diverges() {
     let recorded = daemon();
     recorded.lose_next(&any_agent_run());
+    recorded.queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    // Capacity is a separate project-wide process census. It must not consume
+    // the post-effect recovery readback in this ordered recording.
     recorded.queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
     recorded.queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_DUPLICATE_SLOT));
     let (plane, workspace) = Plane::prepared(recorded).await;
