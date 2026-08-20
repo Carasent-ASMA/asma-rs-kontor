@@ -31,6 +31,11 @@ Both focused tests were then rerun green on the restored tree.
 | M16 | Return from `scheduler:resume` on the first runtime refusal instead of recording it and continuing the prevalidated batch | `exact_resume_recovers_one_durable_admission_without_the_scheduler_key` | killed: the batch returned 503 and never reached the later admissible identity instead of returning HTTP 200 with typed `blocked` evidence |
 | M17 | Mint a different hosted-seat binding id while launching native Core Team leadership | `a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa` | killed: the native LSA readback no longer preserved the logical LSA SeatBinding id and the regression returned 409 |
 | M18 | Serialize a declared CLI `Object` argument as text | `a_declared_object_reaches_the_dispatcher_as_an_object` | killed before implementation: `model_route` reached the dispatcher as a JSON string and the exact live seat replacement was refused before runtime contact |
+| M19 | Let one exact-title workspace hide a second stale workspace at the same canonical cwd | `preparation_refuses_duplicate_canonical_workspace_aliases` | killed: preparation reused `wks_task11` instead of refusing the divergent two-identity placement |
+| M20 | Route a persistent Core Team launch through the ticket-worktree validator | `a_hosted_core_team_seat_launches_in_the_exact_local_ecp` | killed: the real hosted-seat entry point reproduced 422 `a ticket role may not be placed in a root or plain local workspace` |
+| M21 | Put the internal Kontor `MiniProjectId` in the public `jira.epic` label | `a_second_epics_seat_labels_keep_external_and_internal_project_identity_distinct` | killed: readback was the QNR UUID instead of `ASMA-7675` while `kontor.project_id` correctly remained internal |
+| M22 | Skip the exact AgentRun correlation check before provider-outage retirement | `provider_outage_retires_only_the_exact_idle_provider_seat` | killed: a recycled native id carrying another run label was archived instead of refused before mutation |
+| M23 | Reuse the Jira issue key as a legacy task's short code | `a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titles` | killed: the TSW regressed to `TSW · ASMA-7676 · ASMA-7676` instead of the stable semantic code |
 
 ## Restoration receipt
 
@@ -68,6 +73,16 @@ No mutant remains:
   SeatBinding id; and
 - nested CLI object arguments are parsed as JSON objects before dispatcher
   schema validation.
+- every canonical cwd has zero or one native workspace identity; an exact title
+  cannot hide a stale duplicate;
+- only hosted Core Team leadership may launch in an exact local ECP, while
+  ticket roles retain the strict managed-worktree placement rule;
+- `jira.epic` carries the external Jira key and `kontor.project_id` retains its
+  published meaning as the internal Kontor epic id;
+- provider-outage retirement requires the exact binding, native id, provider,
+  AgentRun correlation and queued/no-intent state before archive; and
+- legacy task naming derives a distinct stable semantic short code rather than
+  repeating the Jira issue key.
 
 After restoration:
 
@@ -90,6 +105,11 @@ test capacity_counts_active_processes_not_persistent_idle_seats ... ok
 test exact_resume_recovers_one_durable_admission_without_the_scheduler_key ... ok
 test a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa ... ok
 test a_declared_object_reaches_the_dispatcher_as_an_object ... ok
+test preparation_refuses_duplicate_canonical_workspace_aliases ... ok
+test a_hosted_core_team_seat_launches_in_the_exact_local_ecp ... ok
+test a_second_epics_seat_labels_keep_external_and_internal_project_identity_distinct ... ok
+test provider_outage_retires_only_the_exact_idle_provider_seat ... ok
+test a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titles ... ok
 ```
 
 The full format, lint, Rust workspace, generated-contract, console, and release

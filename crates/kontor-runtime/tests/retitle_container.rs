@@ -86,6 +86,7 @@ fn retitle(
     RetitleContainerRequest {
         topology_node_id: node_id,
         container_binding_id: ContainerBindingId::generate(),
+        projection: kontor_runtime::container::ContainerProjection::NativeChild,
         bound_native_id: kontor_core::id::ExternalId::parse(native_id).expect("a native id"),
         generation,
         scope: None,

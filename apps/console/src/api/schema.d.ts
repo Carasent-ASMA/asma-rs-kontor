@@ -425,6 +425,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/labels:reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Repair one already-bound delivery seat's runtime-owned labels. */
+        post: operations["reconcile_session_labels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon": {
         parameters: {
             query?: never;
@@ -4890,6 +4907,7 @@ export interface components {
             model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
             /** @description The role slot whose terminal attempt is being replaced. */
             role_slot: string;
+            unavailable_provider?: null | components["schemas"]["UnavailableProviderSeatRequest"];
         };
         /** @description One linked successor created for an unusable persistent seat. */
         ReplacedSeatDto: {
@@ -5439,6 +5457,34 @@ export interface components {
             committee_run_id: string;
             /** @enum {string} */
             scope: "committee_consultation";
+        };
+        /** @description What repairing one bound delivery seat's runtime labels is asked for. */
+        SessionLabelsReconcileRequest: {
+            /**
+             * Format: int64
+             * @description Exact generation of the immutable native binding.
+             */
+            binding_generation: number;
+            /**
+             * Format: int64
+             * @description The run revision the caller read.
+             */
+            expected_revision: number;
+        };
+        /** @description Fresh native readback after an in-place label repair. */
+        SessionLabelsReconciledDto: {
+            /** @description The unchanged Kontor run. */
+            agent_run_id: string;
+            /** @description Whether this call corrected anything. */
+            changed: boolean;
+            /** @description Full label map reported by the runtime afterwards. */
+            labels: {
+                [key: string]: string;
+            };
+            /** @description The unchanged native session. */
+            native_id: string;
+            /** @description Mutation receipt, or replay receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
         };
         /** @description Settle one consultation. */
         SettleConsultationRequest: {
@@ -6282,6 +6328,15 @@ export interface components {
             target_agent_run_id?: string | null;
             /** @description The slot the work was handed to. */
             to_role_slot: string;
+        };
+        /** @description Exact identity and outage evidence for retiring one unused native seat. */
+        UnavailableProviderSeatRequest: {
+            /** @description The exact native session id behind that binding. */
+            native_id: string;
+            /** @description Provider the native session reports and runtime configuration marks down. */
+            provider: string;
+            /** @description Kontor's immutable runtime binding id. */
+            runtime_binding_id: string;
         };
         /** @description What `topology-specs:validate` is asked for. */
         ValidateTopologySpecRequest: {
@@ -7269,6 +7324,73 @@ export interface operations {
             };
             /** @description The task, binding, terminal state, or disposition moved */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reconcile_session_labels: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The bound delivery run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionLabelsReconcileRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionLabelsReconciledDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

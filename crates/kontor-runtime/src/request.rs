@@ -6,7 +6,7 @@
 //! correlation evidence — it is never accepted in a field that means "which run
 //! is this", "which binding is this" or "which message is this".
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use kontor_core::compaction::{
@@ -516,6 +516,36 @@ pub struct AdoptRequest {
     pub native: NativeRuntimeIdentity,
     /// When the adoption was requested.
     pub adopted_at: Timestamp,
+}
+
+/// Repair the runtime-owned correlation labels of one already-bound seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconcileSessionLabelsRequest {
+    /// Exact frozen binding of the native session being repaired.
+    pub binding: RuntimeBindingSnapshot,
+    /// Durable epic/task identity from Kontor.
+    pub scope: ExecutionScope,
+    /// TeamRun this delivery seat belongs to.
+    pub team_run_id: TeamRunId,
+    /// Immutable role slot inside that TeamRun.
+    pub role_slot_id: RoleSlotId,
+    /// Exact task container the session must still occupy.
+    pub container: ContainerBindingSnapshot,
+    /// When the read/repair was requested.
+    pub requested_at: Timestamp,
+}
+
+/// Fresh readback after a session-label reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconciledSessionLabels {
+    /// The unchanged native session identity.
+    pub identity: NativeRuntimeIdentity,
+    /// Full label map the runtime reported afterwards.
+    pub labels: BTreeMap<String, String>,
+    /// Whether the operation wrote a correction.
+    pub changed: bool,
+    /// Fresh runtime readback instant.
+    pub observed_at: Timestamp,
 }
 
 impl AdoptRequest {

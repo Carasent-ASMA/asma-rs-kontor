@@ -2113,6 +2113,55 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         )
     }
 
+    async fn retire_unavailable_provider(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        expected_provider: &str,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        let mut state = self.lock();
+        let session = state.session(binding)?;
+        let run = session.agent_run_id;
+        let actual = state
+            .launched_models
+            .get(&run)
+            .map(|model| model.provider.0.as_str());
+        if actual != Some(expected_provider) {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the native session reports a different provider",
+            });
+        }
+        if !state.unavailable_providers.contains(expected_provider) {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the native session's provider is currently available",
+            });
+        }
+        state.session(binding)?.state = ObservedRunState::Cancelled;
+        state.calls.push(AdapterCall::Retire(binding.binding_id()));
+        Self::observation(
+            binding,
+            RuntimeContact::Reachable,
+            ObservedRunState::Cancelled,
+            ObservationSource::Inspect,
+            0,
+            at,
+        )
+    }
+
+    async fn reconcile_session_labels(
+        &self,
+        request: &crate::request::ReconcileSessionLabelsRequest,
+    ) -> RuntimeResult<crate::request::ReconciledSessionLabels> {
+        let mut state = self.lock();
+        state.session(&request.binding)?;
+        Ok(crate::request::ReconciledSessionLabels {
+            identity: request.binding.identity().clone(),
+            labels: std::collections::BTreeMap::new(),
+            changed: false,
+            observed_at: request.requested_at,
+        })
+    }
+
     async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation> {
         let mut state = self.lock();
         let declared = state.capabilities.clone();
