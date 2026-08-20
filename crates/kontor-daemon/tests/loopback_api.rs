@@ -15950,6 +15950,95 @@ async fn materializing_a_ticket_binds_its_native_workspace_without_admitting_a_r
     );
 }
 
+/// An idempotent materialization replay repairs the logical placement chain
+/// without repeating the already acknowledged native effect.
+///
+/// Schema-46 realms can contain a TSW written by an older admission path whose
+/// sibling ECP was never created. The receipt still makes a retry a replay, but
+/// that cannot turn the missing owner into permanent state: reconciliation must
+/// ensure the durable chain again while preserving the exact native TSW binding.
+#[tokio::test]
+async fn replaying_ticket_materialization_repairs_a_missing_epic_control_plane() {
+    let composed = compose_realm("/tmp/kontor-op08-materialize-repair").await;
+    let world = &composed.world;
+    let epic = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    let task = epic.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the composed task id")
+        .to_owned();
+    let uri = format!("/v1/projects/{}/topology:materialize", composed.project);
+    let request = serde_json::json!({
+        "target": {"scope": "ticket", "task_id": task},
+        "expected_revision": composed.project_revision,
+    });
+
+    let first = Call::post(&uri, &request)
+        .signed_as(world, "operator")
+        .with_key("materialize-ticket-repair")
+        .send(world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_json = first.json();
+    let tsw = first_json["projection"]["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .iter()
+        .find(|node| node["kind_key"] == "TSW")
+        .expect("the ticket workspace node");
+    let tsw_node_id = tsw["topology_node_id"].clone();
+    let native_id = tsw["observed_binding"]["native_id"].clone();
+
+    // Recreate the exact durable shape left by the legacy writer: the task's
+    // TSW and native binding exist, but the epic's owner/control node does not.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    let removed = connection
+        .execute(
+            "DELETE FROM topology_nodes
+             WHERE project_id = ?1 AND mini_project_id = ?2 AND kind = 'ECP'",
+            rusqlite::params![composed.project.to_string(), composed.epic.to_string()],
+        )
+        .expect("the legacy gap is seeded");
+    assert_eq!(removed, 1, "the original control plane existed");
+    drop(connection);
+
+    let replayed = Call::post(&uri, &request)
+        .signed_as(world, "operator")
+        .with_key("materialize-ticket-repair")
+        .send(world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    let nodes = replayed.json()["projection"]["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .clone();
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["kind_key"] == "ECP")
+            .count(),
+        1,
+        "a replay restores exactly one epic control plane: {}",
+        replayed.body
+    );
+    let repaired_tsw = nodes
+        .iter()
+        .find(|node| node["topology_node_id"] == tsw_node_id)
+        .expect("the original ticket workspace remains");
+    assert_eq!(
+        repaired_tsw["observed_binding"]["native_id"], native_id,
+        "logical repair must not replace or repeat the native workspace"
+    );
+}
+
 /// A node is retired by the id an answer already returned, and not otherwise.
 #[tokio::test]
 async fn a_node_is_retired_by_the_id_an_answer_returned_and_children_block_it() {

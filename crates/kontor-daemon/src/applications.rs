@@ -8959,6 +8959,16 @@ impl ApplicationOperations for Services {
             )?
             .is_some();
 
+        // Idempotency suppresses a second native effect; it does not freeze a
+        // repairable hole in Kontor's own logical topology. Older admissions
+        // could persist a task node without its sibling ECP, so a replay must
+        // re-ensure that durable chain before returning the unchanged receipt.
+        // `ensure_task_node` is store-only and idempotent: the runtime remains
+        // untouched and the already bound TSW keeps its native identity.
+        if replayed && let Some(task_id) = scope.task_id {
+            self.ensure_task_node(project_id, task_id)?;
+        }
+
         if !replayed {
             // A ticket's semantic identity is a placement prerequisite, not a
             // value to improvise after the root and workspace have already
@@ -17459,12 +17469,9 @@ impl Services {
         task_id: TaskId,
     ) -> Result<SessionTopologyNode, ApiError> {
         let state = self.state()?;
-        if let Some(node) = state
+        let existing_task = state
             .with_store(|store| store.get_task_topology_node(project_id, task_id))
-            .map_err(|error| self.refuse(&error))?
-        {
-            return Ok(node);
-        }
+            .map_err(|error| self.refuse(&error))?;
 
         // A task outside an epic has no place in this topology: the delivery
         // kind is declared below the epic kind, and inventing an epic for it
@@ -17581,6 +17588,14 @@ impl Services {
                 created_at: now,
             },
         )?;
+
+        // A task row can predate the ECP repair above. Return it only after the
+        // whole owning chain has been ensured; returning at function entry
+        // would make the legacy hole permanent, including on idempotent
+        // materialization replays.
+        if let Some(node) = existing_task {
+            return Ok(node);
+        }
 
         self.ensure_node(
             None,
