@@ -2297,6 +2297,7 @@ impl PaseoAdapter {
             .ok_or(RuntimeError::WorkspaceMismatch {
                 rule: "a native_child must say which directory it works in",
             })?;
+        crate::checkout::prepare_managed_worktree(&self.config.scope.project_root_cwd, cwd).await?;
         let existing = self.fetch_workspaces(project_id.as_str()).await?;
         let mut mine = existing
             .into_iter()
@@ -3967,6 +3968,11 @@ impl RuntimeAdapter for PaseoAdapter {
                 rule: "the requested root is not the task's durable canonical worktree",
             });
         }
+        crate::checkout::prepare_managed_worktree(
+            &self.config.scope.project_root_cwd,
+            &request.root,
+        )
+        .await?;
         let project = self.require_project_for(&effective_scope)?;
 
         let workspace_title = format!(

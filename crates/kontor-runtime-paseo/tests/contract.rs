@@ -203,6 +203,65 @@ fn root() -> WorkspaceRoot {
     WorkspaceRoot::parse(CWD).expect("an absolute canonical path")
 }
 
+fn temporary_repository() -> tempfile::TempDir {
+    let repository = tempfile::tempdir().expect("a temporary repository");
+    for arguments in [
+        vec!["init", "--initial-branch=master"],
+        vec!["config", "user.email", "kontor@example.test"],
+        vec!["config", "user.name", "Kontor Contract"],
+        vec!["commit", "--allow-empty", "-m", "initial"],
+        vec!["switch", "-c", "feat/control-plane-in-flight"],
+        vec![
+            "commit",
+            "--allow-empty",
+            "-m",
+            "unmerged control-plane work",
+        ],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(repository.path())
+            .output()
+            .expect("git is available to the contract test");
+        assert!(
+            output.status.success(),
+            "temporary repository setup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    repository
+}
+
+fn managed_worktree(
+    repository: &tempfile::TempDir,
+    branch: &str,
+) -> (PaseoConfig, WorkspaceRoot, std::path::PathBuf) {
+    let path = repository.path().join(".worktrees").join(branch);
+    let mut runtime_config = config();
+    runtime_config.scope.project_root_cwd = WorkspaceRoot::parse(
+        repository
+            .path()
+            .to_str()
+            .expect("the temporary path is UTF-8"),
+    )
+    .expect("an absolute project root");
+    let root = WorkspaceRoot::parse(path.to_str().expect("the temporary path is UTF-8"))
+        .expect("an absolute task worktree");
+    runtime_config.scope.canonical_worktree_cwd = root.clone();
+    (runtime_config, root, path)
+}
+
+fn workspace_readback_at(fixture: &str, root: &WorkspaceRoot, branch: &str) -> serde_json::Value {
+    let mut readback = v(fixture);
+    readback["entries"][0]["projectRootPath"] = serde_json::json!(root.as_str());
+    readback["entries"][0]["workspaceDirectory"] = serde_json::json!(root.as_str());
+    readback["entries"][0]["project"]["checkout"]["cwd"] = serde_json::json!(root.as_str());
+    readback["entries"][0]["project"]["checkout"]["worktreeRoot"] =
+        serde_json::json!(root.as_str());
+    readback["entries"][0]["project"]["checkout"]["currentBranch"] = serde_json::json!(branch);
+    readback
+}
+
 /// The standard-fallback context policy a seat launches under when the test is
 /// about something else.
 ///
@@ -793,6 +852,179 @@ async fn preparation_reuses_an_existing_workspace_without_creating_one() {
         0,
         "an exact (project, canonical cwd) match is reused, never duplicated"
     );
+}
+
+#[tokio::test]
+async fn preparation_creates_an_absent_declared_git_worktree_before_registering_it() {
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-9000-absent-checkout";
+    let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
+    let readback = workspace_readback_at(WORKSPACE_LIST_ONE, &worktree_root, branch);
+
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    let recorded = Arc::new(
+        recorded
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", readback),
+    );
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project("cmd-absent-worktree")
+        .await
+        .expect("the epic project is prepared");
+
+    assert!(!worktree.exists(), "the regression begins with no checkout");
+    let outcome = adapter
+        .prepare_workspace(&WorkspacePrepareRequest {
+            scope: ExecutionScope::for_task(
+                epic_scope(),
+                TaskScope {
+                    task_id: task(),
+                    external_issue_key: external("ASMA-9000"),
+                    short_code: external("ASMA-9000"),
+                    worktree: worktree_root,
+                },
+            ),
+            team_run_id: team_run(),
+            task_id: task(),
+            workspace_binding_id: WorkspaceBindingId::generate(),
+            root: WorkspaceRoot::parse(
+                worktree.to_str().expect("the temporary path remains UTF-8"),
+            )
+            .expect("the declared worktree remains valid"),
+            requested_at: at("2026-08-10T09:00:00Z"),
+        })
+        .await
+        .expect("an absent canonical checkout is prepared autonomously");
+
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
+    );
+    assert!(
+        worktree.join(".git").is_file(),
+        "git created a linked worktree"
+    );
+    let branch = std::process::Command::new("git")
+        .args([
+            "-C",
+            worktree.to_str().expect("UTF-8 path"),
+            "branch",
+            "--show-current",
+        ])
+        .output()
+        .expect("the prepared checkout is readable");
+    assert!(branch.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&branch.stdout).trim(),
+        "feat/ASMA-9000-absent-checkout"
+    );
+    let master = std::process::Command::new("git")
+        .args([
+            "-C",
+            repository.path().to_str().expect("UTF-8 path"),
+            "rev-parse",
+            "master",
+        ])
+        .output()
+        .expect("the default branch is readable");
+    let prepared = std::process::Command::new("git")
+        .args([
+            "-C",
+            worktree.to_str().expect("UTF-8 path"),
+            "rev-parse",
+            "HEAD",
+        ])
+        .output()
+        .expect("the prepared branch is readable");
+    let in_flight = std::process::Command::new("git")
+        .args([
+            "-C",
+            repository.path().to_str().expect("UTF-8 path"),
+            "rev-parse",
+            "HEAD",
+        ])
+        .output()
+        .expect("the in-flight branch is readable");
+    assert!(master.status.success() && prepared.status.success() && in_flight.status.success());
+    assert_eq!(
+        master.stdout, prepared.stdout,
+        "a new task starts from the default branch"
+    );
+    assert_ne!(
+        in_flight.stdout, prepared.stdout,
+        "a new task never inherits the control plane's in-flight branch"
+    );
+    assert_eq!(recorded.count("workspace create"), 1);
+}
+
+#[tokio::test]
+async fn preparation_refuses_branch_drift_before_registering_a_workspace() {
+    let repository = temporary_repository();
+    let expected_branch = "feat/ASMA-9000-expected";
+    let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, expected_branch);
+    let output = std::process::Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "-b",
+            "fix/ASMA-9000-wrong",
+            worktree.to_str().expect("the worktree path is UTF-8"),
+            "master",
+        ])
+        .current_dir(repository.path())
+        .output()
+        .expect("git is available");
+    assert!(
+        output.status.success(),
+        "the drifted fixture is created: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let recorded = Arc::new(daemon());
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project("cmd-branch-drift")
+        .await
+        .expect("the epic project is prepared");
+    let error = adapter
+        .prepare_workspace(&WorkspacePrepareRequest {
+            scope: ExecutionScope::for_task(
+                epic_scope(),
+                TaskScope {
+                    task_id: task(),
+                    external_issue_key: external("ASMA-9000"),
+                    short_code: external("ASMA-9000"),
+                    worktree: worktree_root.clone(),
+                },
+            ),
+            team_run_id: team_run(),
+            task_id: task(),
+            workspace_binding_id: WorkspaceBindingId::generate(),
+            root: worktree_root,
+            requested_at: at("2026-08-10T09:00:00Z"),
+        })
+        .await
+        .expect_err("branch drift is refused rather than registered");
+
+    assert_eq!(
+        error,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "the declared worktree is checked out on a different branch"
+        }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
 }
 
 #[tokio::test]
@@ -4234,6 +4466,64 @@ async fn a_container_created_outside_the_bound_parent_is_refused() {
         plane.adapter.container_binding(node(NODE_A)).is_none(),
         "a refused placement leaves no binding behind"
     );
+}
+
+#[tokio::test]
+async fn ticket_materialization_creates_the_absent_checkout_before_workspace_registration() {
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-9001-ticket-materialization";
+    let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
+    let readback = workspace_readback_at(WORKSPACE_LIST_NODE, &worktree_root, branch);
+    let recorded = Arc::new(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", readback),
+    );
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    let request = ContainerRequest {
+        scope: ExecutionScope::for_task(
+            epic_scope(),
+            TaskScope {
+                task_id: task(),
+                external_issue_key: external("ASMA-9001"),
+                short_code: external("ASMA-9001"),
+                worktree: worktree_root.clone(),
+            },
+        ),
+        cwd: Some(worktree_root),
+        task_id: Some(task()),
+        ..child_request(node(NODE_A), Some(bound_root(node(NODE_B))))
+    };
+
+    assert!(!worktree.exists(), "the declared checkout starts absent");
+    let outcome = adapter
+        .prepare_container(&request)
+        .await
+        .expect("ticket materialization prepares and registers the checkout");
+
+    assert!(outcome.created);
+    assert!(worktree.join(".git").is_file());
+    let observed = std::process::Command::new("git")
+        .args([
+            "-C",
+            worktree.to_str().expect("the worktree path is UTF-8"),
+            "branch",
+            "--show-current",
+        ])
+        .output()
+        .expect("the prepared checkout is readable");
+    assert!(observed.status.success());
+    assert_eq!(String::from_utf8_lossy(&observed.stdout).trim(), branch);
+    assert_eq!(recorded.count("workspace create"), 1);
 }
 
 /// A topology-created TSW is named from its task's scope, not from its node id.

@@ -83,6 +83,13 @@ pub enum RuntimeError {
         /// Why the workspace was refused.
         rule: &'static str,
     },
+    /// The declared workspace is valid, but its local checkout could not be
+    /// prepared without changing or guessing its placement identity.
+    #[error("task checkout preparation failed: {rule}")]
+    WorkspacePreparationFailed {
+        /// The bounded preparation rule that failed.
+        rule: &'static str,
+    },
     /// The binding no longer names a live session in this runtime generation.
     #[error("runtime binding is stale: {rule}")]
     StaleBinding {

@@ -634,6 +634,21 @@ impl ApiError {
                     "the runtime will not work in the workspace this realm asked for",
                 )
             }
+            RuntimeError::WorkspacePreparationFailed { rule } => {
+                warn!(
+                    realm_id = %realm_id,
+                    rule = %rule,
+                    "runtime could not prepare the declared task checkout"
+                );
+                Self::new(
+                    realm_id,
+                    ApiErrorCode::PlacementBlocked,
+                    "the declared task checkout could not be prepared safely",
+                )
+                .advising(
+                    "correct the declared worktree or its Git branch conflict, then retry the same materialization",
+                )
+            }
             RuntimeError::Domain(domain) => Self::from_domain(realm_id, domain),
             // Whatever is left is genuinely unclassified, and it says so in the
             // log rather than only in the answer: an operator who sees this
@@ -779,6 +794,24 @@ mod tests {
         assert!(
             !body.contains("secret_token"),
             "a backend detail may name a column, and a column may name anything"
+        );
+    }
+
+    #[test]
+    fn checkout_preparation_is_a_typed_placement_block_not_a_runtime_outage() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_runtime(
+            realm,
+            &RuntimeError::WorkspacePreparationFailed {
+                rule: "the declared worktree is checked out on a different branch",
+            },
+        );
+
+        assert_eq!(refusal.code, ApiErrorCode::PlacementBlocked);
+        assert_eq!(refusal.code.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            refusal.action,
+            "correct the declared worktree or its Git branch conflict, then retry the same materialization"
         );
     }
 }
