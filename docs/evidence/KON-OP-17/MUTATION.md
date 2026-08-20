@@ -22,6 +22,7 @@ Both focused tests were then rerun green on the restored tree.
 | M7 | Skip native-container preparation from `topology:materialize` | `materializing_a_ticket_binds_its_native_workspace_without_admitting_a_run` | killed: HTTP 200 returned a TSW whose `observed_binding` was still null |
 | M8 | Look up a materialization replay against the project aggregate instead of the epic aggregate recorded by its receipt | same materialization test | killed: the same-key replay returned HTTP 409 `idempotency_conflict` instead of the original receipt and native workspace |
 | M9 | Restore the native-child title renderer's static `task_scopes` lookup instead of using the request's durable `ExecutionScope` | `a_dynamic_task_uses_its_durable_scope_without_a_static_task_entry` | killed: placement returned `WorkspaceMismatch` / `the task has no configured Paseo workspace scope`, reproducing the live OP-18 refusal |
+| M10 | Suppress the transactional `unbound` → `bound` node update after the exact native container is persisted | `materializing_a_ticket_binds_its_native_workspace_without_admitting_a_run` | killed: the projection returned a concrete native id/cwd while still claiming `placement=unbound`, reproducing the contradictory OP-18 readback |
 
 ## Restoration receipt
 
@@ -39,7 +40,9 @@ No mutant remains:
 - materialization replay lookup and receipt storage both address the owning
   epic aggregate;
 - native-child placement and retitle render task identity from the durable
-  request scope, with static fleet entries limited to compatibility overrides.
+  request scope, with static fleet entries limited to compatibility overrides;
+- a persisted exact native container and the node's `bound` placement commit in
+  the same transaction, with replay leaving the node revision stable.
 
 After restoration:
 
