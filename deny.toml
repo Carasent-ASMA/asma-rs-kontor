@@ -55,4 +55,10 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
 ]
-exceptions = []
+exceptions = [
+    # `arrayref` 0.3.10's build-only version probe downloads the public Web
+    # PKI trust-root dataset. Keep the data license exception pinned to the
+    # exact transitive packages instead of admitting it workspace-wide.
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots@0.26.11" },
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots@1.0.9" },
+]
