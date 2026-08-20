@@ -49,7 +49,7 @@ use kontor_core::repository::{
     SourceDisposition, StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
     TicketRepository, TopologyRepository, WorkflowRepository,
 };
-use kontor_core::spec::CatalogRoleRef;
+use kontor_core::spec::{CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{
     Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
     TerminalOutcome,
@@ -4084,6 +4084,56 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
     world.fake.verifying_placement_at(
         kontor_runtime::workspace::WorkspaceRoot::parse("/w/started-epic/0").expect("a valid root"),
     );
+    world.fake.provider_outage(
+        "claude",
+        Some(ModelRung {
+            provider: ProviderRef("codex".to_owned()),
+            model: ModelRef("gpt-5.6-sol".to_owned()),
+            effort: Some(EffortLevel::Xhigh),
+        }),
+    );
+    let builder = kontor_core::id::RoleSlotId::parse("builder").expect("builder slot");
+    world.fake.refusing_launch_of(&builder);
+    let partial = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "admissions": [{
+                "team_run_id": preserved_team_run,
+                "agent_run_id": preserved_agent_run,
+            }],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resume-exact")
+    .send(&world)
+    .await;
+    assert_eq!(partial.status, 200, "{}", partial.body);
+    assert!(
+        partial.json()["started"]
+            .as_array()
+            .expect("started")
+            .is_empty()
+    );
+    assert_eq!(
+        partial.json()["blocked"].as_array().expect("blocked").len(),
+        1
+    );
+    assert_eq!(partial.json()["receipt"]["applied"], "created");
+    // Even though the later builder launch refused, the architect attachment
+    // is indexed and addressable immediately. No unrelated event is needed to
+    // make `/v1/runs/{id}` catch up with the epic projection.
+    let first_run = Call::get(format!("/v1/runs/{preserved_agent_run}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(first_run.status, 200, "{}", first_run.body);
+    assert_eq!(
+        first_run.json()["value"]["agent_run_id"],
+        preserved_agent_run
+    );
+
+    world.fake.allowing_launch_of(&builder);
     let started = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
         &serde_json::json!({
@@ -4114,8 +4164,30 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
         .collect();
     assert_eq!(slots.len(), seats.len(), "no role slot is seated twice");
     for seat in &seats {
-        assert_eq!(seat["applied"], "created");
         assert_eq!(seat["team_run_id"], preserved_team_run, "the same team run");
+    }
+    assert!(
+        seats.iter().any(|seat| seat["applied"] == "unchanged")
+            && seats.iter().any(|seat| seat["applied"] == "created"),
+        "recovery must reuse the partial architect and create only missing seats: {}",
+        started.body
+    );
+    for role in ["builder", "inspector"] {
+        let run = seats
+            .iter()
+            .find(|seat| seat["role_slot"] == role)
+            .and_then(|seat| seat["agent_run_id"].as_str())
+            .and_then(|run| AgentRunId::parse(run).ok())
+            .expect("the outage-sensitive role was seated");
+        let model = world
+            .fake
+            .launched_model(run)
+            .expect("the selected model route is observable");
+        assert_eq!(
+            model.provider.0, "codex",
+            "{role} woke Claude during outage"
+        );
+        assert_eq!(model.model.0, "gpt-5.6-sol");
     }
     let agent_run = seats[0]["agent_run_id"]
         .as_str()
@@ -9581,6 +9653,11 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
         "role_slot": role_slot,
         "expected_task_revision": task_revision,
         "binding_generation": old_binding.identity.generation,
+        "model_route": {
+            "provider": "codex",
+            "model": "gpt-5.6-sol",
+            "effort": "xhigh"
+        },
     });
     let replaced = Call::post(
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
@@ -9606,6 +9683,13 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
             .expect("the successor reads")
             .expect("the successor exists")
     });
+    let selected = world
+        .fake
+        .launched_model(successor_id)
+        .expect("the successor's selected route is observable");
+    assert_eq!(selected.provider.0, "codex");
+    assert_eq!(selected.model.0, "gpt-5.6-sol");
+    assert_eq!(selected.effort, Some(kontor_core::spec::EffortLevel::Xhigh));
     assert_eq!(successor.parent_agent_run_id, Some(predecessor_id));
     assert_eq!(successor.team_run_id.to_string(), team_run);
     let successor_binding = successor.binding.expect("the successor is bound");
@@ -16371,6 +16455,94 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "an on-demand role was seated: {}",
         materialized.body
     );
+
+    // A second, explicitly routed materialization fills the exact same logical
+    // LSA/TPM bindings with native sessions in the ECP. This is the legacy
+    // recovery path: no replacement topology and no delivery TeamRun.
+    let lsa_binding = lsa["seat_binding_id"]
+        .as_str()
+        .expect("LSA binding")
+        .to_owned();
+    let tpm_binding = tpm["seat_binding_id"]
+        .as_str()
+        .expect("TPM binding")
+        .to_owned();
+    let native_body = serde_json::json!({
+        "expected_revision": 1,
+        "routes": [
+            {"role_code": "LSA", "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}},
+            {"role_code": "TPM", "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}}
+        ]
+    });
+    let native = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &native_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("materialize-native-once")
+    .send(world)
+    .await;
+    assert_eq!(native.status, 200, "{}", native.body);
+    let native_seats = native.json()["core_team"]["seats"]
+        .as_array()
+        .expect("native seats")
+        .clone();
+    let native_lsa = native_seats
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "LSA")
+        .expect("native LSA");
+    let native_tpm = native_seats
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "TPM")
+        .expect("native TPM");
+    assert_eq!(native_lsa["seat_binding_id"], lsa_binding);
+    assert_eq!(native_tpm["seat_binding_id"], tpm_binding);
+    assert_eq!(
+        native_lsa["native_seat"]["model_route"]["provider"],
+        "codex"
+    );
+    assert_eq!(
+        native_tpm["native_seat"]["model_route"]["provider"],
+        "codex"
+    );
+    let lsa_native = native_lsa["native_seat"]["native_id"]
+        .as_str()
+        .expect("LSA native id")
+        .to_owned();
+
+    let replayed_native = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &native_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("materialize-native-once")
+    .send(world)
+    .await;
+    assert_eq!(replayed_native.status, 200, "{}", replayed_native.body);
+    assert_eq!(replayed_native.json()["receipt"]["applied"], "unchanged");
+    let replayed_lsa = replayed_native.json()["core_team"]["seats"]
+        .as_array()
+        .expect("replayed seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "LSA")
+        .expect("replayed LSA")
+        .clone();
+    assert_eq!(replayed_lsa["seat_binding_id"], lsa_binding);
+    assert_eq!(replayed_lsa["native_seat"]["native_id"], lsa_native);
+
+    let message_id = kontor_runtime::request::MessageId::generate().to_string();
+    let handoff = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
+        &serde_json::json!({"body": "Continue the bounded epic handoff."}),
+    )
+    .signed_as(world, "operator")
+    .with_key(&message_id)
+    .send(world)
+    .await;
+    assert_eq!(handoff.status, 200, "{}", handoff.body);
+    assert_eq!(handoff.json()["seat_binding_id"], lsa_binding);
+    assert_eq!(handoff.json()["native_id"], lsa_native);
+    assert_eq!(handoff.json()["message_id"], message_id);
 
     // Promoting again returns the same epic rather than building a second.
     let again = Call::post(

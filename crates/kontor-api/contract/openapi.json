@@ -4529,6 +4529,84 @@
         }
       }
     },
+    "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/messages": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Send one bounded handoff to an attached persistent Core Team seat.",
+        "operationId": "message_hosted_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "description": "The persistent Core Team seat",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "A caller-generated UUIDv7 message id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostedSeatMessageRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostedSeatMessageDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The seat identity drifted"
+          },
+          "503": {
+            "description": "The runtime could not be reached"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire": {
       "post": {
         "tags": [
@@ -9588,9 +9666,64 @@
             "format": "int64",
             "description": "The epic revision the caller believes is current.",
             "minimum": 0
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoreTeamSeatRouteRequest"
+            },
+            "description": "Explicit runtime routes for the persistent roles that should be attached.\nAn empty list preserves the historical logical-only materialization."
           }
         },
         "additionalProperties": false
+      },
+      "CoreTeamNativeSeatDto": {
+        "type": "object",
+        "description": "Exact runtime readback filling one persistent Core Team seat.",
+        "required": [
+          "runtime_kind",
+          "host",
+          "generation",
+          "native_id",
+          "model_route",
+          "observed_at"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime generation in which the identity was read back.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "Non-secret runtime host identity."
+          },
+          "model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Frozen provider/model/effort route."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Exact native session identity."
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last exact-id readback."
+          },
+          "provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider-native conversation id, when exposed."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "Runtime family that owns the session."
+          }
+        }
       },
       "CoreTeamOutcomeDto": {
         "type": "object",
@@ -9666,6 +9799,17 @@
             "type": "boolean",
             "description": "Whether the role may open a Quick session."
           },
+          "native_seat": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamNativeSeatDto",
+                "description": "Exact native session filling this persistent seat, once launched."
+              }
+            ]
+          },
           "presence": {
             "type": "string",
             "description": "When a concrete epic materializes it."
@@ -9682,6 +9826,25 @@
             "description": "The binding filling it, once one has been materialized."
           }
         }
+      },
+      "CoreTeamSeatRouteRequest": {
+        "type": "object",
+        "description": "One authorized native route for a persistent Core Team role.",
+        "required": [
+          "role_code",
+          "model_route"
+        ],
+        "properties": {
+          "model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Exact provider/model/effort route to launch or recover."
+          },
+          "role_code": {
+            "type": "string",
+            "description": "Stable role code in the epic's frozen Core Team roster."
+          }
+        },
+        "additionalProperties": false
       },
       "CoreTeamSeatSelectionDto": {
         "type": "object",
@@ -10420,6 +10583,54 @@
             "description": "The persisted schema generation."
           }
         }
+      },
+      "HostedSeatMessageDto": {
+        "type": "object",
+        "description": "Runtime acknowledgement for a persistent Core Team seat message.",
+        "required": [
+          "realm_id",
+          "seat_binding_id",
+          "native_id",
+          "message_id",
+          "accepted_at"
+        ],
+        "properties": {
+          "accepted_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Runtime acceptance time."
+          },
+          "message_id": {
+            "type": "string",
+            "description": "Stable caller message id."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Exact native session addressed."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that accepted the operation."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Logical persistent seat that was addressed."
+          }
+        }
+      },
+      "HostedSeatMessageRequestDto": {
+        "type": "object",
+        "description": "One bounded message to an already attached persistent Core Team seat.",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "Instruction delivered to the exact native session."
+          }
+        },
+        "additionalProperties": false
       },
       "ImportBody": {
         "type": "object",
@@ -12279,6 +12490,17 @@
             "description": "The task revision the replacement is reconciled against.",
             "minimum": 0
           },
+          "model_route": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+                "description": "Admin-authorized temporary provider/model route for this successor.\nAbsent means the first currently eligible rung in the frozen chain."
+              }
+            ]
+          },
           "role_slot": {
             "type": "string",
             "description": "The role slot whose terminal attempt is being replaced."
@@ -12919,6 +13141,32 @@
           }
         }
       },
+      "RuntimeModelRouteRequest": {
+        "type": "object",
+        "description": "One explicit runtime route used by an authorized recovery operation.",
+        "required": [
+          "provider",
+          "model"
+        ],
+        "properties": {
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Runtime-native effort spelling."
+          },
+          "model": {
+            "type": "string",
+            "description": "Model catalog key within the provider."
+          },
+          "provider": {
+            "type": "string",
+            "description": "Provider catalog key."
+          }
+        },
+        "additionalProperties": false
+      },
       "RuntimeSettlementDto": {
         "type": "object",
         "description": "What settling one run against its runtime produced.\n\nNothing in the request shapes this. There is no field on the way in for a\nverdict, a terminal state, an evidence hash or a citation, which is the point:\nsettlement is Kontor *asking* a runtime what is true and recording the answer,\nand an operator who could supply any of those would be closing a run on their\nown authority while it looked like the runtime's.",
@@ -13040,9 +13288,17 @@
         "required": [
           "realm_id",
           "started",
+          "blocked",
           "receipt"
         ],
         "properties": {
+          "blocked": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BlockedTaskDto"
+            },
+            "description": "Admissions that remained durable but could not be attached in this\nattempt. The whole batch is validated before runtime contact; these are\nruntime effects that can be retried under the same key."
+          },
           "realm_id": {
             "type": "string",
             "description": "The Realm the recovery ran in."

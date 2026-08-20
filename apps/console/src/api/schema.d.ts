@@ -1466,6 +1466,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send one bounded handoff to an attached persistent Core Team seat. */
+        post: operations["message_hosted_seat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire": {
         parameters: {
             query?: never;
@@ -3477,6 +3494,34 @@ export interface components {
              * @description The epic revision the caller believes is current.
              */
             expected_revision: number;
+            /**
+             * @description Explicit runtime routes for the persistent roles that should be attached.
+             *     An empty list preserves the historical logical-only materialization.
+             */
+            routes?: components["schemas"]["CoreTeamSeatRouteRequest"][];
+        };
+        /** @description Exact runtime readback filling one persistent Core Team seat. */
+        CoreTeamNativeSeatDto: {
+            /**
+             * Format: int64
+             * @description Runtime generation in which the identity was read back.
+             */
+            generation: number;
+            /** @description Non-secret runtime host identity. */
+            host: string;
+            /** @description Frozen provider/model/effort route. */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Exact native session identity. */
+            native_id: string;
+            /**
+             * Format: date-time
+             * @description Last exact-id readback.
+             */
+            observed_at: string;
+            /** @description Provider-native conversation id, when exposed. */
+            provider_session_id?: string | null;
+            /** @description Runtime family that owns the session. */
+            runtime_kind: string;
         };
         /** @description What a Core Team write produced. */
         CoreTeamOutcomeDto: {
@@ -3511,12 +3556,20 @@ export interface components {
         CoreTeamSeatDto: {
             /** @description Whether the role may open a Quick session. */
             ad_hoc_allowed: boolean;
+            native_seat?: null | components["schemas"]["CoreTeamNativeSeatDto"];
             /** @description When a concrete epic materializes it. */
             presence: string;
             /** @description The role, as the server resolved it. */
             role: components["schemas"]["ResolvedRoleRefDto"];
             /** @description The binding filling it, once one has been materialized. */
             seat_binding_id?: string | null;
+        };
+        /** @description One authorized native route for a persistent Core Team role. */
+        CoreTeamSeatRouteRequest: {
+            /** @description Exact provider/model/effort route to launch or recover. */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Stable role code in the epic's frozen Core Team roster. */
+            role_code: string;
         };
         /**
          * @description One Core Team seat as a caller states it: the role, and the policy the
@@ -3913,6 +3966,27 @@ export interface components {
              * @description The persisted schema generation.
              */
             schema_version: number;
+        };
+        /** @description Runtime acknowledgement for a persistent Core Team seat message. */
+        HostedSeatMessageDto: {
+            /**
+             * Format: date-time
+             * @description Runtime acceptance time.
+             */
+            accepted_at: string;
+            /** @description Stable caller message id. */
+            message_id: string;
+            /** @description Exact native session addressed. */
+            native_id: string;
+            /** @description Realm that accepted the operation. */
+            realm_id: string;
+            /** @description Logical persistent seat that was addressed. */
+            seat_binding_id: string;
+        };
+        /** @description One bounded message to an already attached persistent Core Team seat. */
+        HostedSeatMessageRequestDto: {
+            /** @description Instruction delivered to the exact native session. */
+            body: string;
         };
         ImportBody: {
             entries: Record<string, never>[];
@@ -4813,6 +4887,7 @@ export interface components {
              * @description The task revision the replacement is reconciled against.
              */
             expected_task_revision: number;
+            model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
             /** @description The role slot whose terminal attempt is being replaced. */
             role_slot: string;
         };
@@ -5129,6 +5204,15 @@ export interface components {
             /** @description How much of what it reports Kontor may act on. */
             trust_grade: string;
         };
+        /** @description One explicit runtime route used by an authorized recovery operation. */
+        RuntimeModelRouteRequest: {
+            /** @description Runtime-native effort spelling. */
+            effort?: string | null;
+            /** @description Model catalog key within the provider. */
+            model: string;
+            /** @description Provider catalog key. */
+            provider: string;
+        };
         /**
          * @description What settling one run against its runtime produced.
          *
@@ -5203,6 +5287,12 @@ export interface components {
         };
         /** @description What exact admission recovery produced. */
         SchedulerResumeDto: {
+            /**
+             * @description Admissions that remained durable but could not be attached in this
+             *     attempt. The whole batch is validated before runtime contact; these are
+             *     runtime effects that can be retried under the same key.
+             */
+            blocked: components["schemas"]["BlockedTaskDto"][];
             /** @description The Realm the recovery ran in. */
             realm_id: string;
             /** @description The authority-bearing recovery receipt. */
@@ -10130,6 +10220,75 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    message_hosted_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description A caller-generated UUIDv7 message id */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The persistent Core Team seat */
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostedSeatMessageRequestDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostedSeatMessageDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The seat identity drifted */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The runtime could not be reached */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

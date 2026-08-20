@@ -17,13 +17,12 @@
 //!
 //! # And the one it keeps about seats
 //!
-//! A native session is created in exactly one place in this file: inside the
-//! shared seating path reached by [`Services::start`] and exact admission
-//! recovery, after `admit_candidate` has committed. Admission commits first
-//! because a crash between the two must leave a run with no session (which
-//! reconciliation can see and finish) rather than a session with no run (which
-//! nothing can). There is no method here, and no route above it, that creates a
-//! session any other way.
+//! A delivery native session is created in exactly one place in this file:
+//! inside the shared seating path reached by [`Services::start`] and exact
+//! admission recovery, after `admit_candidate` has committed. Persistent Core
+//! Team seats use their separate, explicitly routed materialization surface;
+//! they have no TeamRun and are keyed by their durable SeatBinding. Neither
+//! path can create the other's kind of session.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -56,12 +55,13 @@ use kontor_api::applications::{
     CloseoutRequirementDto, CommitteeFindingDto, CommitteeRunDto, CommitteeVerdictDto,
     CompletionBlockerDto, CompletionOutcomeDto, CompletionPhaseDto, CompletionRoundDto,
     CompletionStateDto, CompletionWakeDto, ConsultationSeatDto, ConsultationVerdictDto,
-    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamOutcomeDto,
-    CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamSeatDto, CoreTeamSeatSelectionDto,
-    DeliberationStepDto, EnsureQuickSessionRequest, IntegrationRecordDto,
-    InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest, ProfileCatalogDto,
-    ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto,
-    PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
+    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
+    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamSeatDto,
+    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, DeliberationStepDto,
+    EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
+    IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest,
+    ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
+    PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
     RecordFindingsRequest, RemediateCompletionRequest, RemediationActionDto, RepositoryOutcomeDto,
     RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
@@ -76,9 +76,9 @@ use kontor_api::applications::{
     AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
     ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto, ProfilePhaseDto, ProfileValidationDto,
     RegisterPackRequest, ReplaceSeatRequest, ReplacedSeatDto, ResolveConflictRequest,
-    RoleSlotWaiverDto, SettleTurnRequest, SettledTurnDto, SubmitIntakeRequest, TicketClaimDto,
-    TicketCommentDto, TicketCommentPullDto, TicketConflictDto, TriggerSpecDto, TurnFollowUpDto,
-    WaiveRoleSlotRequest, WorkProfileDetailDto,
+    RoleSlotWaiverDto, RuntimeModelRouteRequest, SettleTurnRequest, SettledTurnDto,
+    SubmitIntakeRequest, TicketClaimDto, TicketCommentDto, TicketCommentPullDto, TicketConflictDto,
+    TriggerSpecDto, TurnFollowUpDto, WaiveRoleSlotRequest, WorkProfileDetailDto,
 };
 use kontor_api::applications::{
     CodeHelpProjectionDto, DraftTopologySpecRequest, PublishTopologySpecRequest,
@@ -121,16 +121,17 @@ use kontor_core::repository::{
     RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
     SpecRepository, StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
     StoredConsultationProfileRevision, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
-    StoredQuickSession, StoredRemediationProposal, TaskTransitionRequest, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository,
+    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal, TaskTransitionRequest,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
-    ContextPolicySnapshot, EffectiveContextPolicy, EpicPresence, IntakeReceipt, IntakeResult,
-    ModelRung, NodeProjectionCapability, ProjectSessionTopologySpec, RequestedContextPolicy,
-    RoleCatalogRevision, SeatAutonomy, Shareability, ShareabilityTier, SourceIdentity,
-    SourceProcessingState, TeamRunSnapshot, TopologySnapshot, TriggerSpec,
+    ContextPolicySnapshot, EffectiveContextPolicy, EffortLevel, EpicPresence, IntakeReceipt,
+    IntakeResult, ModelRef, ModelRung, NodeProjectionCapability, ProjectSessionTopologySpec,
+    ProviderRef, RequestedContextPolicy, RoleCatalogRevision, SeatAutonomy, Shareability,
+    ShareabilityTier, SourceIdentity, SourceProcessingState, TeamRunSnapshot, TopologySnapshot,
+    TriggerSpec,
 };
 use kontor_core::state::{
     GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact, SessionTopologyNode,
@@ -154,8 +155,8 @@ use kontor_profiles::pack::{
     ResolvedProfileBundle, parse_pack, resolve_profile, validate_pack,
 };
 use kontor_runtime::adapter::{
-    ConsultationCredential, ConsultationLaunchRequest, ConsultationMessageRequest, RuntimeAdapter,
-    RuntimeError,
+    ConsultationCredential, ConsultationLaunchRequest, ConsultationMessageRequest,
+    HostedSeatLaunchRequest, HostedSeatMessageRequest, RuntimeAdapter, RuntimeError,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
@@ -3259,6 +3260,33 @@ impl Services {
                     binding.role.role_code == seat.role.role_code && binding.is_non_terminal()
                 })
                 .map(|binding| binding.id);
+            seat.native_seat = seat
+                .seat_binding_id
+                .map(|seat_binding_id| {
+                    state
+                        .with_store(|store| {
+                            store.get_hosted_topology_seat(project_id, seat_binding_id)
+                        })
+                        .map_err(|error| self.refuse(&error))
+                })
+                .transpose()?
+                .flatten()
+                .map(|native| CoreTeamNativeSeatDto {
+                    runtime_kind: native.native_identity.runtime_kind,
+                    host: native.native_identity.host.as_str().to_owned(),
+                    generation: native.native_identity.generation,
+                    native_id: native.native_identity.native_id,
+                    provider_session_id: native.provider_session_id,
+                    model_route: RuntimeModelRouteRequest {
+                        provider: native.model_rung.provider.0,
+                        model: native.model_rung.model.0,
+                        effort: native
+                            .model_rung
+                            .effort
+                            .map(|effort| effort.as_str().to_owned()),
+                    },
+                    observed_at: native.observed_at,
+                });
         }
         Ok(CoreTeamDto {
             realm_id: state.realm_id(),
@@ -3332,6 +3360,7 @@ impl Services {
                     presence: seat.presence,
                     ad_hoc_allowed: seat.ad_hoc_allowed,
                     seat_binding_id: None,
+                    native_seat: None,
                 })
             })
             .collect()
@@ -6060,17 +6089,67 @@ fn freeze_seat_autonomy(
 
 /// Select the primary model rung from the team run's immutable template.
 fn freeze_seat_model_rung(
+    adapter: &dyn RuntimeAdapter,
     snapshot: &TeamRunSnapshot,
     slot: &RoleSlotId,
 ) -> kontor_core::DomainResult<ModelRung> {
-    kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
+    let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?;
+    let chain = template
         .slot(slot)
         .and_then(|seat| seat.model_chain.as_ref())
-        .and_then(|chain| chain.rungs.first())
-        .cloned()
         .ok_or_else(|| {
             kontor_core::DomainError::invalid("TeamRunSnapshot", "the role slot has no model route")
+        })?;
+    Ok(chain
+        .rungs
+        .iter()
+        .find(|rung| adapter.provider_available(rung.provider.0.as_str()))
+        .cloned()
+        .or_else(|| {
+            chain
+                .rungs
+                .iter()
+                .find_map(|rung| adapter.fallback_model_rung(rung))
         })
+        // Preserve the frozen primary when every route is temporarily
+        // unavailable. The adapter then returns the typed provider-outage
+        // refusal; inventing a different model here would weaken the template.
+        .or_else(|| chain.rungs.first().cloned())
+        .expect("a validated model chain is non-empty"))
+}
+
+fn parse_runtime_model_route(
+    route: &RuntimeModelRouteRequest,
+) -> kontor_core::DomainResult<ModelRung> {
+    if route.provider.trim().is_empty() || route.model.trim().is_empty() {
+        return Err(kontor_core::DomainError::invalid(
+            "RuntimeModelRouteRequest",
+            "provider and model are required",
+        ));
+    }
+    let effort = route
+        .effort
+        .as_deref()
+        .map(|effort| match effort {
+            "off" => Ok(EffortLevel::Off),
+            "low" => Ok(EffortLevel::Low),
+            "medium" => Ok(EffortLevel::Medium),
+            "high" => Ok(EffortLevel::High),
+            "xhigh" => Ok(EffortLevel::Xhigh),
+            "max" => Ok(EffortLevel::Max),
+            "ultra" => Ok(EffortLevel::Ultra),
+            "ultracode" => Ok(EffortLevel::Ultracode),
+            _ => Err(kontor_core::DomainError::invalid(
+                "RuntimeModelRouteRequest",
+                "effort is not in the runtime effort vocabulary",
+            )),
+        })
+        .transpose()?;
+    Ok(ModelRung {
+        provider: ProviderRef(route.provider.clone()),
+        model: ModelRef(route.model.clone()),
+        effort,
+    })
 }
 
 /// The stable spelling of one context layer.
@@ -9391,12 +9470,50 @@ impl ApplicationOperations for Services {
         // staffed from whatever the project happens to say today would quietly
         // acquire roles decided after it started.
         let roster = self.frozen_roster(project_id, epic_id)?;
-        let intent = self.intent(&serde_json::json!({
+        let routes: BTreeMap<String, ModelRung> = request
+            .routes
+            .iter()
+            .map(|route: &CoreTeamSeatRouteRequest| {
+                Ok((
+                    route.role_code.clone(),
+                    parse_runtime_model_route(&route.model_route)?,
+                ))
+            })
+            .collect::<kontor_core::DomainResult<_>>()
+            .map_err(|error| self.refuse_domain(&error))?;
+        if routes.len() != request.routes.len() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a Core Team role may be routed only once",
+            ));
+        }
+        for role_code in routes.keys() {
+            if !roster.revision.seats.iter().any(|seat| {
+                seat.presence != EpicPresence::OnDemand && seat.role.role_code.as_str() == role_code
+            }) {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "a native Core Team route names no materialized role in the frozen roster",
+                ));
+            }
+        }
+        let mut intent_document = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_materialize",
             "project": project_id.to_string(),
             "epic": epic_id.to_string(),
-        }))?;
+        });
+        // Preserve byte-for-byte replay compatibility for the historical
+        // logical-only request. Native routing is an explicit new intent.
+        if !request.routes.is_empty() {
+            intent_document["routes"] = serde_json::to_value(&request.routes).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "Core Team routes could not be encoded",
+                )
+            })?;
+        }
+        let intent = self.intent(&intent_document)?;
         let replayed = self
             .replayed(
                 key,
@@ -9406,17 +9523,111 @@ impl ApplicationOperations for Services {
                 }),
             )?
             .is_some();
-        if !replayed {
-            let control = self.ensure_scope_chain(
+        let control = self.ensure_scope_chain(
+            project_id,
+            &self.resolve_scope(
                 project_id,
-                &self.resolve_scope(
-                    project_id,
-                    &SemanticTopologyTargetDto::EpicControl { epic_id },
-                )?,
-            )?;
-            // Missing seats only. Every seat already there keeps its identity,
-            // because a seat binding is what a running agent is attached to.
+                &SemanticTopologyTargetDto::EpicControl { epic_id },
+            )?,
+        )?;
+        // Missing seats only. Every seat already there keeps its identity,
+        // because a seat binding is what a running agent is attached to. This
+        // also runs on replay so an old receipt whose process died between the
+        // logical and native halves can converge without creating topology.
+        let materialized =
             self.materialize_roster_seats(project_id, &control, &roster, kontor_api::now())?;
+        if !routes.is_empty() {
+            let runtime_kind = self.node_runtime_kind()?;
+            let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime selected for Core Team placement is not configured",
+                )
+            })?;
+            let cwd = self.runtime_root(project_id, Some(epic_id))?;
+            let container = self
+                .ensure_container(project_id, &control, &cwd, adapter.as_ref())
+                .await?;
+            let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
+            let capabilities = adapter
+                .discover_capabilities()
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let context_policy = ContextPolicySnapshot::standard(
+                &capabilities.limits.context_window,
+                capabilities.supports(RuntimeCapability::ContextPolicy),
+                SCHEMA_VERSION,
+                kontor_api::now(),
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
+            for (seat, seat_binding_id) in materialized {
+                let Some(model_rung) = routes.get(seat.role.role_code.as_str()) else {
+                    continue;
+                };
+                if !adapter.provider_available(model_rung.provider.0.as_str()) {
+                    return Err(ApiError::from_runtime(
+                        state.realm_id(),
+                        &RuntimeError::ProviderUnavailable {
+                            provider: model_rung.provider.0.clone(),
+                        },
+                    ));
+                }
+                let display_name = ExternalName::parse(&format!(
+                    "{} · {}",
+                    seat.role.role_code.as_str(),
+                    scope.epic.external_epic_key.as_str()
+                ))
+                .map_err(|error| self.refuse_domain(&error))?;
+                let prompt = BoundedText::parse(&format!(
+                    "Persistent {} seat for epic {}. Continue only work authorized through Kontor. Await or act on the bounded handoff supplied with this launch, then remain reusable under SeatBinding {}.",
+                    seat.role.role_code.as_str(),
+                    scope.epic.external_epic_key.as_str(),
+                    seat_binding_id,
+                ))
+                .map_err(|error| self.refuse_domain(&error))?;
+                let outcome = adapter
+                    .launch_hosted_seat(&HostedSeatLaunchRequest {
+                        seat_binding_id,
+                        role_slot_id: seat.role_slot_id.clone(),
+                        display_name,
+                        container: container.clone(),
+                        cwd: cwd.clone(),
+                        scope: scope.clone(),
+                        prompt,
+                        model_rung: model_rung.clone(),
+                        context_policy: context_policy.clone(),
+                        requested_at: kontor_api::now(),
+                    })
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                let hosted = StoredHostedTopologySeat {
+                    project_id,
+                    seat_binding_id,
+                    model_rung: model_rung.clone(),
+                    native_identity: outcome.identity,
+                    provider_session_id: outcome.provider_session_id,
+                    observed_at: outcome.observed_at,
+                };
+                state
+                    .with_store(|store| store.bind_hosted_topology_seat(&hosted))
+                    .map_err(|error| self.refuse(&error))?;
+                state
+                    .with_store(|store| {
+                        store.observe_seat_binding(
+                            project_id,
+                            seat_binding_id,
+                            &SeatLivenessObservation {
+                                attached_at: Some(hosted.observed_at),
+                                runtime_reported: Some(
+                                    kontor_core::state::ObservedRunState::Running,
+                                ),
+                                ..SeatLivenessObservation::default()
+                            },
+                            hosted.observed_at,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
         }
         let receipt_id = self.record(
             key,
@@ -9443,6 +9654,69 @@ impl ApplicationOperations for Services {
             },
         })
     }
+
+    async fn message_hosted_seat(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        message_id: MessageId,
+        request: &HostedSeatMessageRequestDto,
+    ) -> Result<HostedSeatMessageDto, ApiError> {
+        let state = self.state()?;
+        let binding = state
+            .with_store(|store| store.get_seat_binding(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|binding| binding.is_non_terminal())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the persistent Core Team seat is not active in this project",
+                )
+            })?;
+        if binding.task_id.is_some() || binding.team_run_id.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "delivery seats are messaged through the session message surface",
+            ));
+        }
+        let hosted = state
+            .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the persistent Core Team seat has no native session",
+                )
+            })?;
+        let adapter = state
+            .runtimes()
+            .get(&hosted.native_identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime holding this Core Team seat is not configured",
+                )
+            })?;
+        let body = BoundedText::parse(&request.body).map_err(|error| self.refuse_domain(&error))?;
+        let outcome = adapter
+            .message_hosted_seat(&HostedSeatMessageRequest {
+                seat_binding_id,
+                identity: hosted.native_identity.clone(),
+                message_id,
+                body,
+                sent_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        Ok(HostedSeatMessageDto {
+            realm_id: state.realm_id(),
+            seat_binding_id,
+            native_id: hosted.native_identity.native_id,
+            message_id: outcome.message_id.to_string(),
+            accepted_at: outcome.accepted_at,
+        })
+    }
+
     fn quick_roles(&self, project_id: ProjectId) -> Result<QuickRolesDto, ApiError> {
         let state = self.state()?;
         self.project_row(project_id)?;
@@ -12556,17 +12830,28 @@ impl ApplicationOperations for Services {
             &intent,
         )?;
         let mut started = Vec::new();
+        let mut blocked = Vec::new();
         for (address, recovered) in recoverable {
-            started.extend(
-                self.seat_with_address(
+            match self
+                .seat_with_address(
                     project_id,
                     &recovered.admitted,
                     &recovered.launch_key,
                     Some(address.team_run_id),
                     Some(address.agent_run_id),
                 )
-                .await?,
-            );
+                .await
+            {
+                Ok(seats) => started.extend(seats),
+                Err(refusal) => blocked.push(BlockedTaskDto {
+                    task_id: recovered.admitted.task_id,
+                    code: refusal.code.as_str().to_owned(),
+                    evidence: vec![serde_json::json!({
+                        "kind": "seat",
+                        "rule": refusal.rule,
+                    })],
+                }),
+            }
         }
         self.mark_started_tasks_in_progress(project_id, &started)?;
         self.retry_undelivered_dispatches().await?;
@@ -12574,6 +12859,7 @@ impl ApplicationOperations for Services {
         Ok(SchedulerResumeDto {
             realm_id: state.realm_id(),
             started,
+            blocked,
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
                 receipt_id: receipt_id.to_string(),
@@ -14051,6 +14337,14 @@ impl ApplicationOperations for Services {
             )
         })?;
         let scope = self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
+        let model_rung = request
+            .model_route
+            .as_ref()
+            .map_or_else(
+                || freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot),
+                parse_runtime_model_route,
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -14063,8 +14357,7 @@ impl ApplicationOperations for Services {
             account_profile_id: predecessor.account_profile_id,
             prompt: slot_prompt(&role_slot, &eligible_roots(slots.template()))
                 .map_err(|error| self.refuse_domain(&error))?,
-            model_rung: freeze_seat_model_rung(&team.snapshot, &role_slot)
-                .map_err(|error| self.refuse_domain(&error))?,
+            model_rung,
             context_policy: context_policy.clone(),
             autonomy: freeze_seat_autonomy(&team.snapshot, &role_slot)
                 .map_err(|error| self.refuse_domain(&error))?,
@@ -15915,11 +16208,11 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
                 .into_authority()
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let model_rung = freeze_seat_model_rung(adapter.as_ref(), &team_snapshot, &slot)
+                .map_err(|error| self.refuse_domain(&error))?;
             let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            let model_rung = freeze_seat_model_rung(&team_snapshot, &slot)
-                .map_err(|error| self.refuse_domain(&error))?;
             let autonomy = freeze_seat_autonomy(&team_snapshot, &slot)
                 .map_err(|error| self.refuse_domain(&error))?;
             let outcome = adapter
@@ -17013,11 +17306,11 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?
             .into_authority()
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        let model_rung = freeze_seat_model_rung(adapter.as_ref(), &team_snapshot, slot)
+            .map_err(|error| self.refuse_domain(&error))?;
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
-        let model_rung = freeze_seat_model_rung(&team_snapshot, slot)
-            .map_err(|error| self.refuse_domain(&error))?;
         let autonomy = freeze_seat_autonomy(&team_snapshot, slot)
             .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter

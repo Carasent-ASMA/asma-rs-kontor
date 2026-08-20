@@ -633,6 +633,32 @@ pub struct CoreTeamSeatDto {
     /// The binding filling it, once one has been materialized.
     #[schema(value_type = Option<String>)]
     pub seat_binding_id: Option<SeatBindingId>,
+    /// Exact native session filling this persistent seat, once launched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_seat: Option<CoreTeamNativeSeatDto>,
+}
+
+/// Exact runtime readback filling one persistent Core Team seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamNativeSeatDto {
+    /// Runtime family that owns the session.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// Non-secret runtime host identity.
+    pub host: String,
+    /// Runtime generation in which the identity was read back.
+    pub generation: u64,
+    /// Exact native session identity.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// Provider-native conversation id, when exposed.
+    #[schema(value_type = Option<String>)]
+    pub provider_session_id: Option<ExternalId>,
+    /// Frozen provider/model/effort route.
+    pub model_route: RuntimeModelRouteRequest,
+    /// Last exact-id readback.
+    #[schema(value_type = String, format = DateTime)]
+    pub observed_at: Timestamp,
 }
 
 /// One project's Core Team.
@@ -719,6 +745,48 @@ pub struct CoreTeamMaterializeRequest {
     /// The epic revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
+    /// Explicit runtime routes for the persistent roles that should be attached.
+    /// An empty list preserves the historical logical-only materialization.
+    #[serde(default)]
+    pub routes: Vec<CoreTeamSeatRouteRequest>,
+}
+
+/// One authorized native route for a persistent Core Team role.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamSeatRouteRequest {
+    /// Stable role code in the epic's frozen Core Team roster.
+    pub role_code: String,
+    /// Exact provider/model/effort route to launch or recover.
+    pub model_route: RuntimeModelRouteRequest,
+}
+
+/// One bounded message to an already attached persistent Core Team seat.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HostedSeatMessageRequestDto {
+    /// Instruction delivered to the exact native session.
+    pub body: String,
+}
+
+/// Runtime acknowledgement for a persistent Core Team seat message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HostedSeatMessageDto {
+    /// Realm that accepted the operation.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Logical persistent seat that was addressed.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact native session addressed.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// Stable caller message id.
+    #[schema(value_type = String)]
+    pub message_id: String,
+    /// Runtime acceptance time.
+    #[schema(value_type = String, format = DateTime)]
+    pub accepted_at: Timestamp,
 }
 
 /// What a Core Team write produced.
@@ -2730,6 +2798,10 @@ pub struct SchedulerResumeDto {
     pub realm_id: kontor_core::id::RealmId,
     /// The preserved seats now attached to their runtime.
     pub started: Vec<StartedSeatDto>,
+    /// Admissions that remained durable but could not be attached in this
+    /// attempt. The whole batch is validated before runtime contact; these are
+    /// runtime effects that can be retried under the same key.
+    pub blocked: Vec<BlockedTaskDto>,
     /// The authority-bearing recovery receipt.
     pub receipt: MutationReceiptDto,
 }
@@ -3268,6 +3340,23 @@ pub struct ReplaceSeatRequest {
     pub expected_task_revision: AggregateRevision,
     /// The immutable binding generation of the terminal predecessor.
     pub binding_generation: u64,
+    /// Admin-authorized temporary provider/model route for this successor.
+    /// Absent means the first currently eligible rung in the frozen chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<RuntimeModelRouteRequest>,
+}
+
+/// One explicit runtime route used by an authorized recovery operation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeModelRouteRequest {
+    /// Provider catalog key.
+    pub provider: String,
+    /// Model catalog key within the provider.
+    pub model: String,
+    /// Runtime-native effort spelling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// One follow-up a settled turn derived.
@@ -4002,6 +4091,14 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &CoreTeamMaterializeRequest,
     ) -> Result<CoreTeamOutcomeDto, ApiError>;
+    /// Send one bounded handoff to an attached persistent Core Team seat.
+    async fn message_hosted_seat(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        message_id: kontor_runtime::request::MessageId,
+        request: &HostedSeatMessageRequestDto,
+    ) -> Result<HostedSeatMessageDto, ApiError>;
     /// The roles a Quick session may be opened against.
     fn quick_roles(&self, project_id: ProjectId) -> Result<QuickRolesDto, ApiError>;
     /// Open a Quick session, or return the one this key opened.
@@ -5460,6 +5557,45 @@ pub async fn materialize_core_team(
         state
             .applications()
             .materialize_core_team(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Send one bounded handoff to an attached persistent Core Team seat.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/messages", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("seat_binding_id" = String, Path, description = "The persistent Core Team seat"),
+        ("Idempotency-Key" = String, Header, description = "A caller-generated UUIDv7 message id")
+    ),
+    request_body = HostedSeatMessageRequestDto,
+    responses(
+        (status = 200, body = HostedSeatMessageDto),
+        (status = 400), (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The seat identity drifted"),
+        (status = 503, description = "The runtime could not be reached")
+    )
+)]
+pub async fn message_hosted_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, seat_binding_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<HostedSeatMessageRequestDto>,
+) -> Result<Json<HostedSeatMessageDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    let message_id = parse_id(
+        &state,
+        kontor_runtime::request::MessageId::parse(key.as_str()),
+    )?;
+    Ok(Json(
+        state
+            .applications()
+            .message_hosted_seat(project_id, seat_binding_id, message_id, &request)
             .await?,
     ))
 }

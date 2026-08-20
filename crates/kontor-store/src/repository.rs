@@ -60,10 +60,10 @@ use kontor_core::repository::{
     StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
     StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
     StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task,
-    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
-    validate_dependency_graph,
+    StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
+    StoredRemediationProposal, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun,
+    TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, TopologyRepository,
+    WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
@@ -1899,6 +1899,122 @@ impl SqliteStore {
             });
         }
         transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Read the exact native identity filling one persistent topology seat.
+    pub fn get_hosted_topology_seat(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Option<StoredHostedTopologySeat>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT model_rung, runtime_kind, host, generation, native_id,
+                        provider_session_id, observed_at
+                 FROM hosted_topology_seats
+                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(
+            |(model, runtime, host, generation, native, provider, observed)| {
+                Ok(StoredHostedTopologySeat {
+                    project_id,
+                    seat_binding_id,
+                    model_rung: serde_json::from_str(&model).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!(
+                                "a hosted-seat model rung could not be decoded: {error}"
+                            ),
+                        }
+                    })?,
+                    native_identity: NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&runtime)?,
+                        host: ExternalName::parse(&host)?,
+                        generation: u64::try_from(generation).map_err(|_| {
+                            RepositoryError::Backend {
+                                detail: "a hosted-seat generation is negative".to_owned(),
+                            }
+                        })?,
+                        native_id: ExternalId::parse(&native)?,
+                    },
+                    provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
+                    observed_at: read_timestamp(&observed)?,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    /// Freeze the first exact native readback for one persistent topology seat.
+    /// The same row is a replay; moving the SeatBinding or changing its route is
+    /// a conflict.
+    pub fn bind_hosted_topology_seat(
+        &self,
+        seat: &StoredHostedTopologySeat,
+    ) -> RepositoryResult<()> {
+        if let Some(existing) =
+            self.get_hosted_topology_seat(seat.project_id, seat.seat_binding_id)?
+        {
+            if existing.model_rung == seat.model_rung
+                && existing.native_identity == seat.native_identity
+                && existing.provider_session_id == seat.provider_session_id
+            {
+                self.connection
+                    .execute(
+                        "UPDATE hosted_topology_seats SET observed_at = ?3
+                         WHERE project_id = ?1 AND seat_binding_id = ?2",
+                        params![
+                            seat.project_id.to_string(),
+                            seat.seat_binding_id.to_string(),
+                            text(seat.observed_at),
+                        ],
+                    )
+                    .map_err(backend)?;
+                return Ok(());
+            }
+            return Err(RepositoryError::Conflict {
+                subject: "hosted topology seat",
+                rule: "a persistent seat cannot change its route or native identity",
+            });
+        }
+        let model =
+            serde_json::to_string(&seat.model_rung).map_err(|error| RepositoryError::Backend {
+                detail: format!("a hosted-seat model rung could not be encoded: {error}"),
+            })?;
+        self.connection
+            .execute(
+                "INSERT INTO hosted_topology_seats
+                     (seat_binding_id, project_id, model_rung, runtime_kind, host,
+                      generation, native_id, provider_session_id, observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    seat.seat_binding_id.to_string(),
+                    seat.project_id.to_string(),
+                    model,
+                    seat.native_identity.runtime_kind.as_str(),
+                    seat.native_identity.host.as_str(),
+                    i64::try_from(seat.native_identity.generation).unwrap_or(i64::MAX),
+                    seat.native_identity.native_id.as_str(),
+                    seat.provider_session_id.as_ref().map(ExternalId::as_str),
+                    text(seat.observed_at),
+                ],
+            )
+            .map_err(backend)?;
         Ok(())
     }
 

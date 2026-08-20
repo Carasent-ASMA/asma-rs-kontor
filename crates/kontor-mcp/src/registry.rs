@@ -172,6 +172,16 @@ const fn field(name: &'static str, ty: ArgType, about: &'static str) -> FieldSpe
     }
 }
 
+/// A shorthand for one optional field of a declared nested object.
+const fn optional_field(name: &'static str, ty: ArgType, about: &'static str) -> FieldSpec {
+    FieldSpec {
+        name,
+        ty,
+        required: false,
+        about,
+    }
+}
+
 impl ArgType {
     /// The JSON type a caller must supply.
     #[must_use]
@@ -335,6 +345,21 @@ const EPIC_EXECUTION_SCOPE: &[FieldSpec] = &[
         "short_title",
         ArgType::ExternalName,
         "The compact title used when the runtime renders the epic container.",
+    ),
+];
+
+/// One explicit provider/model route for an authorized recovery operation.
+const RUNTIME_MODEL_ROUTE: &[FieldSpec] = &[
+    field("provider", ArgType::Text, "The provider catalog key."),
+    field(
+        "model",
+        ArgType::Text,
+        "The model catalog key within that provider.",
+    ),
+    optional_field(
+        "effort",
+        ArgType::Text,
+        "The provider-native effort spelling, when the route supports one.",
     ),
 ];
 
@@ -1501,6 +1526,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::U64,
                 "The predecessor's immutable binding generation.",
             ),
+            opt(
+                "model_route",
+                Place::Body,
+                ArgType::Object(RUNTIME_MODEL_ROUTE),
+                "The Admin-authorized provider/model route for the successor.",
+            ),
             IDEMPOTENCY,
         ],
         about: "Replace one runtime-terminal unusable seat with its linked successor.",
@@ -1938,6 +1969,35 @@ pub static REGISTRY: &[ToolSpec] = &[
             req("body", Place::Body, ArgType::Text, "The message text."),
         ],
         about: "Send one follow-up message into a run's session.",
+    },
+    ToolSpec {
+        name: "kontor_topology_seat_message_send",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/messages",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The persistent Core Team seat.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "body",
+                Place::Body,
+                ArgType::Text,
+                "The bounded handoff text.",
+            ),
+        ],
+        about: "Send one handoff to an attached persistent Core Team seat.",
     },
     ToolSpec {
         name: "kontor_session_permission_respond",
@@ -3175,6 +3235,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Revision,
                 "The revision the caller read.",
+            ),
+            opt(
+                "routes",
+                Place::Body,
+                ArgType::Json,
+                "Explicit provider/model/effort routes for native LSA/TPM attachment.",
             ),
         ],
         about: "Materialize the Core Team's seats for one epic.",

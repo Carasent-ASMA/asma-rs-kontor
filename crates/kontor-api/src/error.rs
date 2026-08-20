@@ -590,10 +590,26 @@ impl ApiError {
                 ApiErrorCode::InvalidRequest,
                 "the runtime cursor was not issued for this session",
             ),
+            RuntimeError::LimitExceeded {
+                subject: "concurrent sessions",
+                ..
+            } => Self::new(
+                realm_id,
+                ApiErrorCode::CapacityExhausted,
+                "this runtime's concurrent-session capacity is currently spent",
+            ),
             RuntimeError::LimitExceeded { .. } => Self::new(
                 realm_id,
                 ApiErrorCode::InvalidRequest,
-                "the request is larger than this session's runtime declared",
+                "one bounded part of the request exceeds the runtime's declared limit",
+            ),
+            RuntimeError::ProviderUnavailable { .. } => Self::new(
+                realm_id,
+                ApiErrorCode::CapacityExhausted,
+                "the selected provider is under a temporary operational outage",
+            )
+            .advising(
+                "use an authorized eligible fallback route or retry after the provider recovers",
             ),
             RuntimeError::Transport { .. } => Self::new(
                 realm_id,
@@ -759,6 +775,24 @@ mod tests {
         );
         assert_eq!(conflict.code, ApiErrorCode::RevisionConflict);
         assert_eq!(conflict.code.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn a_runtime_session_ceiling_is_capacity_not_a_malformed_request() {
+        let refusal = ApiError::from_runtime(
+            RealmId::generate(),
+            &RuntimeError::LimitExceeded {
+                subject: "concurrent sessions",
+                limit: 64,
+            },
+        );
+
+        assert_eq!(refusal.code, ApiErrorCode::CapacityExhausted);
+        assert_eq!(refusal.code.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            refusal.rule,
+            "this runtime's concurrent-session capacity is currently spent"
+        );
     }
 
     #[test]

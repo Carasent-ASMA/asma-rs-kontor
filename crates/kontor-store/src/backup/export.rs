@@ -320,6 +320,10 @@ fn redaction_summary() -> RedactionSummary {
             "epic_execution_scopes",
             "runtime placement identity is authority local to one Realm; a verified same-Realm snapshot preserves it byte-for-byte",
         ),
+        (
+            "hosted_topology_seats",
+            "native leadership-session identity is runtime-local placement authority; a verified same-Realm snapshot preserves it byte-for-byte",
+        ),
     ];
     let excluded_columns = [
         (

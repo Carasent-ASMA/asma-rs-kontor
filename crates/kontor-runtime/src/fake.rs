@@ -24,12 +24,14 @@ use kontor_core::id::{
     parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
+use kontor_core::spec::ModelRung;
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use serde::Deserialize;
 
 use crate::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
-    LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
+    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest, LaunchOutcome,
+    MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -284,6 +286,10 @@ pub enum AdapterCall {
     Launch(AgentRunId),
     /// A read-only consultation seat was launched or recovered.
     LaunchConsultation(SeatBindingId),
+    /// A persistent topology leadership seat was launched or recovered.
+    LaunchHostedSeat(SeatBindingId),
+    /// A persistent topology leadership seat received a message.
+    MessageHostedSeat(SeatBindingId),
     /// A binding was resumed.
     Resume(RuntimeBindingId),
     /// A message was delivered.
@@ -449,6 +455,9 @@ struct FakeState {
     staged_live: Vec<SessionEvent>,
     steps: VecDeque<QueuedStep>,
     calls: Vec<AdapterCall>,
+    launched_models: BTreeMap<AgentRunId, ModelRung>,
+    unavailable_providers: BTreeSet<String>,
+    provider_fallbacks: BTreeMap<String, ModelRung>,
     minted: u64,
     runtime_root: WorkspaceRoot,
     /// One task workspace per team run, held as the *frozen snapshot* rather
@@ -469,6 +478,7 @@ struct FakeState {
     containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
     /// Consultation seats keyed by their durable SeatBinding identity.
     consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// The visible title each container currently carries.
     ///
     /// Held apart from the binding because it is the one thing about a
@@ -808,6 +818,8 @@ impl FakeState {
             RequestKey::Run(request.agent_run_id()),
         )?;
         self.calls.push(AdapterCall::Launch(request.agent_run_id()));
+        self.launched_models
+            .insert(request.agent_run_id(), request.model_rung().clone());
 
         self.minted += 1;
         let native_id = ExternalId::parse(&format!("native-session-{}", self.minted))?;
@@ -901,12 +913,16 @@ impl ScriptedFakeRuntime {
                 staged_live: Vec::new(),
                 steps: VecDeque::new(),
                 calls: Vec::new(),
+                launched_models: BTreeMap::new(),
+                unavailable_providers: BTreeSet::new(),
+                provider_fallbacks: BTreeMap::new(),
                 minted: 0,
                 runtime_root: WorkspaceRoot::parse("/fake-runtime-root")
                     .expect("valid runtime root"),
                 workspaces: BTreeMap::new(),
                 containers: BTreeMap::new(),
                 consultations: BTreeMap::new(),
+                hosted_seats: BTreeMap::new(),
                 container_titles: BTreeMap::new(),
                 task_title_scopes: BTreeMap::new(),
                 bindings: BTreeMap::new(),
@@ -959,6 +975,18 @@ impl ScriptedFakeRuntime {
     /// scheduler replay resumes the durable admission.
     pub fn allowing_launch_of(&self, slot: &kontor_core::id::RoleSlotId) {
         self.lock().unlaunchable.remove(slot.as_str());
+    }
+
+    /// Declare one provider temporarily unavailable and optionally route its
+    /// new launches to an explicit fallback.
+    pub fn provider_outage(&self, provider: &str, fallback: Option<ModelRung>) {
+        let mut state = self.lock();
+        state.unavailable_providers.insert(provider.to_owned());
+        if let Some(fallback) = fallback {
+            state
+                .provider_fallbacks
+                .insert(provider.to_owned(), fallback);
+        }
     }
 
     /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
@@ -1198,6 +1226,12 @@ impl ScriptedFakeRuntime {
         self.lock().calls.clone()
     }
 
+    /// Exact route supplied for one launched delivery run.
+    #[must_use]
+    pub fn launched_model(&self, run: AgentRunId) -> Option<ModelRung> {
+        self.lock().launched_models.get(&run).cloned()
+    }
+
     /// Take the recorded calls and start a fresh log.
     pub fn take_calls(&self) -> Vec<AdapterCall> {
         std::mem::take(&mut self.lock().calls)
@@ -1352,6 +1386,19 @@ fn build_events(scripts: &[EventScript], epoch: u64) -> RuntimeResult<Vec<Sessio
 
 #[async_trait]
 impl RuntimeAdapter for ScriptedFakeRuntime {
+    fn provider_available(&self, provider: &str) -> bool {
+        !self.lock().unavailable_providers.contains(provider)
+    }
+
+    fn fallback_model_rung(&self, requested: &ModelRung) -> Option<ModelRung> {
+        let state = self.lock();
+        state
+            .provider_fallbacks
+            .get(requested.provider.0.as_str())
+            .filter(|fallback| !state.unavailable_providers.contains(&fallback.provider.0))
+            .cloned()
+    }
+
     /// The claim is compared against the registry *whole* — grade, limits,
     /// correlation and all — so a clone with a better trust grade written into
     /// it is refused rather than quietly corrected.
@@ -1815,6 +1862,76 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             return Err(RuntimeError::CorrelationFailed);
         }
         Ok(())
+    }
+
+    async fn launch_hosted_seat(
+        &self,
+        request: &HostedSeatLaunchRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        preflight(
+            &state.capabilities,
+            &OperationContext {
+                operation: RuntimeCapability::Launch,
+                autonomous: true,
+                account_pinned: false,
+                binding: None,
+                placement: None,
+                current_generation: None,
+                demand: Some(LimitDemand::MessageBytes(
+                    u64::try_from(request.prompt.as_str().len()).unwrap_or(u64::MAX),
+                )),
+                context_policy: Some(&request.context_policy),
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::LaunchHostedSeat(request.seat_binding_id));
+        if let Some(existing) = state.hosted_seats.get(&request.seat_binding_id) {
+            return Ok(existing.clone());
+        }
+        state.minted = state.minted.saturating_add(1);
+        let outcome = ConsultationLaunchOutcome {
+            identity: state.identity(ExternalId::parse(&format!(
+                "native-hosted-seat-{}",
+                state.minted
+            ))?),
+            provider_session_id: Some(ExternalId::parse(&format!(
+                "provider-hosted-seat-{}",
+                state.minted
+            ))?),
+            observed_at: request.requested_at,
+            created: true,
+        };
+        state
+            .hosted_seats
+            .insert(request.seat_binding_id, outcome.clone());
+        Ok(outcome)
+    }
+
+    async fn message_hosted_seat(
+        &self,
+        request: &HostedSeatMessageRequest,
+    ) -> RuntimeResult<HostedSeatMessageOutcome> {
+        let mut state = self.lock();
+        let held =
+            state
+                .hosted_seats
+                .get(&request.seat_binding_id)
+                .ok_or(RuntimeError::StaleBinding {
+                    rule: "the hosted topology seat is absent",
+                })?;
+        if held.identity != request.identity {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        state
+            .calls
+            .push(AdapterCall::MessageHostedSeat(request.seat_binding_id));
+        Ok(HostedSeatMessageOutcome {
+            message_id: request.message_id,
+            accepted_at: request.sent_at,
+        })
     }
 
     async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation> {
