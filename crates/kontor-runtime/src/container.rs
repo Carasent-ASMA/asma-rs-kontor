@@ -420,10 +420,10 @@ pub struct ContainerBinding {
 ///
 /// It carries no finished title either. `structural_name` is what the control
 /// plane can render on its own — the node kind's declared template — and
-/// `task_id` names the scope the runtime plane renders the rest from. The plane
-/// holds the Jira issue and the short ticket code; the control plane holds the
-/// template and the node. Neither half can write this title alone, and a request
-/// carrying a finished one would let a caller supply it.
+/// `scope` carries the durable epic/task identity the runtime renders the rest
+/// from. The control plane holds the template and the node. Neither half can
+/// write this title alone, and a request carrying a finished one would let a
+/// caller supply it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetitleContainerRequest {
     /// The node whose container is being retitled.
@@ -441,6 +441,10 @@ pub struct RetitleContainerRequest {
     /// something found under a *different* generation would be renaming
     /// whatever replaced it after a restart.
     pub generation: u64,
+    /// Durable execution identity used to render a task-scoped title.
+    ///
+    /// A project-level structural node has no epic scope and carries `None`.
+    pub scope: Option<ExecutionScope>,
     /// The delivery task whose typed scope names the container, when it has one.
     ///
     /// `None` is a structural container — a project or an epic root — which is

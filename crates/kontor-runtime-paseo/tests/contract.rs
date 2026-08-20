@@ -3586,6 +3586,7 @@ fn retitle(node_id: TopologyNodeId) -> RetitleContainerRequest {
         container_binding_id: ContainerBindingId::generate(),
         bound_native_id: external(WORKSPACE_ID),
         generation: 1,
+        scope: Some(execution_scope()),
         task_id: Some(task()),
         structural_name: name(&format!("Ticket Session Workspace · {node_id}")),
         requested_at: at("2026-08-17T09:00:00Z"),
@@ -4319,18 +4320,22 @@ async fn a_child_that_names_no_task_keeps_the_structural_name() {
     );
 }
 
-/// A task this plane has no scope for is refused before anything is created.
+/// A task absent from the fleet compatibility map is named from the durable
+/// execution scope carried by the container request.
 ///
-/// The alternative is the defect: falling back to the caller's name would put a
-/// node id on a native container permanently, because there is no rename.
+/// Static task scopes preserve old display spellings; they are not an admission
+/// allowlist. Treating them as one strands every task created after the daemon
+/// was configured, even though Kontor already supplied the exact Jira key,
+/// short code and canonical worktree in the request.
 #[tokio::test]
-async fn a_task_with_no_configured_scope_is_refused_before_any_native_effect() {
+async fn a_dynamic_task_uses_its_durable_scope_without_a_static_task_entry() {
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
         .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
         .announcing(&v(SERVER_INFO))
         .answering_rpc("project.list.request", v(PROJECT_LIST))
-        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
     // A plane serving several tickets, none of them the one asked for.
     let mut scoped = config();
     scoped.scope.task_scopes = [(
@@ -4353,21 +4358,23 @@ async fn a_task_with_no_configured_scope_is_refused_before_any_native_effect() {
     .expect("a consistent checkpoint restores");
 
     let node_id = node(NODE_A);
-    let refused = adapter
+    let outcome = adapter
         .prepare_container(&ContainerRequest {
             display_name: name(&format!("Task Session Workspace · {node_id}")),
             task_id: Some(task()),
             ..child_request(node_id, Some(bound_root(node(NODE_B))))
         })
-        .await;
-    assert!(
-        matches!(refused, Err(RuntimeError::WorkspaceMismatch { .. })),
-        "an unscoped task must be refused, not named after its node: {refused:?}"
+        .await
+        .expect("durable task scope is sufficient for native placement");
+
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
     );
-    assert!(
-        daemon.mutations().is_empty(),
-        "the refusal must land before any native effect: {:?}",
-        daemon.mutations()
+    assert_eq!(
+        daemon.titles("workspace create"),
+        ["TSW · ASMA-7755 · KON-11"],
+        "the durable request scope names the workspace"
     );
 }
 

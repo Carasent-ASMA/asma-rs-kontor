@@ -21,6 +21,7 @@ Both focused tests were then rerun green on the restored tree.
 | M6 | Let a directly embedded Paseo adapter accept any `ExternalId` as its configured epic selector | `a_direct_adapter_refuses_a_non_kontor_epic_selector` | killed: the adapter composed successfully with `ASMA-7869` instead of refusing before runtime use |
 | M7 | Skip native-container preparation from `topology:materialize` | `materializing_a_ticket_binds_its_native_workspace_without_admitting_a_run` | killed: HTTP 200 returned a TSW whose `observed_binding` was still null |
 | M8 | Look up a materialization replay against the project aggregate instead of the epic aggregate recorded by its receipt | same materialization test | killed: the same-key replay returned HTTP 409 `idempotency_conflict` instead of the original receipt and native workspace |
+| M9 | Restore the native-child title renderer's static `task_scopes` lookup instead of using the request's durable `ExecutionScope` | `a_dynamic_task_uses_its_durable_scope_without_a_static_task_entry` | killed: placement returned `WorkspaceMismatch` / `the task has no configured Paseo workspace scope`, reproducing the live OP-18 refusal |
 
 ## Restoration receipt
 
@@ -36,7 +37,9 @@ No mutant remains:
 - a non-logical materialization prepares and persists the runtime-issued native
   container before it returns;
 - materialization replay lookup and receipt storage both address the owning
-  epic aggregate.
+  epic aggregate;
+- native-child placement and retitle render task identity from the durable
+  request scope, with static fleet entries limited to compatibility overrides.
 
 After restoration:
 
@@ -50,6 +53,7 @@ test result: ok. 1 passed; 0 failed; 180 filtered out
 test a_paseo_plane_refuses_a_jira_key_as_its_kontor_epic_identity ... ok
 test a_direct_adapter_refuses_a_non_kontor_epic_selector ... ok
 test materializing_a_ticket_binds_its_native_workspace_without_admitting_a_run ... ok
+test a_dynamic_task_uses_its_durable_scope_without_a_static_task_entry ... ok
 ```
 
 The full format, lint, Rust workspace, generated-contract, console, and release

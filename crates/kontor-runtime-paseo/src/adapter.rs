@@ -251,15 +251,6 @@ impl PaseoExecutionScope {
         )
     }
 
-    fn workspace_display_name_for(&self, task_id: TaskId) -> RuntimeResult<String> {
-        let task = self.task_scope(task_id)?;
-        Ok(format!(
-            "TSW · {} · {}",
-            task.jira_issue_key.as_str(),
-            task.ticket_short_code.as_str()
-        ))
-    }
-
     /// `{role} · {ticket_short_code} [· {stable_slot_suffix}]`.
     ///
     /// # Errors
@@ -2295,7 +2286,11 @@ impl PaseoAdapter {
         project_id: &ExternalId,
         generation: u64,
     ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
-        let title = self.container_title(request.task_id, request.display_name.as_str())?;
+        let title = self.container_title(
+            Some(&request.scope),
+            request.task_id,
+            request.display_name.as_str(),
+        )?;
         let cwd = request
             .cwd
             .as_ref()
@@ -2374,13 +2369,34 @@ impl PaseoAdapter {
     /// ticket-scoped, and there is no task scope to render them from.
     ///
     /// # Errors
-    /// Returns [`RuntimeError::WorkspaceMismatch`] when the plane holds no scope
-    /// for the named task. Refusing is the whole point: falling back to the
-    /// structural name would produce exactly the title this rule exists to
-    /// prevent.
-    fn container_title(&self, task_id: Option<TaskId>, structural: &str) -> RuntimeResult<String> {
+    /// Returns [`RuntimeError::WorkspaceMismatch`] when a named task has no
+    /// matching durable request scope. Refusing is the whole point: falling back
+    /// to the structural name would produce exactly the title this rule exists
+    /// to prevent.
+    fn container_title(
+        &self,
+        scope: Option<&ExecutionScope>,
+        task_id: Option<TaskId>,
+        structural: &str,
+    ) -> RuntimeResult<String> {
         Ok(match task_id {
-            Some(task_id) => self.config.scope.workspace_display_name_for(task_id)?,
+            Some(task_id) => {
+                let scope = scope.ok_or(RuntimeError::WorkspaceMismatch {
+                    rule: "a task-scoped container must carry its durable execution scope",
+                })?;
+                let scope = self.effective_scope(scope)?;
+                let task = scope.require_task()?;
+                if task.task_id != task_id {
+                    return Err(RuntimeError::WorkspaceMismatch {
+                        rule: "the container task does not match its durable execution scope",
+                    });
+                }
+                format!(
+                    "TSW · {} · {}",
+                    task.external_issue_key.as_str(),
+                    task.short_code.as_str()
+                )
+            }
             None => structural.to_owned(),
         })
     }
@@ -2960,9 +2976,11 @@ impl PaseoAdapter {
             identity.clone(),
             request.requested_at,
         );
-        let desired = ExternalName::parse(
-            &self.container_title(request.task_id, request.structural_name.as_str())?,
-        )
+        let desired = ExternalName::parse(&self.container_title(
+            request.scope.as_ref(),
+            request.task_id,
+            request.structural_name.as_str(),
+        )?)
         .map_err(RuntimeError::Domain)?;
         let changed = before.visible_title() != desired.as_str();
         Ok(PaseoRetitlePlan {
