@@ -391,6 +391,25 @@ pub struct PaseoProjectAdded {
     pub error: Option<String>,
 }
 
+/// The answer to `project.rename.request`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoProjectRenamed {
+    /// Correlated request id echoed by Paseo.
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+    /// Exact project whose custom title was addressed.
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    /// Whether Paseo accepted the supported rename operation.
+    pub accepted: bool,
+    /// Stored custom title after the operation.
+    #[serde(default, rename = "customName")]
+    pub custom_name: Option<String>,
+    /// Native refusal detail, when not accepted.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 /// What kind of place a workspace is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

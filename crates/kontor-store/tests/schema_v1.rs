@@ -71,6 +71,7 @@ const EXPECTED_TABLES: &[&str] = &[
     // Schema v44 (KON-OP-17): exact native identities for persistent Core Team
     // topology seats.
     "hosted_topology_seats",
+    "hosted_topology_seat_history",
     // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
@@ -142,6 +143,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "task_gate_evaluations",
     "task_persona_snapshots",
     "task_workflows",
+    "task_short_codes",
     "task_worktrees",
     "tasks",
     "team_command_replays",
@@ -323,7 +325,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 45);
+    assert_eq!(SCHEMA_VERSION, 46);
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.

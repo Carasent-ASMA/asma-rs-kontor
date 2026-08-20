@@ -136,3 +136,33 @@ cargo audit && cargo deny check                                  passed
 No schema migration or generated contract changed. The live proof after deploy
 must resolve the preserved OP-18 workspace by its persisted native project
 ancestor without preparing the project again or changing either native id.
+
+## Canonical naming and Core Team route-correction follow-up
+
+The earlier M23 entry recorded the best fact available at that checkpoint: a
+semantic short name was preferable to repeating a Jira key. The later Igor
+decision closed the remaining ambiguity: the short code is a distinct,
+operator-declared backlog field and must never be inferred from a description,
+worktree slug, UUID, task position or Jira key. This section appends that
+correction without erasing the historical finding.
+
+Each mutation below was applied to the corrected source on 2026-08-20, killed
+by the named test, and immediately restored:
+
+| # | Deliberate mutation | Killer test | Observed failure |
+| --- | --- | --- | --- |
+| M25 | Restore the Jira-key fallback when a legacy task has no durable short-code row | `a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titles` | killed: ticket materialization returned 200 and created native ESW/TSW containers instead of the pre-runtime `placement_blocked` prerequisite refusal |
+| M26 | Suppress the advertised `project.rename` write while still returning its readback | `a_native_project_retitle_uses_project_rename_and_preserves_identity` | killed: the exact project-rename RPC count was zero instead of one |
+| M27 | Reconcile delivery labels without sending the canonical seat title | `security_session_label_reconcile_repairs_the_external_epic_key_in_place_once` | killed: the recorded in-place `agent update` carried no `Implement · KON-11 · A` title |
+| M28 | Report hosted-seat retirement without removing the exact predecessor from the runtime | `a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa` | killed: the corrected TPM route reused the predecessor native id instead of preserving the logical SeatBinding with a causally new native session |
+| M29 | Omit `retire` from Paseo's declared full-capability set | `an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved` | killed: the exact idle predecessor returned `UnsupportedCapability { capability: Retire }` before the supported archive/readback path |
+
+Restored invariants:
+
+- a legacy task without an explicit mapping produces no native effect;
+- ESW repair uses Paseo's project operation and preserves project id/root;
+- one delivery-session reconcile repairs title and labels on the same identity;
+- Core Team route correction preserves the SeatBinding while archiving the
+  exact idle predecessor and recording a distinct active successor; and
+- retirement is advertised, capability-gated, exact-id read back and
+  idempotent after the archive stamp is already present.

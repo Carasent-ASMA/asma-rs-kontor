@@ -30,8 +30,9 @@ use serde::Deserialize;
 
 use crate::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
-    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest, LaunchOutcome,
-    MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
+    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
+    HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
+    RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -288,6 +289,8 @@ pub enum AdapterCall {
     LaunchConsultation(SeatBindingId),
     /// A persistent topology leadership seat was launched or recovered.
     LaunchHostedSeat(SeatBindingId),
+    /// A persistent topology leadership predecessor was retired for rerouting.
+    RetireHostedSeat(SeatBindingId),
     /// A persistent topology leadership seat received a message.
     MessageHostedSeat(SeatBindingId),
     /// A binding was resumed.
@@ -1941,6 +1944,31 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         })
     }
 
+    async fn retire_hosted_seat(
+        &self,
+        request: &HostedSeatRetireRequest,
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        let mut state = self.lock();
+        let held =
+            state
+                .hosted_seats
+                .get(&request.seat_binding_id)
+                .ok_or(RuntimeError::StaleBinding {
+                    rule: "the hosted topology seat is absent",
+                })?;
+        if held.identity != request.identity {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        state.hosted_seats.remove(&request.seat_binding_id);
+        state
+            .calls
+            .push(AdapterCall::RetireHostedSeat(request.seat_binding_id));
+        Ok(HostedSeatRetireOutcome {
+            identity: request.identity.clone(),
+            archived_at: request.requested_at,
+        })
+    }
+
     async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation> {
         let mut state = self.lock();
         let declared = state.capabilities.clone();
@@ -2163,6 +2191,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state.session(&request.binding)?;
         Ok(crate::request::ReconciledSessionLabels {
             identity: request.binding.identity().clone(),
+            title: request
+                .scope
+                .require_task()
+                .map(|task| format!("{} · {}", request.role_slot_id, task.short_code))?,
             labels: std::collections::BTreeMap::new(),
             changed: false,
             observed_at: request.requested_at,

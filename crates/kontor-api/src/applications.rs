@@ -76,6 +76,8 @@ use crate::state::ApiState;
 pub enum AppliedDto {
     /// This call wrote it.
     Created,
+    /// The row existed and this call added compatible durable metadata.
+    Updated,
     /// It already existed and matched, so nothing was written.
     Unchanged,
 }
@@ -759,6 +761,111 @@ pub struct CoreTeamSeatRouteRequest {
     pub role_code: String,
     /// Exact provider/model/effort route to launch or recover.
     pub model_route: RuntimeModelRouteRequest,
+}
+
+/// Exact in-place correction requested for one persistent Core Team seat.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamRoutePreviewRequest {
+    /// Epic revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Logical SeatBinding that must be preserved.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact native predecessor the caller observed.
+    #[schema(value_type = String)]
+    pub expected_native_id: ExternalId,
+    /// Exact runtime generation of that predecessor.
+    pub expected_generation: u64,
+    /// Provider/model/effort that should fill the same logical seat afterwards.
+    pub desired_model_route: RuntimeModelRouteRequest,
+}
+
+/// Read-only route-correction plan for one persistent Core Team seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamRoutePreviewDto {
+    /// Realm that computed the plan.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Epic whose ECP hosts the seat.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Unchanged logical seat identity.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact predecessor native identity.
+    #[schema(value_type = String)]
+    pub predecessor_native_id: ExternalId,
+    /// Frozen current route.
+    pub current_model_route: RuntimeModelRouteRequest,
+    /// Requested replacement route.
+    pub desired_model_route: RuntimeModelRouteRequest,
+    /// Whether a native archive/launch is required.
+    pub would_replace_native: bool,
+    /// Hash the apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Projection cursor read by the preview.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Apply one still-current Core Team route preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamRouteApplyRequest {
+    /// Epic revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Logical SeatBinding that must be preserved.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact native predecessor the caller observed.
+    #[schema(value_type = String)]
+    pub expected_native_id: ExternalId,
+    /// Exact runtime generation of that predecessor.
+    pub expected_generation: u64,
+    /// Provider/model/effort that should fill the same logical seat afterwards.
+    pub desired_model_route: RuntimeModelRouteRequest,
+    /// Hash returned by preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+impl CoreTeamRouteApplyRequest {
+    /// Recover the exact preview request represented by this apply.
+    #[must_use]
+    pub fn correction(&self) -> CoreTeamRoutePreviewRequest {
+        CoreTeamRoutePreviewRequest {
+            expected_revision: self.expected_revision,
+            seat_binding_id: self.seat_binding_id,
+            expected_native_id: self.expected_native_id.clone(),
+            expected_generation: self.expected_generation,
+            desired_model_route: self.desired_model_route.clone(),
+        }
+    }
+}
+
+/// Completed in-place route correction with exact identity readback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamRouteOutcomeDto {
+    /// Core Team projection after correction.
+    pub core_team: CoreTeamDto,
+    /// Preserved logical SeatBinding.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Archived predecessor native identity.
+    #[schema(value_type = String)]
+    pub predecessor_native_id: ExternalId,
+    /// Active successor native identity; equal to predecessor for an unchanged route.
+    #[schema(value_type = String)]
+    pub successor_native_id: ExternalId,
+    /// Audited mutation receipt.
+    pub receipt: MutationReceiptDto,
 }
 
 /// One bounded message to an already attached persistent Core Team seat.
@@ -1906,6 +2013,8 @@ pub struct SessionLabelsReconciledDto {
     pub agent_run_id: String,
     /// The unchanged native session.
     pub native_id: String,
+    /// Canonical native seat title read back after repair.
+    pub title: String,
     /// Full label map reported by the runtime afterwards.
     pub labels: BTreeMap<String, String>,
     /// Whether this call corrected anything.
@@ -2288,6 +2397,12 @@ pub struct EpicTaskRequest {
     /// The title, which is this task's identity inside the epic.
     #[schema(value_type = String)]
     pub title: ExternalName,
+    /// Compact durable display identity for this task's native container and
+    /// seats. Omission preserves an existing declaration but leaves a legacy
+    /// task ineligible for materialization or retitle until explicitly mapped.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub short_code: Option<ExternalId>,
     /// The module the task contends for, if any.
     pub module: Option<String>,
     /// The source lifecycle to preserve during this import.
@@ -2384,6 +2499,9 @@ pub struct AppliedTaskDto {
     /// The task.
     #[schema(value_type = String)]
     pub task_id: TaskId,
+    /// Durable compact display identity, once declared.
+    #[schema(value_type = Option<String>)]
+    pub short_code: Option<ExternalId>,
     /// Whether this call created it.
     pub applied: AppliedDto,
     /// Its lifecycle state.
@@ -2455,6 +2573,9 @@ pub struct PreviewEpicTaskDto {
     /// validate a new graph are deliberately not exposed as authority.
     #[schema(value_type = Option<String>)]
     pub task_id: Option<TaskId>,
+    /// Durable compact display identity apply would preserve or add.
+    #[schema(value_type = Option<String>)]
+    pub short_code: Option<ExternalId>,
     /// Whether apply would create it or find it unchanged.
     pub applied: AppliedDto,
     /// The lifecycle projection apply would persist.
@@ -2523,6 +2644,9 @@ pub struct EpicTaskProjectionDto {
     /// Its title.
     #[schema(value_type = String)]
     pub title: ExternalName,
+    /// Durable compact display identity used by native containers and seats.
+    #[schema(value_type = Option<String>)]
+    pub short_code: Option<ExternalId>,
     /// Where its work happens. `None` is why a task cannot be seated, so it is
     /// reported rather than left to be discovered at admission.
     #[schema(value_type = Option<String>)]
@@ -4202,6 +4326,21 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &CoreTeamMaterializeRequest,
     ) -> Result<CoreTeamOutcomeDto, ApiError>;
+    /// Preview an exact provider/model correction for one persistent seat.
+    fn preview_core_team_route(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamRoutePreviewRequest,
+    ) -> Result<CoreTeamRoutePreviewDto, ApiError>;
+    /// Apply one still-current route preview, preserving the SeatBinding.
+    async fn apply_core_team_route(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamRouteApplyRequest,
+    ) -> Result<CoreTeamRouteOutcomeDto, ApiError>;
     /// Send one bounded handoff to an attached persistent Core Team seat.
     async fn message_hosted_seat(
         &self,
@@ -5745,6 +5884,70 @@ pub async fn materialize_core_team(
         state
             .applications()
             .materialize_core_team(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Preview an exact provider/model correction for one persistent Core Team seat.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic")
+    ),
+    request_body = CoreTeamRoutePreviewRequest,
+    responses(
+        (status = 200, body = CoreTeamRoutePreviewDto),
+        (status = 400), (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The runtime could not be reached")
+    )
+)]
+pub async fn preview_core_team_route(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<CoreTeamRoutePreviewRequest>,
+) -> Result<Json<CoreTeamRoutePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_core_team_route(project_id, epic_id, &request)?,
+    ))
+}
+
+/// Apply one still-current Core Team route correction without replacing its logical seat.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = CoreTeamRouteApplyRequest,
+    responses(
+        (status = 200, body = CoreTeamRouteOutcomeDto),
+        (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422),
+        (status = 503, description = "The runtime could not be reached")
+    )
+)]
+pub async fn apply_core_team_route(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<CoreTeamRouteApplyRequest>,
+) -> Result<Json<CoreTeamRouteOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_core_team_route(&key, project_id, epic_id, &request)
             .await?,
     ))
 }

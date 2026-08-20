@@ -660,6 +660,13 @@ exported_tables! {
         created_at: String,
         updated_at: String,
     }
+    task_short_codes: TaskShortCodesRow from "task_short_codes" key(project_id, task_id) {
+        project_id: String,
+        task_id: String,
+        short_code: String,
+        source: String,
+        declared_at: String,
+    }
     task_dependencies: TaskDependenciesRow from "task_dependencies" key(project_id, task_id, depends_on_task_id) {
         project_id: String,
         task_id: String,

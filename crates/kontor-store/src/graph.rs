@@ -82,6 +82,9 @@ pub struct EpicTicketLink {
 pub struct EpicTask {
     /// The title, which is this task's natural identity inside the epic.
     pub title: ExternalName,
+    /// Compact operator-declared display identity used for native containers
+    /// and seats. A description, ticket key or path is never substituted.
+    pub short_code: Option<ExternalId>,
     /// The module the task contends for, if any. Immutable.
     pub module: Option<ModuleKey>,
     /// The historical source lifecycle state this import declares.
@@ -159,6 +162,8 @@ pub struct EpicApplication<'a> {
 pub enum Applied {
     /// This call wrote the row.
     Created,
+    /// The durable row already existed and this call added compatible metadata.
+    Updated,
     /// The row already existed and matched, so nothing was written.
     Unchanged,
 }
@@ -169,6 +174,7 @@ impl Applied {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Created => "created",
+            Self::Updated => "updated",
             Self::Unchanged => "unchanged",
         }
     }
@@ -191,6 +197,8 @@ pub struct AppliedTask {
     pub title: ExternalName,
     /// The task.
     pub task_id: TaskId,
+    /// Durable compact display identity, once declared.
+    pub short_code: Option<ExternalId>,
     /// Whether this call created it.
     pub applied: Applied,
     /// Its lifecycle state.
@@ -603,6 +611,13 @@ impl SqliteStore {
             outcome.links = ensure_links(&transaction, request, outcome.task_id, plan)?;
         }
 
+        let epic_applied = if epic_applied == Applied::Unchanged
+            && applied.iter().any(|task| task.applied == Applied::Updated)
+        {
+            Applied::Updated
+        } else {
+            epic_applied
+        };
         let outcome = AppliedEpic {
             mini_project_id: mini_project.id,
             applied: epic_applied,
@@ -1609,7 +1624,7 @@ fn ensure_task(
         .map_err(backend)?
         .transpose()?;
 
-    let (task, applied) = match existing {
+    let (task, mut applied) = match existing {
         Some(task) => {
             // The module is what the scheduler serializes work on, so changing it
             // under an existing task would change what that task contends for
@@ -1686,6 +1701,17 @@ fn ensure_task(
         }
     };
 
+    let short_code = ensure_task_short_code(
+        transaction,
+        request.project_id,
+        task.id,
+        plan.short_code.as_ref(),
+        request.applied_at,
+    )?;
+    if short_code.inserted && applied == Applied::Unchanged {
+        applied = Applied::Updated;
+    }
+
     // Declared inside the epic's own transaction, so a graph never half-applies
     // into a state where a task exists and its placement does not.
     if let Some(worktree) = &plan.worktree {
@@ -1702,6 +1728,7 @@ fn ensure_task(
     Ok(AppliedTask {
         title: plan.title.clone(),
         task_id: task.id,
+        short_code: short_code.value,
         applied,
         state: task.state,
         revision: task.revision,
@@ -1709,6 +1736,65 @@ fn ensure_task(
         depends_on: BTreeSet::new(),
         links: Vec::new(),
         worktree: read_worktree(transaction, request.project_id, task.id)?,
+    })
+}
+
+struct EnsuredTaskShortCode {
+    value: Option<ExternalId>,
+    inserted: bool,
+}
+
+fn ensure_task_short_code(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    task_id: TaskId,
+    declared: Option<&ExternalId>,
+    declared_at: Timestamp,
+) -> RepositoryResult<EnsuredTaskShortCode> {
+    let existing: Option<String> = transaction
+        .query_row(
+            "SELECT short_code FROM task_short_codes
+             WHERE project_id = ?1 AND task_id = ?2",
+            params![project_id.to_string(), task_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    if let Some(existing) = existing {
+        let existing = ExternalId::parse(&existing)?;
+        if declared.is_some_and(|declared| declared != &existing) {
+            return Err(conflict(
+                "task short code",
+                "the task already has a different durable short code",
+            ));
+        }
+        return Ok(EnsuredTaskShortCode {
+            value: Some(existing),
+            inserted: false,
+        });
+    }
+    let Some(declared) = declared else {
+        return Ok(EnsuredTaskShortCode {
+            value: None,
+            inserted: false,
+        });
+    };
+    transaction
+        .execute(
+            "INSERT INTO task_short_codes
+                 (project_id, task_id, short_code, source, declared_at)
+             VALUES (?1, ?2, ?3, 'import', ?4)",
+            params![
+                project_id.to_string(),
+                task_id.to_string(),
+                declared.as_str(),
+                text(declared_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(EnsuredTaskShortCode {
+        value: Some(declared.clone()),
+        inserted: true,
     })
 }
 
@@ -2252,6 +2338,28 @@ impl SqliteStore {
             .optional()
             .map_err(backend)?;
         Ok(found.as_deref().map(ExternalName::parse).transpose()?)
+    }
+
+    /// The task's compact, operator-declared runtime display identity.
+    ///
+    /// `None` is an intentional placement refusal. Callers must not derive a
+    /// replacement from a description, ticket key, UUID or filesystem path.
+    pub fn task_short_code(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<ExternalId>> {
+        let found: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT short_code FROM task_short_codes
+                 WHERE project_id = ?1 AND task_id = ?2",
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(found.as_deref().map(ExternalId::parse).transpose()?)
     }
 }
 

@@ -186,6 +186,9 @@ closed_enum! {
         PromoteQuickSession => "promote_quick_session",
         /// Materialize one epic's frozen roster into seats.
         MaterializeCoreTeam => "materialize_core_team",
+        /// Replace only the native provider/model filling one persistent Core
+        /// Team SeatBinding, preserving its logical topology identity.
+        CorrectCoreTeamRoute => "correct_core_team_route",
         /// Move one epic's roster pin to another published revision.
         UpgradeEpicRoster => "upgrade_epic_roster",
         /// Bring a provider-account profile into existence, or prove the one
@@ -503,6 +506,7 @@ impl CommandKind {
             // to be findable from the thing that now exists.
             Self::PromoteQuickSession
             | Self::MaterializeCoreTeam
+            | Self::CorrectCoreTeamRoute
             | Self::UpgradeEpicRoster => witness(matches!(target, A::MiniProject)),
             // Publishing a Completion Profile is project configuration; the two
             // completion writes are about one epic's own frozen run. Splitting

@@ -56,7 +56,8 @@ use kontor_api::applications::{
     CompletionBlockerDto, CompletionOutcomeDto, CompletionPhaseDto, CompletionRoundDto,
     CompletionStateDto, CompletionWakeDto, ConsultationSeatDto, ConsultationVerdictDto,
     CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
-    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamSeatDto,
+    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
+    CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest, CoreTeamSeatDto,
     CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, DeliberationStepDto,
     EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
     IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest,
@@ -114,7 +115,7 @@ use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository, CommandRepository,
-    CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository,
+    CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository, MiniProject,
     MiniProjectTopologySnapshot, NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun,
     NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent, NewGateEvaluation,
     NewMiniProject, NewNativeContainerBinding, NewSeatBinding, NewSessionTopologyNode,
@@ -135,8 +136,9 @@ use kontor_core::spec::{
     TriggerSpec,
 };
 use kontor_core::state::{
-    GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact, SessionTopologyNode,
-    TaskState, TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact, SeatBinding,
+    SessionTopologyNode, TaskState, TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome,
+    TopologyLifecycle,
 };
 use kontor_core::ticket::{
     CommentPolicy, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, TicketSyncProjection,
@@ -157,7 +159,8 @@ use kontor_profiles::pack::{
 };
 use kontor_runtime::adapter::{
     ConsultationCredential, ConsultationLaunchRequest, ConsultationMessageRequest,
-    HostedSeatLaunchRequest, HostedSeatMessageRequest, RuntimeAdapter, RuntimeError,
+    HostedSeatLaunchRequest, HostedSeatMessageRequest, HostedSeatRetireRequest, RuntimeAdapter,
+    RuntimeError,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
@@ -246,6 +249,16 @@ struct PreparedEpic {
     bundle: ResolvedProfileBundle,
     execution_scope: Option<EpicExecutionScopeDeclaration>,
     tasks: Vec<EpicTask>,
+}
+
+struct CoreTeamRoutePlan {
+    epic: MiniProject,
+    roster: FrozenRoster,
+    binding: SeatBinding,
+    predecessor: StoredHostedTopologySeat,
+    successor: Option<StoredHostedTopologySeat>,
+    desired: ModelRung,
+    preview_hash: ContentHash,
 }
 
 /// The realm-scoped operation a pack registration binds its key to.
@@ -442,7 +455,15 @@ impl Services {
                 "the task has more than one Jira link for its runtime execution scope",
             ));
         }
-        let short_code = self.legacy_task_short_code(&task.title, &external_issue_key)?;
+        let short_code = state
+            .with_store(|store| store.task_short_code(project_id, task.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no durable short code; preview and apply an explicit epic task mapping before materialization or retitle",
+                )
+            })?;
         Ok(ExecutionScope::for_task(
             epic,
             TaskScope {
@@ -482,55 +503,36 @@ impl Services {
         })
     }
 
-    /// Render a stable ticket code for legacy tasks that predate a typed short
-    /// code. A declared `OP-<n>` token wins; otherwise the semantic suffix after
-    /// the Jira key is slugged deterministically. Repeating the Jira key is
-    /// refused because it recreates the malformed title this bridge repairs.
-    fn legacy_task_short_code(
+    /// Validate one explicit compact display identity at the import boundary.
+    /// The database repeats the size/alphabet rule; these semantic refusals keep
+    /// ticket keys and internal ids from becoming plausible-looking titles.
+    fn validate_task_short_code(
         &self,
-        title: &ExternalName,
-        external_issue_key: &ExternalId,
+        code: &ExternalId,
+        links: &[EpicTicketLink],
     ) -> Result<ExternalId, ApiError> {
-        let text = title.as_str();
-        if let Some(start) = text.find("OP-") {
-            let code = text[start..]
-                .chars()
-                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
-                .collect::<String>();
-            if code.len() > 3
-                && code[3..].chars().all(|ch| ch.is_ascii_digit())
-                && code != external_issue_key.as_str()
-            {
-                return ExternalId::parse(&code).map_err(|error| self.refuse_domain(&error));
-            }
-        }
-        let Some(semantic) = text
-            .strip_prefix(external_issue_key.as_str())
-            .and_then(|rest| rest.strip_prefix(" · "))
-        else {
-            return Ok(external_issue_key.clone());
-        };
-        let mut slug = String::new();
-        let mut separator = false;
-        for ch in semantic.chars() {
-            if ch.is_ascii_alphanumeric() {
-                if separator && !slug.is_empty() {
-                    slug.push('-');
-                }
-                slug.push(ch.to_ascii_lowercase());
-                separator = false;
-            } else {
-                separator = true;
-            }
-        }
-        let slug = slug.trim_end_matches('-');
-        if slug.is_empty() || slug == external_issue_key.as_str().to_ascii_lowercase() {
+        if code.as_str().len() > 32 {
             return Err(self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "a legacy task has no distinct semantic short code",
+                ApiErrorCode::InvalidRequest,
+                "a task short code is longer than 32 bytes",
             ));
         }
-        ExternalId::parse(slug).map_err(|error| self.refuse_domain(&error))
+        if links
+            .iter()
+            .any(|link| link.external_issue_key.as_str() == code.as_str())
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a task short code must be distinct from its external issue key",
+            ));
+        }
+        if uuid::Uuid::parse_str(code.as_str()).is_ok() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "an internal identifier is not a task short code",
+            ));
+        }
+        Ok(code.clone())
     }
 
     /// Turn a repository refusal into the one the caller is owed.
@@ -776,6 +778,11 @@ impl Services {
             };
             tasks.push(EpicTask {
                 title: task.title.clone(),
+                short_code: task
+                    .short_code
+                    .as_ref()
+                    .map(|code| self.validate_task_short_code(code, &links))
+                    .transpose()?,
                 module,
                 imported_state,
                 depends_on: task.depends_on.clone(),
@@ -854,6 +861,9 @@ impl Services {
             applied.push(AppliedTaskDto {
                 title: task.title.clone(),
                 task_id: task.id,
+                short_code: state
+                    .with_store(|store| store.task_short_code(project_id, task.id))
+                    .map_err(|error| self.refuse(&error))?,
                 applied: AppliedDto::Unchanged,
                 state: task.state.as_str().to_owned(),
                 revision: task.revision,
@@ -3412,6 +3422,143 @@ impl Services {
             seats,
             revision: roster.revision_of_epic,
             snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    fn core_team_route_plan(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamRoutePreviewRequest,
+    ) -> Result<CoreTeamRoutePlan, ApiError> {
+        let state = self.state()?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        if epic.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the epic moved since the caller read it",
+                )
+                .with_revision(Some(epic.revision)));
+        }
+        let roster = self.frozen_roster(project_id, epic_id)?;
+        let binding = state
+            .with_store(|store| store.get_seat_binding(project_id, request.seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|binding| binding.is_non_terminal())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the requested persistent Core Team SeatBinding is not active",
+                )
+            })?;
+        let node = state
+            .with_store(|store| store.get_topology_node(project_id, binding.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|node| {
+                node.mini_project_id == Some(epic_id)
+                    && node.kind == self.domain.delivery.control_kind
+                    && node.task_id.is_none()
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the SeatBinding is not hosted by this epic's control plane",
+                )
+            })?;
+        let _ = node;
+        if !roster.revision.seats.iter().any(|seat| {
+            seat.presence != EpicPresence::OnDemand
+                && seat.role_slot_id == binding.role_slot_id
+                && seat.role.role_code == binding.role.role_code
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the SeatBinding is not one of this epic's frozen Core Team roles",
+            ));
+        }
+        let active = state
+            .with_store(|store| store.get_hosted_topology_seat(project_id, request.seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the logical Core Team seat has no exact native session to reroute",
+                )
+            })?;
+        let desired = parse_runtime_model_route(&request.desired_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let (predecessor, successor) = if active.native_identity.native_id
+            == request.expected_native_id
+            && active.native_identity.generation == request.expected_generation
+        {
+            (active, None)
+        } else {
+            let predecessor = state
+                .with_store(|store| {
+                    store.get_hosted_topology_seat_history(
+                        project_id,
+                        request.seat_binding_id,
+                        &request.expected_native_id,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+                .filter(|predecessor| {
+                    predecessor.native_identity.generation == request.expected_generation
+                })
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the native Core Team predecessor moved since the caller read it",
+                    )
+                })?;
+            if active.model_rung != desired {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the logical Core Team seat is active on another unpreviewed route",
+                ));
+            }
+            (predecessor, Some(active))
+        };
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime selected for Core Team placement is not configured",
+            )
+        })?;
+        if !adapter.provider_available(desired.provider.0.as_str()) {
+            return Err(ApiError::from_runtime(
+                state.realm_id(),
+                &RuntimeError::ProviderUnavailable {
+                    provider: desired.provider.0.clone(),
+                },
+            ));
+        }
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "core_team_route_correction",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "epic_revision": epic.revision.get(),
+            "seat_binding": binding.id.to_string(),
+            "predecessor": {
+                "runtime_kind": predecessor.native_identity.runtime_kind.as_str(),
+                "host": predecessor.native_identity.host.as_str(),
+                "generation": predecessor.native_identity.generation,
+                "native_id": predecessor.native_identity.native_id.as_str(),
+                "model": predecessor.model_rung,
+            },
+            "desired": desired,
+        }))?;
+        Ok(CoreTeamRoutePlan {
+            epic,
+            roster,
+            binding,
+            predecessor,
+            successor,
+            desired,
+            preview_hash,
         })
     }
 
@@ -6314,6 +6461,14 @@ fn parse_runtime_model_route(
     })
 }
 
+fn runtime_model_route_dto(rung: &ModelRung) -> RuntimeModelRouteRequest {
+    RuntimeModelRouteRequest {
+        provider: rung.provider.0.clone(),
+        model: rung.model.0.clone(),
+        effort: rung.effort.map(|effort| effort.as_str().to_owned()),
+    }
+}
+
 /// The stable spelling of one context layer.
 const fn layer_name(layer: kontor_context::model::ContextLayer) -> &'static str {
     use kontor_context::model::ContextLayer as L;
@@ -6918,6 +7073,7 @@ fn pinned_spec_dto(snapshot: &TopologySnapshot) -> PinnedSpecDto {
 const fn applied_dto(applied: Applied) -> AppliedDto {
     match applied {
         Applied::Created => AppliedDto::Created,
+        Applied::Updated => AppliedDto::Updated,
         Applied::Unchanged => AppliedDto::Unchanged,
     }
 }
@@ -8747,6 +8903,22 @@ impl ApplicationOperations for Services {
             .is_some();
 
         if !replayed {
+            // A ticket's semantic identity is a placement prerequisite, not a
+            // value to improvise after the root and workspace have already
+            // been contacted. Resolve it before ensuring the logical chain or
+            // asking the runtime to prepare its plane, so a legacy task that
+            // lacks an explicit short-code mapping fails with zero native
+            // effects and can be repaired through `epics:preview/apply`.
+            if let (Some(epic_id), Some(task_id)) = (scope.epic_id, scope.task_id) {
+                let runtime_kind = self.node_runtime_kind()?;
+                let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the node's configured runtime family is unavailable",
+                    )
+                })?;
+                self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
+            }
             // Materializing is ensuring plus preparing the exact native
             // container and binding the seats the scope hosts. The chain comes
             // first because neither a native binding nor a seat can ever
@@ -9200,6 +9372,7 @@ impl ApplicationOperations for Services {
         Ok(SessionLabelsReconciledDto {
             agent_run_id: agent_run_id.to_string(),
             native_id: outcome.identity.native_id.as_str().to_owned(),
+            title: outcome.title,
             labels: outcome.labels,
             changed: !replayed && outcome.changed,
             receipt: MutationReceiptDto {
@@ -9993,6 +10166,196 @@ impl ApplicationOperations for Services {
                     AppliedDto::Created
                 },
                 revision: epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    fn preview_core_team_route(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamRoutePreviewRequest,
+    ) -> Result<CoreTeamRoutePreviewDto, ApiError> {
+        let state = self.state()?;
+        let plan = self.core_team_route_plan(project_id, epic_id, request)?;
+        Ok(CoreTeamRoutePreviewDto {
+            realm_id: state.realm_id(),
+            project_id,
+            epic_id,
+            seat_binding_id: plan.binding.id,
+            predecessor_native_id: plan.predecessor.native_identity.native_id.clone(),
+            current_model_route: runtime_model_route_dto(&plan.predecessor.model_rung),
+            desired_model_route: runtime_model_route_dto(&plan.desired),
+            would_replace_native: plan.successor.is_none()
+                && plan.predecessor.model_rung != plan.desired,
+            preview_hash: plan.preview_hash,
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    async fn apply_core_team_route(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamRouteApplyRequest,
+    ) -> Result<CoreTeamRouteOutcomeDto, ApiError> {
+        let state = self.state()?;
+        let plan = self.core_team_route_plan(project_id, epic_id, &request.correction())?;
+        if plan.preview_hash != request.preview_hash {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the Core Team route correction no longer matches its preview",
+            ));
+        }
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "core_team_route_correction",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "seat_binding": plan.binding.id.to_string(),
+            "predecessor": plan.predecessor.native_identity.native_id.as_str(),
+            "preview": request.preview_hash.as_str(),
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+
+        let successor = if let Some(successor) = plan.successor.clone() {
+            successor
+        } else if plan.predecessor.model_rung == plan.desired {
+            plan.predecessor.clone()
+        } else {
+            let runtime_kind = plan.predecessor.native_identity.runtime_kind.clone();
+            let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the hosted seat runtime is not configured in this daemon",
+                )
+            })?;
+            let retired = adapter
+                .retire_hosted_seat(&HostedSeatRetireRequest {
+                    seat_binding_id: plan.binding.id,
+                    identity: plan.predecessor.native_identity.clone(),
+                    model_rung: plan.predecessor.model_rung.clone(),
+                    requested_at: kontor_api::now(),
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let control = state
+                .with_store(|store| {
+                    store.get_topology_node(project_id, plan.binding.topology_node_id)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the Core Team control-plane node no longer exists",
+                    )
+                })?;
+            let cwd = self.runtime_root(project_id, Some(epic_id))?;
+            let container = self
+                .ensure_container(project_id, &control, &cwd, adapter.as_ref())
+                .await?;
+            let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
+            let capabilities = adapter
+                .discover_capabilities()
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let context_policy = ContextPolicySnapshot::standard(
+                &capabilities.limits.context_window,
+                capabilities.supports(RuntimeCapability::ContextPolicy),
+                SCHEMA_VERSION,
+                kontor_api::now(),
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
+            let display_name = ExternalName::parse(&format!(
+                "{} · {}",
+                plan.binding.role.role_code.as_str(),
+                scope.epic.external_epic_key.as_str()
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            let prompt = BoundedText::parse(&format!(
+                "Persistent {} seat for epic {}. This native session replaces archived predecessor {} under the same Kontor SeatBinding {}. Continue only bounded work authorized through Kontor.",
+                plan.binding.role.role_code.as_str(),
+                scope.epic.external_epic_key.as_str(),
+                plan.predecessor.native_identity.native_id.as_str(),
+                plan.binding.id,
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            let outcome = adapter
+                .launch_hosted_seat(&HostedSeatLaunchRequest {
+                    seat_binding_id: plan.binding.id,
+                    role_slot_id: plan.binding.role_slot_id.clone(),
+                    display_name,
+                    container,
+                    cwd,
+                    scope,
+                    prompt,
+                    model_rung: plan.desired.clone(),
+                    context_policy,
+                    requested_at: kontor_api::now(),
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let successor = StoredHostedTopologySeat {
+                project_id,
+                seat_binding_id: plan.binding.id,
+                model_rung: plan.desired.clone(),
+                native_identity: outcome.identity,
+                provider_session_id: outcome.provider_session_id,
+                observed_at: outcome.observed_at,
+            };
+            state
+                .with_store(|store| {
+                    store.replace_hosted_topology_seat_route(
+                        &plan.predecessor,
+                        &successor,
+                        retired.archived_at,
+                        "authorized Core Team provider/model route correction",
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            state
+                .with_store(|store| {
+                    store.observe_seat_binding(
+                        project_id,
+                        plan.binding.id,
+                        &SeatLivenessObservation {
+                            attached_at: Some(successor.observed_at),
+                            runtime_reported: Some(kontor_core::state::ObservedRunState::Running),
+                            ..SeatLivenessObservation::default()
+                        },
+                        successor.observed_at,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            successor
+        };
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::CorrectCoreTeamRoute,
+            target,
+            plan.epic.revision,
+            &intent,
+        )?;
+        Ok(CoreTeamRouteOutcomeDto {
+            core_team: self.epic_core_team_dto(project_id, epic_id, &plan.roster)?,
+            seat_binding_id: plan.binding.id,
+            predecessor_native_id: plan.predecessor.native_identity.native_id,
+            successor_native_id: successor.native_identity.native_id,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed || plan.predecessor.model_rung == plan.desired {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Updated
+                },
+                revision: plan.epic.revision,
                 snapshot_cursor: self.cursor()?,
             },
         })
@@ -12319,6 +12682,7 @@ impl ApplicationOperations for Services {
                 .map(|task| AppliedTaskDto {
                     title: task.title,
                     task_id: task.task_id,
+                    short_code: task.short_code,
                     applied: applied_dto(task.applied),
                     state: task.state.as_str().to_owned(),
                     revision: task.revision,
@@ -12370,7 +12734,7 @@ impl ApplicationOperations for Services {
         Ok(PreviewEpicDto {
             realm_id: state.realm_id(),
             project_id,
-            epic_id: (preview.applied == Applied::Unchanged).then_some(preview.mini_project_id),
+            epic_id: (preview.applied != Applied::Created).then_some(preview.mini_project_id),
             applied: applied_dto(preview.applied),
             execution_scope: preview.execution_scope.map(|scope| EpicExecutionScopeDto {
                 external_epic_key: scope.external_epic_key,
@@ -12389,7 +12753,8 @@ impl ApplicationOperations for Services {
                 .into_iter()
                 .map(|task| PreviewEpicTaskDto {
                     title: task.title,
-                    task_id: (task.applied == Applied::Unchanged).then_some(task.task_id),
+                    task_id: (task.applied != Applied::Created).then_some(task.task_id),
+                    short_code: task.short_code,
                     applied: applied_dto(task.applied),
                     state: task.state.as_str().to_owned(),
                 })
@@ -12546,6 +12911,9 @@ impl ApplicationOperations for Services {
             projected.push(EpicTaskProjectionDto {
                 task_id: task.id,
                 title: task.title.clone(),
+                short_code: state
+                    .with_store(|store| store.task_short_code(project_id, task.id))
+                    .map_err(|error| self.refuse(&error))?,
                 worktree,
                 state: task.state.as_str().to_owned(),
                 revision: task.revision,

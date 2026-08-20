@@ -540,6 +540,8 @@ pub struct ReconcileSessionLabelsRequest {
 pub struct ReconciledSessionLabels {
     /// The unchanged native session identity.
     pub identity: NativeRuntimeIdentity,
+    /// Canonical display title reported after the same in-place repair.
+    pub title: String,
     /// Full label map the runtime reported afterwards.
     pub labels: BTreeMap<String, String>,
     /// Whether the operation wrote a correction.

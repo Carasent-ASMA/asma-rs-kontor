@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 45;
+pub const SCHEMA_VERSION: i64 = 46;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -198,6 +198,9 @@ const MIGRATIONS: &[&str] = &[
     // Schema v45. Project-pinned external-workflow installation and a distinct
     // terminal task-withdrawal state/receipt.
     include_str!("../migrations/0045_admin_workflow_install_and_withdrawal.sql"),
+    // Schema v46. Explicit task display identity plus immutable predecessor
+    // evidence for persistent Core Team route correction.
+    include_str!("../migrations/0046_task_short_codes_and_hosted_route_history.sql"),
 ];
 
 const _: () = assert!(
@@ -370,6 +373,7 @@ fn apply_pending(
             MIGRATIONS[42],
             MIGRATIONS[43],
             MIGRATIONS[44],
+            MIGRATIONS[45],
         ] {
             transaction.execute_batch(migration)?;
         }
