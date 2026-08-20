@@ -2681,6 +2681,75 @@ async fn message_a_lost_ack_is_reconciled_rather_than_resent() {
 }
 
 #[tokio::test]
+async fn message_a_lost_ack_older_than_the_tail_page_is_reconciled_backwards() {
+    let (plane, binding) = launched().await;
+    plane.daemon.lose_next_rpc("send_agent_message_request");
+
+    let epoch = "8f2b1c34-0000-4000-8000-000000000001";
+    let newest = (102..=201).map(assistant_entry).collect::<Vec<_>>();
+    plane.daemon.queue_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "req-fixture",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": "tail",
+            "projection": "canonical",
+            "epoch": epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 102, "maxSeq": 201, "nextSeq": 202 },
+            "startCursor": { "epoch": epoch, "seq": 102 },
+            "endCursor": { "epoch": epoch, "seq": 201 },
+            "hasOlder": true,
+            "hasNewer": false,
+            "entries": newest,
+            "error": serde_json::Value::Null,
+        }),
+    );
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "req-fixture",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": "before",
+            "projection": "canonical",
+            "epoch": epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 101, "maxSeq": 101, "nextSeq": 102 },
+            "startCursor": { "epoch": epoch, "seq": 101 },
+            "endCursor": { "epoch": epoch, "seq": 101 },
+            "hasOlder": false,
+            "hasNewer": true,
+            "entries": [user_entry(101, MESSAGE)],
+            "error": serde_json::Value::Null,
+        }),
+    );
+
+    let acknowledged = plane
+        .adapter
+        .send(&message(&binding, "the next turn"))
+        .await
+        .expect("the backward scan finds an accepted message beyond the newest page");
+
+    assert_eq!(acknowledged.position.sequence, 101);
+    assert_eq!(
+        plane.daemon.count("rpc fetch_agent_timeline_request"),
+        2,
+        "reconciliation reads the newest page, then the older page"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        1,
+        "an accepted message is never resent"
+    );
+}
+
+#[tokio::test]
 async fn message_a_lost_ack_under_a_renumbered_epoch_is_a_break_not_a_fresh_epoch() {
     let (plane, binding) = with_history().await;
     // Reading the content is what makes an epoch this session's epoch.
