@@ -31,6 +31,7 @@
 //! * [`seat_mcp`] — worktree-local MCP composition for Claude seats.
 
 pub mod adapter;
+mod checkout;
 pub mod client;
 pub mod fixture;
 pub mod mcp;
