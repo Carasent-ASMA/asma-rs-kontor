@@ -81,7 +81,7 @@ fn retitle(
     node_id: TopologyNodeId,
     native_id: &str,
     generation: u64,
-    structural_name: &str,
+    desired_title: &str,
 ) -> RetitleContainerRequest {
     RetitleContainerRequest {
         topology_node_id: node_id,
@@ -92,9 +92,7 @@ fn retitle(
             kontor_core::id::ExternalId::parse("native-project-1").expect("a native project id"),
         ),
         generation,
-        scope: None,
-        task_id: None,
-        structural_name: name(structural_name),
+        desired_title: name(desired_title),
         requested_at: at("2026-08-17T09:05:00Z"),
     }
 }
@@ -104,13 +102,10 @@ fn retitle_for_task(
     node_id: TopologyNodeId,
     native_id: &str,
     generation: u64,
-    structural_name: &str,
-    task_id: TaskId,
+    desired_title: &str,
+    _task_id: TaskId,
 ) -> RetitleContainerRequest {
-    RetitleContainerRequest {
-        task_id: Some(task_id),
-        ..retitle(node_id, native_id, generation, structural_name)
-    }
+    retitle(node_id, native_id, generation, desired_title)
 }
 
 /// A retitle changes the name and keeps the identity, and it says which
@@ -256,8 +251,7 @@ async fn a_runtime_that_does_not_declare_the_capability_refuses_by_name() {
     );
 }
 
-/// A task-scoped container is titled from the plane's own scope, over the
-/// structural name the control plane could render alone.
+/// A task-scoped container consumes the daemon-rendered title verbatim.
 #[tokio::test]
 async fn a_task_scoped_container_is_titled_from_the_planes_scope() {
     let runtime = ScriptedFakeRuntime::new(every_capability());
@@ -275,7 +269,7 @@ async fn a_task_scoped_container_is_titled_from_the_planes_scope() {
             node_id,
             native.native_id.as_str(),
             native.generation,
-            "TSW",
+            "TSW • ASMA-7872 • OP-03",
             task_id,
         ))
         .await
@@ -283,17 +277,16 @@ async fn a_task_scoped_container_is_titled_from_the_planes_scope() {
 
     assert_eq!(
         outcome.desired_title.as_str(),
-        "TSW · ASMA-7872 · OP-03",
-        "the structural name is the floor and the plane's scope completes it"
+        "TSW • ASMA-7872 • OP-03",
+        "the runtime must not recompute the caller-rendered title"
     );
-    assert_eq!(outcome.observed_title, "TSW · ASMA-7872 · OP-03");
+    assert_eq!(outcome.observed_title, "TSW • ASMA-7872 • OP-03");
     assert_eq!(outcome.snapshot.binding.identity, native);
 }
 
-/// A plane holding no scope for the task refuses, rather than titling the
-/// container after half of what it should say.
+/// A runtime needs no local naming scope once the daemon supplies the title.
 #[tokio::test]
-async fn a_task_with_no_scope_on_this_plane_is_refused() {
+async fn a_task_with_no_scope_on_this_plane_uses_the_supplied_title() {
     let runtime = ScriptedFakeRuntime::new(every_capability());
     let node_id = TopologyNodeId::generate();
     let prepared = runtime
@@ -302,24 +295,21 @@ async fn a_task_with_no_scope_on_this_plane_is_refused() {
         .expect("the container is prepared");
     let native = prepared.snapshot.binding.identity.clone();
 
-    let refused = runtime
+    let outcome = runtime
         .retitle_container(&retitle_for_task(
             node_id,
             native.native_id.as_str(),
             native.generation,
-            "TSW",
+            "TSW • ASMA-7872 • OP-03",
             TaskId::generate(),
         ))
-        .await;
-
-    assert!(
-        matches!(refused, Err(RuntimeError::LaunchNotAdmitted { .. })),
-        "an unscoped task must be refused, not partially titled: {refused:?}"
-    );
+        .await
+        .expect("the finished title needs no adapter-side scope");
+    assert_eq!(outcome.observed_title, "TSW • ASMA-7872 • OP-03");
     assert_eq!(
         runtime.container_title(node_id).as_deref(),
-        Some("before"),
-        "the refusal must leave the title exactly where it was"
+        Some("TSW • ASMA-7872 • OP-03"),
+        "the supplied title is applied verbatim"
     );
 }
 
@@ -342,7 +332,7 @@ async fn a_preview_answers_the_same_thing_and_changes_nothing() {
         node_id,
         native.native_id.as_str(),
         native.generation,
-        "TSW",
+        "TSW • ASMA-7872 • OP-03",
         task_id,
     );
 
@@ -351,7 +341,7 @@ async fn a_preview_answers_the_same_thing_and_changes_nothing() {
         .await
         .expect("the preview is answered");
     assert!(preview.changed, "the container is not correct yet");
-    assert_eq!(preview.desired_title.as_str(), "TSW · ASMA-7872 · OP-03");
+    assert_eq!(preview.desired_title.as_str(), "TSW • ASMA-7872 • OP-03");
     assert_eq!(
         preview.observed_title, "Ticket Session Workspace · 0189",
         "a preview reports what the container carries now"
@@ -387,7 +377,7 @@ async fn a_preview_answers_the_same_thing_and_changes_nothing() {
         .await
         .expect("the second preview is answered");
     assert!(!settled.changed, "the container is already correct");
-    assert_eq!(settled.observed_title, "TSW · ASMA-7872 · OP-03");
+    assert_eq!(settled.observed_title, "TSW • ASMA-7872 • OP-03");
 }
 
 /// A preview refuses for every reason an apply refuses, including a runtime that

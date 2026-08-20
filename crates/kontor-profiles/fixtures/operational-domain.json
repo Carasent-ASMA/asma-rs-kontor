@@ -6,6 +6,7 @@
       "spec_id": "01936f5a-1000-7000-8000-000000000001",
       "version": 1,
       "name": "Operational project session topology",
+      "name_separator": " • ",
       "root_kind": "PSW",
       "node_kinds": [
         {
@@ -19,7 +20,11 @@
             "native_root"
           ],
           "read_only": false,
-          "name_template": "Project Session Workspace",
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Project Session Workspace" }
+            ]
+          },
           "code_help": {
             "full_name": "Project Session Workspace",
             "meaning": "Logical root grouping the Quick and Epic session scopes of one Kontor Project.",
@@ -40,7 +45,16 @@
             "session_host"
           ],
           "read_only": false,
-          "name_template": "Quick Session Workspace",
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Quick Session Workspace" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
           "code_help": {
             "full_name": "Quick Session Workspace",
             "meaning": "Ad-hoc single-role session scope that may later provide an epic promotion handoff.",
@@ -60,7 +74,13 @@
             "native_root"
           ],
           "read_only": false,
-          "name_template": "Epic Session Workspace",
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "JIRA_CODE" },
+              { "kind": "token", "value": "KONTOR_BACKLOG_CODE" }
+            ]
+          },
           "code_help": {
             "full_name": "Epic Session Workspace",
             "meaning": "Complete logical boundary for one concrete epic; Paseo projects it as one epic project.",
@@ -82,7 +102,20 @@
             "session_host"
           ],
           "read_only": false,
-          "name_template": "ECP \u00b7 <Jira epic> \u00b7 <short title>",
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "JIRA_CODE" },
+              { "kind": "token", "value": "KONTOR_BACKLOG_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "JIRA_CODE" },
+              { "kind": "token", "value": "KONTOR_BACKLOG_CODE" }
+            ]
+          },
           "code_help": {
             "full_name": "Epic Control Plane",
             "meaning": "Specification-defined ESW child grouping persistent epic leadership, coordination and authorized ad-hoc seats in one runtime session host.",
@@ -103,7 +136,19 @@
             "session_host"
           ],
           "read_only": false,
-          "name_template": "Ticket Session Workspace",
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "JIRA_CODE" },
+              { "kind": "token", "value": "KONTOR_BACKLOG_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "KONTOR_BACKLOG_CODE" }
+            ]
+          },
           "code_help": {
             "full_name": "Ticket Session Workspace",
             "meaning": "Delivery workspace for one ticket and all persistent seats in that ticket's TeamRun.",
@@ -124,7 +169,16 @@
             "session_host"
           ],
           "read_only": true,
-          "name_template": "Advisor Session Workspace",
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Advisor Session Workspace" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
           "code_help": {
             "full_name": "Advisor Session Workspace",
             "meaning": "Read-only workspace for one Advisor consultation and one Advisor seat.",
@@ -145,7 +199,16 @@
             "session_host"
           ],
           "read_only": true,
-          "name_template": "Committee Session Workspace",
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Committee Session Workspace" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
           "code_help": {
             "full_name": "Committee Session Workspace",
             "meaning": "Read-only workspace for one Committee run or topic and its template-declared seats.",

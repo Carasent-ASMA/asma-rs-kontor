@@ -144,6 +144,9 @@ closed_enum! {
         /// display that Kontor itself rendered wrongly, and the container it
         /// repairs is addressed by its durable binding rather than by its name.
         RetitleContainer => "retitle_container",
+        /// Reconcile every bound container and seat name in one epic against
+        /// its pinned topology revision after a complete preflight.
+        ReconcileNativeNames => "reconcile_native_names",
         /// Publish the next immutable Project Core Team revision.
         ///
         /// The project is the aggregate. This changes project configuration and
@@ -483,7 +486,9 @@ impl CommandKind {
             // authority is over, and it is the one aggregate every seat has.
             Self::ObserveSeat | Self::RetireSeat => witness(matches!(target, A::Project)),
             Self::PublishTopologySpec => witness(matches!(target, A::Project)),
-            Self::UpgradeTopology => witness(matches!(target, A::MiniProject)),
+            Self::UpgradeTopology | Self::ReconcileNativeNames => {
+                witness(matches!(target, A::MiniProject))
+            }
             // Neither a native container nor the topology node holding it is an
             // aggregate a command may name, and the epic is too wide: a retitle
             // touches one node's container. The project is the one aggregate it

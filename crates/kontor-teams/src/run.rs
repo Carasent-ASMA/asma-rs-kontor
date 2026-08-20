@@ -57,8 +57,8 @@ use std::sync::{LazyLock, Mutex};
 
 use kontor_core::id::{
     AccountProfileId, AgentRunId, ArtifactKey, BoundedText, CanonicalDocument, ContentHash,
-    ProjectId, RoleKey, RuntimeBindingId, SchemaVersion, SpecVersion, TaskId, TeamRunId,
-    TeamTemplateId, Timestamp,
+    ExternalName, ProjectId, RoleKey, RuntimeBindingId, SchemaVersion, SpecVersion, TaskId,
+    TeamRunId, TeamTemplateId, Timestamp,
 };
 use kontor_core::repository::{AgentRun, NewAgentRun};
 use kontor_core::spec::{
@@ -367,6 +367,7 @@ impl LaunchPermit {
             placement: launch.placement,
             cwd: launch.cwd,
             scope: launch.scope,
+            display_name: launch.display_name,
             account_profile_id: launch.account_profile_id,
             prompt: launch.prompt,
             model_rung: launch.model_rung,
@@ -451,6 +452,8 @@ pub struct SlotLaunch {
     pub cwd: WorkspaceRoot,
     /// Durable epic/task identity used by the runtime for placement and labels.
     pub scope: ExecutionScope,
+    /// Complete daemon-rendered display name for this seat.
+    pub display_name: ExternalName,
     /// The coding account this attempt is pinned to, if any.
     pub account_profile_id: Option<AccountProfileId>,
     /// What the session starts with.

@@ -391,6 +391,36 @@ pub struct HostedSeatRetireOutcome {
     pub archived_at: Timestamp,
 }
 
+/// In-place title repair for a persistent hosted or consultation seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetitleSeatRequest {
+    /// Exact native session identity already persisted by Kontor.
+    pub identity: NativeRuntimeIdentity,
+    /// Provider-native conversation id captured with that identity, when any.
+    pub provider_session_id: Option<ExternalId>,
+    /// Exact native container the session must remain in.
+    pub container_native_id: ExternalId,
+    /// Complete daemon-rendered desired title, applied verbatim.
+    pub desired_title: ExternalName,
+    /// Read/repair instant.
+    pub requested_at: Timestamp,
+}
+
+/// Exact native readback after a persistent-seat title preview or repair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetitleSeatOutcome {
+    /// Unchanged native identity.
+    pub identity: NativeRuntimeIdentity,
+    /// Unchanged provider-native conversation id.
+    pub provider_session_id: Option<ExternalId>,
+    /// Unchanged native container.
+    pub container_native_id: ExternalId,
+    /// Title read back from the runtime.
+    pub observed_title: String,
+    /// Whether apply changed the title; preview reports whether it would.
+    pub changed: bool,
+}
+
 /// One idempotently addressed follow-up to an existing consultation seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsultationMessageRequest {
@@ -558,6 +588,26 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> RuntimeResult<HostedSeatRetireOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Retire,
+        })
+    }
+
+    /// Preview an in-place title repair for a persistent non-delivery seat.
+    async fn preview_retitle_seat(
+        &self,
+        _request: &RetitleSeatRequest,
+    ) -> RuntimeResult<RetitleSeatOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::RetitleContainer,
+        })
+    }
+
+    /// Apply and read back an in-place title repair for a persistent seat.
+    async fn retitle_seat(
+        &self,
+        _request: &RetitleSeatRequest,
+    ) -> RuntimeResult<RetitleSeatOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::RetitleContainer,
         })
     }
 

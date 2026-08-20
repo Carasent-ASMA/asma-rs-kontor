@@ -406,6 +406,9 @@ pub struct WorkspacePrepareRequest {
     pub workspace_binding_id: WorkspaceBindingId,
     /// Where the workspace must be.
     pub root: WorkspaceRoot,
+    /// Finished native display name rendered by the pinned topology spec.
+    /// Runtime adapters consume this value verbatim and never re-render it.
+    pub display_name: ExternalName,
     /// The epic and ticket this workspace serves, from durable Kontor state.
     ///
     /// The ticket half is required here: a task workspace with no ticket scope

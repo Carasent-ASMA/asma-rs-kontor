@@ -1097,6 +1097,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/native-names:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply an exact whole-epic native-name preview. */
+        post: operations["apply_native_names"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/native-names:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview every bound container and persistent seat name in one epic. */
+        post: operations["preview_native_names"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
         parameters: {
             query?: never;
@@ -2620,6 +2654,18 @@ export interface components {
             /** @description The link. */
             link_id: string;
         };
+        /** @description Result of one idempotent, preflighted whole-epic name repair. */
+        AppliedNativeNamesDto: {
+            /**
+             * Format: int64
+             * @description Count of targets changed by this invocation.
+             */
+            changed: number;
+            /** @description Fresh complete readback after apply. */
+            readback: components["schemas"]["NativeNamesPreviewDto"];
+            /** @description Durable command receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+        };
         /** @description One published profile revision and the receipt that froze it. */
         AppliedProfileDto: {
             /** @description The revision now standing. */
@@ -2659,6 +2705,8 @@ export interface components {
         };
         /** @description One task after an epic was applied. */
         AppliedTaskDto: {
+            /** @description Durable intake-time two-keyword summary, once declared. */
+            ai_short_name?: string | null;
             /** @description Whether this call created it. */
             applied: components["schemas"]["AppliedDto"];
             /** @description The tasks it depends on. */
@@ -3875,8 +3923,12 @@ export interface components {
          *     name and of any process-wide runtime configuration.
          */
         EpicExecutionScopeDto: {
+            /** @description Immutable two-keyword summary captured at intake. */
+            ai_short_name?: string | null;
             /** @description The external tracker key, e.g. `ASMA-7869`. */
             external_epic_key: string;
+            /** @description Immutable Kontor backlog identity used by the built-in epic templates. */
+            kontor_backlog_code?: string | null;
             /** @description The compact title used when a runtime renders the epic container. */
             short_title: string;
         };
@@ -3925,6 +3977,8 @@ export interface components {
         };
         /** @description One task, as the epic projection reports it. */
         EpicTaskProjectionDto: {
+            /** @description Durable intake-time two-keyword summary. */
+            ai_short_name?: string | null;
             /** @description The phase its active workflow is in. */
             current_phase?: string | null;
             /** @description The tasks it depends on. */
@@ -3983,6 +4037,11 @@ export interface components {
          *     it, and it is immutable for the life of the task.
          */
         EpicTaskRequest: {
+            /**
+             * @description Immutable two-keyword summary captured at intake for templates that
+             *     explicitly select `AI_SHORT_NAME`.
+             */
+            ai_short_name?: string | null;
             /** @description The titles of the sibling tasks that must finish first. */
             depends_on?: string[];
             /**
@@ -4413,6 +4472,70 @@ export interface components {
             snapshot_cursor: number;
         };
         /**
+         * @description One subject in an epic-wide native-name plan.
+         * @enum {string}
+         */
+        NativeNameSubjectKindDto: "container" | "seat";
+        /** @description One exact container or seat target in stable plan order. */
+        NativeNameTargetDto: {
+            /** @description AgentRun for a delivery-seat target. */
+            agent_run_id?: string | null;
+            /** @description Typed capability result (`ready`, `unchanged`, or `rename_pending`). */
+            capability: string;
+            /** @description Exact title rendered by the daemon. */
+            desired_title: string;
+            /** @description Exact runtime-native identity. */
+            native_id: string;
+            /** @description Runtime title observed during preflight. */
+            observed_title: string;
+            /** @description Provider-native session identity, when reported. */
+            provider_session_id?: string | null;
+            /** @description Persistent SeatBinding for a seat target. */
+            seat_binding_id?: string | null;
+            /** @description Whether this is a container or a persistent seat. */
+            subject_kind: components["schemas"]["NativeNameSubjectKindDto"];
+            /** @description Owning topology node. */
+            topology_node_id: string;
+            /** @description Whether apply would mutate this subject. */
+            would_change: boolean;
+        };
+        /** @description Apply request bound to the exact previewed identity/name plan. */
+        NativeNamesApplyRequest: {
+            /**
+             * Format: int64
+             * @description Project revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Hash returned by `native-names:preview`. */
+            preview_hash: string;
+        };
+        /** @description Complete identity-bound epic native-name plan. */
+        NativeNamesPreviewDto: {
+            /** @description Owning epic. */
+            epic_id: string;
+            /** @description Hash over every logical/native identity and observed/desired name. */
+            preview_hash: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm that produced the plan. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description Snapshot position.
+             */
+            snapshot_cursor: number;
+            /** @description Stable ordered targets. */
+            targets: components["schemas"]["NativeNameTargetDto"][];
+        };
+        /** @description Read-only request for a complete epic native-name census. */
+        NativeNamesPreviewRequest: {
+            /**
+             * Format: int64
+             * @description Project revision the caller read.
+             */
+            expected_revision: number;
+        };
+        /**
          * @description The mandatory context a `needs_human` completion carries.
          *
          *     Both fields are required by construction. A stalling path that could enter
@@ -4509,6 +4632,8 @@ export interface components {
         };
         /** @description One task as an epic preview judges it, without committing prospective ids. */
         PreviewEpicTaskDto: {
+            /** @description Durable intake-time two-keyword summary apply would preserve or add. */
+            ai_short_name?: string | null;
             /** @description Whether apply would create it or find it unchanged. */
             applied: components["schemas"]["AppliedDto"];
             /** @description Durable compact display identity apply would preserve or add. */
@@ -4806,6 +4931,7 @@ export interface components {
         };
         /** @description Apply a named promotion preview. */
         PromotionApplyRequest: {
+            execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
             /**
              * Format: int64
              * @description The session revision the caller believes is current.
@@ -9619,6 +9745,125 @@ export interface operations {
             };
             /** @description An illegal transition, a stale revision, or unmet gates */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_native_names: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The owning epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NativeNamesApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedNativeNamesDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_native_names: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The owning epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NativeNamesPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NativeNamesPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

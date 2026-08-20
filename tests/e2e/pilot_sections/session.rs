@@ -1675,6 +1675,8 @@ impl Realm {
                 team_run_id: self.team_run,
                 task_id: self.task,
                 workspace_binding_id: WorkspaceBindingId::generate(),
+                display_name: kontor_core::id::ExternalName::parse("TSW • ASMA-1 • TEST-1")
+                    .expect("a native name"),
                 root: WorkspaceRoot::parse(TASK_WORKSPACE).expect("an absolute path"),
                 requested_at: at("2026-08-12T08:59:00Z"),
             })
@@ -1682,6 +1684,8 @@ impl Realm {
             .expect("the runtime prepares the task workspace")
             .snapshot;
         let parts = LaunchParts {
+            display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
+                .expect("display name"),
             scope: execution_scope(self.task, workspace.root().clone()),
             agent_run_id,
             team_run_id: self.team_run,

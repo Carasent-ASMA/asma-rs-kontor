@@ -28,6 +28,7 @@ use kontor_core::id::{
     validate_open_key,
 };
 use kontor_core::id::{CalendarProfileId, SCHEMA_VERSION, WorkCalendarId};
+use kontor_core::spec::ProjectSessionTopologySpec;
 use kontor_core::spec::{
     ApprovalReceipt, AutoArmPolicy, ContextCapabilityResult, ContextClamp, ContextEnforcement,
     ContextPolicyInputs, ContextPolicySnapshot, ContextPolicySource, ContextWindowBounds,
@@ -62,6 +63,113 @@ fn trigger() -> TriggerSpec {
 
 fn phase(id: &str) -> PhaseKey {
     PhaseKey::parse(id).expect("valid phase key")
+}
+
+fn native_topology(value: serde_json::Value) -> Result<ProjectSessionTopologySpec, String> {
+    serde_json::from_value::<ProjectSessionTopologySpec>(value)
+        .map_err(|error| error.to_string())
+        .and_then(|spec| {
+            spec.validate()
+                .map(|()| spec)
+                .map_err(|error| error.to_string())
+        })
+}
+
+fn minimal_native_topology() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "spec_id": "01936f5a-1000-7000-8000-000000000001",
+        "version": 1,
+        "name": "Naming contract",
+        "name_separator": " • ",
+        "root_kind": "PSW",
+        "node_kinds": [{
+            "kind": "PSW",
+            "allowed_parents": [],
+            "cardinality": {"minimum": 1, "maximum": 1},
+            "projection_capabilities": ["native_root", "session_host"],
+            "read_only": false,
+            "name_template": {"segments": [{"kind": "literal", "value": "Project Session Workspace"}]},
+            "seat_name_template": {"segments": [{"kind": "token", "value": "AREA_CODE"}]},
+            "code_help": {
+                "full_name": "Project Session Workspace",
+                "meaning": "One naming validation root.",
+                "category": "session_topology",
+                "lifecycle": "current"
+            }
+        }],
+        "historical_codes": []
+    })
+}
+
+#[test]
+fn topology_naming_requires_typed_container_and_hosted_seat_templates() {
+    let valid = minimal_native_topology();
+    native_topology(valid.clone()).expect("the complete typed document validates");
+
+    let mut missing_container = valid.clone();
+    missing_container["node_kinds"][0]
+        .as_object_mut()
+        .expect("a node object")
+        .remove("name_template");
+    assert!(native_topology(missing_container).is_err());
+
+    let mut missing_seat = valid;
+    missing_seat["node_kinds"][0]
+        .as_object_mut()
+        .expect("a node object")
+        .remove("seat_name_template");
+    assert!(native_topology(missing_seat).is_err());
+}
+
+#[test]
+fn topology_naming_rejects_legacy_unknown_empty_duplicate_and_punctuated_templates() {
+    let mut legacy = minimal_native_topology();
+    legacy["node_kinds"][0]["name_template"] = serde_json::json!("Project Session Workspace");
+    assert!(
+        native_topology(legacy).is_err(),
+        "legacy strings are read but not valid for publish"
+    );
+
+    let mut unknown = minimal_native_topology();
+    unknown["node_kinds"][0]["name_template"] = serde_json::json!({
+        "segments": [{"kind": "token", "value": "SOMETHING_INFERRED"}]
+    });
+    assert!(native_topology(unknown).is_err());
+
+    let mut empty = minimal_native_topology();
+    empty["node_kinds"][0]["name_template"] = serde_json::json!({"segments": []});
+    assert!(native_topology(empty).is_err());
+
+    let mut duplicate = minimal_native_topology();
+    duplicate["node_kinds"][0]["name_template"] = serde_json::json!({
+        "segments": [
+            {"kind": "token", "value": "AREA_CODE"},
+            {"kind": "token", "value": "AREA_CODE"}
+        ]
+    });
+    assert!(native_topology(duplicate).is_err());
+
+    for punctuation in ["legacy · literal", "embedded • literal"] {
+        let mut punctuated = minimal_native_topology();
+        punctuated["node_kinds"][0]["name_template"] = serde_json::json!({
+            "segments": [{"kind": "literal", "value": punctuation}]
+        });
+        assert!(native_topology(punctuated).is_err());
+    }
+}
+
+#[test]
+fn topology_naming_rejects_invalid_or_middle_dot_separators() {
+    for separator in ["", "   ", " · ", "\n"] {
+        let mut document = minimal_native_topology();
+        document["name_separator"] = serde_json::json!(separator);
+        assert!(
+            native_topology(document).is_err(),
+            "`{}` must be refused",
+            separator.escape_debug()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

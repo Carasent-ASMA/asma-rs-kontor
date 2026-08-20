@@ -172,6 +172,8 @@ impl Runtime {
                 team_run_id,
                 task_id,
                 workspace_binding_id: WorkspaceBindingId::generate(),
+                display_name: kontor_core::id::ExternalName::parse("TSW • ASMA-1 • TEST-1")
+                    .expect("a native name"),
                 root: WorkspaceRoot::parse("/w/task-1").expect("an absolute path"),
                 requested_at: at("2026-08-10T08:59:00Z"),
             })
@@ -190,6 +192,8 @@ impl Runtime {
     fn launch_parts(&self, slot: &RoleSlotId, agent_run_id: AgentRunId) -> LaunchParts {
         LaunchParts {
             scope: execution_scope(self.task_id, self.workspace.root().clone()),
+            display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
+                .expect("display name"),
             agent_run_id,
             team_run_id: self.team_run_id,
             role_slot_id: slot.clone(),
@@ -232,6 +236,8 @@ impl Runtime {
     fn launch_input(&self) -> SlotLaunch {
         SlotLaunch {
             scope: execution_scope(self.task_id, self.workspace.root().clone()),
+            display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
+                .expect("display name"),
             task_id: self.task_id,
             binding_id: RuntimeBindingId::generate(),
             placement: Some(LaunchPlacement::Workspace(self.workspace.clone())),

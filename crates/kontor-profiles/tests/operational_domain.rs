@@ -10,7 +10,8 @@
 //! * declaring a compatibility or retired code as a usable node kind;
 //! * letting `SA` stand in for the mandatory `LSA` slot.
 
-use kontor_core::id::{RoleCode, TopologyKindKey};
+use kontor_core::id::{RoleCode, SpecVersion, TopologyKindKey};
+use kontor_core::naming::{NativeNameSegment, NativeNameToken};
 use kontor_core::spec::{
     CodeCategory, CodeLifecycle, NodeCardinality, NodeProjectionCapability,
     ProjectSessionTopologySpec, TopologyNodeKindSpec,
@@ -36,6 +37,10 @@ fn declared(spec: &ProjectSessionTopologySpec, text: &str) -> TopologyNodeKindSp
         .find(|entry| entry.kind == kind(text))
         .unwrap_or_else(|| panic!("{text} is declared"))
         .clone()
+}
+
+fn token(value: NativeNameToken) -> NativeNameSegment {
+    NativeNameSegment::Token(value)
 }
 
 #[test]
@@ -82,9 +87,78 @@ fn one_epic_control_plane_sits_under_each_epic_workspace() {
         "the default claims no nested Paseo project"
     );
     assert!(!ecp.read_only);
+}
+
+#[test]
+fn operational_v1_owns_the_exact_native_name_matrix_and_separator_bytes() {
+    let spec = topology();
     assert_eq!(
-        ecp.name_template.as_str(),
-        "ECP · <Jira epic> · <short title>"
+        spec.spec_id.to_string(),
+        "01936f5a-1000-7000-8000-000000000001"
+    );
+    assert_eq!(spec.version, SpecVersion::parse(1).expect("v1"));
+    assert_eq!(spec.name_separator.as_str().as_bytes(), " • ".as_bytes());
+
+    let scoped = [
+        token(NativeNameToken::AreaCode),
+        token(NativeNameToken::JiraCode),
+        token(NativeNameToken::KontorBacklogCode),
+    ];
+    for area in ["ESW", "ECP", "TSW"] {
+        assert_eq!(
+            declared(&spec, area).name_template.segments(),
+            Some(scoped.as_slice()),
+            "{area} uses the same specification-owned scope template"
+        );
+    }
+    assert_eq!(
+        declared(&spec, "ECP")
+            .seat_name_template
+            .as_ref()
+            .and_then(|template| template.segments()),
+        Some(scoped.as_slice())
+    );
+    let ticket_seat = [
+        token(NativeNameToken::AreaCode),
+        token(NativeNameToken::KontorBacklogCode),
+    ];
+    assert_eq!(
+        declared(&spec, "TSW")
+            .seat_name_template
+            .as_ref()
+            .and_then(|template| template.segments()),
+        Some(ticket_seat.as_slice())
+    );
+
+    for (area, literal) in [
+        ("PSW", "Project Session Workspace"),
+        ("QSW", "Quick Session Workspace"),
+        ("ASW", "Advisor Session Workspace"),
+        ("CSW", "Committee Session Workspace"),
+    ] {
+        let expected = [NativeNameSegment::Literal(
+            kontor_core::id::ExternalName::parse(literal).expect("a fixture literal"),
+        )];
+        assert_eq!(
+            declared(&spec, area).name_template.segments(),
+            Some(expected.as_slice())
+        );
+    }
+    for area in ["QSW", "ASW", "CSW"] {
+        let role_only = [token(NativeNameToken::AreaCode)];
+        assert_eq!(
+            declared(&spec, area)
+                .seat_name_template
+                .as_ref()
+                .and_then(|template| template.segments()),
+            Some(role_only.as_slice())
+        );
+    }
+
+    let serialized = serde_json::to_string(&spec).expect("the seed serializes");
+    assert!(
+        !serialized.contains('\u{00b7}'),
+        "the v1 seed contains no U+00B7 fallback punctuation"
     );
 }
 

@@ -378,6 +378,12 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "idempotency_key": "journey-epic-1",
             "expected_revision": revision,
             "name": "Bootstrap epic",
+            "execution_scope": {
+                "external_epic_key": "ASMA-JOURNEY",
+                "short_title": "Bootstrap epic",
+                "kontor_backlog_code": "JOURNEY",
+                "ai_short_name": "Bootstrap Epic",
+            },
             "work_profile_category": category,
             "runtime_family": "fake.runtime",
             // A task with no declared worktree cannot be seated — there is
@@ -386,12 +392,16 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             // worktree collision.
             "tasks": [
                 {"title": "Design the thing", "short_code": "JOURNEY-01",
+                 "ai_short_name": "Design Thing",
                  "worktree": "/w/journey/0", "ticket_links": [
                     {"connector": "jira", "external_issue_key": "ASMA-1"}
                 ]},
                 {"title": "Build the thing", "short_code": "JOURNEY-02",
+                 "ai_short_name": "Build Thing",
                  "worktree": "/w/journey/1",
-                 "depends_on": ["Design the thing"]}
+                 "depends_on": ["Design the thing"], "ticket_links": [
+                    {"connector": "jira", "external_issue_key": "ASMA-2"}
+                 ]}
             ],
         }),
     )

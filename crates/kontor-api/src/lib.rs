@@ -362,6 +362,14 @@ pub fn router(state: ApiState) -> Router {
             post(applications::apply_container_retitle),
         )
         .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/native-names:preview",
+            post(applications::preview_native_names),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/native-names:apply",
+            post(applications::apply_native_names),
+        )
+        .route(
             "/v1/projects/{project_id}/agent-runs/{agent_run_id}/labels:reconcile",
             post(applications::reconcile_session_labels),
         )

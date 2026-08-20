@@ -526,12 +526,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "129 forever": this is what makes a later contract change fail here, so a
+    // Not "131 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        129,
+        131,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -541,7 +541,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        130,
+        132,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -684,6 +684,8 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_topology_archive", CallerTier::Operator),
         ("kontor_topology_upgrade_preview", CallerTier::Admin),
         ("kontor_topology_upgrade_apply", CallerTier::Admin),
+        ("kontor_native_names_preview", CallerTier::Admin),
+        ("kontor_native_names_apply", CallerTier::Admin),
         // KON-OP-03: the ceilings a realm admits work under are configuration,
         // so reading and changing them is admin. Collecting evidence, judging
         // an account and attending or releasing one exact seat are operator
