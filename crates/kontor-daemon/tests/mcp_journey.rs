@@ -385,10 +385,12 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             // scheduler is refusing on the dependency edge rather than on a
             // worktree collision.
             "tasks": [
-                {"title": "Design the thing", "worktree": "/w/journey/0", "ticket_links": [
+                {"title": "Design the thing", "short_code": "JOURNEY-01",
+                 "worktree": "/w/journey/0", "ticket_links": [
                     {"connector": "jira", "external_issue_key": "ASMA-1"}
                 ]},
-                {"title": "Build the thing", "worktree": "/w/journey/1",
+                {"title": "Build the thing", "short_code": "JOURNEY-02",
+                 "worktree": "/w/journey/1",
                  "depends_on": ["Design the thing"]}
             ],
         }),

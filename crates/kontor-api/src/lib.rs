@@ -433,6 +433,14 @@ pub fn router(state: ApiState) -> Router {
             post(applications::materialize_core_team),
         )
         .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:preview",
+            post(applications::preview_core_team_route),
+        )
+        .route(
+            "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply",
+            post(applications::apply_core_team_route),
+        )
+        .route(
             "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/messages",
             post(applications::message_hosted_seat),
         )

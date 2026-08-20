@@ -93,7 +93,7 @@ use serde::de::DeserializeOwned;
 use crate::SqliteStore;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
-use crate::graph::IdempotencyBinding;
+use crate::graph::{Applied, IdempotencyBinding};
 
 /// Maximum length of an agent-run parent chain that is walked when checking for
 /// a lineage cycle.
@@ -2016,6 +2016,297 @@ impl SqliteStore {
             )
             .map_err(backend)?;
         Ok(())
+    }
+
+    /// Move one exact hosted-seat predecessor into immutable route history.
+    ///
+    /// The logical SeatBinding is untouched. Repeating the same move after a
+    /// crash is unchanged; naming another active native identity is conflict.
+    pub fn archive_hosted_topology_seat_route(
+        &self,
+        predecessor: &StoredHostedTopologySeat,
+        retired_at: Timestamp,
+        reason: &str,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let active = transaction
+            .query_row(
+                "SELECT model_rung, runtime_kind, host, generation, native_id,
+                        provider_session_id, observed_at
+                 FROM hosted_topology_seats
+                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                params![
+                    predecessor.project_id.to_string(),
+                    predecessor.seat_binding_id.to_string(),
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let expected_model = serde_json::to_string(&predecessor.model_rung).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a hosted-seat model rung could not be encoded: {error}"),
+            }
+        })?;
+        if let Some((model, runtime, host, generation, native, provider, observed)) = active {
+            if model != expected_model
+                || runtime != predecessor.native_identity.runtime_kind.as_str()
+                || host != predecessor.native_identity.host.as_str()
+                || u64::try_from(generation).ok() != Some(predecessor.native_identity.generation)
+                || native != predecessor.native_identity.native_id.as_str()
+                || provider.as_deref()
+                    != predecessor
+                        .provider_session_id
+                        .as_ref()
+                        .map(ExternalId::as_str)
+                || observed != text(predecessor.observed_at)
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted topology seat",
+                    rule: "the active native predecessor differs from the route correction",
+                });
+            }
+            transaction
+                .execute(
+                    "INSERT INTO hosted_topology_seat_history
+                         (seat_binding_id, project_id, generation, model_rung,
+                          runtime_kind, host, native_id, provider_session_id,
+                          observed_at, retired_at, retirement_reason)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        predecessor.seat_binding_id.to_string(),
+                        predecessor.project_id.to_string(),
+                        i64::try_from(predecessor.native_identity.generation).unwrap_or(i64::MAX),
+                        expected_model,
+                        predecessor.native_identity.runtime_kind.as_str(),
+                        predecessor.native_identity.host.as_str(),
+                        predecessor.native_identity.native_id.as_str(),
+                        predecessor
+                            .provider_session_id
+                            .as_ref()
+                            .map(ExternalId::as_str),
+                        text(predecessor.observed_at),
+                        text(retired_at),
+                        reason,
+                    ],
+                )
+                .map_err(backend)?;
+            transaction
+                .execute(
+                    "DELETE FROM hosted_topology_seats
+                     WHERE project_id = ?1 AND seat_binding_id = ?2",
+                    params![
+                        predecessor.project_id.to_string(),
+                        predecessor.seat_binding_id.to_string(),
+                    ],
+                )
+                .map_err(backend)?;
+            transaction.commit().map_err(backend)?;
+            return Ok(Applied::Created);
+        }
+        let archived: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM hosted_topology_seat_history
+                     WHERE project_id = ?1 AND seat_binding_id = ?2 AND native_id = ?3
+                 )",
+                params![
+                    predecessor.project_id.to_string(),
+                    predecessor.seat_binding_id.to_string(),
+                    predecessor.native_identity.native_id.as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if !archived {
+            return Err(RepositoryError::NotFound {
+                subject: "hosted topology seat predecessor",
+            });
+        }
+        transaction.rollback().map_err(backend)?;
+        Ok(Applied::Unchanged)
+    }
+
+    /// Read one exact hosted-seat predecessor from immutable route history.
+    pub fn get_hosted_topology_seat_history(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        native_id: &ExternalId,
+    ) -> RepositoryResult<Option<StoredHostedTopologySeat>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT model_rung, runtime_kind, host, generation,
+                        provider_session_id, observed_at
+                 FROM hosted_topology_seat_history
+                 WHERE project_id = ?1 AND seat_binding_id = ?2 AND native_id = ?3",
+                params![
+                    project_id.to_string(),
+                    seat_binding_id.to_string(),
+                    native_id.as_str(),
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|(model, runtime, host, generation, provider, observed)| {
+            Ok(StoredHostedTopologySeat {
+                project_id,
+                seat_binding_id,
+                model_rung: serde_json::from_str(&model).map_err(|error| {
+                    RepositoryError::Backend {
+                        detail: format!(
+                            "a hosted-seat history model rung could not be decoded: {error}"
+                        ),
+                    }
+                })?,
+                native_identity: NativeRuntimeIdentity {
+                    runtime_kind: RuntimeKindKey::parse(&runtime)?,
+                    host: ExternalName::parse(&host)?,
+                    generation: u64::try_from(generation).map_err(|_| {
+                        RepositoryError::Backend {
+                            detail: "a hosted-seat history generation is negative".to_owned(),
+                        }
+                    })?,
+                    native_id: native_id.clone(),
+                },
+                provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
+                observed_at: read_timestamp(&observed)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Atomically move the exact predecessor to history and make its successor
+    /// the active native filler of the same logical SeatBinding.
+    pub fn replace_hosted_topology_seat_route(
+        &self,
+        predecessor: &StoredHostedTopologySeat,
+        successor: &StoredHostedTopologySeat,
+        retired_at: Timestamp,
+        reason: &str,
+    ) -> RepositoryResult<Applied> {
+        if predecessor.project_id != successor.project_id
+            || predecessor.seat_binding_id != successor.seat_binding_id
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted topology seat route",
+                rule: "a route correction cannot move the logical SeatBinding",
+            });
+        }
+        let transaction = self.begin()?;
+        let active_native: Option<String> = transaction
+            .query_row(
+                "SELECT native_id FROM hosted_topology_seats
+                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                params![
+                    predecessor.project_id.to_string(),
+                    predecessor.seat_binding_id.to_string(),
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if active_native.as_deref() == Some(successor.native_identity.native_id.as_str()) {
+            transaction.rollback().map_err(backend)?;
+            return Ok(Applied::Unchanged);
+        }
+        if active_native.as_deref() != Some(predecessor.native_identity.native_id.as_str()) {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted topology seat route",
+                rule: "the active native predecessor differs from the correction",
+            });
+        }
+        let predecessor_model =
+            serde_json::to_string(&predecessor.model_rung).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("a hosted-seat model rung could not be encoded: {error}"),
+                }
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO hosted_topology_seat_history
+                     (seat_binding_id, project_id, generation, model_rung,
+                      runtime_kind, host, native_id, provider_session_id,
+                      observed_at, retired_at, retirement_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    predecessor.seat_binding_id.to_string(),
+                    predecessor.project_id.to_string(),
+                    i64::try_from(predecessor.native_identity.generation).unwrap_or(i64::MAX),
+                    predecessor_model,
+                    predecessor.native_identity.runtime_kind.as_str(),
+                    predecessor.native_identity.host.as_str(),
+                    predecessor.native_identity.native_id.as_str(),
+                    predecessor
+                        .provider_session_id
+                        .as_ref()
+                        .map(ExternalId::as_str),
+                    text(predecessor.observed_at),
+                    text(retired_at),
+                    reason,
+                ],
+            )
+            .map_err(backend)?;
+        transaction
+            .execute(
+                "DELETE FROM hosted_topology_seats
+                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                params![
+                    predecessor.project_id.to_string(),
+                    predecessor.seat_binding_id.to_string(),
+                ],
+            )
+            .map_err(backend)?;
+        let successor_model = serde_json::to_string(&successor.model_rung).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a hosted-seat model rung could not be encoded: {error}"),
+            }
+        })?;
+        transaction
+            .execute(
+                "INSERT INTO hosted_topology_seats
+                     (seat_binding_id, project_id, model_rung, runtime_kind, host,
+                      generation, native_id, provider_session_id, observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    successor.seat_binding_id.to_string(),
+                    successor.project_id.to_string(),
+                    successor_model,
+                    successor.native_identity.runtime_kind.as_str(),
+                    successor.native_identity.host.as_str(),
+                    i64::try_from(successor.native_identity.generation).unwrap_or(i64::MAX),
+                    successor.native_identity.native_id.as_str(),
+                    successor
+                        .provider_session_id
+                        .as_ref()
+                        .map(ExternalId::as_str),
+                    text(successor.observed_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Updated)
     }
 
     /// Read the immutable advice artifact one Advisor seat submitted.

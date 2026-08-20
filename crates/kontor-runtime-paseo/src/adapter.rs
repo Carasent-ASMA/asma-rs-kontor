@@ -56,8 +56,9 @@ use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
-    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest, LaunchOutcome,
-    MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
+    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
+    HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
+    RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, ClaimedSeat, OccupiedSeat, RoleSlotKey,
@@ -99,11 +100,11 @@ use crate::wire::{
     MAX_DIRECTORY_PAGE, MAX_DIRECTORY_PAGES, MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES,
     PASEO_APP_VERSION, PaseoAgent, PaseoAgentAnswer, PaseoAgentPage, PaseoAgentStatus,
     PaseoCliAgentReloaded, PaseoCliAgentStarted, PaseoCliAgentUpdated, PaseoCliArchived,
-    PaseoCliStopped, PaseoCliWorkspaceCreated, PaseoDirection, PaseoPermissionResolved,
-    PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjection, PaseoSendAccepted,
-    PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck, PaseoTimelineCursor,
-    PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage, label,
-    normalize_entry, stream_permission_external_id,
+    PaseoCliStopped, PaseoCliWorkspaceCreated, PaseoDirection, PaseoFeature,
+    PaseoPermissionResolved, PaseoProject, PaseoProjectAdded, PaseoProjectList,
+    PaseoProjectRenamed, PaseoProjection, PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame,
+    PaseoSubscriptionAck, PaseoTimelineCursor, PaseoTimelinePage, PaseoWorkspace,
+    PaseoWorkspaceKind, PaseoWorkspacePage, label, normalize_entry, stream_permission_external_id,
 };
 
 /// Everything Paseo 0.3.1 can prove at trust grade A.
@@ -118,6 +119,7 @@ const SUPPORTED: &[RuntimeCapability] = &[
     RuntimeCapability::Resume,
     RuntimeCapability::SendMessage,
     RuntimeCapability::Cancel,
+    RuntimeCapability::Retire,
     RuntimeCapability::Inspect,
     RuntimeCapability::Adopt,
     RuntimeCapability::History,
@@ -2969,8 +2971,10 @@ impl PaseoAdapter {
 struct PaseoRetitlePlan {
     /// The binding this container is repaired under.
     snapshot: ContainerBindingSnapshot,
-    /// The workspace as the daemon reports it now.
-    before: PaseoWorkspace,
+    /// The native project as the daemon reports it now, for an ESW root.
+    before_project: Option<PaseoProject>,
+    /// The workspace as the daemon reports it now, for an ECP/TSW child.
+    before_workspace: Option<PaseoWorkspace>,
     /// The title it must end up carrying.
     desired: ExternalName,
     /// Whether that differs from what it carries now.
@@ -3027,8 +3031,50 @@ impl PaseoAdapter {
         }
 
         if request.projection == ContainerProjection::NativeRoot {
-            return Err(RuntimeError::UnsupportedCapability {
-                capability: RuntimeCapability::RetitleContainer,
+            let info = self.fetch_server_info().await?;
+            if !info.supports(PaseoFeature::ProjectRename) {
+                return Err(RuntimeError::UnsupportedCapability {
+                    capability: RuntimeCapability::RetitleContainer,
+                });
+            }
+            let before = self
+                .fetch_projects()
+                .await?
+                .into_iter()
+                .find(|project| project.id == request.bound_native_id.as_str())
+                .ok_or(RuntimeError::StaleBinding {
+                    rule: "the bound native project no longer exists on this runtime",
+                })?;
+            let identity = self.identity(ExternalId::parse(&before.id)?, generation);
+            let correlation = ContainerCorrelationEvidence::by_exact_id(
+                request.topology_node_id,
+                identity.clone(),
+                request.requested_at,
+            );
+            let desired = ExternalName::parse(&self.container_title(
+                request.scope.as_ref(),
+                request.task_id,
+                request.structural_name.as_str(),
+            )?)
+            .map_err(RuntimeError::Domain)?;
+            let changed = before.display_name != desired.as_str();
+            return Ok(PaseoRetitlePlan {
+                snapshot: ContainerBindingSnapshot {
+                    binding: ContainerBinding {
+                        id: request.container_binding_id,
+                        topology_node_id: request.topology_node_id,
+                        projection: ContainerProjection::NativeRoot,
+                        identity,
+                        root: WorkspaceRoot::parse(&before.root_path).ok(),
+                        bound_at: request.requested_at,
+                    },
+                    capabilities: declared,
+                    correlation,
+                },
+                before_project: Some(before),
+                before_workspace: None,
+                desired,
+                changed,
             });
         }
         if request.projection != ContainerProjection::NativeChild {
@@ -3086,7 +3132,8 @@ impl PaseoAdapter {
             },
             desired,
             changed,
-            before,
+            before_project: None,
+            before_workspace: Some(before),
         })
     }
 
@@ -3176,7 +3223,12 @@ impl PaseoAdapter {
         // version gate. Declared at every grade on purpose: a rename sets a title
         // and reads it back, so there is no readback a degraded daemon could
         // mislead a *placement* decision with.
-        if self.mcp.is_some() {
+        let supports_project_rename = self
+            .lock()
+            .server
+            .as_ref()
+            .is_some_and(|info| info.supports(PaseoFeature::ProjectRename));
+        if self.mcp.is_some() || supports_project_rename {
             capabilities
                 .supported
                 .insert(RuntimeCapability::RetitleContainer);
@@ -3920,6 +3972,61 @@ impl RuntimeAdapter for PaseoAdapter {
         outcome
     }
 
+    async fn retire_hosted_seat(
+        &self,
+        request: &HostedSeatRetireRequest,
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        let declared = self.declared().await?;
+        preflight(&declared, &OperationContext::new(RuntimeCapability::Retire))?;
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation > self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the hosted topology predecessor belongs to another runtime",
+            });
+        }
+        let native_id = request.identity.native_id.as_str();
+        let before = self.fetch_agent(native_id).await?;
+        let expected_seat = request.seat_binding_id.to_string();
+        if before.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
+            || before.label(label::HOSTED_SEAT) != Some("true")
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Self::verify_agent_route(&before, &request.model_rung, SeatAutonomy::Supervised)?;
+        if before.is_archived() {
+            return Ok(HostedSeatRetireOutcome {
+                identity: request.identity.clone(),
+                archived_at: request.requested_at,
+            });
+        }
+        if before.status != PaseoAgentStatus::Idle || !before.pending_permissions.is_empty() {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "Core Team route correction requires an idle predecessor with no pending permission",
+            });
+        }
+        let output = self
+            .transport
+            .run(&PaseoCommand::agent_archive(native_id))
+            .await?;
+        let archived: PaseoCliArchived = output.parse("PaseoCliArchived")?;
+        if archived.agent_id.as_deref() != Some(native_id) || archived.archived_at.is_none() {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let after = self.fetch_agent(native_id).await?;
+        if after.id != before.id
+            || after.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
+            || !after.is_archived()
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(HostedSeatRetireOutcome {
+            identity: request.identity.clone(),
+            archived_at: request.requested_at,
+        })
+    }
+
     async fn message_hosted_seat(
         &self,
         request: &HostedSeatMessageRequest,
@@ -4060,20 +4167,66 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &RetitleContainerRequest,
     ) -> RuntimeResult<RetitleContainerOutcome> {
+        let plan = self.retitle_plan(request).await?;
+        if let Some(before) = &plan.before_project {
+            if plan.changed {
+                let rpc = PaseoRpc::project_rename(
+                    self.next_request_id(),
+                    &before.id,
+                    plan.desired.as_str(),
+                );
+                let frame = self.transport.request(&rpc).await?;
+                let renamed: PaseoProjectRenamed = frame.resolve(&rpc, "PaseoProjectRenamed")?;
+                if !renamed.accepted
+                    || renamed.project_id != before.id
+                    || renamed.custom_name.as_deref() != Some(plan.desired.as_str())
+                {
+                    return Err(RuntimeError::Transport {
+                        rule: "Paseo refused or mis-correlated the native project rename",
+                    });
+                }
+            }
+            let after = self
+                .fetch_projects()
+                .await?
+                .into_iter()
+                .find(|project| project.id == before.id)
+                .ok_or(RuntimeError::StaleBinding {
+                    rule: "the addressed native project is gone after the rename",
+                })?;
+            if after.root_path != before.root_path {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the renamed native project came back rooted in another directory",
+                });
+            }
+            if after.display_name != plan.desired.as_str() {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the native project did not come back carrying the title it was renamed to",
+                });
+            }
+            return Ok(RetitleContainerOutcome {
+                observed_title: after.display_name,
+                snapshot: plan.snapshot,
+                desired_title: plan.desired,
+                changed: plan.changed,
+            });
+        }
+
+        let before = plan
+            .before_workspace
+            .as_ref()
+            .expect("every non-project retitle plan carries a workspace");
         let mcp = self
             .mcp
             .as_ref()
             .ok_or(RuntimeError::UnsupportedCapability {
                 capability: RuntimeCapability::RetitleContainer,
             })?;
-        let plan = self.retitle_plan(request).await?;
         if plan.changed {
-            // The id and the new title, and nothing else. Paseo is given nothing
-            // it could move: no parent, no directory, no placement.
             mcp.call(
                 RENAME_WORKSPACE_TOOL,
                 serde_json::json!({
-                    "workspaceId": plan.before.id,
+                    "workspaceId": before.id,
                     "title": plan.desired.as_str(),
                 }),
             )
@@ -4086,7 +4239,7 @@ impl RuntimeAdapter for PaseoAdapter {
         // container is still in the same project, still in the same directory,
         // and still the same id.
         let after = self.retitle_readback(request).await?;
-        if after.workspace_directory != plan.before.workspace_directory {
+        if after.workspace_directory != before.workspace_directory {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the renamed container came back working in another directory",
             });
@@ -4117,14 +4270,23 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &RetitleContainerRequest,
     ) -> RuntimeResult<RetitleContainerOutcome> {
-        if self.mcp.is_none() {
-            return Err(RuntimeError::UnsupportedCapability {
-                capability: RuntimeCapability::RetitleContainer,
-            });
-        }
         let plan = self.retitle_plan(request).await?;
+        let observed_title = if let Some(before) = &plan.before_project {
+            before.display_name.clone()
+        } else {
+            if self.mcp.is_none() {
+                return Err(RuntimeError::UnsupportedCapability {
+                    capability: RuntimeCapability::RetitleContainer,
+                });
+            }
+            plan.before_workspace
+                .as_ref()
+                .expect("every non-project retitle plan carries a workspace")
+                .visible_title()
+                .to_owned()
+        };
         Ok(RetitleContainerOutcome {
-            observed_title: plan.before.visible_title().to_owned(),
+            observed_title,
             snapshot: plan.snapshot,
             desired_title: plan.desired,
             changed: plan.changed,
@@ -4727,11 +4889,17 @@ impl RuntimeAdapter for PaseoAdapter {
             &project,
             &workspace_id,
         )?;
-        let changed = !before.matches_labels(&labels);
+        let title = self.scoped_agent_display_name(&request.role_slot_id, &scope)?;
+        let changed =
+            !before.matches_labels(&labels) || before.title.as_deref() != Some(title.as_str());
         if changed {
             let output = self
                 .transport
-                .run(&PaseoCommand::agent_update_labels(&native_id, &labels))
+                .run(&PaseoCommand::agent_update(
+                    &native_id,
+                    Some(&title),
+                    &labels,
+                ))
                 .await?;
             let updated: PaseoCliAgentUpdated = output.parse("PaseoCliAgentUpdated")?;
             if updated.agent_id != native_id {
@@ -4743,11 +4911,13 @@ impl RuntimeAdapter for PaseoAdapter {
         if after.id != before.id
             || after.provider_session_id() != before.provider_session_id()
             || !after.matches_labels(&labels)
+            || after.title.as_deref() != Some(title.as_str())
         {
             return Err(RuntimeError::CorrelationFailed);
         }
         Ok(ReconciledSessionLabels {
             identity: binding.identity().clone(),
+            title,
             labels: after.labels,
             changed,
             observed_at: request.requested_at,

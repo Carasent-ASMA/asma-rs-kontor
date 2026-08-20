@@ -995,6 +995,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply one still-current Core Team route correction without replacing its logical seat. */
+        post: operations["apply_core_team_route"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview an exact provider/model correction for one persistent Core Team seat. */
+        post: operations["preview_core_team_route"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize": {
         parameters: {
             query?: never;
@@ -2537,7 +2571,7 @@ export interface components {
          *     needs to tell them apart without diffing.
          * @enum {string}
          */
-        AppliedDto: "created" | "unchanged";
+        AppliedDto: "created" | "updated" | "unchanged";
         /** @description One epic after it was applied. */
         AppliedEpicDto: {
             /** @description Whether this call created it. */
@@ -2636,6 +2670,8 @@ export interface components {
              * @description The revision a write must present.
              */
             revision: number;
+            /** @description Durable compact display identity, once declared. */
+            short_code?: string | null;
             /** @description Its lifecycle state. */
             state: string;
             /** @description The task. */
@@ -3612,6 +3648,85 @@ export interface components {
             /** @description The roles the Core Team should seat, in order. */
             seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
         };
+        /** @description Apply one still-current Core Team route preview. */
+        CoreTeamRouteApplyRequest: {
+            /** @description Provider/model/effort that should fill the same logical seat afterwards. */
+            desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /**
+             * Format: int64
+             * @description Exact runtime generation of that predecessor.
+             */
+            expected_generation: number;
+            /** @description Exact native predecessor the caller observed. */
+            expected_native_id: string;
+            /**
+             * Format: int64
+             * @description Epic revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Hash returned by preview. */
+            preview_hash: string;
+            /** @description Logical SeatBinding that must be preserved. */
+            seat_binding_id: string;
+        };
+        /** @description Completed in-place route correction with exact identity readback. */
+        CoreTeamRouteOutcomeDto: {
+            /** @description Core Team projection after correction. */
+            core_team: components["schemas"]["CoreTeamDto"];
+            /** @description Archived predecessor native identity. */
+            predecessor_native_id: string;
+            /** @description Audited mutation receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Preserved logical SeatBinding. */
+            seat_binding_id: string;
+            /** @description Active successor native identity; equal to predecessor for an unchanged route. */
+            successor_native_id: string;
+        };
+        /** @description Read-only route-correction plan for one persistent Core Team seat. */
+        CoreTeamRoutePreviewDto: {
+            /** @description Frozen current route. */
+            current_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Requested replacement route. */
+            desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Epic whose ECP hosts the seat. */
+            epic_id: string;
+            /** @description Exact predecessor native identity. */
+            predecessor_native_id: string;
+            /** @description Hash the apply must name. */
+            preview_hash: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm that computed the plan. */
+            realm_id: string;
+            /** @description Unchanged logical seat identity. */
+            seat_binding_id: string;
+            /**
+             * Format: int64
+             * @description Projection cursor read by the preview.
+             */
+            snapshot_cursor: number;
+            /** @description Whether a native archive/launch is required. */
+            would_replace_native: boolean;
+        };
+        /** @description Exact in-place correction requested for one persistent Core Team seat. */
+        CoreTeamRoutePreviewRequest: {
+            /** @description Provider/model/effort that should fill the same logical seat afterwards. */
+            desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /**
+             * Format: int64
+             * @description Exact runtime generation of that predecessor.
+             */
+            expected_generation: number;
+            /** @description Exact native predecessor the caller observed. */
+            expected_native_id: string;
+            /**
+             * Format: int64
+             * @description Epic revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Logical SeatBinding that must be preserved. */
+            seat_binding_id: string;
+        };
         /**
          * @description One Core Team seat: the standard role, the policy it is held under, and the
          *     seat filling it if any.
@@ -3830,6 +3945,8 @@ export interface components {
              * @description The revision a write must present.
              */
             revision: number;
+            /** @description Durable compact display identity used by native containers and seats. */
+            short_code?: string | null;
             /** @description Its lifecycle state. */
             state: string;
             /** @description The task. */
@@ -3877,6 +3994,12 @@ export interface components {
             import_state?: components["schemas"]["EpicImportStateDto"];
             /** @description The module the task contends for, if any. */
             module?: string | null;
+            /**
+             * @description Compact durable display identity for this task's native container and
+             *     seats. Omission preserves an existing declaration but leaves a legacy
+             *     task ineligible for materialization or retitle until explicitly mapped.
+             */
+            short_code?: string | null;
             /** @description The external tickets to link. */
             ticket_links?: components["schemas"]["TicketLinkRequest"][];
             /** @description The title, which is this task's identity inside the epic. */
@@ -4388,6 +4511,8 @@ export interface components {
         PreviewEpicTaskDto: {
             /** @description Whether apply would create it or find it unchanged. */
             applied: components["schemas"]["AppliedDto"];
+            /** @description Durable compact display identity apply would preserve or add. */
+            short_code?: string | null;
             /** @description The lifecycle projection apply would persist. */
             state: string;
             /**
@@ -5587,6 +5712,8 @@ export interface components {
             native_id: string;
             /** @description Mutation receipt, or replay receipt. */
             receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Canonical native seat title read back after repair. */
+            title: string;
         };
         /** @description Settle one consultation. */
         SettleConsultationRequest: {
@@ -9124,6 +9251,145 @@ export interface operations {
                 content?: never;
             };
             /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_core_team_route: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamRouteApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamRouteOutcomeDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The runtime could not be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_core_team_route: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamRoutePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamRoutePreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The runtime could not be reached */
             503: {
                 headers: {
                     [name: string]: unknown;

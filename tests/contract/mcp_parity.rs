@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 127 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 127 is forever — it is what makes a later change to the daemon's
+//! 129 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 129 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -526,12 +526,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "127 forever": this is what makes a later contract change fail here, so a
+    // Not "129 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        127,
+        129,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -541,7 +541,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        128,
+        130,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -706,6 +706,8 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_core_team_preview", CallerTier::Admin),
         ("kontor_core_team_apply", CallerTier::Admin),
         ("kontor_core_team_materialize", CallerTier::Operator),
+        ("kontor_core_team_route_preview", CallerTier::Admin),
+        ("kontor_core_team_route_apply", CallerTier::Admin),
         ("kontor_quick_roles_list", CallerTier::Observer),
         ("kontor_quick_session_ensure", CallerTier::Operator),
         ("kontor_promotion_preview", CallerTier::Operator),

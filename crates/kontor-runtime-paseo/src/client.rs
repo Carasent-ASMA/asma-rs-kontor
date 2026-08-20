@@ -358,7 +358,21 @@ impl PaseoCommand {
     /// part of what the launch was admitted as, not a dial to turn afterwards.
     #[must_use]
     pub fn agent_update_labels(agent_id: &str, labels: &BTreeMap<String, String>) -> Self {
+        Self::agent_update(agent_id, None, labels)
+    }
+
+    /// `paseo agent update {id} --name {title} --label …` repairs display and
+    /// correlation projection without changing provider, model or authority.
+    #[must_use]
+    pub fn agent_update(
+        agent_id: &str,
+        title: Option<&str>,
+        labels: &BTreeMap<String, String>,
+    ) -> Self {
         let mut argv = Argv::new(&["agent", "update"]).value(agent_id);
+        if let Some(title) = title {
+            argv = argv.option("--name", title);
+        }
         for (key, value) in labels {
             argv = argv.option("--label", &format!("{key}={value}"));
         }
@@ -446,7 +460,7 @@ impl PaseoCommand {
         self.mutates
     }
 
-    /// The `--title` this command sets, if it sets one.
+    /// The visible title this command sets, if it sets one.
     ///
     /// Narrow on purpose, and deliberately not part of [`PaseoCommand::route`].
     /// The route omits every foreign value so a ledger assertion can never
@@ -459,7 +473,7 @@ impl PaseoCommand {
     pub fn title(&self) -> Option<&str> {
         self.argv
             .iter()
-            .position(|argument| argument == "--title")
+            .position(|argument| argument == "--title" || argument == "--name")
             .and_then(|flag| self.argv.get(flag + 1))
             .map(String::as_str)
     }
@@ -698,6 +712,21 @@ impl PaseoRpc {
             // derives a project's display name from the directory, which is why
             // `prepare_project` reports drift instead of setting one.
             serde_json::json!({ "cwd": cwd }),
+        )
+    }
+
+    /// `project.rename.request`, available only when `projectRename` was
+    /// advertised by the exact daemon connection being driven.
+    #[must_use]
+    pub fn project_rename(request_id: String, project_id: &str, custom_name: &str) -> Self {
+        Self::mutate(
+            "project.rename.request",
+            "project.rename.response",
+            request_id,
+            serde_json::json!({
+                "projectId": project_id,
+                "customName": custom_name,
+            }),
         )
     }
 

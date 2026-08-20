@@ -113,6 +113,12 @@ pub const UNSUPPORTED: &[(RuntimeCapability, &str)] = &[
          that created it",
     ),
     (
+        RuntimeCapability::Retire,
+        "AO exposes no evidence-preserving archive operation for a hosted session, so a \
+         provider route cannot be corrected without losing the predecessor's durable \
+         runtime evidence",
+    ),
+    (
         RuntimeCapability::Adopt,
         "AO cannot plant Kontor's full immutable correlation label into a branch that \
          already exists, so an existing session cannot be proven to belong to a run",

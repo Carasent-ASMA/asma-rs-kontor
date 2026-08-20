@@ -2178,6 +2178,9 @@ fn epic_body(
                         .replace(' ', "-")
                 );
             }
+            if task.get("short_code").is_none() {
+                task["short_code"] = serde_json::json!(format!("TEST-{}", index + 1));
+            }
             task
         })
         .collect::<Vec<_>>();
@@ -2338,6 +2341,107 @@ async fn reapplying_the_identical_epic_writes_nothing_and_drift_is_refused() {
     .send(&world)
     .await;
     assert_eq!(reused.status, 409, "{}", reused.body);
+}
+
+/// Legacy imports may add one explicit short-code mapping without changing the
+/// task, epic, lifecycle or ticket identities. Descriptions, Jira keys and
+/// internal ids remain unavailable as implicit display-name sources.
+#[tokio::test]
+async fn legacy_task_short_code_mapping_previews_applies_and_replays_in_place() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "short-code-project",
+        "Short-code migration",
+        "/tmp/kontor-short-code",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let legacy = epic_body(
+        revision,
+        "ASMA-7675 · QNR v2 Nonprod Delivery",
+        &category,
+        serde_json::json!([{
+            "title": "ASMA-7676 · Prepare the very long non-production delivery foundation",
+            "short_code": null,
+            "import_state": "completed",
+            "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-7676"}]
+        }]),
+    );
+    let first = Call::post(format!("/v1/projects/{project}/epics:apply"), &legacy)
+        .signed_as(&world, "admin")
+        .with_key("short-code-legacy")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let epic = first.json()["epic_id"].as_str().expect("epic").to_owned();
+    let task = first.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("task")
+        .to_owned();
+    assert!(first.json()["tasks"][0]["short_code"].is_null());
+
+    let mut mapped = legacy.clone();
+    mapped["tasks"][0]["short_code"] = serde_json::json!("QNR-NP-01");
+    let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &mapped)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["applied"], "updated");
+    assert_eq!(preview.json()["epic_id"], epic);
+    assert_eq!(preview.json()["tasks"][0]["task_id"], task);
+    assert_eq!(preview.json()["tasks"][0]["short_code"], "QNR-NP-01");
+    assert_eq!(preview.json()["tasks"][0]["state"], "done");
+
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &mapped)
+        .signed_as(&world, "admin")
+        .with_key("short-code-map")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["applied"], "updated");
+    assert_eq!(applied.json()["epic_id"], epic);
+    assert_eq!(applied.json()["tasks"][0]["task_id"], task);
+    assert_eq!(applied.json()["tasks"][0]["short_code"], "QNR-NP-01");
+    assert_eq!(applied.json()["tasks"][0]["state"], "done");
+
+    let readback = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(readback.status, 200, "{}", readback.body);
+    assert_eq!(readback.json()["tasks"][0]["task_id"], task);
+    assert_eq!(readback.json()["tasks"][0]["short_code"], "QNR-NP-01");
+    assert_eq!(readback.json()["tasks"][0]["state"], "done");
+
+    let replay = Call::post(format!("/v1/projects/{project}/epics:apply"), &mapped)
+        .signed_as(&world, "admin")
+        .with_key("short-code-replay")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    assert_eq!(replay.json()["tasks"][0]["short_code"], "QNR-NP-01");
+
+    for invalid in [
+        serde_json::json!("ASMA-7676"),
+        serde_json::json!("01a019c0-eee7-72a1-a8a7-7fff1ddce8f3"),
+    ] {
+        let mut refused = legacy.clone();
+        refused["tasks"][0]["short_code"] = invalid;
+        let answer = Call::post(format!("/v1/projects/{project}/epics:preview"), &refused)
+            .signed_as(&world, "admin")
+            .send(&world)
+            .await;
+        assert_eq!(answer.status, 400, "{}", answer.body);
+    }
 }
 
 /// GAP-06. A runtime plane serves a host, not one epic. Each epic therefore
@@ -15043,28 +15147,73 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
         .to_owned();
 
     let category = first_category(&world).await;
-    let applied = Call::post(
-        format!("/v1/projects/{project}/epics:apply"),
-        &epic_body(
-            project_revision,
-            "ASMA-7675 · QNR v2 Nonprod Delivery",
-            &category,
-            serde_json::json!([{
-                "title": "ASMA-7676 · grid-column ops and question-ownership invariant",
-                "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-7676"}],
-                "worktree": "/tmp/kontor-legacy-naming/asma-7676"
-            }]),
-        ),
-    )
-    .signed_as(&world, "admin")
-    .with_key("legacy-naming-epic")
-    .send(&world)
-    .await;
+    let legacy_body = epic_body(
+        project_revision,
+        "ASMA-7675 · QNR v2 Nonprod Delivery",
+        &category,
+        serde_json::json!([{
+            "title": "ASMA-7676 · grid-column ops and question-ownership invariant",
+            "short_code": null,
+            "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-7676"}],
+            "worktree": "/tmp/kontor-legacy-naming/asma-7676"
+        }]),
+    );
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &legacy_body)
+        .signed_as(&world, "admin")
+        .with_key("legacy-naming-epic")
+        .send(&world)
+        .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"]
         .as_str()
         .expect("the epic id")
         .to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the task id")
+        .to_owned();
+
+    // The description, worktree slug, Jira key and UUID are all available,
+    // but none is an authorized substitute for the missing backlog code.
+    let calls_before_refusal = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("legacy-naming-refuses-inference")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked");
+    assert!(
+        refused.body.contains("durable short code"),
+        "the refusal must name the supported prerequisite: {}",
+        refused.body
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_refusal,
+        "missing short-code validation must precede runtime contact"
+    );
+
+    // The supported migration adds only the explicit mapping and preserves the
+    // epic/task/ticket identities before admission is retried.
+    let mut mapped_body = legacy_body.clone();
+    mapped_body["tasks"][0]["short_code"] = serde_json::json!("QNR-NP-01");
+    let mapped = Call::post(format!("/v1/projects/{project}/epics:apply"), &mapped_body)
+        .signed_as(&world, "admin")
+        .with_key("legacy-naming-explicit-code")
+        .send(&world)
+        .await;
+    assert_eq!(mapped.status, 200, "{}", mapped.body);
+    assert_eq!(mapped.json()["applied"], "updated");
+    assert_eq!(mapped.json()["epic_id"], epic);
+    assert_eq!(mapped.json()["tasks"][0]["task_id"], task);
+    assert_eq!(mapped.json()["tasks"][0]["short_code"], "QNR-NP-01");
     let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(&world, "observer")
         .send(&world)
@@ -15167,10 +15316,7 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
         title_for("ECP"),
         "ECP · ASMA-7675 · QNR v2 Nonprod Delivery"
     );
-    assert_eq!(
-        title_for("TSW"),
-        "TSW · ASMA-7676 · grid-column-ops-and-question-ownership-invariant"
-    );
+    assert_eq!(title_for("TSW"), "TSW · ASMA-7676 · QNR-NP-01");
 }
 
 /// Ensuring a scope creates the chain the specification declares.
@@ -17475,6 +17621,13 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         .as_str()
         .expect("LSA native id")
         .to_owned();
+    let tpm_native = native_tpm["native_seat"]["native_id"]
+        .as_str()
+        .expect("TPM native id")
+        .to_owned();
+    let tpm_generation = native_tpm["native_seat"]["generation"]
+        .as_u64()
+        .expect("TPM generation");
 
     let replayed_native = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
@@ -17495,6 +17648,124 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         .clone();
     assert_eq!(replayed_lsa["seat_binding_id"], lsa_binding);
     assert_eq!(replayed_lsa["native_seat"]["native_id"], lsa_native);
+
+    // A wrong explicit predecessor is refused before the runtime is touched.
+    let route_request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": tpm_binding,
+        "expected_native_id": tpm_native,
+        "expected_generation": tpm_generation,
+        "desired_model_route": {
+            "provider": "opencode",
+            "model": "deepseek/deepseek-v4-flash",
+            "effort": "high"
+        }
+    });
+    let calls_before_refusal = world.fake.calls().len();
+    let mut wrong_predecessor = route_request.clone();
+    wrong_predecessor["expected_generation"] = serde_json::json!(tpm_generation + 1);
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &wrong_predecessor,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "revision_conflict");
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_refusal,
+        "an identity refusal reached the runtime"
+    );
+
+    // The authorized correction archives only the exact native predecessor,
+    // launches the requested fallback, and preserves the logical SeatBinding.
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &route_request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["seat_binding_id"], tpm_binding);
+    assert_eq!(preview.json()["predecessor_native_id"], tpm_native);
+    assert_eq!(preview.json()["would_replace_native"], true);
+    let route_body = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": tpm_binding,
+        "expected_native_id": tpm_native,
+        "expected_generation": tpm_generation,
+        "desired_model_route": {
+            "provider": "opencode",
+            "model": "deepseek/deepseek-v4-flash",
+            "effort": "high"
+        },
+        "preview_hash": preview.json()["preview_hash"],
+    });
+    let calls_before_apply = world.fake.calls().len();
+    let corrected = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &route_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("core-team-tpm-route-correction")
+    .send(world)
+    .await;
+    assert_eq!(corrected.status, 200, "{}", corrected.body);
+    assert_eq!(corrected.json()["seat_binding_id"], tpm_binding);
+    assert_eq!(corrected.json()["predecessor_native_id"], tpm_native);
+    assert_ne!(corrected.json()["successor_native_id"], tpm_native);
+    assert_eq!(corrected.json()["receipt"]["applied"], "updated");
+    let corrected_tpm = corrected.json()["core_team"]["seats"]
+        .as_array()
+        .expect("corrected seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "TPM")
+        .expect("corrected TPM")
+        .clone();
+    assert_eq!(corrected_tpm["seat_binding_id"], tpm_binding);
+    assert_eq!(
+        corrected_tpm["native_seat"]["native_id"],
+        corrected.json()["successor_native_id"]
+    );
+    assert_eq!(
+        corrected_tpm["native_seat"]["model_route"]["provider"],
+        "opencode"
+    );
+    let tpm_binding_id = SeatBindingId::parse(&tpm_binding).expect("TPM binding id");
+    let route_calls = &world.fake.calls()[calls_before_apply..];
+    assert!(
+        route_calls.contains(&AdapterCall::RetireHostedSeat(tpm_binding_id)),
+        "the predecessor was not retired: {route_calls:?}"
+    );
+    assert!(
+        route_calls.contains(&AdapterCall::LaunchHostedSeat(tpm_binding_id)),
+        "the successor was not launched: {route_calls:?}"
+    );
+
+    let calls_before_replay = world.fake.calls().len();
+    let replayed_route = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &route_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("core-team-tpm-route-correction")
+    .send(world)
+    .await;
+    assert_eq!(replayed_route.status, 200, "{}", replayed_route.body);
+    assert_eq!(replayed_route.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(replayed_route.json()["seat_binding_id"], tpm_binding);
+    assert_eq!(
+        replayed_route.json()["successor_native_id"],
+        corrected.json()["successor_native_id"]
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_replay,
+        "a replay touched the runtime"
+    );
 
     let message_id = kontor_runtime::request::MessageId::generate().to_string();
     let handoff = Call::post(

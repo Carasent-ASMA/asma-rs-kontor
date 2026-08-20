@@ -51,6 +51,12 @@ pub enum RuntimeCapability {
     SendMessage,
     /// Ask an existing native session to stop.
     Cancel,
+    /// Retire an exact idle native session while preserving its evidence.
+    ///
+    /// Separate from [`Self::Cancel`]: cancellation asks a running turn to
+    /// stop, while retirement archives a session that has already reached a
+    /// safe, idle boundary so a causally linked replacement can take its seat.
+    Retire,
     /// Read the current authoritative state of one native session.
     Inspect,
     /// Bind an already-running native session to an agent run.
@@ -86,6 +92,7 @@ impl RuntimeCapability {
         Self::Resume,
         Self::SendMessage,
         Self::Cancel,
+        Self::Retire,
         Self::Inspect,
         Self::Adopt,
         Self::History,
@@ -107,6 +114,7 @@ impl RuntimeCapability {
             Self::Resume => "resume",
             Self::SendMessage => "send_message",
             Self::Cancel => "cancel",
+            Self::Retire => "retire",
             Self::Inspect => "inspect",
             Self::Adopt => "adopt",
             Self::History => "history",
@@ -133,6 +141,7 @@ impl RuntimeCapability {
                 | Self::Resume
                 | Self::SendMessage
                 | Self::Cancel
+                | Self::Retire
                 | Self::Adopt
                 | Self::PermissionResponse
                 | Self::Compact

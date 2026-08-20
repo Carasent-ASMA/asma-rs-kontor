@@ -42,7 +42,8 @@ use kontor_core::id::{
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
 use kontor_runtime::adapter::{
-    HostedSeatLaunchRequest, LaunchOutcome, RuntimeAdapter, RuntimeError, RuntimeResult,
+    HostedSeatLaunchRequest, HostedSeatRetireRequest, LaunchOutcome, RuntimeAdapter, RuntimeError,
+    RuntimeResult,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
@@ -3611,6 +3612,8 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
 
     let mut leaked = v(AGENT);
     leaked["agent"]["labels"][label::JIRA_EPIC] = serde_json::json!(MINI_PROJECT);
+    leaked["agent"]["title"] =
+        serde_json::json!("SWE · grid-column-ops-and-question-ownership-invariant");
     plane.daemon.queue_answer_rpc("fetch_agent_request", leaked);
     plane
         .daemon
@@ -3635,6 +3638,7 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
         .expect("the stale labels are repaired");
     assert!(repaired.changed);
     assert_eq!(repaired.identity, *launched.snapshot.identity());
+    assert_eq!(repaired.title, "Implement · KON-11 · A");
     assert_eq!(
         repaired.labels.get(label::JIRA_EPIC).map(String::as_str),
         Some("ASMA-7744")
@@ -3644,6 +3648,11 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
         Some(MINI_PROJECT)
     );
     assert_eq!(plane.daemon.count("agent update agt_implement"), 1);
+    assert_eq!(
+        plane.daemon.titles("agent update agt_implement"),
+        ["Implement · KON-11 · A"],
+        "the same mutation repairs the canonical seat title"
+    );
 
     let replayed = plane
         .adapter
@@ -4377,6 +4386,61 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
     assert!(outcome.created);
     assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
     assert_eq!(plane.daemon.count("agent run"), 1);
+}
+
+/// An admin-authorized Core Team route correction archives the exact idle
+/// native predecessor and proves the archive by the same id. A replay observes
+/// the archived stamp and emits no second native effect.
+#[tokio::test]
+async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved() {
+    let seat_binding_id = SeatBindingId::generate();
+    let labels = serde_json::json!({
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+    });
+    let mut before = v(AGENT);
+    before["agent"]["labels"] = labels.clone();
+    let mut after = before.clone();
+    after["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
+
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+        .announcing(&v(SERVER_INFO))
+        .then_answering_rpc("fetch_agent_request", before)
+        .answering_rpc("fetch_agent_request", after);
+    let plane = Plane::fresh(recorded);
+    let request = HostedSeatRetireRequest {
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        model_rung: model_rung(),
+        requested_at: at("2026-08-20T05:10:00Z"),
+    };
+
+    let retired = plane
+        .adapter
+        .retire_hosted_seat(&request)
+        .await
+        .expect("the exact idle predecessor is retired");
+    assert_eq!(retired.identity, request.identity);
+    assert_eq!(plane.daemon.count("agent archive agt_implement"), 1);
+
+    let replayed = plane
+        .adapter
+        .retire_hosted_seat(&request)
+        .await
+        .expect("the archived predecessor is an idempotent readback");
+    assert_eq!(replayed.identity, request.identity);
+    assert_eq!(
+        plane.daemon.count("agent archive agt_implement"),
+        1,
+        "retirement replay must not archive twice"
+    );
 }
 
 /// A legacy alias at the canonical path is retitle-required, not vacancy.
@@ -5124,6 +5188,76 @@ async fn a_native_project_retitle_refuses_without_treating_the_project_as_a_work
         "no workspace rename was attempted"
     );
     assert!(plane.daemon.mutations().is_empty());
+}
+
+/// A daemon advertising the supported project-rename envelope repairs the ESW
+/// project in place. The project id and root path are read back unchanged; no
+/// workspace facade call or replacement project is involved.
+#[tokio::test]
+async fn a_native_project_retitle_uses_project_rename_and_preserves_identity() {
+    let mut server_info = v(SERVER_INFO);
+    server_info["features"]["projectRename"] = serde_json::json!(true);
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&server_info)
+        .then_answering_rpc("project.list.request", v(PROJECT_LIST_RENAMED))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc(
+            "project.rename.request",
+            serde_json::json!({
+                "requestId": "fixture",
+                "projectId": PROJECT_ID,
+                "accepted": true,
+                "customName": "Epic · ASMA-7744 · Kontor MVP",
+                "error": null
+            }),
+        );
+    let plane = Plane::fresh(recorded);
+    let request = RetitleContainerRequest {
+        projection: ContainerProjection::NativeRoot,
+        bound_native_id: external(PROJECT_ID),
+        bound_project_native_id: None,
+        task_id: None,
+        scope: Some(epic_execution_scope()),
+        structural_name: name("Epic · ASMA-7744 · Kontor MVP"),
+        ..retitle(node(NODE_B))
+    };
+
+    let preview = plane
+        .adapter
+        .preview_retitle_container(&request)
+        .await
+        .expect("the advertised operation can be previewed");
+    assert!(preview.changed);
+    assert_eq!(preview.observed_title, "kontor mvp (old name)");
+
+    // Preview consumed the queued stale read. Put it back for apply's plan;
+    // the standing answer remains the post-rename readback.
+    plane
+        .daemon
+        .queue_answer_rpc("project.list.request", v(PROJECT_LIST_RENAMED));
+    let outcome = plane
+        .adapter
+        .retitle_container(&request)
+        .await
+        .expect("the project is renamed through the supported envelope");
+    assert!(outcome.changed);
+    assert_eq!(outcome.observed_title, "Epic · ASMA-7744 · Kontor MVP");
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        PROJECT_ID
+    );
+    assert_eq!(
+        outcome
+            .snapshot
+            .binding
+            .root
+            .as_ref()
+            .map(WorkspaceRoot::as_str),
+        Some(CWD)
+    );
+    assert_eq!(plane.daemon.count("rpc project.rename.request"), 1);
+    assert_eq!(plane.daemon.count("rpc project.add.request"), 0);
 }
 
 /// The capability is declared from the route, so a caller can tell before asking.

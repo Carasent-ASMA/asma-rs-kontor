@@ -2900,6 +2900,156 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply one still-current Core Team route correction without replacing its logical seat.",
+        "operationId": "apply_core_team_route",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoreTeamRouteApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamRouteOutcomeDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "503": {
+            "description": "The runtime could not be reached"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview an exact provider/model correction for one persistent Core Team seat.",
+        "operationId": "preview_core_team_route",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoreTeamRoutePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamRoutePreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The runtime could not be reached"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize": {
       "post": {
         "tags": [
@@ -7669,6 +7819,7 @@
         "description": "Whether an ensure/apply wrote the row or found it already matching.\n\nIt is on every item of every declarative answer, because \"it worked\" and \"it\nwas already like that\" are different facts and a caller reconciling a plan\nneeds to tell them apart without diffing.",
         "enum": [
           "created",
+          "updated",
           "unchanged"
         ]
       },
@@ -7884,6 +8035,13 @@
             "format": "int64",
             "description": "The revision a write must present.",
             "minimum": 0
+          },
+          "short_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Durable compact display identity, once declared."
           },
           "state": {
             "type": "string",
@@ -10010,6 +10168,179 @@
         },
         "additionalProperties": false
       },
+      "CoreTeamRouteApplyRequest": {
+        "type": "object",
+        "description": "Apply one still-current Core Team route preview.",
+        "required": [
+          "expected_revision",
+          "seat_binding_id",
+          "expected_native_id",
+          "expected_generation",
+          "desired_model_route",
+          "preview_hash"
+        ],
+        "properties": {
+          "desired_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Provider/model/effort that should fill the same logical seat afterwards."
+          },
+          "expected_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact runtime generation of that predecessor.",
+            "minimum": 0
+          },
+          "expected_native_id": {
+            "type": "string",
+            "description": "Exact native predecessor the caller observed."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epic revision the caller read.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by preview."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Logical SeatBinding that must be preserved."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CoreTeamRouteOutcomeDto": {
+        "type": "object",
+        "description": "Completed in-place route correction with exact identity readback.",
+        "required": [
+          "core_team",
+          "seat_binding_id",
+          "predecessor_native_id",
+          "successor_native_id",
+          "receipt"
+        ],
+        "properties": {
+          "core_team": {
+            "$ref": "#/components/schemas/CoreTeamDto",
+            "description": "Core Team projection after correction."
+          },
+          "predecessor_native_id": {
+            "type": "string",
+            "description": "Archived predecessor native identity."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Audited mutation receipt."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Preserved logical SeatBinding."
+          },
+          "successor_native_id": {
+            "type": "string",
+            "description": "Active successor native identity; equal to predecessor for an unchanged route."
+          }
+        }
+      },
+      "CoreTeamRoutePreviewDto": {
+        "type": "object",
+        "description": "Read-only route-correction plan for one persistent Core Team seat.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "epic_id",
+          "seat_binding_id",
+          "predecessor_native_id",
+          "current_model_route",
+          "desired_model_route",
+          "would_replace_native",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "current_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Frozen current route."
+          },
+          "desired_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Requested replacement route."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "Epic whose ECP hosts the seat."
+          },
+          "predecessor_native_id": {
+            "type": "string",
+            "description": "Exact predecessor native identity."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash the apply must name."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that computed the plan."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Unchanged logical seat identity."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Projection cursor read by the preview."
+          },
+          "would_replace_native": {
+            "type": "boolean",
+            "description": "Whether a native archive/launch is required."
+          }
+        }
+      },
+      "CoreTeamRoutePreviewRequest": {
+        "type": "object",
+        "description": "Exact in-place correction requested for one persistent Core Team seat.",
+        "required": [
+          "expected_revision",
+          "seat_binding_id",
+          "expected_native_id",
+          "expected_generation",
+          "desired_model_route"
+        ],
+        "properties": {
+          "desired_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Provider/model/effort that should fill the same logical seat afterwards."
+          },
+          "expected_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact runtime generation of that predecessor.",
+            "minimum": 0
+          },
+          "expected_native_id": {
+            "type": "string",
+            "description": "Exact native predecessor the caller observed."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epic revision the caller read.",
+            "minimum": 0
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Logical SeatBinding that must be preserved."
+          }
+        },
+        "additionalProperties": false
+      },
       "CoreTeamSeatDto": {
         "type": "object",
         "description": "One Core Team seat: the standard role, the policy it is held under, and the\nseat filling it if any.\n\nPresence and ad-hoc eligibility are reported, not just accepted. A Core Team\nedit states the whole roster, so a caller that could not read the policy of\nthe seats it is not changing would have to invent one for each of them — and\nthe first such edit would silently rewrite every other seat's presence.",
@@ -10462,6 +10793,13 @@
             "description": "The revision a write must present.",
             "minimum": 0
           },
+          "short_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Durable compact display identity used by native containers and seats."
+          },
           "state": {
             "type": "string",
             "description": "Its lifecycle state."
@@ -10523,6 +10861,13 @@
               "null"
             ],
             "description": "The module the task contends for, if any."
+          },
+          "short_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Compact durable display identity for this task's native container and\nseats. Omission preserves an existing declaration but leaves a legacy\ntask ineligible for materialization or retitle until explicitly mapped."
           },
           "ticket_links": {
             "type": "array",
@@ -11572,6 +11917,13 @@
           "applied": {
             "$ref": "#/components/schemas/AppliedDto",
             "description": "Whether apply would create it or find it unchanged."
+          },
+          "short_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Durable compact display identity apply would preserve or add."
           },
           "state": {
             "type": "string",
@@ -14056,6 +14408,7 @@
         "required": [
           "agent_run_id",
           "native_id",
+          "title",
           "labels",
           "changed",
           "receipt"
@@ -14086,6 +14439,10 @@
           "receipt": {
             "$ref": "#/components/schemas/MutationReceiptDto",
             "description": "Mutation receipt, or replay receipt."
+          },
+          "title": {
+            "type": "string",
+            "description": "Canonical native seat title read back after repair."
           }
         }
       },

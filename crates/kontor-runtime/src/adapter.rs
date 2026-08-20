@@ -368,6 +368,29 @@ pub struct HostedSeatMessageOutcome {
     pub accepted_at: Timestamp,
 }
 
+/// Retire the exact native session currently filling one persistent Core Team
+/// SeatBinding before a provider/model route correction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatRetireRequest {
+    /// Logical identity that must remain unchanged.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact native predecessor read from Kontor's frozen hosted-seat row.
+    pub identity: NativeRuntimeIdentity,
+    /// Exact route that predecessor must still report.
+    pub model_rung: ModelRung,
+    /// Audited retirement instant.
+    pub requested_at: Timestamp,
+}
+
+/// Exact archive readback for a hosted-seat predecessor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatRetireOutcome {
+    /// Unchanged predecessor identity.
+    pub identity: NativeRuntimeIdentity,
+    /// When the runtime reports it archived.
+    pub archived_at: Timestamp,
+}
+
 /// One idempotently addressed follow-up to an existing consultation seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsultationMessageRequest {
@@ -524,6 +547,17 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
+    /// Retire an idle persistent leadership session for an authorized route
+    /// correction. This is not a generic idle-seat reaper.
+    async fn retire_hosted_seat(
+        &self,
+        _request: &HostedSeatRetireRequest,
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Retire,
         })
     }
 
