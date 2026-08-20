@@ -88,6 +88,7 @@ fn retitle(
         container_binding_id: ContainerBindingId::generate(),
         bound_native_id: kontor_core::id::ExternalId::parse(native_id).expect("a native id"),
         generation,
+        scope: None,
         task_id: None,
         structural_name: name(structural_name),
         requested_at: at("2026-08-17T09:05:00Z"),

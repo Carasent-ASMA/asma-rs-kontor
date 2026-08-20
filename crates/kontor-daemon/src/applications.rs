@@ -4024,6 +4024,12 @@ impl Services {
                     "this daemon is not configured with the runtime that holds this container",
                 )
             })?;
+        let scope = node
+            .mini_project_id
+            .map(|epic_id| {
+                self.execution_scope(project_id, epic_id, node.task_id, adapter.as_ref())
+            })
+            .transpose()?;
         Ok((
             RetitleContainerRequest {
                 topology_node_id,
@@ -4033,6 +4039,7 @@ impl Services {
                 .map_err(|error| self.refuse_domain(&error))?,
                 bound_native_id: binding.identity.native_id.clone(),
                 generation: binding.identity.generation,
+                scope,
                 task_id: node.task_id,
                 structural_name: self.container_name(&spec, &node)?,
                 requested_at: kontor_api::now(),
