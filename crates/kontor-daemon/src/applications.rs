@@ -8980,7 +8980,13 @@ impl ApplicationOperations for Services {
             // container and binding the seats the scope hosts. The chain comes
             // first because neither a native binding nor a seat can ever
             // belong to a node that does not exist.
-            let leaf = self.ensure_scope_chain(project_id, &scope)?;
+            let leaf = match scope.task_id {
+                // Ticket admission also needs the ECP node that owns delivery
+                // seats. `ensure_task_node` creates that durable chain without
+                // admitting a TeamRun or opening a delivery seat.
+                Some(task_id) => self.ensure_task_node(project_id, task_id)?,
+                None => self.ensure_scope_chain(project_id, &scope)?,
+            };
             let spec = self.pinned_spec(project_id)?;
             let declared = spec
                 .node_kinds

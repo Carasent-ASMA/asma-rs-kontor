@@ -7781,6 +7781,7 @@ async fn an_applied_task_materializes_and_replays_without_a_startup_task_scope()
             "account_profile_id": account_id,
             "tasks": [{
                 "title": "OP-08",
+                "short_code": "OP-08",
                 "ticket_links": [{
                     "connector": "jira",
                     "external_issue_key": "ASMA-7877"
