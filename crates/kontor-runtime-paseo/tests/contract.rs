@@ -3797,6 +3797,37 @@ async fn seat_retitle_accepts_an_older_persisted_generation_and_refuses_a_future
     );
 }
 
+#[tokio::test]
+async fn seat_retitle_classifies_an_exact_missing_native_agent_as_stale() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering_rpc(
+            "fetch_agent_request",
+            v(fixture!("protocol/agent-not-found.json")),
+        );
+    let plane = Plane::fresh(recorded);
+    let request = RetitleSeatRequest {
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external("agt_kontor_does_not_exist"),
+        },
+        provider_session_id: None,
+        container_native_id: external(WORKSPACE_ID),
+        desired_title: name("LSA • ASMA-7675 • QNR-P1"),
+        requested_at: at("2026-08-20T05:03:00Z"),
+    };
+
+    let refused = plane.adapter.preview_retitle_seat(&request).await;
+    assert!(matches!(refused, Err(RuntimeError::StaleBinding { .. })));
+    assert_eq!(
+        plane.daemon.count("agent update agt_kontor_does_not_exist"),
+        0,
+        "a missing exact identity is evidence only and must not create or rename a seat"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // compaction_
 // ---------------------------------------------------------------------------
