@@ -7687,6 +7687,47 @@ fn needs_human_dto(payload: &NeedsHumanPayload) -> NeedsHumanDto {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    fn projects(&self) -> Result<Vec<kontor_api::applications::ProjectReadDto>, ApiError> {
+        let state = self.state()?;
+        Ok(state
+            .with_store(SqliteStore::list_projects)
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .map(|project| kontor_api::applications::ProjectReadDto {
+                realm_id: state.realm_id(),
+                project_id: project.project_id,
+                name: project.name,
+                root_path: project.root_path,
+                revision: project.revision,
+                created_at: project.created_at,
+            })
+            .collect())
+    }
+
+    fn project(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<kontor_api::applications::ProjectReadDto, ApiError> {
+        let state = self.state()?;
+        let project = state
+            .with_store(|store| store.get_project(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such project exists in this realm",
+                )
+            })?;
+        Ok(kontor_api::applications::ProjectReadDto {
+            realm_id: state.realm_id(),
+            project_id: project.id,
+            name: project.name,
+            root_path: project.root_path,
+            revision: project.revision,
+            created_at: project.created_at,
+        })
+    }
+
     async fn ensure_project(
         &self,
         key: &IdempotencyKey,

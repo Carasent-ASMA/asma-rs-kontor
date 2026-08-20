@@ -270,6 +270,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/events", get(control::events))
         // The declarative application operations. Every one of them answers with
         // the durable projection its service produced, not with an intent.
+        .route("/v1/projects", get(applications::projects))
+        .route("/v1/projects/{project_id}", get(applications::project))
         .route("/v1/projects:ensure", post(applications::ensure_project))
         .route(
             "/v1/catalog/work-profiles",

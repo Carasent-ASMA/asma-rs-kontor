@@ -856,6 +856,29 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "A bounded read of one session's live frames, from one response.",
     },
+    ToolSpec {
+        name: "kontor_projects_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects",
+        kind: OpKind::Read,
+        args: &[],
+        about: "Every project in this Realm, with the revision needed by later writes.",
+    },
+    ToolSpec {
+        name: "kontor_project_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The project to read.",
+        )],
+        about: "Read one project by id without repeating its stored name.",
+    },
     // ---- Admin: graph authorship, selection and arming -----------------------
     ToolSpec {
         name: "kontor_project_ensure",

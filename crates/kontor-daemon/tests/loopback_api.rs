@@ -463,6 +463,42 @@ async fn the_authority_tiers_are_enforced_per_route() {
     assert_eq!(admin.status, 200, "{}", admin.body);
 }
 
+#[tokio::test]
+async fn an_observer_can_discover_projects_and_read_one_without_repeating_its_name() {
+    let world = World::open().await;
+
+    let list = Call::get("/v1/projects")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(list.status, 200, "{}", list.body);
+    let listed = list.json();
+    let projects = listed.as_array().expect("a project list");
+    let project = projects
+        .iter()
+        .find(|project| project["project_id"] == world.project.to_string())
+        .expect("the seeded project is discoverable");
+    assert_eq!(project["realm_id"], world.realm_id().to_string());
+    assert!(project["name"].is_string());
+    assert!(project["root_path"].is_string());
+    assert!(project["revision"].is_number());
+    assert!(project.get("applied").is_none(), "a read is not an ensure");
+
+    let one = Call::get(format!("/v1/projects/{}", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(one.status, 200, "{}", one.body);
+    assert_eq!(one.json(), project.clone());
+
+    let missing = Call::get("/v1/projects/01a00000-0000-7000-8000-000000000000")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.code(), "not_found");
+}
+
 // ---------------------------------------------------------------------------
 // Frozen capabilities
 // ---------------------------------------------------------------------------

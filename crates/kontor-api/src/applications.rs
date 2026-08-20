@@ -2000,6 +2000,33 @@ pub struct ProjectDto {
     pub created_at: Timestamp,
 }
 
+/// One project, as an Observer read sees it.
+///
+/// Unlike [`ProjectDto`], this projection carries no `applied` result because a
+/// read does not perform the bootstrap ensure. The project id is sufficient to
+/// retrieve it; callers never have to repeat the stored name as an assertion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProjectReadDto {
+    /// The Realm it belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Its stored name.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// Its canonical root path.
+    #[schema(value_type = String)]
+    pub root_path: ExternalName,
+    /// The revision a subsequent write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// When it was created.
+    #[schema(value_type = String, format = DateTime)]
+    pub created_at: Timestamp,
+}
+
 // ---------------------------------------------------------------------------
 // Catalogs
 // ---------------------------------------------------------------------------
@@ -3868,6 +3895,12 @@ pub struct TicketClaimDto {
 /// different bytes is a conflict.
 #[async_trait]
 pub trait ApplicationOperations: Send + Sync {
+    /// Every project in this Realm, oldest first.
+    fn projects(&self) -> Result<Vec<ProjectReadDto>, ApiError>;
+
+    /// One project, addressed by its durable id alone.
+    fn project(&self, project_id: ProjectId) -> Result<ProjectReadDto, ApiError>;
+
     /// Create a project, or return the one already standing at that root.
     async fn ensure_project(
         &self,
@@ -4628,6 +4661,38 @@ pub type Applications = Arc<dyn ApplicationOperations>;
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
+
+/// Every project in this Realm, oldest first.
+#[utoipa::path(
+    get, path = "/v1/projects", tag = "applications",
+    responses((status = 200, body = Vec<ProjectReadDto>), (status = 401), (status = 403))
+)]
+pub async fn projects(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<Vec<ProjectReadDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    Ok(Json(state.applications().projects()?))
+}
+
+/// One project, addressed by its durable id alone.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}", tag = "applications",
+    params(("project_id" = String, Path, description = "The project")),
+    responses(
+        (status = 200, body = ProjectReadDto),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn project(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProjectReadDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().project(project_id)?))
+}
 
 /// Create a project, or return the one already standing at that root.
 #[utoipa::path(
