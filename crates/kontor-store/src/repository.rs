@@ -5116,6 +5116,389 @@ impl SqliteStore {
 // Specification revisions
 // ---------------------------------------------------------------------------
 
+fn install_external_workflow_spec_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    expected_revision: AggregateRevision,
+    spec: &ExternalWorkflowSpec,
+    created_at: Timestamp,
+) -> RepositoryResult<(ContentHash, AggregateRevision, crate::graph::Applied)> {
+    let document = spec.canonicalize()?;
+    let current: i64 = transaction
+        .query_row(
+            "SELECT revision FROM projects WHERE id = ?1",
+            params![project_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?
+        .ok_or(RepositoryError::NotFound { subject: "project" })?;
+    let current = revision_of(current)?;
+    current.expect("project", expected_revision)?;
+
+    let existing: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT definition, definition_hash FROM external_workflow_specs
+             WHERE project_id = ?1 AND connector = ?2 AND external_project = ?3
+               AND issue_type = ?4 AND version = ?5",
+            params![
+                project_id.to_string(),
+                spec.connector.as_str(),
+                spec.project.as_str(),
+                spec.issue_type.as_str(),
+                version_column(spec.version)
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    if let Some((json, hash)) = existing {
+        let installed = stored_document::<ExternalWorkflowSpec>(&json, &hash)?;
+        if installed != *spec || hash != document.hash().as_str() {
+            return Err(RepositoryError::Conflict {
+                subject: "external workflow specification",
+                rule: "the installed immutable revision has different canonical bytes",
+            });
+        }
+        return Ok((
+            document.hash().clone(),
+            current,
+            crate::graph::Applied::Unchanged,
+        ));
+    }
+
+    transaction
+        .execute(
+            "INSERT INTO external_workflow_specs
+                 (project_id, connector, external_project, issue_type, version,
+                  work_profile_key, work_profile_version, definition, definition_hash,
+                  created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                project_id.to_string(),
+                spec.connector.as_str(),
+                spec.project.as_str(),
+                spec.issue_type.as_str(),
+                version_column(spec.version),
+                spec.work_profile.as_ref().map(WorkProfileKey::as_str),
+                spec.work_profile_version.map(version_column),
+                document.json(),
+                document.hash().as_str(),
+                text(created_at)
+            ],
+        )
+        .map_err(backend)?;
+    let next = current.next()?;
+    let changed = transaction
+        .execute(
+            "UPDATE projects SET revision = ?1 WHERE id = ?2 AND revision = ?3",
+            params![
+                revision_column(next)?,
+                project_id.to_string(),
+                revision_column(current)?
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(conflict(
+            "project",
+            "the project revision moved during workflow installation",
+        ));
+    }
+    Ok((
+        document.hash().clone(),
+        next,
+        crate::graph::Applied::Created,
+    ))
+}
+
+fn workflow_install_result_payload(
+    intent: &CanonicalDocument,
+    revision: AggregateRevision,
+    applied: crate::graph::Applied,
+) -> RepositoryResult<CanonicalDocument> {
+    let mut payload: serde_json::Value = from_json(intent.json())?;
+    let fields = payload
+        .as_object_mut()
+        .ok_or_else(|| DomainError::invalid("workflow installation intent", "must be an object"))?;
+    fields.insert(
+        "result".to_owned(),
+        serde_json::json!({
+            "intent_hash": intent.hash().as_str(),
+            "resulting_revision": revision.get(),
+            "applied": applied.as_str(),
+        }),
+    );
+    Ok(CanonicalDocument::from_value(&payload)?)
+}
+
+fn parse_workflow_install_result(
+    json: &str,
+    hash: &str,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<AggregateRevision> {
+    let result: serde_json::Value = stored_document(json, hash)?;
+    if result["operation"] != "install_workflow_spec"
+        || result["result"]["intent_hash"].as_str() != Some(receipt.intent.hash().as_str())
+    {
+        return Err(RepositoryError::Conflict {
+            subject: "workflow installation receipt",
+            rule: "the persisted result does not belong to the recorded intent",
+        });
+    }
+    let revision =
+        result["result"]["resulting_revision"]
+            .as_u64()
+            .ok_or(RepositoryError::Conflict {
+                subject: "workflow installation receipt",
+                rule: "the persisted result has no resulting project revision",
+            })?;
+    Ok(AggregateRevision::parse(revision)?)
+}
+
+fn workflow_install_result_in_transaction(
+    transaction: &Transaction<'_>,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<AggregateRevision> {
+    let stored: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT payload, payload_hash FROM command_outbox
+             WHERE project_id = ?1 AND receipt_id = ?2",
+            params![receipt.project_id.to_string(), receipt.id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let (json, hash) = stored.ok_or(RepositoryError::NotFound {
+        subject: "workflow installation result",
+    })?;
+    parse_workflow_install_result(&json, &hash, receipt)
+}
+
+/// The durable public answer produced by one task lifecycle command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskTransitionResult {
+    pub task_id: TaskId,
+    pub state: TaskState,
+    pub revision: AggregateRevision,
+}
+
+fn task_transition_result_payload(
+    intent: &CanonicalDocument,
+    task: &Task,
+) -> RepositoryResult<CanonicalDocument> {
+    let mut payload: serde_json::Value = from_json(intent.json())?;
+    let fields = payload
+        .as_object_mut()
+        .ok_or_else(|| DomainError::invalid("task lifecycle intent", "must be an object"))?;
+    fields.insert(
+        "result".to_owned(),
+        serde_json::json!({
+            "intent_hash": intent.hash().as_str(),
+            "task_id": task.id.to_string(),
+            "state": task.state.as_str(),
+            "resulting_revision": task.revision.get(),
+        }),
+    );
+    Ok(CanonicalDocument::from_value(&payload)?)
+}
+
+fn parse_task_transition_result(
+    json: &str,
+    hash: &str,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<TaskTransitionResult> {
+    let result: serde_json::Value = stored_document(json, hash)?;
+    if result["operation"] != "lifecycle"
+        || result["result"]["intent_hash"].as_str() != Some(receipt.intent.hash().as_str())
+    {
+        return Err(RepositoryError::Conflict {
+            subject: "task lifecycle receipt",
+            rule: "the persisted result does not belong to the recorded intent",
+        });
+    }
+    let task_id = result["result"]["task_id"]
+        .as_str()
+        .ok_or(RepositoryError::Conflict {
+            subject: "task lifecycle receipt",
+            rule: "the persisted result has no task identity",
+        })
+        .and_then(|value| TaskId::parse(value).map_err(Into::into))?;
+    if receipt.target != (AggregateRef::Task { task_id }) {
+        return Err(RepositoryError::Conflict {
+            subject: "task lifecycle receipt",
+            rule: "the persisted result does not name the receipt target",
+        });
+    }
+    let state = result["result"]["state"]
+        .as_str()
+        .ok_or(RepositoryError::Conflict {
+            subject: "task lifecycle receipt",
+            rule: "the persisted result has no task state",
+        })
+        .and_then(|value| TaskState::parse(value).map_err(Into::into))?;
+    let revision =
+        result["result"]["resulting_revision"]
+            .as_u64()
+            .ok_or(RepositoryError::Conflict {
+                subject: "task lifecycle receipt",
+                rule: "the persisted result has no resulting task revision",
+            })?;
+    Ok(TaskTransitionResult {
+        task_id,
+        state,
+        revision: AggregateRevision::parse(revision)?,
+    })
+}
+
+fn task_transition_result_in_transaction(
+    transaction: &Transaction<'_>,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<TaskTransitionResult> {
+    let stored: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT payload, payload_hash FROM command_outbox
+             WHERE project_id = ?1 AND receipt_id = ?2",
+            params![receipt.project_id.to_string(), receipt.id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let (json, hash) = stored.ok_or(RepositoryError::NotFound {
+        subject: "task lifecycle result",
+    })?;
+    parse_task_transition_result(&json, &hash, receipt)
+}
+
+impl SqliteStore {
+    /// Pin one immutable external-workflow revision to a project.
+    ///
+    /// The specification row and project revision move in one transaction. An
+    /// already-installed byte-identical revision is an unchanged result; the
+    /// same selector with different canonical bytes is an immutable conflict.
+    ///
+    /// # Errors
+    /// Returns the domain revision conflict for stale project state, and a
+    /// repository conflict when an installed selector names different bytes.
+    pub fn install_external_workflow_spec(
+        &self,
+        project_id: ProjectId,
+        expected_revision: AggregateRevision,
+        spec: &ExternalWorkflowSpec,
+    ) -> RepositoryResult<(ContentHash, AggregateRevision, crate::graph::Applied)> {
+        let transaction = self.begin()?;
+        let installed = install_external_workflow_spec_in_transaction(
+            &transaction,
+            project_id,
+            expected_revision,
+            spec,
+            Timestamp::now(),
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(installed)
+    }
+
+    /// Install one workflow revision and record its Admin authority atomically.
+    ///
+    /// The command payload retains the original resulting project revision, so
+    /// a later replay never substitutes whatever revision the project has now.
+    pub fn install_external_workflow_spec_with_intent(
+        &self,
+        project_id: ProjectId,
+        expected_revision: AggregateRevision,
+        spec: &ExternalWorkflowSpec,
+        envelope: &ReceiptEnvelope<NewCommandIntent>,
+    ) -> RepositoryResult<(
+        ContentHash,
+        AggregateRevision,
+        crate::graph::Applied,
+        CommandReceipt,
+    )> {
+        let intent = envelope.peek(self.realm_id())?;
+        let target = AggregateRef::Project { project_id };
+        ensure_atomic_intent_matches(
+            intent,
+            project_id,
+            CommandKind::InstallWorkflowSpec,
+            &target,
+            expected_revision,
+        )?;
+        let transaction = self.begin()?;
+        if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
+            ensure_atomic_replay(&existing, intent)?;
+            let revision = workflow_install_result_in_transaction(&transaction, &existing)?;
+            let hash = spec.canonicalize()?.hash().clone();
+            return Ok((hash, revision, crate::graph::Applied::Unchanged, existing));
+        }
+
+        let (hash, revision, applied) = install_external_workflow_spec_in_transaction(
+            &transaction,
+            project_id,
+            expected_revision,
+            spec,
+            intent.created_at,
+        )?;
+        let mut recorded = intent.clone();
+        recorded.payload = workflow_install_result_payload(&intent.intent, revision, applied)?;
+        let replayed = crate::commands::intent::insert_intent(&transaction, &recorded)?;
+        if replayed.is_some() {
+            return Err(conflict(
+                "command receipt",
+                "the idempotency key appeared during one atomic workflow installation",
+            ));
+        }
+        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "command receipt",
+            },
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok((hash, revision, applied, receipt))
+    }
+
+    /// Read the original resulting revision retained by a workflow-install receipt.
+    pub fn workflow_install_result_revision(
+        &self,
+        receipt: &CommandReceipt,
+    ) -> RepositoryResult<AggregateRevision> {
+        let stored: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT payload, payload_hash FROM command_outbox
+                 WHERE project_id = ?1 AND receipt_id = ?2",
+                params![receipt.project_id.to_string(), receipt.id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let (json, hash) = stored.ok_or(RepositoryError::NotFound {
+            subject: "workflow installation result",
+        })?;
+        parse_workflow_install_result(&json, &hash, receipt)
+    }
+
+    /// Read the original state and revision retained by a task lifecycle receipt.
+    pub fn task_transition_result(
+        &self,
+        receipt: &CommandReceipt,
+    ) -> RepositoryResult<TaskTransitionResult> {
+        let stored: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT payload, payload_hash FROM command_outbox
+                 WHERE project_id = ?1 AND receipt_id = ?2",
+                params![receipt.project_id.to_string(), receipt.id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let (json, hash) = stored.ok_or(RepositoryError::NotFound {
+            subject: "task lifecycle result",
+        })?;
+        parse_task_transition_result(&json, &hash, receipt)
+    }
+}
+
 impl SpecRepository for SqliteStore {
     fn insert_work_profile(
         &self,
@@ -5850,6 +6233,228 @@ fn reduce_gate_states(
     Ok(states)
 }
 
+fn transition_task_in_transaction(
+    transaction: &Transaction<'_>,
+    request: &TaskTransitionRequest,
+) -> RepositoryResult<Task> {
+    let row: Option<(String, i64)> = transaction
+        .query_row(
+            "SELECT state, revision FROM tasks WHERE project_id = ?1 AND id = ?2",
+            params![request.project_id.to_string(), request.task_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((state, revision)) = row else {
+        return Err(RepositoryError::NotFound { subject: "task" });
+    };
+    let current = TaskState::parse(&state)?;
+    let revision = revision_of(revision)?;
+    revision.expect("task", request.expected_revision)?;
+
+    if request.to == TaskState::Withdrawn {
+        let runs: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM team_runs WHERE project_id = ?1 AND task_id = ?2",
+                params![request.project_id.to_string(), request.task_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if runs != 0 {
+            return Err(conflict(
+                "task withdrawal",
+                "a task with TeamRun history is not never-started",
+            ));
+        }
+        let mut statement = transaction
+            .prepare(
+                "SELECT dependent.state
+                 FROM task_dependencies dependency
+                 JOIN tasks dependent
+                   ON dependent.project_id = dependency.project_id
+                  AND dependent.id = dependency.task_id
+                 WHERE dependency.project_id = ?1
+                   AND dependency.depends_on_task_id = ?2",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![
+                request.project_id.to_string(),
+                request.task_id.to_string()
+            ])
+            .map_err(backend)?;
+        while let Some(row) = rows.next().map_err(backend)? {
+            let dependent = TaskState::parse(&row.get::<_, String>(0).map_err(backend)?)?;
+            if !dependent.is_terminal() {
+                return Err(conflict(
+                    "task withdrawal",
+                    "an unresolved dependent task still requires it",
+                ));
+            }
+        }
+    }
+
+    // A task closing with an execution outcome answers for two independent
+    // things: its pinned profile's phases, gates and artifacts, and its team's
+    // role slots. Withdrawal instead proves here that no TeamRun ever existed.
+    let mut certificate = None;
+    if request.to.is_terminal() && request.to != TaskState::Withdrawn {
+        let workflow_id: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM task_workflows
+                 WHERE project_id = ?1 AND task_id = ?2 AND active = 1",
+                params![request.project_id.to_string(), request.task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+
+        let pinned = match workflow_id {
+            Some(id) => {
+                let workflow_id = TaskWorkflowId::parse(&id)?;
+                let (workflow, _) = load_workflow(transaction, request.project_id, workflow_id)?;
+                Some((workflow_id, workflow))
+            }
+            None => None,
+        };
+
+        ensure_team_accounted_for(
+            transaction,
+            request,
+            pinned
+                .as_ref()
+                .is_some_and(|(_, workflow)| workflow.snapshot.definition.team_template.is_some()),
+        )?;
+
+        if request.to == TaskState::Done {
+            let (workflow_id, workflow) = pinned.ok_or(DomainError::MissingEvidence {
+                subject: "task completion",
+                rule: "a task without an active workflow has no closure evidence",
+            })?;
+            let states = reduce_gate_states(transaction, request.project_id, workflow_id)?;
+            certificate = Some(workflow.snapshot.certify_closure(
+                &request.completed_phases,
+                &states,
+                &request.produced_artifacts,
+            )?);
+        }
+    }
+
+    let mut progress = None;
+    if request.to == TaskState::InProgress {
+        progress = Some(certify_task_progress_from_store(
+            transaction,
+            request.project_id,
+            request.task_id,
+            request.occurred_at,
+        )?);
+    }
+
+    let transition = TaskTransition {
+        to: request.to,
+        resume_receipt: request.resume_receipt,
+        reopen: match (request.reopen, request.resume_receipt) {
+            (true, Some(receipt)) => Some(TaskReopenAuthority::granted_by(receipt)),
+            (true, None) => {
+                return Err(DomainError::MissingAuthority {
+                    subject: "task reopen",
+                    rule: "reopening a terminal task requires a command receipt",
+                }
+                .into());
+            }
+            (false, _) => None,
+        },
+        run_outcome: request.run_outcome,
+        closure: certificate.as_ref(),
+        progress: progress.as_ref(),
+    };
+    let next_state = kontor_core::state::apply_task_transition(current, &transition)?;
+    let next_revision = revision.next()?;
+    let changed = transaction
+        .execute(
+            "UPDATE tasks SET state = ?1, imported_state = NULL, revision = ?2, updated_at = ?3
+             WHERE project_id = ?4 AND id = ?5 AND revision = ?6",
+            params![
+                next_state.as_str(),
+                revision_column(next_revision)?,
+                text(request.occurred_at),
+                request.project_id.to_string(),
+                request.task_id.to_string(),
+                revision_column(revision)?
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(conflict("task", "the task revision moved during the write"));
+    }
+    transaction
+        .query_row(
+            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 AND id = ?2"),
+            params![request.project_id.to_string(), request.task_id.to_string()],
+            |row| Ok(read_task(row)),
+        )
+        .optional()
+        .map_err(backend)?
+        .transpose()?
+        .ok_or(RepositoryError::NotFound { subject: "task" })
+}
+
+fn command_receipt_by_key(
+    transaction: &Transaction<'_>,
+    key: &IdempotencyKey,
+) -> RepositoryResult<Option<CommandReceipt>> {
+    transaction
+        .query_row(
+            &format!("SELECT {RECEIPT_COLUMNS} FROM command_receipts WHERE idempotency_key = ?1"),
+            params![key.as_str()],
+            |row| Ok(crate::commands::receipts::read_receipt_row(row)),
+        )
+        .optional()
+        .map_err(backend)?
+        .transpose()
+}
+
+fn ensure_atomic_replay(
+    existing: &CommandReceipt,
+    request: &NewCommandIntent,
+) -> RepositoryResult<()> {
+    if existing.project_id != request.project_id {
+        return Err(RepositoryError::CrossProject {
+            subject: "command receipt",
+        });
+    }
+    existing.ensure_replay(&request.target, &request.intent)?;
+    if existing.kind != request.kind || existing.target_revision != request.target_revision {
+        return Err(DomainError::invalid(
+            "CommandReceipt",
+            "idempotency key reused for a different command or target revision",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn ensure_atomic_intent_matches(
+    request: &NewCommandIntent,
+    project_id: ProjectId,
+    kind: CommandKind,
+    target: &AggregateRef,
+    target_revision: AggregateRevision,
+) -> RepositoryResult<()> {
+    if request.project_id != project_id
+        || request.kind != kind
+        || &request.target != target
+        || request.target_revision != target_revision
+    {
+        return Err(DomainError::invalid(
+            "CommandReceipt",
+            "the atomic command authority does not match the operation it accompanies",
+        )
+        .into());
+    }
+    Ok(())
+}
+
 impl WorkflowRepository for SqliteStore {
     fn create_task_workflow(&self, request: &NewTaskWorkflow) -> RepositoryResult<TaskWorkflow> {
         request.snapshot.verify()?;
@@ -6230,131 +6835,72 @@ impl WorkflowRepository for SqliteStore {
 
     fn transition_task(&self, request: &TaskTransitionRequest) -> RepositoryResult<Task> {
         let transaction = self.begin()?;
-        let row: Option<(String, i64)> = transaction
-            .query_row(
-                "SELECT state, revision FROM tasks WHERE project_id = ?1 AND id = ?2",
-                params![request.project_id.to_string(), request.task_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((state, revision)) = row else {
-            return Err(RepositoryError::NotFound { subject: "task" });
-        };
-        let current = TaskState::parse(&state)?;
-        let revision = revision_of(revision)?;
-        revision.expect("task", request.expected_revision)?;
-
-        // A task becoming terminal answers for two independent things: its
-        // pinned profile's phases, gates and artifacts, and its team's role
-        // slots. Neither implies the other, so both are checked here — and a
-        // failed or cancelled task is checked for the team just as a completed
-        // one is, because an open native session is no more acceptable under a
-        // failure than under a success.
-        let mut certificate = None;
-        if request.to.is_terminal() {
-            let workflow_id: Option<String> = transaction
-                .query_row(
-                    "SELECT id FROM task_workflows
-                     WHERE project_id = ?1 AND task_id = ?2 AND active = 1",
-                    params![request.project_id.to_string(), request.task_id.to_string()],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(backend)?;
-
-            let pinned = match workflow_id {
-                Some(id) => {
-                    let workflow_id = TaskWorkflowId::parse(&id)?;
-                    let (workflow, _) =
-                        load_workflow(&transaction, request.project_id, workflow_id)?;
-                    Some((workflow_id, workflow))
-                }
-                None => None,
-            };
-
-            ensure_team_accounted_for(
-                &transaction,
-                request,
-                pinned.as_ref().is_some_and(|(_, workflow)| {
-                    workflow.snapshot.definition.team_template.is_some()
-                }),
-            )?;
-
-            // Closure is certified by the pinned profile, never asserted by the
-            // caller: `TaskClosureCertificate` has no public constructor.
-            if request.to == TaskState::Done {
-                let (workflow_id, workflow) = pinned.ok_or(DomainError::MissingEvidence {
-                    subject: "task completion",
-                    rule: "a task without an active workflow has no closure evidence",
-                })?;
-                let states = reduce_gate_states(&transaction, request.project_id, workflow_id)?;
-                certificate = Some(workflow.snapshot.certify_closure(
-                    &request.completed_phases,
-                    &states,
-                    &request.produced_artifacts,
-                )?);
-            }
-        }
-
-        // Progress is certified from persisted run and seat rows, never
-        // asserted by the caller: `TaskProgressEvidence` has no public
-        // constructor. A queued run with no attached seat cannot produce one,
-        // which is exactly the state that once let a task read `in_progress`
-        // for thirteen hours over work nobody had launched.
-        let mut progress = None;
-        if request.to == TaskState::InProgress {
-            progress = Some(certify_task_progress_from_store(
-                &transaction,
-                request.project_id,
-                request.task_id,
-                request.occurred_at,
-            )?);
-        }
-
-        let transition = TaskTransition {
-            to: request.to,
-            resume_receipt: request.resume_receipt,
-            // The authority *is* the receipt, so a reopen with no receipt cannot
-            // be assembled here — which is the check, rather than a second flag
-            // beside it.
-            reopen: match (request.reopen, request.resume_receipt) {
-                (true, Some(receipt)) => Some(TaskReopenAuthority::granted_by(receipt)),
-                (true, None) => {
-                    return Err(DomainError::MissingAuthority {
-                        subject: "task reopen",
-                        rule: "reopening a terminal task requires a command receipt",
-                    }
-                    .into());
-                }
-                (false, _) => None,
-            },
-            run_outcome: request.run_outcome,
-            closure: certificate.as_ref(),
-            progress: progress.as_ref(),
-        };
-        let next_state = kontor_core::state::apply_task_transition(current, &transition)?;
-        let next_revision = revision.next()?;
-        let changed = transaction
-            .execute(
-                "UPDATE tasks SET state = ?1, imported_state = NULL, revision = ?2, updated_at = ?3
-                 WHERE project_id = ?4 AND id = ?5 AND revision = ?6",
-                params![
-                    next_state.as_str(),
-                    revision_column(next_revision)?,
-                    text(request.occurred_at),
-                    request.project_id.to_string(),
-                    request.task_id.to_string(),
-                    revision_column(revision)?
-                ],
-            )
-            .map_err(backend)?;
-        if changed != 1 {
-            return Err(conflict("task", "the task revision moved during the write"));
-        }
+        let moved = transition_task_in_transaction(&transaction, request)?;
         transaction.commit().map_err(backend)?;
-        self.get_task(request.project_id, request.task_id)?
-            .ok_or(RepositoryError::NotFound { subject: "task" })
+        Ok(moved)
+    }
+}
+
+impl SqliteStore {
+    /// Move one task and record the authority for that move in the same transaction.
+    ///
+    /// A refused transition rolls the receipt back with it. An exact concurrent
+    /// replay reads the original durable result and receipt without trying the
+    /// compare-and-swap again or substituting the task's current state.
+    pub fn transition_task_with_intent(
+        &self,
+        request: &TaskTransitionRequest,
+        envelope: &ReceiptEnvelope<NewCommandIntent>,
+    ) -> RepositoryResult<(TaskTransitionResult, CommandReceipt, crate::graph::Applied)> {
+        let intent = envelope.peek(self.realm_id())?;
+        let target = AggregateRef::Task {
+            task_id: request.task_id,
+        };
+        ensure_atomic_intent_matches(
+            intent,
+            request.project_id,
+            if request.to == TaskState::Withdrawn {
+                CommandKind::WithdrawTask
+            } else if request.resume_receipt.is_some() {
+                CommandKind::ResumeTask
+            } else {
+                CommandKind::TransitionTask
+            },
+            &target,
+            request.expected_revision,
+        )?;
+        let transaction = self.begin()?;
+        if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
+            ensure_atomic_replay(&existing, intent)?;
+            let result = task_transition_result_in_transaction(&transaction, &existing)?;
+            return Ok((result, existing, crate::graph::Applied::Unchanged));
+        }
+
+        let moved = transition_task_in_transaction(&transaction, request)?;
+        let mut recorded = intent.clone();
+        recorded.payload = task_transition_result_payload(&intent.intent, &moved)?;
+        let replayed = crate::commands::intent::insert_intent(&transaction, &recorded)?;
+        if replayed.is_some() {
+            return Err(conflict(
+                "command receipt",
+                "the idempotency key appeared during one atomic task transition",
+            ));
+        }
+        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "command receipt",
+            },
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok((
+            TaskTransitionResult {
+                task_id: moved.id,
+                state: moved.state,
+                revision: moved.revision,
+            },
+            receipt,
+            crate::graph::Applied::Created,
+        ))
     }
 }
 

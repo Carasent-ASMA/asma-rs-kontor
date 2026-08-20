@@ -779,6 +779,167 @@ fn both_external_workflow_fixtures_persist_reopen_and_hash_identically() {
 }
 
 #[test]
+fn workflow_installation_rolls_back_when_its_authority_receipt_is_refused() {
+    let fixture = fixture();
+    let workflow: ExternalWorkflowSpec =
+        serde_json::from_str(WORKFLOW_ALTERNATE).expect("the workflow fixture parses");
+    let occupied_receipt = CommandReceiptId::generate();
+    let occupied_intent = document("occupied receipt");
+    fixture
+        .store
+        .record_intent(&NewCommandIntent {
+            project_id: fixture.project,
+            receipt_id: occupied_receipt,
+            idempotency_key: IdempotencyKey::parse("workflow-occupied-receipt")
+                .expect("a valid key"),
+            kind: CommandKind::TransitionTask,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: occupied_intent.clone(),
+            payload: occupied_intent,
+            desired: None,
+            not_before: now(),
+            created_at: now(),
+        })
+        .expect("the colliding receipt id is occupied first");
+    let key = IdempotencyKey::parse("workflow-atomic-refusal").expect("a valid key");
+    let intent = document("workflow install");
+    let command = ReceiptEnvelope::new(
+        fixture.store.realm(),
+        NewCommandIntent {
+            project_id: fixture.project,
+            receipt_id: occupied_receipt,
+            idempotency_key: key.clone(),
+            // The operation is valid but its receipt id is already occupied.
+            // That storage refusal occurs after the policy write begins inside
+            // the transaction and must roll the policy and revision back.
+            kind: CommandKind::InstallWorkflowSpec,
+            target: AggregateRef::Project {
+                project_id: fixture.project,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: intent.clone(),
+            payload: intent,
+            desired: None,
+            not_before: now(),
+            created_at: now(),
+        },
+    );
+    let before = census(&fixture);
+
+    fixture
+        .store
+        .install_external_workflow_spec_with_intent(
+            fixture.project,
+            AggregateRevision::INITIAL,
+            &workflow,
+            &command,
+        )
+        .expect_err("a workflow policy without its Admin receipt is refused atomically");
+
+    assert_unchanged(
+        &before,
+        &census(&fixture),
+        "a refused atomic workflow installation",
+    );
+    let project = fixture
+        .store
+        .get_project(fixture.project)
+        .expect("the project read succeeds")
+        .expect("the project exists");
+    assert_eq!(project.revision, AggregateRevision::INITIAL);
+    assert!(
+        fixture
+            .store
+            .get_receipt_by_key(&key)
+            .expect("the receipt lookup succeeds")
+            .is_none()
+    );
+    assert!(
+        fixture
+            .store
+            .get_external_workflow_spec(&ConnectorSpecSelector {
+                project_id: fixture.project,
+                connector: workflow.connector,
+                project: workflow.project,
+                issue_type: workflow.issue_type,
+                version: workflow.version,
+            })
+            .expect("the workflow lookup succeeds")
+            .is_none()
+    );
+}
+
+#[test]
+fn stale_atomic_withdrawal_leaves_no_receipt_and_preserves_the_moved_task() {
+    let fixture = fixture();
+    let transition = |to, expected_revision| TaskTransitionRequest {
+        project_id: fixture.project,
+        task_id: fixture.task,
+        expected_revision,
+        to,
+        resume_receipt: None,
+        reopen: false,
+        run_outcome: None,
+        produced_artifacts: BTreeSet::new(),
+        completed_phases: BTreeSet::new(),
+        team_closure: TaskTeamClosure::NoTeam,
+        occurred_at: now(),
+    };
+    let moved = fixture
+        .store
+        .transition_task(&transition(TaskState::Blocked, AggregateRevision::INITIAL))
+        .expect("a concurrent writer moves the task");
+    let key = IdempotencyKey::parse("withdraw-stale-atomic").expect("a valid key");
+    let intent = document("withdraw task");
+    let command = ReceiptEnvelope::new(
+        fixture.store.realm(),
+        NewCommandIntent {
+            project_id: fixture.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key.clone(),
+            kind: CommandKind::WithdrawTask,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: intent.clone(),
+            payload: intent,
+            desired: None,
+            not_before: now(),
+            created_at: now(),
+        },
+    );
+    let before = census(&fixture);
+
+    fixture
+        .store
+        .transition_task_with_intent(
+            &transition(TaskState::Withdrawn, AggregateRevision::INITIAL),
+            &command,
+        )
+        .expect_err("the stale withdrawal is refused");
+
+    assert_unchanged(&before, &census(&fixture), "a stale atomic withdrawal");
+    assert!(
+        fixture
+            .store
+            .get_receipt_by_key(&key)
+            .expect("the receipt lookup succeeds")
+            .is_none()
+    );
+    let preserved = fixture
+        .store
+        .get_task(fixture.project, fixture.task)
+        .expect("the task read succeeds")
+        .expect("the task exists");
+    assert_eq!(preserved.state, TaskState::Blocked);
+    assert_eq!(preserved.revision, moved.revision);
+}
+
+#[test]
 fn the_arbitrary_profile_and_persona_fixtures_persist_reopen_and_hash_identically() {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");

@@ -323,6 +323,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every project in this Realm, oldest first. */
+        get: operations["projects"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One project, addressed by its durable id alone. */
+        get: operations["project"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/advisor-profiles": {
         parameters: {
             query?: never;
@@ -768,6 +802,23 @@ export interface paths {
         get: operations["connector_workflow_specs"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/connectors/{connector}/workflow-specs:install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Install one exact shipped external-workflow revision into a project. */
+        post: operations["install_connector_workflow_spec"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4012,6 +4063,30 @@ export interface components {
             snapshot_hash: string;
             source: string;
         };
+        /** @description The exact shipped external-workflow revision an Admin wants to pin. */
+        InstallWorkflowSpecRequest: {
+            /**
+             * Format: int64
+             * @description The project revision the caller read before installing policy.
+             */
+            expected_revision: number;
+            /** @description The external project key advertised by the catalogue. */
+            external_project: string;
+            /** @description The external issue type advertised by the catalogue. */
+            issue_type: string;
+            /**
+             * Format: int32
+             * @description The exact immutable revision.
+             */
+            version: number;
+        };
+        /** @description An installed workflow revision and the receipt that pinned it. */
+        InstalledWorkflowSpecDto: {
+            /** @description Durable Admin authority and resulting project revision. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Canonical specification identity and installed readback. */
+            spec: components["schemas"]["ConnectorSpecDto"];
+        };
         /** @description One recorded intake decision. */
         IntakeReceiptDto: {
             /** @description Whether this call recorded it, or found the event already decided. */
@@ -4110,7 +4185,7 @@ export interface components {
          *     the transition table the others are judged by.
          * @enum {string}
          */
-        LifecycleAction: "block" | "resume" | "complete_task" | "reopen_task" | "close_epic" | "reopen_epic";
+        LifecycleAction: "block" | "resume" | "complete_task" | "reopen_task" | "withdraw_task" | "close_epic" | "reopen_epic";
         /** @description What a lifecycle transition produced. */
         LifecycleOutcomeDto: {
             /** @description The Realm it happened in. */
@@ -4535,6 +4610,33 @@ export interface components {
             /**
              * Format: int64
              * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description Its canonical root path. */
+            root_path: string;
+        };
+        /**
+         * @description One project, as an Observer read sees it.
+         *
+         *     Unlike [`ProjectDto`], this projection carries no `applied` result because a
+         *     read does not perform the bootstrap ensure. The project id is sufficient to
+         *     retrieve it; callers never have to repeat the stored name as an assertion.
+         */
+        ProjectReadDto: {
+            /**
+             * Format: date-time
+             * @description When it was created.
+             */
+            created_at: string;
+            /** @description Its stored name. */
+            name: string;
+            /** @description The project. */
+            project_id: string;
+            /** @description The Realm it belongs to. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The revision a subsequent write must present.
              */
             revision: number;
             /** @description Its canonical root path. */
@@ -7005,6 +7107,77 @@ export interface operations {
             };
         };
     };
+    projects: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectReadDto"][];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    project: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectReadDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     advisor_profiles: {
         parameters: {
             query?: never;
@@ -8358,6 +8531,67 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    install_connector_workflow_spec: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The connector implementation */
+                connector: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InstallWorkflowSpecRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstalledWorkflowSpecDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

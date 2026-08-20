@@ -39,14 +39,16 @@ use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, 
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
-    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ContentHash, ExternalName,
-    MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, TaskId, TeamRunId,
-    TicketLinkId, TopologyNodeId,
+    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash,
+    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, MiniProjectId, ProjectId,
+    QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId, TeamRunId, TicketLinkId,
+    TopologyNodeId,
 };
 use kontor_core::repository::{
-    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow,
-    NewTicketLink, ProjectRepository, RealmRepository, RunClosure, RunRepository,
-    SourceDisposition, StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
+    CommandRepository, ConnectorSpecSelector, NewMiniProject, NewObservation, NewProject,
+    NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    ProjectRepository, RealmRepository, RunClosure, RunRepository, SourceDisposition,
+    SpecRepository, StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
     TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderRef};
@@ -461,6 +463,42 @@ async fn the_authority_tiers_are_enforced_per_route() {
         .send(&world)
         .await;
     assert_eq!(admin.status, 200, "{}", admin.body);
+}
+
+#[tokio::test]
+async fn an_observer_can_discover_projects_and_read_one_without_repeating_its_name() {
+    let world = World::open().await;
+
+    let list = Call::get("/v1/projects")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(list.status, 200, "{}", list.body);
+    let listed = list.json();
+    let projects = listed.as_array().expect("a project list");
+    let project = projects
+        .iter()
+        .find(|project| project["project_id"] == world.project.to_string())
+        .expect("the seeded project is discoverable");
+    assert_eq!(project["realm_id"], world.realm_id().to_string());
+    assert!(project["name"].is_string());
+    assert!(project["root_path"].is_string());
+    assert!(project["revision"].is_number());
+    assert!(project.get("applied").is_none(), "a read is not an ensure");
+
+    let one = Call::get(format!("/v1/projects/{}", world.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(one.status, 200, "{}", one.body);
+    assert_eq!(one.json(), project.clone());
+
+    let missing = Call::get("/v1/projects/01a00000-0000-7000-8000-000000000000")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.code(), "not_found");
 }
 
 // ---------------------------------------------------------------------------
@@ -2062,6 +2100,38 @@ async fn ensure_project(world: &World, key: &str, name: &str, root: &str) -> Ans
     Call::post(
         "/v1/projects:ensure",
         &serde_json::json!({"name": name, "root_path": root}),
+    )
+    .signed_as(world, "admin")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// Install the bundled Jira workflow through the same public surfaces a Lead
+/// uses: catalogue read, project read, then revision-checked Admin mutation.
+async fn install_jira_workflow(world: &World, project: &str, key: &str) -> Answer {
+    let catalogue = Call::get(format!(
+        "/v1/projects/{project}/connectors/jira/workflow-specs"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(catalogue.status, 200, "{}", catalogue.body);
+    let catalogue = catalogue.json();
+    let shipped = &catalogue.as_array().expect("a workflow catalogue")[0];
+    let project_read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(project_read.status, 200, "{}", project_read.body);
+    Call::post(
+        format!("/v1/projects/{project}/connectors/jira/workflow-specs:install"),
+        &serde_json::json!({
+            "external_project": shipped["external_project"],
+            "issue_type": shipped["issue_type"],
+            "version": shipped["version"],
+            "expected_revision": project_read.json()["revision"],
+        }),
     )
     .signed_as(world, "admin")
     .with_key(key)
@@ -4372,6 +4442,29 @@ async fn lifecycle_transitions_are_legal_revisioned_and_gated() {
     .await;
     assert_eq!(resumed.status, 200, "{}", resumed.body);
     assert_eq!(resumed.json()["state"], "ready");
+    let resumed_revision = resumed.json()["revision"].as_u64().expect("revision");
+    assert!(
+        resumed_revision > held_revision,
+        "resume is a material mutation after the original block"
+    );
+
+    let replayed_block = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "block", "task_id": task,
+            "expected_revision": task_revision, "reason": "Hold it"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("life-block")
+    .send(&world)
+    .await;
+    assert_eq!(replayed_block.status, 200, "{}", replayed_block.body);
+    assert_eq!(
+        replayed_block.json(),
+        blocked.json(),
+        "K1 must replay its original blocked state and revision after K2 resumed the live task"
+    );
 
     // Closing the epic while a task is still open is refused.
     let premature = Call::post(
@@ -4400,6 +4493,316 @@ async fn lifecycle_transitions_are_legal_revisioned_and_gated() {
     .await;
     assert_eq!(taskless.status, 400, "{}", taskless.body);
     assert_eq!(taskless.code(), "invalid_request");
+}
+
+#[tokio::test]
+async fn withdrawal_is_a_terminal_audited_scope_change_not_a_block_or_delete() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "withdraw-project",
+        "Withdrawal",
+        "/tmp/kontor-withdrawal",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("a revision");
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Withdrawal epic",
+            &category,
+            serde_json::json!([
+                {
+                    "title": "Descoped dependency",
+                    "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-7687"}]
+                },
+                {"title": "Dependent", "depends_on": ["Descoped dependency"]}
+            ]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("withdraw-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let first = applied.json()["tasks"][0].clone();
+    let second = applied.json()["tasks"][1].clone();
+    let lifecycle = format!("/v1/projects/{project}/epics/{epic}/lifecycle");
+
+    let invalid_withdrawal = serde_json::json!({
+        "action": "withdraw_task",
+        "task_id": second["task_id"],
+        "expected_revision": second["revision"],
+        "reason": "Invalid evidence must not leave withdrawal authority behind",
+        "evidence": ["not a valid artifact key"]
+    });
+    for _ in 0..2 {
+        let invalid = Call::post(&lifecycle, &invalid_withdrawal)
+            .signed_as(&world, "operator")
+            .with_key("withdraw-invalid-evidence")
+            .send(&world)
+            .await;
+        assert_eq!(invalid.status, 400, "{}", invalid.body);
+        assert_eq!(invalid.code(), "invalid_request");
+    }
+    let (invalid_receipt, untouched) = world.daemon.state().with_store(|store| {
+        let receipt = store
+            .get_receipt_by_key(
+                &kontor_core::id::IdempotencyKey::parse("withdraw-invalid-evidence")
+                    .expect("the test key is valid"),
+            )
+            .expect("the receipt lookup succeeds");
+        let task = store
+            .get_task(
+                kontor_core::id::ProjectId::parse(&project).expect("project id"),
+                kontor_core::id::TaskId::parse(second["task_id"].as_str().expect("task id"))
+                    .expect("task id"),
+            )
+            .expect("the task reads")
+            .expect("the task remains");
+        (receipt, task)
+    });
+    assert!(
+        invalid_receipt.is_none(),
+        "a refused withdrawal records no authority receipt"
+    );
+    assert_eq!(untouched.state, kontor_core::state::TaskState::Ready);
+    assert_eq!(
+        untouched.revision.get(),
+        second["revision"].as_u64().unwrap()
+    );
+
+    let unresolved = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "withdraw_task",
+            "task_id": first["task_id"],
+            "expected_revision": first["revision"],
+            "reason": "The downstream consequence is not resolved"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("withdraw-unresolved")
+    .send(&world)
+    .await;
+    assert_eq!(unresolved.status, 409, "{}", unresolved.body);
+
+    let dependent = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "withdraw_task",
+            "task_id": second["task_id"],
+            "expected_revision": second["revision"],
+            "reason": "Dependent work is explicitly descoped first"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("withdraw-dependent")
+    .send(&world)
+    .await;
+    assert_eq!(dependent.status, 200, "{}", dependent.body);
+    assert_eq!(dependent.json()["state"], "withdrawn");
+
+    let blocked = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "block",
+            "task_id": first["task_id"],
+            "expected_revision": first["revision"],
+            "reason": "Temporary hold remains a distinct state"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("withdraw-block-first")
+    .send(&world)
+    .await;
+    assert_eq!(blocked.status, 200, "{}", blocked.body);
+    assert_eq!(blocked.json()["state"], "blocked");
+
+    let withdraw_first_request = serde_json::json!({
+        "action": "withdraw_task",
+        "task_id": first["task_id"],
+        "expected_revision": blocked.json()["revision"],
+        "reason": "ASMA-7687 left this epic's active scope"
+    });
+    let withdrawn = Call::post(&lifecycle, &withdraw_first_request)
+        .signed_as(&world, "operator")
+        .with_key("withdraw-first")
+        .send(&world)
+        .await;
+    assert_eq!(withdrawn.status, 200, "{}", withdrawn.body);
+    assert_eq!(withdrawn.json()["state"], "withdrawn");
+    assert!(
+        !withdrawn.json()["receipt_id"]
+            .as_str()
+            .expect("a receipt")
+            .is_empty()
+    );
+    let withdrawal_receipt = world.daemon.state().with_store(|store| {
+        store
+            .get_receipt_by_key(
+                &kontor_core::id::IdempotencyKey::parse("withdraw-first")
+                    .expect("the test key is valid"),
+            )
+            .expect("the receipt reads")
+            .expect("the withdrawal receipt exists")
+    });
+    assert_eq!(
+        withdrawal_receipt.kind,
+        kontor_core::receipt::CommandKind::WithdrawTask
+    );
+
+    let replay = Call::post(&lifecycle, &withdraw_first_request)
+        .signed_as(&world, "operator")
+        .with_key("withdraw-first")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["state"], "withdrawn");
+    assert_eq!(replay.json()["revision"], withdrawn.json()["revision"]);
+    assert_eq!(replay.json()["receipt_id"], withdrawn.json()["receipt_id"]);
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    let tasks = projection.json()["tasks"]
+        .as_array()
+        .expect("tasks")
+        .clone();
+    assert!(tasks.iter().all(|task| task["state"] == "withdrawn"));
+    let retained = tasks
+        .iter()
+        .find(|task| task["task_id"] == first["task_id"])
+        .expect("the withdrawn task remains visible");
+    assert_eq!(retained["links"][0]["external_issue_key"], "ASMA-7687");
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert!(plan.json()["ready"].as_array().expect("ready").is_empty());
+
+    // Declarative omission remains non-destructive: the withdrawn dependent is
+    // absent from the new document and still present in history afterward.
+    let project_read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let reapply = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_read.json()["revision"]
+                .as_u64()
+                .expect("a revision"),
+            "Withdrawal epic",
+            &category,
+            serde_json::json!([{
+                "title": "Descoped dependency",
+                "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-7687"}]
+            }]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("withdraw-reapply-omission")
+    .send(&world)
+    .await;
+    assert_eq!(reapply.status, 200, "{}", reapply.body);
+    let after = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(after.json()["tasks"].as_array().expect("tasks").len(), 2);
+    assert!(
+        after.json()["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .all(|task| task["state"] == "withdrawn")
+    );
+}
+
+#[tokio::test]
+async fn withdrawal_refuses_any_task_that_has_ever_had_a_team_run() {
+    let world = World::open().await;
+    let project = world.project;
+    let epic = MiniProjectId::generate();
+    let task = TaskId::generate();
+    let seeded_team = world.daemon.state().with_store(|store| {
+        let seeded_team = store
+            .get_team_run(project, world.team_run)
+            .expect("the seeded team run reads")
+            .expect("the seeded team run exists");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic,
+                project_id: project,
+                name: name("Never-started invariant"),
+                created_at: at("2026-08-20T07:00:00Z"),
+            })
+            .expect("the epic is created");
+        store
+            .create_task(&NewTask {
+                id: task,
+                project_id: project,
+                mini_project_id: Some(epic),
+                title: name("A task with historical run identity"),
+                module: None,
+                state: kontor_core::state::TaskState::Ready,
+                created_at: at("2026-08-20T07:01:00Z"),
+            })
+            .expect("the task is created");
+        store
+            .create_team_run(&NewTeamRun {
+                id: TeamRunId::generate(),
+                project_id: project,
+                task_id: task,
+                snapshot: seeded_team.snapshot.clone(),
+                created_at: at("2026-08-20T07:02:00Z"),
+            })
+            .expect("the historical TeamRun is created");
+        seeded_team
+    });
+    let _ = seeded_team;
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/lifecycle"),
+        &serde_json::json!({
+            "action": "withdraw_task",
+            "task_id": task,
+            "expected_revision": 1,
+            "reason": "A run already exists"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("withdraw-historical-run")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_task(project, task)
+            .expect("the task reads")
+            .expect("the task remains")
+    });
+    assert_eq!(stored.state, kontor_core::state::TaskState::Ready);
+    assert_eq!(stored.revision.get(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -5242,6 +5645,30 @@ print(json.dumps(response, sort_keys=True))
         .as_str()
         .expect("a task id")
         .to_owned();
+    let without_policy = Call::post(
+        format!(
+            "/v1/projects/{historical_project_id}/tasks/{historical_task}/ticket:reconcile-plan"
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(without_policy.status, 422, "{}", without_policy.body);
+    assert_eq!(without_policy.code(), "unsupported_capability");
+    assert!(
+        without_policy.body.contains("connector.jira"),
+        "the refusal names the canonical install key: {}",
+        without_policy.body
+    );
+    let installed = install_jira_workflow(
+        &world,
+        &historical_project_id,
+        "jira-historical-workflow-install",
+    )
+    .await;
+    assert_eq!(installed.status, 200, "{}", installed.body);
+
     let historical_plan = Call::post(
         format!(
             "/v1/projects/{historical_project_id}/tasks/{historical_task}/ticket:reconcile-plan"
@@ -5267,6 +5694,9 @@ print(json.dumps(response, sort_keys=True))
     );
 
     let seed = bootstrap(&world, "jira-composed").await;
+    let installed =
+        install_jira_workflow(&world, &seed.project, "jira-composed-workflow-install").await;
+    assert_eq!(installed.status, 200, "{}", installed.body);
     let project = ProjectId::parse(&seed.project).expect("a project id");
     let epic = MiniProjectId::parse(&seed.epic).expect("an epic id");
     let seed_task = TaskId::parse(&seed.task).expect("a task id");
@@ -6451,6 +6881,140 @@ async fn a_connector_reports_the_specifications_this_build_ships() {
     .await;
     assert_eq!(other.status, 200, "{}", other.body);
     assert_eq!(other.json().as_array().expect("a list").len(), 0);
+}
+
+#[tokio::test]
+async fn an_admin_installs_the_exact_shipped_workflow_revision_under_project_cas() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "workflow-install").await;
+
+    // Ticket links use `jira`; the catalogue uses `connector.jira`. The alias
+    // must discover the canonical key instead of returning a misleading empty
+    // list.
+    let alias = Call::get(format!(
+        "/v1/projects/{}/connectors/jira/workflow-specs",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(alias.status, 200, "{}", alias.body);
+    let shipped = alias.json();
+    let shipped = &shipped.as_array().expect("the shipped revisions")[0];
+    assert_eq!(shipped["connector"], "connector.jira");
+    assert_eq!(shipped["installed"], false);
+
+    let project = Call::get(format!("/v1/projects/{}", seed.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = project.json()["revision"].as_u64().expect("a revision");
+    let uri = format!(
+        "/v1/projects/{}/connectors/jira/workflow-specs:install",
+        seed.project
+    );
+    let request = serde_json::json!({
+        "external_project": shipped["external_project"],
+        "issue_type": shipped["issue_type"],
+        "version": shipped["version"],
+        "expected_revision": revision,
+    });
+
+    let operator = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("workflow-install-operator")
+        .send(&world)
+        .await;
+    assert_eq!(operator.status, 403, "{}", operator.body);
+
+    let installed = Call::post(&uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("workflow-install-once")
+        .send(&world)
+        .await;
+    assert_eq!(installed.status, 200, "{}", installed.body);
+    assert_eq!(installed.json()["spec"]["connector"], "connector.jira");
+    assert_eq!(installed.json()["spec"]["installed"], true);
+    assert_eq!(installed.json()["receipt"]["applied"], "created");
+    assert_eq!(installed.json()["receipt"]["revision"], revision + 1);
+    let receipt = installed.json()["receipt"]["receipt_id"]
+        .as_str()
+        .expect("a receipt")
+        .to_owned();
+
+    let readback = Call::get(format!(
+        "/v1/projects/{}/connectors/connector.jira/workflow-specs",
+        seed.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(readback.status, 200, "{}", readback.body);
+    assert_eq!(readback.json()[0]["installed"], true);
+
+    let project_id = ProjectId::parse(&seed.project).expect("project id");
+    let selector = ConnectorSpecSelector {
+        project_id,
+        connector: ConnectorKey::parse(shipped["connector"].as_str().expect("connector key"))
+            .expect("connector key"),
+        project: ExternalProjectKey::parse(
+            shipped["external_project"]
+                .as_str()
+                .expect("external project"),
+        )
+        .expect("external project"),
+        issue_type: ExternalIssueTypeKey::parse(
+            shipped["issue_type"].as_str().expect("issue type"),
+        )
+        .expect("issue type"),
+        version: SpecVersion::parse(
+            u32::try_from(shipped["version"].as_u64().expect("version")).expect("u32 version"),
+        )
+        .expect("version"),
+    };
+    world.daemon.state().with_store(|store| {
+        let mut second_spec = store
+            .get_external_workflow_spec(&selector)
+            .expect("the installed spec reads")
+            .expect("the installed spec exists");
+        second_spec.version = second_spec.version.next().expect("a next spec revision");
+        let (_, moved, _) = store
+            .install_external_workflow_spec(
+                project_id,
+                AggregateRevision::parse(revision + 1).expect("project revision"),
+                &second_spec,
+            )
+            .expect("an intervening workflow revision moves the project");
+        assert_eq!(moved.get(), revision + 2);
+    });
+    let moved_project = Call::get(format!("/v1/projects/{}", seed.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(moved_project.status, 200, "{}", moved_project.body);
+    assert!(
+        moved_project.json()["revision"].as_u64().expect("revision") > revision + 1,
+        "the replay must be tested after the project has moved again"
+    );
+
+    let replay = Call::post(&uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("workflow-install-once")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["receipt"]["receipt_id"], receipt);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(replay.json()["receipt"]["revision"], revision + 1);
+
+    let stale = Call::post(&uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("workflow-install-stale")
+        .send(&world)
+        .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(stale.code(), "revision_conflict");
 }
 
 #[tokio::test]

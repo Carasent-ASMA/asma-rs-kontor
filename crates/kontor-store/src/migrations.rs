@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 44;
+pub const SCHEMA_VERSION: i64 = 45;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -195,6 +195,9 @@ const MIGRATIONS: &[&str] = &[
     // still need an exact native identity for idempotent messages and restart
     // recovery. SeatBinding remains their logical identity.
     include_str!("../migrations/0044_hosted_topology_seats.sql"),
+    // Schema v45. Project-pinned external-workflow installation and a distinct
+    // terminal task-withdrawal state/receipt.
+    include_str!("../migrations/0045_admin_workflow_install_and_withdrawal.sql"),
 ];
 
 const _: () = assert!(
@@ -366,6 +369,7 @@ fn apply_pending(
             MIGRATIONS[41],
             MIGRATIONS[42],
             MIGRATIONS[43],
+            MIGRATIONS[44],
         ] {
             transaction.execute_batch(migration)?;
         }

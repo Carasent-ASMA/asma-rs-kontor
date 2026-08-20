@@ -323,7 +323,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 44);
+    assert_eq!(SCHEMA_VERSION, 45);
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.
@@ -637,7 +637,7 @@ fn the_merged_op12_v41_lineage_upgrades_through_epic_execution_scopes_v43() {
     }
 
     let store = SqliteStore::open(&path).expect("the merged v41 lineage upgrades once");
-    assert_eq!(store.schema_version().expect("readable"), 44);
+    assert_eq!(store.schema_version().expect("readable"), SCHEMA_VERSION);
     assert_eq!(store.realm_id().to_string(), REALM);
     let connection = raw(&directory);
     let (state, imported_state): (String, Option<String>) = connection

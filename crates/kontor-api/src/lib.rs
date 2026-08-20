@@ -270,6 +270,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/events", get(control::events))
         // The declarative application operations. Every one of them answers with
         // the durable projection its service produced, not with an intent.
+        .route("/v1/projects", get(applications::projects))
+        .route("/v1/projects/{project_id}", get(applications::project))
         .route("/v1/projects:ensure", post(applications::ensure_project))
         .route(
             "/v1/catalog/work-profiles",
@@ -680,6 +682,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/projects/{project_id}/connectors/{connector}/workflow-specs",
             get(applications::connector_workflow_specs),
+        )
+        .route(
+            "/v1/projects/{project_id}/connectors/{connector}/workflow-specs:install",
+            post(applications::install_connector_workflow_spec),
         )
         // Conflicts, inbound comments and ownership, all task-scoped: a ticket is
         // linked to a task, and every one of these is a fact about that link.
