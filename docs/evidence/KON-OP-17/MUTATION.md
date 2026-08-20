@@ -118,3 +118,21 @@ test a_retitle_reads_the_persisted_parent_project_after_restart ... ok
 
 The full format, lint, Rust workspace, generated-contract, console, and release
 build gates are recorded in the associated deployment report and commit/PR.
+
+## Restart-safe retitle follow-up
+
+The M24 restoration was reverified on 2026-08-20 before release:
+
+```text
+cargo fmt --all -- --check                                      passed
+cargo clippy --workspace --all-targets -- -D warnings           passed
+cargo test --workspace                                           passed
+pnpm --dir apps/console verify:api                               passed
+pnpm typecheck                                                   passed
+pnpm test                                                        passed (295 tests)
+cargo audit && cargo deny check                                  passed
+```
+
+No schema migration or generated contract changed. The live proof after deploy
+must resolve the preserved OP-18 workspace by its persisted native project
+ancestor without preparing the project again or changing either native id.
