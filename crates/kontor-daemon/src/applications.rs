@@ -8082,6 +8082,17 @@ fn needs_human_dto(payload: &NeedsHumanPayload) -> NeedsHumanDto {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    fn persist_session_observation(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        observation: &ControlPlaneObservation,
+        reduced_at: Timestamp,
+    ) -> Result<(), ApiError> {
+        self.persist_run_observation(project_id, agent_run_id, observation, reduced_at)
+            .map(|_| ())
+    }
+
     fn projects(&self) -> Result<Vec<kontor_api::applications::ProjectReadDto>, ApiError> {
         let state = self.state()?;
         Ok(state
@@ -9107,7 +9118,8 @@ impl ApplicationOperations for Services {
         // `ensure_task_node` is store-only and idempotent: the runtime remains
         // untouched and the already bound TSW keeps its native identity.
         if replayed && let Some(task_id) = scope.task_id {
-            self.ensure_task_node(project_id, task_id)?;
+            let leaf = self.ensure_task_node(project_id, task_id)?;
+            self.retire_unrouted_task_persistent_seats(project_id, task_id, leaf.id)?;
         }
 
         if !replayed {
@@ -9214,6 +9226,9 @@ impl ApplicationOperations for Services {
                         })
                         .map_err(|error| self.refuse(&error))?;
                 }
+            }
+            if let Some(task_id) = leaf.task_id {
+                self.retire_unrouted_task_persistent_seats(project_id, task_id, leaf.id)?;
             }
         }
 
@@ -10598,10 +10613,10 @@ impl ApplicationOperations for Services {
                     "the persistent Core Team seat is not active in this project",
                 )
             })?;
-        if binding.task_id.is_some() || binding.team_run_id.is_some() {
+        if binding.team_run_id.is_some() {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
-                "delivery seats are messaged through the session message surface",
+                "TeamRun delivery seats are messaged through the session message surface",
             ));
         }
         let hosted = state
@@ -17742,6 +17757,55 @@ impl Services {
                 created_at: now,
             },
         )
+    }
+
+    /// Retire legacy task control rows that have no supported message route.
+    ///
+    /// Current Operational semantics admit TSW delivery seats only with a
+    /// TeamRun; persistent LSA/TPM control seats belong to the epic Core Team.
+    /// Older ticket materialization could leave an active task-bound TPM with
+    /// neither a TeamRun/AgentRun session route nor a hosted native route. A
+    /// materialization replay reconciles that durable row in place: it remains
+    /// evidence under the same `SeatBindingId`, but no longer publishes itself
+    /// active. An already-hosted task seat is left alone and remains addressable
+    /// through topology messaging; this repair never invents its route.
+    fn retire_unrouted_task_persistent_seats(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        task_node_id: TopologyNodeId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let bindings = state
+            .with_store(|store| store.list_seat_bindings(project_id, task_node_id))
+            .map_err(|error| self.refuse(&error))?;
+        let now = kontor_api::now();
+        for binding in bindings.into_iter().filter(|binding| {
+            binding.is_non_terminal()
+                && binding.task_id == Some(task_id)
+                && binding.team_run_id.is_none()
+        }) {
+            let hosted = state
+                .with_store(|store| store.get_hosted_topology_seat(project_id, binding.id))
+                .map_err(|error| self.refuse(&error))?;
+            if hosted.is_some() {
+                continue;
+            }
+            state
+                .with_store(|store| {
+                    store.observe_seat_binding(
+                        project_id,
+                        binding.id,
+                        &SeatLivenessObservation {
+                            released_at: Some(now),
+                            ..SeatLivenessObservation::default()
+                        },
+                        now,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        Ok(())
     }
 
     /// The seat that owns one epic's delivery seats, opened once per epic.

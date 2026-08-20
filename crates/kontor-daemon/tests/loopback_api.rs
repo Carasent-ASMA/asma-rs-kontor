@@ -1191,6 +1191,104 @@ async fn a_caught_up_live_stream_waits_instead_of_claiming_it_ended() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn a_message_resume_reduces_the_run_and_team_run_back_to_running() {
+    let world = World::open().await;
+    let (run_id, snapshot) = world.launch().await;
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let waiting_at = at("2026-08-10T09:05:00Z");
+    let payload = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "observed_state": "waiting_input",
+        "contact": "reachable",
+        "native_sequence": 1,
+        "observed_at": waiting_at.to_string(),
+    }))
+    .expect("control metadata");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_observation(&NewObservation {
+                event: NewRuntimeEvent {
+                    project_id: world.project,
+                    agent_run_id: run_id,
+                    identity: snapshot.identity().clone(),
+                    native_event_id: None,
+                    native_sequence: 1,
+                    payload,
+                    observed_at: waiting_at,
+                },
+                observed: ObservedRunState::WaitingInput,
+                contact: RuntimeContact::Reachable,
+                freshness: Freshness::Fresh,
+                expected_revision: before.revision,
+            })
+            .expect("waiting input is persisted through the shared reducer");
+    });
+    let waiting_run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let waiting_team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(world.project, world.team_run)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert_eq!(waiting_run.projection.lifecycle.as_str(), "waiting_input");
+    assert_eq!(waiting_team.lifecycle.as_str(), "waiting_input");
+
+    let message_id = kontor_runtime::request::MessageId::generate().to_string();
+    let sent = Call::post(
+        format!("/v1/sessions/{run_id}/messages"),
+        &serde_json::json!({"body": "Continue the same bounded turn."}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(&message_id)
+    .send(&world)
+    .await;
+    assert_eq!(sent.status, 200, "{}", sent.body);
+
+    let after_run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let after_team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(world.project, world.team_run)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert_eq!(after_run.id, run_id, "the AgentRun identity is unchanged");
+    assert_eq!(
+        after_run.binding.as_ref().map(|binding| binding.id),
+        Some(snapshot.binding_id()),
+        "the exact issued binding was observed"
+    );
+    assert_eq!(after_run.projection.lifecycle.as_str(), "running");
+    assert_eq!(
+        after_team.id, world.team_run,
+        "the TeamRun identity is unchanged"
+    );
+    assert_eq!(after_team.lifecycle.as_str(), "running");
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Inspect(binding) if *binding == snapshot.binding_id())),
+        "the acknowledged message is followed by an exact-binding inspect"
+    );
+}
+
+#[tokio::test]
 async fn a_lost_acknowledgement_is_replayed_without_a_second_native_effect() {
     let world = World::open().await;
     world.script(HISTORY_LIVE);
@@ -1751,7 +1849,15 @@ async fn no_response_or_stored_row_carries_a_secret_a_runtime_endpoint_or_a_tran
     .with_key(&key)
     .send(&world)
     .await;
-    observe(&world, run, 1, 1);
+    let revision = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run)
+            .expect("the run reads")
+            .expect("the run exists")
+            .revision
+            .get()
+    });
+    observe(&world, run, 1, revision);
     world.daemon.state().signals().stop();
 
     let secrets: Vec<String> = ["observer", "operator", "admin"]
@@ -16047,6 +16153,135 @@ async fn materializing_a_ticket_binds_its_native_workspace_without_admitting_a_r
         task.json()["value"]["state"],
         "ready",
         "native placement alone must not admit or start the task"
+    );
+}
+
+#[tokio::test]
+async fn ticket_materialization_retires_an_unrouted_legacy_tpm_without_creating_identity() {
+    let composed = compose_realm("/tmp/kontor-op08-unrouted-task-tpm").await;
+    let world = &composed.world;
+    let epic = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    let task = epic.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the composed task id")
+        .to_owned();
+    let project_id = ProjectId::parse(&composed.project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let uri = format!("/v1/projects/{}/topology:materialize", composed.project);
+    let request = serde_json::json!({
+        "target": {"scope": "ticket", "task_id": task},
+        "expected_revision": composed.project_revision,
+    });
+
+    let first = Call::post(&uri, &request)
+        .signed_as(world, "operator")
+        .with_key("materialize-ticket-with-legacy-tpm")
+        .send(world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let node_id = TopologyNodeId::parse(
+        first.json()["projection"]["nodes"]
+            .as_array()
+            .expect("topology nodes")
+            .iter()
+            .find(|node| node["kind_key"] == "TSW")
+            .expect("the TSW node")["topology_node_id"]
+            .as_str()
+            .expect("the TSW id"),
+    )
+    .expect("a topology node id");
+    let legacy_binding_id = SeatBindingId::generate();
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    let catalog = domain
+        .role_catalogs
+        .first()
+        .expect("a bundled role catalog");
+    let tpm = catalog
+        .role(&RoleCode::parse("TPM").expect("the TPM role code"))
+        .expect("the catalog has TPM");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_seat_binding(&NewSeatBinding {
+                id: legacy_binding_id,
+                project_id,
+                topology_node_id: node_id,
+                role_slot_id: kontor_core::id::RoleSlotId::parse("tpm").expect("a role slot"),
+                role: CatalogRoleRef {
+                    catalog_id: catalog.catalog_id,
+                    catalog_revision: catalog.version,
+                    role_code: tpm.role_code.clone(),
+                    standard_title: tpm.standard_title.clone(),
+                    custom_display_name: None,
+                },
+                task_id: Some(task_id),
+                team_run_id: None,
+                attach_deadline: at("2099-01-01T00:00:00Z"),
+                parent_seat_binding_id: None,
+                created_at: at("2026-08-10T09:00:00Z"),
+            })
+            .expect("the legacy logical-only TPM is reproduced");
+        assert!(
+            store
+                .get_hosted_topology_seat(project_id, legacy_binding_id)
+                .expect("the hosted route reads")
+                .is_none(),
+            "the legacy row starts with no topology-message route"
+        );
+    });
+    let calls_before = world.fake.calls().len();
+
+    let repaired = Call::post(&uri, &request)
+        .signed_as(world, "operator")
+        .with_key("materialize-ticket-with-legacy-tpm")
+        .send(world)
+        .await;
+    assert_eq!(repaired.status, 200, "{}", repaired.body);
+    assert_eq!(repaired.json()["receipt"]["applied"], "unchanged");
+    let preserved = world.daemon.state().with_store(|store| {
+        let binding = store
+            .get_seat_binding(project_id, legacy_binding_id)
+            .expect("the binding reads")
+            .expect("the binding is preserved as evidence");
+        assert!(
+            store
+                .get_hosted_topology_seat(project_id, legacy_binding_id)
+                .expect("the hosted route reads")
+                .is_none(),
+            "repair must not invent a native route"
+        );
+        binding
+    });
+    assert_eq!(preserved.id, legacy_binding_id);
+    assert_eq!(preserved.lifecycle.as_str(), "retired");
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before,
+        "replay has no native effect"
+    );
+
+    let message = Call::post(
+        format!(
+            "/v1/projects/{}/seat-bindings/{legacy_binding_id}/messages",
+            composed.project
+        ),
+        &serde_json::json!({"body": "This must not materialize the missing seat."}),
+    )
+    .signed_as(world, "operator")
+    .with_key(kontor_runtime::request::MessageId::generate().to_string())
+    .send(world)
+    .await;
+    assert_eq!(message.status, 404, "{}", message.body);
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before,
+        "messaging an inactive logical row cannot create a native identity"
     );
 }
 

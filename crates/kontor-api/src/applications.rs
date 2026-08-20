@@ -53,6 +53,7 @@ use kontor_core::spec::{
     ShareabilityClassifier, ShareabilityProvenance,
 };
 use kontor_core::state::{PlacementState, TopologyLifecycle};
+use kontor_runtime::observation::ControlPlaneObservation;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -4045,6 +4046,16 @@ pub struct TicketClaimDto {
 /// different bytes is a conflict.
 #[async_trait]
 pub trait ApplicationOperations: Send + Sync {
+    /// Persist one exact post-message runtime observation through the shared
+    /// AgentRun/TeamRun reducer.
+    fn persist_session_observation(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        observation: &ControlPlaneObservation,
+        reduced_at: Timestamp,
+    ) -> Result<(), ApiError>;
+
     /// Every project in this Realm, oldest first.
     fn projects(&self) -> Result<Vec<ProjectReadDto>, ApiError>;
 
