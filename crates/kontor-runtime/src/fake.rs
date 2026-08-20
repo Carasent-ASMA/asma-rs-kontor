@@ -47,7 +47,7 @@ use crate::container::{
 };
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
-    ReconciliationReport, reconcile,
+    ReconciliationReport, reconcile, timestamp_control_sequence,
 };
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
@@ -1344,7 +1344,11 @@ impl ScriptedFakeRuntime {
             state,
             identity: snapshot.identity().clone(),
             native_event_id: None,
-            native_sequence,
+            native_sequence: if native_sequence == 0 {
+                timestamp_control_sequence(at)?
+            } else {
+                native_sequence
+            },
             observed_at: at,
             evidence: CanonicalDocument::from_serializable(&serde_json::json!({
                 "schema_version": 1,

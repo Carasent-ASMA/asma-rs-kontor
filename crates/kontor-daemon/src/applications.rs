@@ -168,6 +168,7 @@ use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
     ContainerRequest, RetitleContainerRequest,
 };
+use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
     LaunchParts, LaunchPlacement, MessageId, ReconcileSessionLabelsRequest,
 };
@@ -2410,6 +2411,146 @@ impl Services {
         })?;
         state.signals().appended();
         Ok(receipt)
+    }
+
+    /// Ensure an open native-bound run has the launch intent Kontor actually
+    /// exercised when it created that session.
+    ///
+    /// New downstream and replacement seats call this before runtime contact.
+    /// The bound-run reconciliation path calls it only after loading the exact
+    /// immutable binding. That second use repairs the historical write omission;
+    /// it never authorizes another launch.
+    fn ensure_launch_intent(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> Result<kontor_core::repository::AgentRun, ApiError> {
+        let state = self.state()?;
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the agent run no longer exists"))?;
+        if run.terminal.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a terminal run cannot receive launch intent",
+            ));
+        }
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, run.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the team run no longer exists"))?;
+        if team.lifecycle.is_terminal() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a terminal team run cannot receive launch intent",
+            ));
+        }
+        match run.projection.desired {
+            kontor_core::state::DesiredRunState::RunRequested => return Ok(run),
+            kontor_core::state::DesiredRunState::NoIntent => {}
+            _ => {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the run already carries a contradictory desired state",
+                ));
+            }
+        }
+
+        let key = IdempotencyKey::parse(&format!("launch-run-{agent_run_id}"))
+            .map_err(|error| self.refuse_domain(&error))?;
+        let document = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "launch_run",
+            "agent_run_id": agent_run_id.to_string(),
+            "team_run_id": run.team_run_id.to_string(),
+            "role_slot": run.role.as_str(),
+        }))?;
+        let now = kontor_api::now();
+        let envelope = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewCommandIntent {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key,
+                kind: CommandKind::LaunchRun,
+                target: AggregateRef::AgentRun { agent_run_id },
+                target_revision: run.revision,
+                intent: document.clone(),
+                payload: document,
+                desired: Some(kontor_core::state::DesiredRunState::RunRequested),
+                not_before: now,
+                created_at: now,
+            },
+        );
+        state
+            .with_store(|store| store.record_intent_in_realm(&envelope))
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the agent run vanished"))
+    }
+
+    /// Persist one runtime-issued control observation and reduce both the child
+    /// and its owning TeamRun in the same store transaction.
+    fn persist_run_observation(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        observation: &ControlPlaneObservation,
+        now: Timestamp,
+    ) -> Result<(kontor_core::state::RunProjection, CanonicalDocument), ApiError> {
+        let state = self.state()?;
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the agent run no longer exists"))?;
+        let payload = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "observed_state": observation.state.as_str(),
+            "contact": observation.contact.as_str(),
+            "native_sequence": observation.native_sequence,
+            "observed_at": observation.observed_at.to_string(),
+        }))?;
+        let projection = state
+            .with_store(|store| {
+                store.record_observation(&kontor_core::repository::NewObservation {
+                    event: kontor_core::repository::NewRuntimeEvent {
+                        project_id,
+                        agent_run_id,
+                        identity: observation.identity.clone(),
+                        native_event_id: observation.native_event_id.clone(),
+                        native_sequence: observation.native_sequence,
+                        payload: payload.clone(),
+                        observed_at: observation.observed_at,
+                    },
+                    observed: observation.state,
+                    contact: observation.contact,
+                    freshness: kontor_core::state::Freshness::evaluate(
+                        Some(observation.observed_at),
+                        now,
+                        jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                    ),
+                    expected_revision: run.revision,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        self.observe_seat(
+            project_id,
+            self.task_for_team_run(project_id, run.team_run_id)?,
+            run.team_run_id,
+            &RoleSlotId::new(run.role.clone()),
+            &SeatLivenessObservation {
+                attached_at: Some(observation.observed_at),
+                runtime_reported: Some(observation.state),
+                ..SeatLivenessObservation::default()
+            },
+            now,
+        )?;
+        Ok((projection, payload))
     }
 
     /// Build the scheduling snapshot one epic is judged against.
@@ -15114,6 +15255,7 @@ impl ApplicationOperations for Services {
                 .with_store(|store| store.create_agent_run(&successor_row))
                 .map_err(|error| self.refuse(&error))?;
         }
+        self.ensure_launch_intent(project_id, successor_agent_run_id)?;
 
         adapter
             .prepare_plane()
@@ -15202,6 +15344,12 @@ impl ApplicationOperations for Services {
                 store.record_run_context_policy(project_id, successor_agent_run_id, &context_policy)
             })
             .map_err(|error| self.refuse(&error))?;
+        self.persist_run_observation(
+            project_id,
+            successor_agent_run_id,
+            &outcome.observation,
+            now,
+        )?;
         self.hold(&outcome.snapshot)?;
         self.retry_undelivered_dispatches().await?;
 
@@ -15394,7 +15542,7 @@ impl ApplicationOperations for Services {
 
         // (1) The run and its *immutable* binding. A run that was never bound has
         // no session to ask about, which is not the same as a session that ended.
-        let run = state
+        let mut run = state
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| {
@@ -15403,12 +15551,21 @@ impl ApplicationOperations for Services {
                     "no such agent run exists in this project",
                 )
             })?;
-        let binding = run.binding.as_ref().ok_or_else(|| {
+        let binding = run.binding.clone().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::NotFound,
                 "this run was never bound to a native session, so there is nothing to settle",
             )
         })?;
+
+        // A bound open session with `no_intent` is the historical replay gap:
+        // Kontor launched and bound it, but omitted the desired-state write.
+        // Repair that durable half before reducing the runtime's exact binding.
+        if run.terminal.is_none()
+            && run.projection.desired == kontor_core::state::DesiredRunState::NoIntent
+        {
+            run = self.ensure_launch_intent(project_id, agent_run_id)?;
+        }
 
         if run.terminal.is_none() && self.latest_handoff_receipt(project_id, &run)?.is_some() {
             let task_id = self.task_for_team_run(project_id, run.team_run_id)?;
@@ -15521,55 +15678,8 @@ impl ApplicationOperations for Services {
         // whatever the runtime told it. The digest below is therefore the digest of
         // this document, which is what the closure cites and what the store
         // re-loads and compares.
-        let payload = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "observed_state": observation.state.as_str(),
-            "contact": observation.contact.as_str(),
-            "native_sequence": observation.native_sequence,
-            "observed_at": observation.observed_at.to_string(),
-        }))?;
-        let projection = state
-            .with_store(|store| {
-                store.record_observation(&kontor_core::repository::NewObservation {
-                    event: kontor_core::repository::NewRuntimeEvent {
-                        project_id,
-                        agent_run_id,
-                        identity: observation.identity.clone(),
-                        native_event_id: observation.native_event_id.clone(),
-                        native_sequence: observation.native_sequence,
-                        payload: payload.clone(),
-                        observed_at: observation.observed_at,
-                    },
-                    observed: observation.state,
-                    contact: observation.contact,
-                    freshness: kontor_core::state::Freshness::evaluate(
-                        Some(observation.observed_at),
-                        now,
-                        jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
-                    ),
-                    expected_revision: run.revision,
-                })
-            })
-            .map_err(|error| self.refuse(&error))?;
-        state.signals().appended();
-
-        // (3b) The same readback, against the seat's own binding. A successful
-        // inspect proves the session is *there*, so it records attachment and
-        // quotes what the runtime said about itself — and it deliberately
-        // records no activity. Treating `running` as activity is the shortcut
-        // that makes a hung seat look busy for as long as its process survives.
-        self.observe_seat(
-            project_id,
-            self.task_for_team_run(project_id, run.team_run_id)?,
-            run.team_run_id,
-            &RoleSlotId::new(run.role.clone()),
-            &SeatLivenessObservation {
-                attached_at: Some(observation.observed_at),
-                runtime_reported: Some(observation.state),
-                ..SeatLivenessObservation::default()
-            },
-            now,
-        )?;
+        let (projection, payload) =
+            self.persist_run_observation(project_id, agent_run_id, &observation, now)?;
 
         // (4) The only place an outcome comes from. It is derived from the
         // observation against the *issued* binding, and it refuses every uncertain
@@ -15579,10 +15689,28 @@ impl ApplicationOperations for Services {
         let Some(outcome) =
             observation.terminal_evidence(&issued, now, state.evidence_window_seconds())
         else {
-            return Err(self.deny(
-                ApiErrorCode::UnsupportedCapability,
-                "the runtime does not currently evidence a terminal state for this run",
-            ));
+            let reconciled = state
+                .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the run vanished during reconciliation",
+                    )
+                })?;
+            let (team_run_closed, team_pending) =
+                self.team_closure_state(project_id, &reconciled)?;
+            return Ok(RuntimeSettlementDto {
+                realm_id,
+                agent_run_id: agent_run_id.to_string(),
+                observed: observation.state.as_str().to_owned(),
+                outcome: None,
+                evidence_cursor: projection.last_cursor,
+                applied: AppliedDto::Created,
+                team_run_closed,
+                team_pending,
+                receipt_id: receipt.to_string(),
+            });
         };
         let cursor = projection.last_cursor.ok_or_else(|| {
             self.deny(
@@ -16610,12 +16738,15 @@ impl Services {
                 ));
             }
             ExternalId::parse(&evidence.provider).map_err(|error| self.refuse_domain(&error))?;
-            if predecessor.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
-                || predecessor.projection.desired != kontor_core::state::DesiredRunState::NoIntent
+            if predecessor.projection.lifecycle != kontor_core::state::RunLifecycle::Launching
+                || predecessor.projection.desired
+                    != kontor_core::state::DesiredRunState::RunRequested
+                || predecessor.projection.observed
+                    != kontor_core::state::ObservedRunState::Launching
             {
                 return Err(self.deny(
                     ApiErrorCode::UnsupportedCapability,
-                    "provider-unavailable retirement is limited to a queued seat with no dispatch intent",
+                    "provider-unavailable retirement is limited to a seat evidenced only at launch",
                 ));
             }
             if adapter.provider_available(&evidence.provider) {
@@ -17192,6 +17323,7 @@ impl Services {
                     store.record_run_context_policy(project_id, agent_run_id, &context_policy)
                 })
                 .map_err(|error| self.refuse(&error))?;
+            self.persist_run_observation(project_id, agent_run_id, &outcome.observation, now)?;
             // The launch read a native session back for this seat: it is
             // attached, and starting is itself an observed runtime event, so it
             // is the seat's first activity. Recording only attachment here would
@@ -18304,6 +18436,7 @@ impl Services {
                 })
                 .map_err(|error| self.refuse(&error))?;
         }
+        self.ensure_launch_intent(project_id, agent_run_id)?;
 
         // The seat resolves its context window against the team run's own frozen
         // inputs, read back from storage rather than recomposed from whatever
@@ -18376,6 +18509,7 @@ impl Services {
                 store.record_run_context_policy(project_id, agent_run_id, &context_policy)
             })
             .map_err(|error| self.refuse(&error))?;
+        self.persist_run_observation(project_id, agent_run_id, &outcome.observation, now)?;
         // As in `seat`: the launch read a session back, and starting is the
         // seat's first observed activity.
         self.observe_seat(

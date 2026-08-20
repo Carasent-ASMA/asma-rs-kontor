@@ -18,6 +18,7 @@ use kontor_core::state::{
     TerminalOutcome,
 };
 use kontor_core::{
+    DomainError,
     id::{ExternalId, RuntimeBindingId},
     state::TerminalEvidenceSource,
 };
@@ -26,6 +27,22 @@ use serde::{Deserialize, Serialize};
 use crate::adapter::{RuntimeError, RuntimeResult};
 use crate::capability::{IssuedBinding, RuntimeBindingSnapshot, TrustGrade};
 use crate::request::CorrelationLabel;
+
+/// Allocate control ordering for a runtime that exposes no native session
+/// revision.
+///
+/// Content keeps its own timeline sequence. This value orders fresh control
+/// readbacks only, using the instant the adapter observed them — the same
+/// fallback the Paseo adapter uses for its revisionless agent view.
+pub fn timestamp_control_sequence(observed_at: Timestamp) -> RuntimeResult<u64> {
+    u64::try_from(observed_at.as_microsecond()).map_err(|_| {
+        DomainError::invalid(
+            "runtime observation",
+            "timestamp cannot identify a current runtime read",
+        )
+        .into()
+    })
+}
 
 /// Where one observation came from.
 ///

@@ -38,7 +38,7 @@ use kontor_core::state::{
     TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
     TerminalEvidenceSource, TerminalOutcome, apply_task_transition, certify_task_progress,
     derive_run_state, evaluate_seat_attachment, plan_team_advance, plan_team_closure,
-    reduce_team_outcome, team_child_evidence_digest,
+    reduce_run_lifecycle, reduce_team_outcome, team_child_evidence_digest,
 };
 
 const ARBITRARY_PROFILE: &str = include_str!("fixtures/work_profile_arbitrary.json");
@@ -927,6 +927,37 @@ fn abandon_facts(revision: AggregateRevision, hash: &ContentHash) -> AbandonRece
         intent_hash: hash.clone(),
         recorded_at: at("2026-08-09T11:00:00Z"),
     }
+}
+
+#[test]
+fn fresh_runtime_evidence_converges_non_terminal_lifecycle_without_regression() {
+    assert_eq!(
+        reduce_run_lifecycle(RunLifecycle::Queued, ObservedRunState::Launching),
+        RunLifecycle::Launching
+    );
+    assert_eq!(
+        reduce_run_lifecycle(RunLifecycle::Queued, ObservedRunState::Running),
+        RunLifecycle::Running,
+        "a lost launch acknowledgement cannot keep a proven live run queued"
+    );
+    assert_eq!(
+        reduce_run_lifecycle(RunLifecycle::Queued, ObservedRunState::WaitingInput),
+        RunLifecycle::WaitingInput
+    );
+    assert_eq!(
+        reduce_run_lifecycle(RunLifecycle::WaitingInput, ObservedRunState::Running),
+        RunLifecycle::Running
+    );
+    assert_eq!(
+        reduce_run_lifecycle(RunLifecycle::Running, ObservedRunState::Launching),
+        RunLifecycle::Running,
+        "late launch evidence never regresses active work"
+    );
+    assert_eq!(
+        reduce_run_lifecycle(RunLifecycle::Running, ObservedRunState::Succeeded),
+        RunLifecycle::Running,
+        "terminal observations require the evidence-bearing closure path"
+    );
 }
 
 #[test]

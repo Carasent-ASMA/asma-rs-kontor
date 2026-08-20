@@ -63,7 +63,7 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
-    ReconciliationFinding, ReconciliationReport,
+    ReconciliationFinding, ReconciliationReport, timestamp_control_sequence,
 };
 use kontor_runtime::request::{
     AdoptRequest, CancelRequest, CompactRequest, HistoryRequest, InspectRequest, LaunchRequest,
@@ -1110,7 +1110,7 @@ impl<'a> CodexAdapter<'a> {
             state: ObservedRunState::Unknown,
             identity,
             native_event_id: None,
-            native_sequence: 0,
+            native_sequence: timestamp_control_sequence(observed_at)?,
             observed_at,
             evidence: Self::process_evidence(record, Some(ending))?,
             source: ObservationSource::AdvisoryReport,
@@ -1267,7 +1267,7 @@ impl<'a> CodexAdapter<'a> {
                 state: ObservedRunState::Running,
                 identity,
                 native_event_id: ExternalId::parse(&frame.id).ok(),
-                native_sequence: 0,
+                native_sequence: timestamp_control_sequence(request.requested_at())?,
                 observed_at: request.requested_at(),
                 evidence: Self::frame_evidence(&started.launch_ack, &frame)?,
                 source: ObservationSource::CommandAck,
@@ -1596,7 +1596,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
             state: ObservedRunState::Unknown,
             identity: binding.identity().clone(),
             native_event_id: None,
-            native_sequence: 0,
+            native_sequence: timestamp_control_sequence(request.requested_at)?,
             observed_at: request.requested_at,
             evidence: Self::process_evidence(&record, Some(ending))?,
             source: ObservationSource::CommandAck,
@@ -1643,7 +1643,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 state: ObservedRunState::Running,
                 identity: binding.identity().clone(),
                 native_event_id: None,
-                native_sequence: 0,
+                native_sequence: timestamp_control_sequence(request.requested_at)?,
                 observed_at: request.requested_at,
                 evidence: Self::process_evidence(&record, None)?,
                 source: ObservationSource::Inspect,

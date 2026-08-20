@@ -4455,7 +4455,44 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
             seat["attached"].as_bool().expect("a flag"),
             "this process holds the frozen snapshot for every seat it launched"
         );
+        let run = Call::get(format!(
+            "/v1/runs/{}",
+            seat["agent_run_id"].as_str().expect("an agent run id")
+        ))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+        assert_eq!(run.status, 200, "{}", run.body);
+        assert_eq!(
+            run.json()["value"]["projection"]["desired"],
+            "run_requested",
+            "every native launch has durable launch intent: {}",
+            run.body
+        );
+        assert_eq!(
+            run.json()["value"]["projection"]["observed"],
+            "launching",
+            "the runtime-issued launch observation is durable: {}",
+            run.body
+        );
+        assert_eq!(
+            run.json()["value"]["projection"]["derived"],
+            "confirmed",
+            "the binding, intent and launch observation agree: {}",
+            run.body
+        );
+        assert_eq!(
+            run.json()["value"]["projection"]["lifecycle"],
+            "launching",
+            "runtime evidence advances the AgentRun lifecycle: {}",
+            run.body
+        );
     }
+    assert_eq!(
+        runs[0]["lifecycle"], "launching",
+        "runtime evidence advances the owning TeamRun too: {}",
+        projection.body
+    );
 }
 
 #[tokio::test]
@@ -6295,18 +6332,36 @@ async fn settling_a_run_takes_a_fresh_inspect_and_never_a_supplied_verdict() {
 
 #[tokio::test]
 async fn a_run_the_runtime_says_is_still_working_is_not_settled() {
-    let world = World::open_empty().await;
-    // The default script reports a live session, so `inspect` answers with a
-    // non-terminal state.
+    let world = World::open().await;
+    // This harness launch deliberately models the historical projection gap: a
+    // native binding exists, but no launch intent or observation was stored.
     world.script(HISTORY_LIVE);
-    world.daemon.reconcile().await;
-    let (seed, runs) = seated(&world, "live").await;
-    let run = runs[0].clone();
+    let (run, _) = world.launch().await;
+    let before = Call::get(format!("/v1/runs/{run}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(before.json()["value"]["projection"]["desired"], "no_intent");
+    assert_eq!(before.json()["value"]["projection"]["observed"], "unknown");
 
-    let refused = Call::post(
+    // A supported native operation makes the exact existing session report
+    // running. Reconciliation must inspect this binding; it must not launch or
+    // replace anything to repair the omitted projection writes.
+    let message_id = kontor_runtime::request::MessageId::generate().to_string();
+    let sent = Call::post(
+        format!("/v1/sessions/{run}/messages"),
+        &serde_json::json!({"body": "continue the existing run"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(message_id)
+    .send(&world)
+    .await;
+    assert_eq!(sent.status, 200, "{}", sent.body);
+
+    let reconciled = Call::post(
         format!(
             "/v1/projects/{}/agent-runs/{run}/runtime:settle",
-            seed.project
+            world.project
         ),
         &serde_json::json!({}),
     )
@@ -6314,18 +6369,40 @@ async fn a_run_the_runtime_says_is_still_working_is_not_settled() {
     .with_key("live-settle")
     .send(&world)
     .await;
-    assert_eq!(refused.status, 422, "{}", refused.body);
-    assert_eq!(refused.code(), "unsupported_capability");
+    assert_eq!(reconciled.status, 200, "{}", reconciled.body);
+    assert_eq!(reconciled.json()["observed"], "running");
+    assert!(reconciled.json()["outcome"].is_null());
+    assert!(reconciled.json()["team_run_closed"].is_null());
 
-    // And the run is still open: an uncertain answer closes nothing.
+    // The run is still open, but its projection now states exactly what the
+    // supported runtime evidence proved. The TeamRun moves with its child.
     let snapshot = Call::get(format!("/v1/runs/{run}"))
         .signed_as(&world, "observer")
         .send(&world)
         .await;
-    assert_ne!(
-        snapshot.json()["value"]["projection"]["derived"],
-        "terminal"
+    assert_eq!(
+        snapshot.json()["value"]["projection"]["desired"],
+        "run_requested"
     );
+    assert_eq!(
+        snapshot.json()["value"]["projection"]["observed"],
+        "running"
+    );
+    assert_eq!(
+        snapshot.json()["value"]["projection"]["derived"],
+        "confirmed"
+    );
+    assert_eq!(
+        snapshot.json()["value"]["projection"]["lifecycle"],
+        "running"
+    );
+    let team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(world.project, world.team_run)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert_eq!(team.lifecycle, kontor_core::state::RunLifecycle::Running);
 }
 
 /// Settle every seat of one seated task, and return the last answer.
@@ -10939,10 +11016,11 @@ async fn an_admin_replacement_retires_a_bound_nonterminal_predecessor_first() {
     );
 }
 
-/// A provider outage may retire a reachable idle seat only when Kontor never
-/// dispatched it and Admin names the immutable binding exactly. This is the
-/// supported replacement path for the dormant Claude seats; omitting the typed
-/// evidence keeps the ordinary persistent-seat reuse rule unchanged.
+/// A provider outage may retire a reachable idle seat only while its durable
+/// evidence has never advanced beyond launch and Admin names the immutable
+/// binding exactly. This is the supported replacement path for the dormant
+/// Claude seats; omitting the typed evidence keeps the ordinary persistent-seat
+/// reuse rule unchanged.
 #[tokio::test]
 async fn an_admin_retires_an_exact_never_dispatched_provider_blocked_seat() {
     let world = World::open_empty_with_a_plane().await;
@@ -10962,8 +11040,13 @@ async fn an_admin_retires_an_exact_never_dispatched_provider_blocked_seat() {
     });
     assert_eq!(
         run.projection.desired,
-        kontor_core::state::DesiredRunState::NoIntent,
-        "the outage path is for a seat that was materialized but never dispatched"
+        kontor_core::state::DesiredRunState::RunRequested,
+        "every native session has its actual launch intent"
+    );
+    assert_eq!(
+        run.projection.observed,
+        kontor_core::state::ObservedRunState::Launching,
+        "the outage path is limited to a seat with launch-only evidence"
     );
     let binding = run.binding.as_ref().expect("the dormant seat is bound");
     let provider = world
@@ -13661,8 +13744,15 @@ async fn a_public_waiver_is_refused_without_authority_policy_or_evidence() {
         seats,
         ..
     } = &seeded;
-    let revision = |body: &serde_json::Value| body["team_run_revision"].as_u64();
-    let _ = revision;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a team run id");
+    let team_revision = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+            .revision
+    });
 
     let waive = |slot: &'static str,
                  role: &'static str,
@@ -13673,7 +13763,7 @@ async fn a_public_waiver_is_refused_without_authority_policy_or_evidence() {
         Call::post(
             uri,
             &serde_json::json!({
-                "expected_team_revision": 1,
+                "expected_team_revision": team_revision,
                 "authorized_by_role": role,
                 "evidence": evidence
             }),
@@ -14045,12 +14135,22 @@ async fn a_waived_slot_is_never_given_a_follow_up() {
         ..
     } = &seeded;
 
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a team run id");
+    let team_revision = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+            .revision
+    });
+
     // Waive first, while the other slots are still outstanding: the team cannot
     // close yet, so settlement still happens afterwards.
     let waived = Call::post(
         format!("/v1/projects/{project}/team-runs/{team_run}/role-slots/omega-k3/waivers"),
         &serde_json::json!({
-            "expected_team_revision": 1,
+            "expected_team_revision": team_revision,
             "authorized_by_role": "omega-r1",
             "evidence": ["omega-a3"]
         }),
