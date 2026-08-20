@@ -103,6 +103,11 @@ locked Swagger UI artifact. The approved network rerun downloaded it and
 completed every Rust gate. The first pnpm audit attempt likewise reached the
 sandbox DNS boundary; the approved rerun returned no known vulnerabilities.
 
+The first ASMA force-only PR attempt found no configured upstream, skipped its
+push phase, and was refused by GitHub because the head ref did not yet exist.
+It created no PR and changed no remote state. The release retry carries this
+evidence amendment through ASMA's combined commit, push, and PR path.
+
 ## Boundaries and preserved evidence
 
 - OP-18's project read/list, workflow-spec installation semantics, and task
