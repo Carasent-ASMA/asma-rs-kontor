@@ -14305,6 +14305,92 @@ async fn materializing_binds_a_seat_only_on_a_kind_declared_a_session_host() {
     );
 }
 
+/// Materializing a ticket is the supported placement preflight: it must read
+/// back the exact native workspace before a scheduler is asked to admit work.
+///
+/// A logical TSW and its control seat are not enough. Returning HTTP 200 while
+/// `observed_binding` remains null forces callers to use scheduler admission as
+/// a placement probe, which can leave a durable queued run behind on failure.
+#[tokio::test]
+async fn materializing_a_ticket_binds_its_native_workspace_without_admitting_a_run() {
+    let composed = compose_realm("/tmp/kontor-op18-materialize").await;
+    let world = &composed.world;
+    let epic = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    let task = epic.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the composed task id")
+        .to_owned();
+    let uri = format!("/v1/projects/{}/topology:materialize", composed.project);
+    let request = serde_json::json!({
+        "target": {"scope": "ticket", "task_id": task},
+        "expected_revision": composed.project_revision,
+    });
+
+    let first = Call::post(&uri, &request)
+        .signed_as(world, "operator")
+        .with_key("materialize-ticket-native")
+        .send(world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_json = first.json();
+    let tsw = first_json["projection"]["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .iter()
+        .find(|node| node["kind_key"] == "TSW")
+        .expect("the ticket workspace node");
+    assert_eq!(
+        tsw["observed_binding"]["cwd"], "/w/composed-epic/0",
+        "materialization reads back the task's declared workspace: {}",
+        first.body
+    );
+    assert!(
+        tsw["observed_binding"]["native_id"].is_string(),
+        "a successful materialization returns the runtime-issued workspace id: {}",
+        first.body
+    );
+    let node_id = tsw["topology_node_id"].clone();
+    let native_id = tsw["observed_binding"]["native_id"].clone();
+
+    let replayed = Call::post(&uri, &request)
+        .signed_as(world, "operator")
+        .with_key("materialize-ticket-native")
+        .send(world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    let replayed_json = replayed.json();
+    let exact: Vec<_> = replayed_json["projection"]["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .iter()
+        .filter(|node| node["topology_node_id"] == node_id)
+        .collect();
+    assert_eq!(exact.len(), 1, "a replay creates no duplicate TSW");
+    assert_eq!(
+        exact[0]["observed_binding"]["native_id"], native_id,
+        "a replay preserves the runtime-issued workspace identity"
+    );
+
+    let task = Call::get(format!("/v1/projects/{}/tasks/{task}", composed.project))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(task.status, 200, "{}", task.body);
+    assert_eq!(
+        task.json()["value"]["state"],
+        "ready",
+        "native placement alone must not admit or start the task"
+    );
+}
+
 /// A node is retired by the id an answer already returned, and not otherwise.
 #[tokio::test]
 async fn a_node_is_retired_by_the_id_an_answer_returned_and_children_block_it() {

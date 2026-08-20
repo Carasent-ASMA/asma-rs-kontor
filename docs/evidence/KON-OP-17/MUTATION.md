@@ -19,6 +19,8 @@ Both focused tests were then rerun green on the restored tree.
 | M4 | Allow a fresh recovery key to address an already-bound AgentRun | same exact-resume test | killed: second fresh resume returned 200 with the preserved seats instead of 409 |
 | M5 | Parse `runtimes.json.mini_project_id` as a generic `ExternalId` again | `a_paseo_plane_refuses_a_jira_key_as_its_kontor_epic_identity` | killed: the refusal moved past the fleet-field boundary and surfaced only as the adapter's generic `execution plane` error |
 | M6 | Let a directly embedded Paseo adapter accept any `ExternalId` as its configured epic selector | `a_direct_adapter_refuses_a_non_kontor_epic_selector` | killed: the adapter composed successfully with `ASMA-7869` instead of refusing before runtime use |
+| M7 | Skip native-container preparation from `topology:materialize` | `materializing_a_ticket_binds_its_native_workspace_without_admitting_a_run` | killed: HTTP 200 returned a TSW whose `observed_binding` was still null |
+| M8 | Look up a materialization replay against the project aggregate instead of the epic aggregate recorded by its receipt | same materialization test | killed: the same-key replay returned HTTP 409 `idempotency_conflict` instead of the original receipt and native workspace |
 
 ## Restoration receipt
 
@@ -31,6 +33,10 @@ No mutant remains:
 - the fleet loader parses the configured selector as `MiniProjectId` before it
   constructs an adapter;
 - direct adapter construction enforces the same typed selector invariant.
+- a non-logical materialization prepares and persists the runtime-issued native
+  container before it returns;
+- materialization replay lookup and receipt storage both address the owning
+  epic aggregate.
 
 After restoration:
 
@@ -43,6 +49,7 @@ test result: ok. 1 passed; 0 failed; 180 filtered out
 
 test a_paseo_plane_refuses_a_jira_key_as_its_kontor_epic_identity ... ok
 test a_direct_adapter_refuses_a_non_kontor_epic_selector ... ok
+test materializing_a_ticket_binds_its_native_workspace_without_admitting_a_run ... ok
 ```
 
 The full format, lint, Rust workspace, generated-contract, console, and release
