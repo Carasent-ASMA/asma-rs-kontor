@@ -27,6 +27,10 @@ Both focused tests were then rerun green on the restored tree.
 | M12 | Create a new task branch from the control plane's current `HEAD` instead of the repository default branch | `preparation_creates_an_absent_declared_git_worktree_before_registering_it` | killed: the prepared branch inherited the deliberately divergent in-flight control-plane commit instead of `master` |
 | M13 | Suppress the exact branch check for an existing managed worktree | `preparation_refuses_branch_drift_before_registering_a_workspace` | killed: the expected typed checkout refusal disappeared and execution advanced to a later workspace mismatch |
 | M14 | Classify checkout-preparation failure as runtime `unavailable` again | `checkout_preparation_is_a_typed_placement_block_not_a_runtime_outage` | killed: the API returned `Unavailable` instead of `PlacementBlocked` |
+| M15 | Count every persistent binding, including idle sessions, against concurrent runtime capacity | `capacity_counts_active_processes_not_persistent_idle_seats` | killed: the healthy admission reproduced `LimitExceeded` even though no native process was active |
+| M16 | Return from `scheduler:resume` on the first runtime refusal instead of recording it and continuing the prevalidated batch | `exact_resume_recovers_one_durable_admission_without_the_scheduler_key` | killed: the batch returned 503 and never reached the later admissible identity instead of returning HTTP 200 with typed `blocked` evidence |
+| M17 | Mint a different hosted-seat binding id while launching native Core Team leadership | `a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa` | killed: the native LSA readback no longer preserved the logical LSA SeatBinding id and the regression returned 409 |
+| M18 | Serialize a declared CLI `Object` argument as text | `a_declared_object_reaches_the_dispatcher_as_an_object` | killed before implementation: `model_route` reached the dispatcher as a JSON string and the exact live seat replacement was refused before runtime contact |
 
 ## Restoration receipt
 
@@ -55,6 +59,15 @@ No mutant remains:
   and carry the exact branch encoded by its canonical path;
 - a checkout precondition or conflict is `placement_blocked`, not a fabricated
   runtime outage.
+- only native processes in initializing, running or error state spend concurrent
+  runtime capacity; persistent idle and closed seats remain addressable without
+  consuming an active-process slot;
+- exact-resume validates the whole identity batch before runtime contact, then
+  records per-admission runtime refusals while continuing later identities;
+- native Core Team launches are keyed by and read back against the exact durable
+  SeatBinding id; and
+- nested CLI object arguments are parsed as JSON objects before dispatcher
+  schema validation.
 
 After restoration:
 
@@ -73,6 +86,10 @@ test ticket_materialization_creates_the_absent_checkout_before_workspace_registr
 test preparation_creates_an_absent_declared_git_worktree_before_registering_it ... ok
 test preparation_refuses_branch_drift_before_registering_a_workspace ... ok
 test checkout_preparation_is_a_typed_placement_block_not_a_runtime_outage ... ok
+test capacity_counts_active_processes_not_persistent_idle_seats ... ok
+test exact_resume_recovers_one_durable_admission_without_the_scheduler_key ... ok
+test a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa ... ok
+test a_declared_object_reaches_the_dispatcher_as_an_object ... ok
 ```
 
 The full format, lint, Rust workspace, generated-contract, console, and release

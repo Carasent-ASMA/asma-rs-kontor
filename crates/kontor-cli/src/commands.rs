@@ -167,7 +167,7 @@ fn convert(ty: ArgType, raw: &str) -> Result<serde_json::Value, String> {
             .map_err(|_| "true or false".to_owned()),
         // A nested document is given as JSON, because there is no shell spelling of
         // a task graph that is not just JSON with more steps.
-        ArgType::TextArray | ArgType::Json => {
+        ArgType::TextArray | ArgType::Json | ArgType::Object(_) => {
             serde_json::from_str(raw).map_err(|_| "a JSON document".to_owned())
         }
         // Everything else is text the dispatcher validates against the domain.
@@ -294,6 +294,45 @@ mod tests {
         assert!(convert(ArgType::Json, "not json").is_err());
         assert!(convert(ArgType::Revision, "seven").is_err());
         assert!(convert(ArgType::Bool, "yes").is_err());
+    }
+
+    #[test]
+    fn a_declared_object_reaches_the_dispatcher_as_an_object() {
+        let command = build();
+        let matches = command
+            .try_get_matches_from([
+                "kontor",
+                "--state-root",
+                "/tmp/realm",
+                "--tier",
+                "admin",
+                "seat-replace",
+                "--project-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70",
+                "--agent-run-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71",
+                "--role-slot",
+                "builder",
+                "--expected-task-revision",
+                "2",
+                "--binding-generation",
+                "1",
+                "--model-route",
+                r#"{"provider":"codex","model":"gpt-5.6-sol","effort":"xhigh"}"#,
+                "--idempotency-key",
+                "replace-1",
+            ])
+            .expect("a well-formed command line");
+        let (tool, sub) = resolve(&matches).expect("the seat replacement tool");
+        let arguments = arguments(tool, sub).expect("well-formed arguments");
+        assert_eq!(
+            arguments["model_route"],
+            serde_json::json!({
+                "provider": "codex",
+                "model": "gpt-5.6-sol",
+                "effort": "xhigh"
+            })
+        );
     }
 
     #[test]
