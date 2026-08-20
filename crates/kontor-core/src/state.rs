@@ -54,6 +54,8 @@ closed_enum! {
         Failed => "failed",
         /// Terminal: the task was cancelled.
         Cancelled => "cancelled",
+        /// Terminal: never-started work was explicitly removed from active scope.
+        Withdrawn => "withdrawn",
     }
 }
 
@@ -94,7 +96,10 @@ impl TaskState {
     /// Whether the state is terminal and therefore immutable.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Done | Self::Failed | Self::Cancelled | Self::Withdrawn
+        )
     }
 
     /// Whether returning to [`TaskState::Ready`] requires an explicit command.
@@ -140,20 +145,29 @@ impl TaskState {
     pub const fn can_transition_to(self, next: Self) -> bool {
         use TaskState::{
             Blocked, Cancelled, Done, Draft, Failed, InProgress, NeedsHuman, Parked, Ready, Todo,
+            Withdrawn,
         };
         matches!(
             (self, next),
-            (Draft, Todo | Cancelled)
-                | (Todo, Ready | Blocked | Parked | NeedsHuman | Cancelled)
+            (Draft, Todo | Cancelled | Withdrawn)
+                | (Todo, Ready | Blocked | Parked | NeedsHuman | Cancelled | Withdrawn)
                 | (
                     Ready,
-                    InProgress | Blocked | Parked | NeedsHuman | Todo | Done | Cancelled
+                    InProgress
+                        | Blocked
+                        | Parked
+                        | NeedsHuman
+                        | Todo
+                        | Done
+                        | Cancelled
+                        | Withdrawn
                 )
                 | (
                     InProgress,
                     Blocked | Parked | NeedsHuman | Done | Failed | Cancelled | Ready
                 )
-                | (Blocked | Parked | NeedsHuman, Ready | Cancelled)
+                | (Blocked, Ready | Cancelled | Withdrawn)
+                | (Parked | NeedsHuman, Ready | Cancelled)
                 // `Done -> Ready` is legal *structurally* and reachable only with
                 // an explicit reopen authority — see
                 // [`apply_task_transition`], which refuses every terminal source

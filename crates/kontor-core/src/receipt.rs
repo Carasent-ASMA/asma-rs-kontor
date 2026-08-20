@@ -239,6 +239,19 @@ closed_enum! {
         /// to arm work without a human. A submission receipt must never be
         /// citable as the authority that granted that.
         PublishTrigger => "publish_trigger",
+        /// Install one shipped external-workflow revision into a project.
+        ///
+        /// Installation makes a bundled document authoritative for ticket
+        /// reconciliation. It is distinct from [`CommandKind::ReconcileTicket`]
+        /// so a receipt for using policy cannot be replayed as authority to pin
+        /// policy, or vice versa.
+        InstallWorkflowSpec => "install_workflow_spec",
+        /// Remove never-started work from active epic scope without deleting it.
+        ///
+        /// Distinct from [`CommandKind::TransitionTask`]: withdrawal has stronger
+        /// safety checks and a terminal, scope-excluding meaning that an ordinary
+        /// lifecycle receipt must never authorize.
+        WithdrawTask => "withdraw_task",
     }
 }
 
@@ -432,7 +445,8 @@ impl CommandKind {
             Self::EnsureProject
             | Self::EnsureAccountProfile
             | Self::SubmitIntake
-            | Self::PublishTrigger => witness(matches!(target, A::Project)),
+            | Self::PublishTrigger
+            | Self::InstallWorkflowSpec => witness(matches!(target, A::Project)),
             Self::ApplyEpicGraph | Self::TransitionEpic | Self::StartScheduledWork => {
                 witness(matches!(target, A::MiniProject))
             }
@@ -446,7 +460,8 @@ impl CommandKind {
             // task holds, so the task is the aggregate the authority is over. A
             // receipt naming one link would understate what it authorized.
             | Self::PullTicketComments
-            | Self::ClaimTicket => witness(matches!(target, A::Task)),
+            | Self::ClaimTicket
+            | Self::WithdrawTask => witness(matches!(target, A::Task)),
             // Settlement witnesses the run it is about. It is deliberately not a
             // `run_intent`: those carry a desired state, and asking a runtime what
             // is already true desires nothing.

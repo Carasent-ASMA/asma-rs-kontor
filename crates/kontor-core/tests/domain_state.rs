@@ -1626,6 +1626,7 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("transition_epic", "mini_project", "witness", None),
     ("start_scheduled_work", "mini_project", "witness", None),
     ("transition_task", "task", "witness", None),
+    ("withdraw_task", "task", "witness", None),
     ("resolve_context", "task", "witness", None),
     ("select_task_profile", "task", "witness", None),
     ("select_task_team", "task", "witness", None),
@@ -1683,6 +1684,7 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     // row inside it: the revision it creates is addressed by `(id, version)`,
     // not by an aggregate carrying a revision of its own.
     ("publish_trigger", "project", "witness", None),
+    ("install_workflow_spec", "project", "witness", None),
 ];
 
 /// One concrete reference per aggregate kind.

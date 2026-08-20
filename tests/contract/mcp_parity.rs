@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 29 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 29 is forever — it is what makes a later change to the daemon's
+//! 127 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 127 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -526,12 +526,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "29 forever": this is what makes a later contract change fail here, so a
+    // Not "127 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        124,
+        127,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -541,7 +541,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        125,
+        128,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -582,6 +582,8 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_epic_get", CallerTier::Observer),
         ("kontor_session_timeline_get", CallerTier::Observer),
         ("kontor_session_stream_read", CallerTier::Observer),
+        ("kontor_projects_list", CallerTier::Observer),
+        ("kontor_project_get", CallerTier::Observer),
         ("kontor_project_ensure", CallerTier::Admin),
         ("kontor_account_profile_ensure", CallerTier::Admin),
         ("kontor_epic_apply", CallerTier::Admin),
@@ -615,6 +617,7 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_intake_receipt_get", CallerTier::Observer),
         ("kontor_connector_field_specs_list", CallerTier::Observer),
         ("kontor_connector_workflow_specs_list", CallerTier::Observer),
+        ("kontor_connector_workflow_spec_install", CallerTier::Admin),
         ("kontor_ticket_conflicts_list", CallerTier::Observer),
         ("kontor_ticket_conflict_resolve", CallerTier::Operator),
         ("kontor_ticket_comments_pull", CallerTier::Operator),

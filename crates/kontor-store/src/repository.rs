@@ -5116,6 +5116,109 @@ impl SqliteStore {
 // Specification revisions
 // ---------------------------------------------------------------------------
 
+impl SqliteStore {
+    /// Pin one immutable external-workflow revision to a project.
+    ///
+    /// The specification row and project revision move in one transaction. An
+    /// already-installed byte-identical revision is an unchanged result; the
+    /// same selector with different canonical bytes is an immutable conflict.
+    ///
+    /// # Errors
+    /// Returns the domain revision conflict for stale project state, and a
+    /// repository conflict when an installed selector names different bytes.
+    pub fn install_external_workflow_spec(
+        &self,
+        project_id: ProjectId,
+        expected_revision: AggregateRevision,
+        spec: &ExternalWorkflowSpec,
+    ) -> RepositoryResult<(ContentHash, AggregateRevision, crate::graph::Applied)> {
+        let document = spec.canonicalize()?;
+        let transaction = self.begin()?;
+        let current: i64 = transaction
+            .query_row(
+                "SELECT revision FROM projects WHERE id = ?1",
+                params![project_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or(RepositoryError::NotFound { subject: "project" })?;
+        let current = revision_of(current)?;
+        current.expect("project", expected_revision)?;
+
+        let existing: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT definition, definition_hash FROM external_workflow_specs
+                 WHERE project_id = ?1 AND connector = ?2 AND external_project = ?3
+                   AND issue_type = ?4 AND version = ?5",
+                params![
+                    project_id.to_string(),
+                    spec.connector.as_str(),
+                    spec.project.as_str(),
+                    spec.issue_type.as_str(),
+                    version_column(spec.version)
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((json, hash)) = existing {
+            let installed = stored_document::<ExternalWorkflowSpec>(&json, &hash)?;
+            if installed != *spec || hash != document.hash().as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "external workflow specification",
+                    rule: "the installed immutable revision has different canonical bytes",
+                });
+            }
+            transaction.commit().map_err(backend)?;
+            return Ok((
+                document.hash().clone(),
+                current,
+                crate::graph::Applied::Unchanged,
+            ));
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO external_workflow_specs
+                     (project_id, connector, external_project, issue_type, version,
+                      work_profile_key, work_profile_version, definition, definition_hash,
+                      created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    project_id.to_string(),
+                    spec.connector.as_str(),
+                    spec.project.as_str(),
+                    spec.issue_type.as_str(),
+                    version_column(spec.version),
+                    spec.work_profile.as_ref().map(WorkProfileKey::as_str),
+                    spec.work_profile_version.map(version_column),
+                    document.json(),
+                    document.hash().as_str(),
+                    text(Timestamp::now())
+                ],
+            )
+            .map_err(backend)?;
+        let next = current.next()?;
+        transaction
+            .execute(
+                "UPDATE projects SET revision = ?1 WHERE id = ?2 AND revision = ?3",
+                params![
+                    revision_column(next)?,
+                    project_id.to_string(),
+                    revision_column(current)?
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok((
+            document.hash().clone(),
+            next,
+            crate::graph::Applied::Created,
+        ))
+    }
+}
+
 impl SpecRepository for SqliteStore {
     fn insert_work_profile(
         &self,
@@ -6245,14 +6348,57 @@ impl WorkflowRepository for SqliteStore {
         let revision = revision_of(revision)?;
         revision.expect("task", request.expected_revision)?;
 
-        // A task becoming terminal answers for two independent things: its
-        // pinned profile's phases, gates and artifacts, and its team's role
-        // slots. Neither implies the other, so both are checked here — and a
-        // failed or cancelled task is checked for the team just as a completed
-        // one is, because an open native session is no more acceptable under a
-        // failure than under a success.
+        if request.to == TaskState::Withdrawn {
+            let runs: i64 = transaction
+                .query_row(
+                    "SELECT count(*) FROM team_runs WHERE project_id = ?1 AND task_id = ?2",
+                    params![request.project_id.to_string(), request.task_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if runs != 0 {
+                return Err(conflict(
+                    "task withdrawal",
+                    "a task with TeamRun history is not never-started",
+                ));
+            }
+            let mut statement = transaction
+                .prepare(
+                    "SELECT dependent.state
+                     FROM task_dependencies dependency
+                     JOIN tasks dependent
+                       ON dependent.project_id = dependency.project_id
+                      AND dependent.id = dependency.task_id
+                     WHERE dependency.project_id = ?1
+                       AND dependency.depends_on_task_id = ?2",
+                )
+                .map_err(backend)?;
+            let mut rows = statement
+                .query(params![
+                    request.project_id.to_string(),
+                    request.task_id.to_string()
+                ])
+                .map_err(backend)?;
+            while let Some(row) = rows.next().map_err(backend)? {
+                let dependent = TaskState::parse(&row.get::<_, String>(0).map_err(backend)?)?;
+                if !dependent.is_terminal() {
+                    return Err(conflict(
+                        "task withdrawal",
+                        "an unresolved dependent task still requires it",
+                    ));
+                }
+            }
+        }
+
+        // A task closing with an execution outcome answers for two independent
+        // things: its pinned profile's phases, gates and artifacts, and its
+        // team's role slots. Neither implies the other, so both are checked here
+        // — and a failed or cancelled task is checked for the team just as a
+        // completed one is. Withdrawal is different: the checks immediately
+        // above prove there was never a TeamRun, so it has no execution closure
+        // to certify.
         let mut certificate = None;
-        if request.to.is_terminal() {
+        if request.to.is_terminal() && request.to != TaskState::Withdrawn {
             let workflow_id: Option<String> = transaction
                 .query_row(
                     "SELECT id FROM task_workflows

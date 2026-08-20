@@ -2882,6 +2882,8 @@ pub enum LifecycleAction {
     CompleteTask,
     /// Re-open a closed task as a new, auditable non-terminal revision.
     ReopenTask,
+    /// Remove never-started work from active epic scope without deleting it.
+    WithdrawTask,
     /// Close the epic, once every task, gate, run and ticket is terminal.
     CloseEpic,
     /// Re-open a closed epic.
@@ -3769,6 +3771,30 @@ pub struct ConnectorSpecDto {
     pub installed: bool,
 }
 
+/// The exact shipped external-workflow revision an Admin wants to pin.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct InstallWorkflowSpecRequest {
+    /// The external project key advertised by the catalogue.
+    pub external_project: String,
+    /// The external issue type advertised by the catalogue.
+    pub issue_type: String,
+    /// The exact immutable revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// The project revision the caller read before installing policy.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// An installed workflow revision and the receipt that pinned it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct InstalledWorkflowSpecDto {
+    /// Canonical specification identity and installed readback.
+    pub spec: ConnectorSpecDto,
+    /// Durable Admin authority and resulting project revision.
+    pub receipt: MutationReceiptDto,
+}
+
 /// One recorded reconciliation conflict.
 ///
 /// A conflict names its *kind* and the observation it was raised from, and
@@ -4614,6 +4640,15 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         connector: &str,
     ) -> Result<Vec<ConnectorSpecDto>, ApiError>;
+
+    /// Install one exact shipped external-workflow revision into a project.
+    fn install_connector_workflow_spec(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        connector: &str,
+        request: &InstallWorkflowSpecRequest,
+    ) -> Result<InstalledWorkflowSpecDto, ApiError>;
 
     /// Every reconciliation conflict recorded against one task's tickets.
     fn ticket_conflicts(
@@ -7581,6 +7616,37 @@ pub async fn connector_workflow_specs(
             .applications()
             .connector_workflow_specs(project_id, &connector)?,
     ))
+}
+
+/// Install one exact shipped external-workflow revision into a project.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/connectors/{connector}/workflow-specs:install",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("connector" = String, Path, description = "The connector implementation"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = InstallWorkflowSpecRequest,
+    responses(
+        (status = 200, body = InstalledWorkflowSpecDto),
+        (status = 400), (status = 401), (status = 403), (status = 404), (status = 409)
+    )
+)]
+pub async fn install_connector_workflow_spec(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Path((project_id, connector)): Path<(String, String)>,
+    Json(request): Json<InstallWorkflowSpecRequest>,
+) -> Result<Json<InstalledWorkflowSpecDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().install_connector_workflow_spec(
+        &key, project_id, &connector, &request,
+    )?))
 }
 
 /// Every reconciliation conflict recorded against one task's tickets.

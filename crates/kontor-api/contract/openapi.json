@@ -611,6 +611,77 @@
         }
       }
     },
+    "/v1/projects": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every project in this Realm, oldest first.",
+        "operationId": "projects",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectReadDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One project, addressed by its durable id alone.",
+        "operationId": "project",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectReadDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/advisor-profiles": {
       "get": {
         "tags": [
@@ -2135,6 +2206,81 @@
             "description": ""
           },
           "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/connectors/{connector}/workflow-specs:install": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Install one exact shipped external-workflow revision into a project.",
+        "operationId": "install_connector_workflow_spec",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connector",
+            "in": "path",
+            "description": "The connector implementation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallWorkflowSpecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstalledWorkflowSpecDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
             "description": ""
           }
         }
@@ -10738,6 +10884,56 @@
           }
         }
       },
+      "InstallWorkflowSpecRequest": {
+        "type": "object",
+        "description": "The exact shipped external-workflow revision an Admin wants to pin.",
+        "required": [
+          "external_project",
+          "issue_type",
+          "version",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller read before installing policy.",
+            "minimum": 0
+          },
+          "external_project": {
+            "type": "string",
+            "description": "The external project key advertised by the catalogue."
+          },
+          "issue_type": {
+            "type": "string",
+            "description": "The external issue type advertised by the catalogue."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The exact immutable revision.",
+            "minimum": 0
+          }
+        }
+      },
+      "InstalledWorkflowSpecDto": {
+        "type": "object",
+        "description": "An installed workflow revision and the receipt that pinned it.",
+        "required": [
+          "spec",
+          "receipt"
+        ],
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Durable Admin authority and resulting project revision."
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ConnectorSpecDto",
+            "description": "Canonical specification identity and installed readback."
+          }
+        }
+      },
       "IntakeReceiptDto": {
         "type": "object",
         "description": "One recorded intake decision.",
@@ -10953,6 +11149,7 @@
           "resume",
           "complete_task",
           "reopen_task",
+          "withdraw_task",
           "close_epic",
           "reopen_epic"
         ]
@@ -11835,6 +12032,47 @@
             "type": "integer",
             "format": "int64",
             "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "root_path": {
+            "type": "string",
+            "description": "Its canonical root path."
+          }
+        }
+      },
+      "ProjectReadDto": {
+        "type": "object",
+        "description": "One project, as an Observer read sees it.\n\nUnlike [`ProjectDto`], this projection carries no `applied` result because a\nread does not perform the bootstrap ensure. The project id is sufficient to\nretrieve it; callers never have to repeat the stored name as an assertion.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "name",
+          "root_path",
+          "revision",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its stored name."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it belongs to."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a subsequent write must present.",
             "minimum": 0
           },
           "root_path": {

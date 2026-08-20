@@ -683,6 +683,10 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/connectors/{connector}/workflow-specs",
             get(applications::connector_workflow_specs),
         )
+        .route(
+            "/v1/projects/{project_id}/connectors/{connector}/workflow-specs:install",
+            post(applications::install_connector_workflow_spec),
+        )
         // Conflicts, inbound comments and ownership, all task-scoped: a ticket is
         // linked to a task, and every one of these is a fact about that link.
         .route(

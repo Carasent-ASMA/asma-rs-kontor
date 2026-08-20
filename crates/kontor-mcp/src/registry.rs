@@ -1850,6 +1850,53 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "The external-workflow spec revisions this build ships, and whether the project pinned each.",
     },
     ToolSpec {
+        name: "kontor_connector_workflow_spec_install",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/connectors/{connector}/workflow-specs:install",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "connector",
+                Place::Path,
+                ArgType::OpenKey,
+                "The connector implementation key or its documented alias.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "external_project",
+                Place::Body,
+                ArgType::OpenKey,
+                "The shipped external project selector.",
+            ),
+            req(
+                "issue_type",
+                Place::Body,
+                ArgType::OpenKey,
+                "The shipped issue-type selector.",
+            ),
+            req(
+                "version",
+                Place::Body,
+                ArgType::SpecVersion,
+                "The exact shipped revision.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+        ],
+        about: "Install one exact shipped external-workflow revision into a project.",
+    },
+    ToolSpec {
         name: "kontor_ticket_conflicts_list",
         tier: CallerTier::Observer,
         method: Method::Get,
@@ -4181,6 +4228,7 @@ pub static LIFECYCLE_ACTIONS: &[&str] = &[
     "resume",
     "complete_task",
     "reopen_task",
+    "withdraw_task",
     "close_epic",
     "reopen_epic",
 ];

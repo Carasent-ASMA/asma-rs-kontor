@@ -1429,6 +1429,16 @@ impl Services {
         Ok(self.connectors.get_or_init(|| catalog))
     }
 
+    /// Resolve the ticket-link shorthand to the catalogue's canonical key.
+    fn canonical_connector(&self, connector: &str) -> Result<ConnectorKey, ApiError> {
+        let canonical = if connector == "jira" {
+            "connector.jira"
+        } else {
+            connector
+        };
+        ConnectorKey::parse(canonical).map_err(|error| self.refuse_domain(&error))
+    }
+
     /// The configured Jira boundary, or the honest answer for a Realm without it.
     fn asma(&self) -> Result<&AsmaExecutable, ApiError> {
         self.asma.as_ref().ok_or_else(|| {
@@ -1465,10 +1475,10 @@ impl Services {
     }
 
     /// Select the exact bundled mapping pinned by one task's frozen profile.
-    fn jira_specs<'a>(
-        &'a self,
+    fn jira_specs(
+        &self,
         workflow: &kontor_core::repository::TaskWorkflow,
-    ) -> Result<(&'a CompiledFieldSpec, &'a CompiledWorkflowSpec), ApiError> {
+    ) -> Result<(CompiledFieldSpec, CompiledWorkflowSpec), ApiError> {
         let catalog = self.connector_catalog()?;
         let seed_field = catalog.field_specs().first().ok_or_else(|| {
             self.deny(
@@ -1483,25 +1493,54 @@ impl Services {
                 issue_type: seed_field.spec().issue_type.clone(),
                 version: seed_field.spec().version,
             })
-            .map_err(|error| self.refuse_asma(&error))?;
+            .map_err(|error| self.refuse_asma(&error))?
+            .clone();
         let seed_workflow = catalog.workflow_specs().first().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::Unavailable,
                 "this build ships no Jira external-workflow specification",
             )
         })?;
-        let external = catalog
+        let selector = kontor_core::repository::ConnectorSpecSelector {
+            project_id: workflow.project_id,
+            connector: seed_workflow.spec().connector.clone(),
+            project: seed_workflow.spec().project.clone(),
+            issue_type: seed_workflow.spec().issue_type.clone(),
+            version: seed_workflow.spec().version,
+        };
+        let installed = self
+            .state()?
+            .with_store(|store| store.get_external_workflow_spec(&selector))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "install the canonical connector.jira external-workflow revision before reconciling Jira links",
+                )
+            })?;
+        let installed_json = serde_json::to_string(&installed).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the installed external-workflow specification could not be compiled",
+            )
+        })?;
+        let mut installed_catalog = SpecCatalog::empty();
+        installed_catalog
+            .load_workflow_spec(&installed_json)
+            .map_err(|error| self.refuse_asma(&error))?;
+        let external = installed_catalog
             .select_workflow_spec(&WorkflowSpecKey {
-                connector: seed_workflow.spec().connector.clone(),
-                project: seed_workflow.spec().project.clone(),
-                issue_type: seed_workflow.spec().issue_type.clone(),
-                version: seed_workflow.spec().version,
+                connector: selector.connector,
+                project: selector.project,
+                issue_type: selector.issue_type,
+                version: selector.version,
                 work_profile: Some(PinnedProfile {
                     key: workflow.snapshot.definition.id.clone(),
                     version: workflow.snapshot.definition.version,
                 }),
             })
-            .map_err(|error| self.refuse_asma(&error))?;
+            .map_err(|error| self.refuse_asma(&error))?
+            .clone();
         Ok((field, external))
     }
 
@@ -1639,8 +1678,8 @@ impl Services {
             };
             let delegation = TicketDelegation {
                 asma,
-                field_spec,
-                workflow_spec,
+                field_spec: &field_spec,
+                workflow_spec: &workflow_spec,
                 projection: &projection,
                 facts: &facts,
                 link_id: link.id,
@@ -6051,6 +6090,7 @@ const fn action_name(action: LifecycleAction) -> &'static str {
         LifecycleAction::Resume => "resume",
         LifecycleAction::CompleteTask => "complete_task",
         LifecycleAction::ReopenTask => "reopen_task",
+        LifecycleAction::WithdrawTask => "withdraw_task",
         LifecycleAction::CloseEpic => "close_epic",
         LifecycleAction::ReopenEpic => "reopen_epic",
     }
@@ -7154,8 +7194,10 @@ impl Services {
     ///
     /// The contract is read from each task's pinned work profile: its declared
     /// gates are the goals and its declared artifact contracts are the evidence
-    /// keys. A task lifecycle value is deliberately not consulted — `done` is a
-    /// state a task can reach, not evidence that the things it promised exist.
+    /// keys. Ordinary lifecycle values are deliberately not consulted — `done`
+    /// is a state a task can reach, not evidence that the things it promised
+    /// exist. `withdrawn` is the one exception because it explicitly removes
+    /// never-started work from the epic's completion contract.
     fn epic_ticket_requirements(
         &self,
         project_id: ProjectId,
@@ -7166,10 +7208,9 @@ impl Services {
             .with_store(|store| store.list_tasks(project_id))
             .map_err(|error| self.refuse(&error))?;
         let mut requirements = Vec::new();
-        for task in tasks
-            .into_iter()
-            .filter(|task| task.mini_project_id == Some(epic_id))
-        {
+        for task in tasks.into_iter().filter(|task| {
+            task.mini_project_id == Some(epic_id) && counts_towards_completion(task.state)
+        }) {
             let inspection = state
                 .with_store(|store| store.snapshot_task_inspection(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?
@@ -13858,8 +13899,8 @@ impl ApplicationOperations for Services {
             };
             let delegation = TicketDelegation {
                 asma,
-                field_spec,
-                workflow_spec,
+                field_spec: &field_spec,
+                workflow_spec: &workflow_spec,
                 projection: &ticket.projection,
                 facts: &ticket.facts,
                 link_id: ticket.link.id,
@@ -15725,8 +15766,7 @@ impl ApplicationOperations for Services {
         connector: &str,
     ) -> Result<Vec<ConnectorSpecDto>, ApiError> {
         let state = self.state()?;
-        let connector =
-            ConnectorKey::parse(connector).map_err(|error| self.refuse_domain(&error))?;
+        let connector = self.canonical_connector(connector)?;
         let catalog = self.connector_catalog()?;
         let mut specs = Vec::new();
         for compiled in catalog.workflow_specs() {
@@ -15763,6 +15803,108 @@ impl ApplicationOperations for Services {
             });
         }
         Ok(specs)
+    }
+
+    fn install_connector_workflow_spec(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        connector: &str,
+        request: &kontor_api::applications::InstallWorkflowSpecRequest,
+    ) -> Result<kontor_api::applications::InstalledWorkflowSpecDto, ApiError> {
+        let state = self.state()?;
+        let connector = self.canonical_connector(connector)?;
+        let external_project =
+            kontor_core::id::ExternalProjectKey::parse(&request.external_project)
+                .map_err(|error| self.refuse_domain(&error))?;
+        let issue_type = kontor_core::id::ExternalIssueTypeKey::parse(&request.issue_type)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let matches: Vec<&CompiledWorkflowSpec> = self
+            .connector_catalog()?
+            .workflow_specs()
+            .iter()
+            .filter(|compiled| {
+                let spec = compiled.spec();
+                spec.connector == connector
+                    && spec.project == external_project
+                    && spec.issue_type == issue_type
+                    && spec.version == request.version
+            })
+            .collect();
+        let compiled = match matches.as_slice() {
+            [compiled] => *compiled,
+            [] => {
+                return Err(self.deny(
+                    ApiErrorCode::NotFound,
+                    "this build ships no external-workflow specification for that exact selector",
+                ));
+            }
+            _ => {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the shipped external-workflow selector is ambiguous",
+                ));
+            }
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "install_workflow_spec",
+            "project_id": project_id.to_string(),
+            "connector": connector.as_str(),
+            "external_project": external_project.as_str(),
+            "issue_type": issue_type.as_str(),
+            "version": request.version.get(),
+            "definition_hash": compiled.hash().as_str(),
+            "expected_revision": request.expected_revision.get(),
+        }))?;
+        let target = AggregateRef::Project { project_id };
+        let replayed = self.replayed(key, &intent, Some(&target))?;
+        let (receipt_id, applied, revision) = if let Some(receipt) = replayed {
+            let project = self.project_row(project_id)?;
+            (receipt.id, Applied::Unchanged, project.revision)
+        } else {
+            let (_, revision, applied) = state
+                .with_store(|store| {
+                    store.install_external_workflow_spec(
+                        project_id,
+                        request.expected_revision,
+                        compiled.spec(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            let receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::InstallWorkflowSpec,
+                target,
+                request.expected_revision,
+                &intent,
+            )?;
+            (receipt_id, applied, revision)
+        };
+        let spec = compiled.spec();
+        Ok(kontor_api::applications::InstalledWorkflowSpecDto {
+            spec: ConnectorSpecDto {
+                connector: spec.connector.as_str().to_owned(),
+                external_project: spec.project.as_str().to_owned(),
+                issue_type: spec.issue_type.as_str().to_owned(),
+                version: spec.version,
+                definition_hash: compiled.hash().as_str().to_owned(),
+                covers: spec
+                    .milestones
+                    .iter()
+                    .map(|rule| rule.milestone.as_str().to_owned())
+                    .collect(),
+                installed: true,
+            },
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: applied_dto(applied),
+                revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
     }
 
     fn ticket_conflicts(
@@ -17786,16 +17928,52 @@ impl Services {
                     .unwrap_or_default(),
             });
         }
+        if request.action == LifecycleAction::WithdrawTask {
+            if !matches!(
+                task.state,
+                TaskState::Draft | TaskState::Todo | TaskState::Ready | TaskState::Blocked
+            ) {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "only never-started draft, todo, ready or blocked work may be withdrawn",
+                ));
+            }
+            let runs = state
+                .with_store(|store| store.list_team_runs_for_task(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?;
+            if !runs.is_empty() {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "a task with any TeamRun history is not never-started and cannot be withdrawn",
+                ));
+            }
+            let graph = state
+                .with_store(|store| store.task_dependency_graph(project_id))
+                .map_err(|error| self.refuse(&error))?;
+            let tasks = state
+                .with_store(|store| store.list_tasks(project_id))
+                .map_err(|error| self.refuse(&error))?;
+            let unresolved_dependent = graph.iter().any(|(candidate, dependencies)| {
+                dependencies.contains(&task.id)
+                    && tasks
+                        .iter()
+                        .find(|row| row.id == *candidate)
+                        .is_some_and(|row| !row.state.is_terminal())
+            });
+            if unresolved_dependent {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "an unresolved dependent task still requires this task",
+                ));
+            }
+        }
         // Only a resume records `resume_task`: that receipt is *consumed* as the
         // authority to leave a held state, and a block that shared the kind could
         // be cited as the permission to undo itself.
-        let kind = if matches!(
-            request.action,
-            LifecycleAction::Resume | LifecycleAction::ReopenTask
-        ) {
-            CommandKind::ResumeTask
-        } else {
-            CommandKind::TransitionTask
+        let kind = match request.action {
+            LifecycleAction::Resume | LifecycleAction::ReopenTask => CommandKind::ResumeTask,
+            LifecycleAction::WithdrawTask => CommandKind::WithdrawTask,
+            _ => CommandKind::TransitionTask,
         };
         let receipt = self.record(key, project_id, kind, target, task.revision, &intent)?;
 
@@ -17804,6 +17982,7 @@ impl Services {
             LifecycleAction::Resume => TaskState::Ready,
             LifecycleAction::CompleteTask => TaskState::Done,
             LifecycleAction::ReopenTask => TaskState::Ready,
+            LifecycleAction::WithdrawTask => TaskState::Withdrawn,
             LifecycleAction::CloseEpic | LifecycleAction::ReopenEpic => {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
@@ -18109,9 +18288,37 @@ fn phase_reached(
     }
 }
 
+/// Whether a task remains part of its epic's completion contract.
+///
+/// All ordinary states count, including other terminal outcomes: a failed or
+/// cancelled task remains work the epic declared and its evidence stays in the
+/// closeout census. Withdrawal alone is the audited removal from active scope.
+const fn counts_towards_completion(state: TaskState) -> bool {
+    !matches!(state, TaskState::Withdrawn)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{eligible_roots, slot_prompt};
+    use super::{counts_towards_completion, eligible_roots, slot_prompt};
+    use kontor_core::state::TaskState;
+
+    #[test]
+    fn withdrawal_alone_leaves_the_epic_completion_census() {
+        assert!(!counts_towards_completion(TaskState::Withdrawn));
+        for state in [
+            TaskState::Ready,
+            TaskState::Blocked,
+            TaskState::Done,
+            TaskState::Failed,
+            TaskState::Cancelled,
+        ] {
+            assert!(
+                counts_towards_completion(state),
+                "{} remains declared completion scope",
+                state.as_str()
+            );
+        }
+    }
 
     /// The bundled team is a chain — architect → builder → inspector → tester →
     /// verifier — so exactly one slot is a root, and the other four are waiting on
