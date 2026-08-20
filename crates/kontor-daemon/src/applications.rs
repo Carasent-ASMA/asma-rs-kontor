@@ -4138,6 +4138,47 @@ impl Services {
                 self.execution_scope(project_id, epic_id, node.task_id, adapter.as_ref())
             })
             .transpose()?;
+        let projection = match binding.observed_kind {
+            ObservedContainerKind::Project => ContainerProjection::NativeRoot,
+            ObservedContainerKind::Workspace => ContainerProjection::NativeChild,
+        };
+        // Paseo can fetch a workspace only inside an exact native project. That
+        // ancestry is durable Kontor state, whereas the adapter's prepared-plane
+        // cache is intentionally empty after a daemon restart. Walk the logical
+        // parents until their persisted binding names the native project; never
+        // scan every runtime project or infer the parent from a mutable title.
+        let bound_project_native_id = if projection == ContainerProjection::NativeChild {
+            let mut parent_id = node.parent_id;
+            let mut found = None;
+            while let Some(candidate_id) = parent_id {
+                let candidate = state
+                    .with_store(|store| store.get_topology_node(project_id, candidate_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the container's parent is not in this project's topology",
+                        )
+                    })?;
+                if let Some(candidate_binding) = state
+                    .with_store(|store| store.get_topology_node_container(project_id, candidate_id))
+                    .map_err(|error| self.refuse(&error))?
+                    && candidate_binding.observed_kind == ObservedContainerKind::Project
+                {
+                    found = Some(candidate_binding.identity.native_id);
+                    break;
+                }
+                parent_id = candidate.parent_id;
+            }
+            Some(found.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the native child has no persisted native project ancestor",
+                )
+            })?)
+        } else {
+            None
+        };
         Ok((
             RetitleContainerRequest {
                 topology_node_id,
@@ -4145,11 +4186,9 @@ impl Services {
                     binding.container_binding_id.as_str(),
                 )
                 .map_err(|error| self.refuse_domain(&error))?,
-                projection: match binding.observed_kind {
-                    ObservedContainerKind::Project => ContainerProjection::NativeRoot,
-                    ObservedContainerKind::Workspace => ContainerProjection::NativeChild,
-                },
+                projection,
                 bound_native_id: binding.identity.native_id.clone(),
+                bound_project_native_id,
                 generation: binding.identity.generation,
                 scope: scope.clone(),
                 task_id: node.task_id,
