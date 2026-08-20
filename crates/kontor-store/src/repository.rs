@@ -4311,6 +4311,24 @@ impl TopologyRepository for SqliteStore {
                 })?;
         }
 
+        // The container row and the node's derived placement are one fact.
+        // Persist them in this transaction so no projection can claim a node is
+        // unbound while simultaneously returning its exact native identity.
+        // Re-attesting an already-bound node is idempotent for node revision;
+        // only the container readback timestamp advances above.
+        transaction
+            .execute(
+                "UPDATE topology_nodes
+                 SET placement = 'bound', revision = revision + 1, updated_at = ?3
+                 WHERE project_id = ?1 AND id = ?2 AND placement <> 'bound'",
+                params![
+                    request.project_id.to_string(),
+                    request.topology_node_id.to_string(),
+                    text(request.observed_at),
+                ],
+            )
+            .map_err(backend)?;
+
         let binding = transaction
             .query_row(
                 &format!(

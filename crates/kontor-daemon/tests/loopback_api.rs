@@ -14356,6 +14356,11 @@ async fn materializing_a_ticket_binds_its_native_workspace_without_admitting_a_r
         "a successful materialization returns the runtime-issued workspace id: {}",
         first.body
     );
+    assert_eq!(
+        tsw["placement"], "bound",
+        "a node holding an exact native readback cannot still claim it is unbound: {}",
+        first.body
+    );
     let node_id = tsw["topology_node_id"].clone();
     let native_id = tsw["observed_binding"]["native_id"].clone();
 
