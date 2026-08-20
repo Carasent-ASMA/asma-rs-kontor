@@ -2726,17 +2726,11 @@ impl PaseoAdapter {
     async fn fetch_canonical(
         &self,
         agent_id: &str,
+        direction: PaseoDirection,
         cursor: Option<&PaseoTimelineCursor>,
         limit: u32,
         projection: PaseoProjection,
     ) -> RuntimeResult<PaseoTimelinePage> {
-        let direction = if cursor.is_some() {
-            PaseoDirection::After
-        } else {
-            // No cursor means "from the start of what exists", and `tail` is the
-            // only direction 0.3.1 answers without one.
-            PaseoDirection::Tail
-        };
         let request = PaseoRpc::timeline_fetch(
             self.next_request_id(),
             agent_id,
@@ -2752,6 +2746,9 @@ impl PaseoAdapter {
         }
         if let Some(reason) = page.declared_break() {
             return Err(RuntimeError::TimelineRefetchRequired { reason });
+        }
+        if page.direction != direction {
+            return Err(RuntimeError::CorrelationFailed);
         }
         if page.error.is_some() {
             return Err(RuntimeError::Transport {
@@ -2906,14 +2903,19 @@ impl PaseoAdapter {
             .cursors
             .get(&binding.binding_id())
             .map(|position| position.epoch);
-        let mut after: Option<PaseoTimelineCursor> = None;
+        let mut before: Option<PaseoTimelineCursor> = None;
         let mut found: Option<TimelinePosition> = None;
         let mut hits = 0usize;
         for _ in 0..RECONCILE_PAGE_BUDGET {
             let page = self
                 .fetch_canonical(
                     &native_id,
-                    after.as_ref(),
+                    if before.is_some() {
+                        PaseoDirection::Before
+                    } else {
+                        PaseoDirection::Tail
+                    },
+                    before.as_ref(),
                     MAX_HISTORY_PAGE,
                     PaseoProjection::Canonical,
                 )
@@ -2933,12 +2935,15 @@ impl PaseoAdapter {
                     found.get_or_insert(event.position);
                 }
             }
-            // The daemon's own end cursor, never a position this adapter
-            // counted: `hasNewer` says another page exists and `endCursor` says
-            // exactly where it starts, and deriving that anchor from the last
-            // entry instead would re-read or skip whatever the daemon merged.
-            match (page.has_newer, page.end_cursor) {
-                (true, Some(end)) => after = Some(end),
+            // A reconciliation starts at the newest window because that is the
+            // only cursor-free read Paseo exposes, then walks *backward*. A busy
+            // turn can emit more than one page before the send acknowledgement
+            // is settled; walking forward from the newest page would never see
+            // the accepted user message and could authorize a duplicate send.
+            // Use Paseo's own start cursor rather than deriving an anchor from
+            // an entry, so projection or paging changes cannot create overlap.
+            match (page.has_older, page.start_cursor) {
+                (true, Some(start)) => before = Some(start),
                 _ => break,
             }
         }
@@ -5259,6 +5264,11 @@ impl RuntimeAdapter for PaseoAdapter {
         let page = self
             .fetch_canonical(
                 &native_id,
+                if cursor.is_some() {
+                    PaseoDirection::After
+                } else {
+                    PaseoDirection::Tail
+                },
                 cursor.as_ref(),
                 request.page_size,
                 // Canonical, always. `projected` collapses tool lifecycles into
@@ -5380,6 +5390,7 @@ impl RuntimeAdapter for PaseoAdapter {
         let catch_up = self
             .fetch_canonical(
                 &native_id,
+                PaseoDirection::After,
                 Some(&anchor),
                 MAX_HISTORY_PAGE,
                 PaseoProjection::Canonical,

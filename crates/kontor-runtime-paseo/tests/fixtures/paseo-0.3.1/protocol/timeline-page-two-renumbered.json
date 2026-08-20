@@ -106,7 +106,7 @@
     "attentionTimestamp": null,
     "archivedAt": null
   },
-  "direction": "after",
+  "direction": "before",
   "projection": "canonical",
   "epoch": "8f2b1c34-0000-4000-8000-000000000002",
   "reset": false,
@@ -126,7 +126,7 @@
     "seq": 2
   },
   "hasOlder": false,
-  "hasNewer": false,
+  "hasNewer": true,
   "entries": [
     {
       "provider": "claude",
