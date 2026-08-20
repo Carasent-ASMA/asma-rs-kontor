@@ -11911,7 +11911,6 @@
           "subject_kind",
           "topology_node_id",
           "native_id",
-          "observed_title",
           "desired_title",
           "would_change",
           "capability"
@@ -11937,8 +11936,11 @@
             "description": "Exact runtime-native identity."
           },
           "observed_title": {
-            "type": "string",
-            "description": "Runtime title observed during preflight."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Runtime title observed during preflight.\n\n`None` means the exact persisted session is temporarily unavailable or\nstale. The target remains in the identity-bound census as\n`rename_pending`, but an apply performs no native action for it."
           },
           "provider_session_id": {
             "type": [

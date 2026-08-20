@@ -1268,6 +1268,13 @@ impl ScriptedFakeRuntime {
         }
     }
 
+    /// Make one previously materialized seat unreachable without changing its
+    /// durable Kontor identity. This is a test-only reproduction of a runtime
+    /// that no longer returns a persisted native session.
+    pub fn forget_seat(&self, native_id: &ExternalId) {
+        self.lock().seat_titles.remove(native_id);
+    }
+
     /// Everything the fake has been asked to do, in order.
     #[must_use]
     pub fn calls(&self) -> Vec<AdapterCall> {

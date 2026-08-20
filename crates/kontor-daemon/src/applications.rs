@@ -970,7 +970,7 @@ impl Services {
         project_id: ProjectId,
         team_run_id: TeamRunId,
         role: &RoleKey,
-    ) -> Result<kontor_core::repository::AgentRun, ApiError> {
+    ) -> Result<Option<kontor_core::repository::AgentRun>, ApiError> {
         let state = self.state()?;
         let rows = state
             .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
@@ -993,6 +993,13 @@ impl Services {
                 ));
             }
             runs.push(run);
+        }
+
+        // A logical role slot is created before its first AgentRun. It has no
+        // native title target yet; absence here is not a broken replacement
+        // chain and must not block repair of the epic's existing containers.
+        if runs.is_empty() {
+            return Ok(None);
         }
 
         let named_parents: BTreeSet<AgentRunId> = runs
@@ -1024,7 +1031,7 @@ impl Services {
                 "the current delivery role leaf's native binding names another AgentRun",
             ));
         }
-        Ok(leaf)
+        Ok(Some(leaf))
     }
 
     /// Certify one team run's closure from its declared slots, or say why not.
@@ -4477,8 +4484,11 @@ impl Services {
 
     /// Preflight every existing native container and persistent seat in one
     /// epic. The returned actions are usable only after the whole loop has
-    /// completed: one unavailable identity or capability therefore produces
-    /// zero writes rather than a half-renamed topology.
+    /// completed. Persisted seats that have no native session yet are omitted;
+    /// exact seats whose runtime session is temporarily unavailable remain in
+    /// the plan as `rename_pending` and produce no native action. Structural
+    /// ambiguity and identity drift still refuse the complete plan before any
+    /// write.
     async fn prepare_native_names(
         &self,
         project_id: ProjectId,
@@ -4544,7 +4554,7 @@ impl Services {
                     agent_run_id: None,
                     native_id: request.bound_native_id.clone(),
                     provider_session_id: None,
-                    observed_title: outcome.observed_title,
+                    observed_title: Some(outcome.observed_title),
                     desired_title: request.desired_title.clone(),
                     would_change: outcome.changed,
                     capability: if outcome.changed {
@@ -4562,6 +4572,9 @@ impl Services {
                 .with_store(|store| store.list_seat_bindings(project_id, node.id))
                 .map_err(|error| self.refuse(&error))?;
             for seat in seats {
+                if seat.lifecycle != TopologyLifecycle::Active {
+                    continue;
+                }
                 let hosted = state
                     .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))
                     .map_err(|error| self.refuse(&error))?;
@@ -4584,6 +4597,7 @@ impl Services {
                             )
                         })
                         .transpose()?
+                        .flatten()
                 } else {
                     None
                 };
@@ -4636,10 +4650,30 @@ impl Services {
                     desired_title,
                     requested_at: kontor_api::now(),
                 };
-                let outcome = adapter
-                    .preview_retitle_seat(&request)
-                    .await
-                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                let outcome = match adapter.preview_retitle_seat(&request).await {
+                    Ok(outcome) => outcome,
+                    Err(
+                        RuntimeError::StaleBinding { .. }
+                        | RuntimeError::ProviderUnavailable { .. },
+                    ) => {
+                        targets.push(NativeNameTargetDto {
+                            subject_kind: NativeNameSubjectKindDto::Seat,
+                            topology_node_id: node.id,
+                            seat_binding_id: Some(seat.id),
+                            agent_run_id,
+                            native_id: request.identity.native_id.clone(),
+                            provider_session_id: request.provider_session_id.clone(),
+                            observed_title: None,
+                            desired_title: request.desired_title.clone(),
+                            would_change: false,
+                            capability: "rename_pending".to_owned(),
+                        });
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(ApiError::from_runtime(state.realm_id(), &error));
+                    }
+                };
                 if outcome.identity != request.identity
                     || outcome.container_native_id != request.container_native_id
                     || outcome.observed_title == request.desired_title.as_str() && outcome.changed
@@ -4660,7 +4694,7 @@ impl Services {
                     agent_run_id,
                     native_id: request.identity.native_id.clone(),
                     provider_session_id: outcome.provider_session_id,
-                    observed_title: outcome.observed_title,
+                    observed_title: Some(outcome.observed_title),
                     desired_title: request.desired_title.clone(),
                     would_change: outcome.changed,
                     capability: if outcome.changed {
