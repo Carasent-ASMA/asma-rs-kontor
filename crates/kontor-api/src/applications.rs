@@ -2055,7 +2055,11 @@ pub struct NativeNameTargetDto {
     #[schema(value_type = Option<String>)]
     pub provider_session_id: Option<ExternalId>,
     /// Runtime title observed during preflight.
-    pub observed_title: String,
+    ///
+    /// `None` means the exact persisted session is temporarily unavailable or
+    /// stale. The target remains in the identity-bound census as
+    /// `rename_pending`, but an apply performs no native action for it.
+    pub observed_title: Option<String>,
     /// Exact title rendered by the daemon.
     #[schema(value_type = String)]
     pub desired_title: ExternalName,

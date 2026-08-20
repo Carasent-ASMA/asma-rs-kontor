@@ -34,8 +34,17 @@
 | M8 | Restore Paseo's adapter-local `TSW · JIRA · short-code` formatter in `prepare_workspace` | `two_epics_share_one_plane_without_sharing_a_project_or_static_task_scope` | killed: Paseo received `TSW · ASMA-9001 · QNR-01` instead of the caller-rendered `TSW • ASMA-9001 • QNR-2` |
 | M9 | Change the fake seat-generation bound from `persisted <= current` to strict `persisted < current` | `persisted_seat_generation_is_a_bound_and_future_generation_is_refused` | killed: an exact-current generation binding was rejected with `StaleBinding` |
 | M10 | Apply the same strict-generation mutant to Paseo `preview_retitle_seat` | `seat_retitle_accepts_an_older_persisted_generation_and_refuses_a_future_one` | killed: exact-current generation preview was rejected before correlation readback |
+| M11 | Suppress the empty-AgentRun guard so a declared logical seat is forced through replacement-chain leaf resolution | same whole-epic QNR regression | killed: preview returned 409 `a delivery role has no current replacement-chain leaf` instead of omitting the not-yet-native seat and repairing existing targets |
+| M12 | Stop classifying an exact stale runtime seat as `rename_pending` | same whole-epic QNR regression | killed: preview returned 409 `the binding no longer names a session this runtime will act on` instead of retaining the exact identity as pending while repairing the independent stale TSW |
 
 The M9 and M10 killers also retain the complementary future-generation case and assert that it is refused before mutation. The QNR regression restarts the fake runtime between durable binding and repair, then proves the old-generation hosted and delivery identities remain unchanged.
+
+M11 reproduces the ASMA-7869 live shape in which topology declared a role slot
+before any AgentRun existed. M12 removes a previously materialized native seat
+from the fake runtime while keeping its Kontor identity, then proves preview and
+apply preserve that identity as `rename_pending` and still repair a stale native
+container in the same complete plan. Both mutations failed before the restored
+test reran green.
 
 ## Restoration receipt
 
@@ -82,3 +91,33 @@ The workspace run included the 190 daemon loopback tests, 135 Paseo adapter
 contracts, OpenAPI/MCP parity, schema 46→47 upgrade and refusal fixtures, crash
 recovery, and the end-to-end pilot. No mutation or generated-artifact drift
 remained in the verified tree.
+
+## Live sparse-seat repair verification
+
+The post-deployment live preview exposed two additional preflight shapes before
+any title mutation occurred: an active logical SeatBinding with no AgentRun, and
+an exact persisted seat whose runtime session was no longer readable. M11/M12
+cover those shapes. After restoring both guards, the complete 2026-08-21 gate
+set passed again:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+  kontor-daemon loopback: 190 passed
+  kontor-runtime-paseo contract: 135 passed
+  schema fixtures: 45 passed, including v46 -> v47
+  OpenAPI/MCP parity and both E2E pilots: passed
+pnpm --dir apps/console verify:api
+pnpm --dir apps/console typecheck
+pnpm --dir apps/console test
+  Test Files  16 passed (16)
+  Tests       295 passed (295)
+pnpm --dir apps/console build
+pnpm audit --prod
+  No known vulnerabilities found
+cargo audit
+  no vulnerabilities; 19 repository-allowed maintenance warnings
+cargo deny check
+  advisories ok, bans ok, licenses ok, sources ok
+```

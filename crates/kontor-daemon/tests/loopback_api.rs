@@ -15739,6 +15739,49 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
         .clone()
         .expect("the current leaf is natively bound");
 
+    // Reproduce a durable logical delivery slot declared before any AgentRun
+    // exists. It has no native title target and must not make the replacement
+    // resolver diagnose an empty chain as stale.
+    let task_id = TaskId::parse(&task).expect("a canonical task id");
+    let task_node = world.daemon.state().with_store(|store| {
+        store
+            .get_task_topology_node(project_id, task_id)
+            .expect("the task topology reads")
+            .expect("the task topology exists")
+    });
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    let catalog = domain
+        .role_catalogs
+        .first()
+        .expect("the bundled role catalog");
+    let declared_role = catalog
+        .role(&RoleCode::parse("SWE").expect("a standard role code"))
+        .expect("the catalog has SWE");
+    let declared_unbound = SeatBindingId::generate();
+    world.daemon.state().with_store(|store| {
+        store
+            .create_seat_binding(&NewSeatBinding {
+                id: declared_unbound,
+                project_id,
+                topology_node_id: task_node.id,
+                role_slot_id: kontor_core::id::RoleSlotId::parse("declared-unbound")
+                    .expect("a role slot"),
+                role: CatalogRoleRef {
+                    catalog_id: catalog.catalog_id,
+                    catalog_revision: catalog.version,
+                    role_code: declared_role.role_code.clone(),
+                    standard_title: declared_role.standard_title.clone(),
+                    custom_display_name: None,
+                },
+                task_id: Some(task_id),
+                team_run_id: Some(successor.team_run_id),
+                attach_deadline: at("2099-01-01T00:00:00Z"),
+                parent_seat_binding_id: None,
+                created_at: at("2026-08-20T00:00:00Z"),
+            })
+            .expect("the logical role slot is declared without an AgentRun");
+    });
+
     // Drift only the current delivery leaf and the current hosted successor.
     // The archived predecessor remains deliberately distinct so an oldest-first
     // resolver is observable as the wrong target.
@@ -15776,6 +15819,13 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
             .iter()
             .any(|target| target["agent_run_id"] == predecessor_id.to_string()),
         "the archived oldest-first predecessor entered the census: {}",
+        mixed_preview.body
+    );
+    assert!(
+        !mixed_targets
+            .iter()
+            .any(|target| target["seat_binding_id"] == declared_unbound.to_string()),
+        "a declared seat without an AgentRun is not a native title target: {}",
         mixed_preview.body
     );
     let delivery_target = mixed_targets
@@ -15881,6 +15931,62 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
         assert_eq!(after["topology_node_id"], before["topology_node_id"]);
         assert_eq!(after["would_change"], false);
     }
+
+    // An exact persisted seat may become unreachable after materialization.
+    // It stays visible as typed pending evidence, while an independent stale
+    // container in the same epic remains actionable and is repaired in place.
+    world.fake.forget_seat(&lsa_native);
+    world
+        .fake
+        .set_container_title(node_id("TSW"), "stale beside unavailable seat");
+    let pending_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:preview"),
+        &serde_json::json!({"expected_revision": project_revision}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(pending_preview.status, 200, "{}", pending_preview.body);
+    let pending_targets = pending_preview.json()["targets"]
+        .as_array()
+        .expect("the pending native-name census")
+        .clone();
+    let pending_lsa = pending_targets
+        .iter()
+        .find(|target| target["seat_binding_id"] == lsa_binding.to_string())
+        .expect("the unavailable seat remains explicit");
+    assert_eq!(pending_lsa["native_id"], lsa_native.as_str());
+    assert_eq!(pending_lsa["observed_title"], serde_json::Value::Null);
+    assert_eq!(pending_lsa["capability"], "rename_pending");
+    assert_eq!(pending_lsa["would_change"], false);
+    let pending_apply = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:apply"),
+        &serde_json::json!({
+            "expected_revision": project_revision,
+            "preview_hash": pending_preview.json()["preview_hash"],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("qnr-native-name-repair-with-pending-seat")
+    .send(&world)
+    .await;
+    assert_eq!(pending_apply.status, 200, "{}", pending_apply.body);
+    assert_eq!(pending_apply.json()["changed"], 1);
+    assert_eq!(
+        title_for("TSW"),
+        "TSW • ASMA-7676 • QNR-NP-01",
+        "an unavailable seat must not block an independent container repair"
+    );
+    let pending_readback = pending_apply.json()["readback"]["targets"]
+        .as_array()
+        .expect("the fresh pending readback")
+        .iter()
+        .find(|target| target["seat_binding_id"] == lsa_binding.to_string())
+        .expect("the same unavailable seat remains in readback")
+        .clone();
+    assert_eq!(pending_readback["native_id"], lsa_native.as_str());
+    assert_eq!(pending_readback["capability"], "rename_pending");
+    assert_eq!(pending_readback["observed_title"], serde_json::Value::Null);
 }
 
 /// Ensuring a scope creates the chain the specification declares.

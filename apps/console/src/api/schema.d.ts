@@ -4486,8 +4486,14 @@ export interface components {
             desired_title: string;
             /** @description Exact runtime-native identity. */
             native_id: string;
-            /** @description Runtime title observed during preflight. */
-            observed_title: string;
+            /**
+             * @description Runtime title observed during preflight.
+             *
+             *     `None` means the exact persisted session is temporarily unavailable or
+             *     stale. The target remains in the identity-bound census as
+             *     `rename_pending`, but an apply performs no native action for it.
+             */
+            observed_title?: string | null;
             /** @description Provider-native session identity, when reported. */
             provider_session_id?: string | null;
             /** @description Persistent SeatBinding for a seat target. */
