@@ -98,3 +98,9 @@ cargo build --release --workspace                     passed
 
 PR/CI, deployment, same-key live reconciliation, and the final OP-08 inspector
 handoff receipt will be appended before this report is approved.
+
+The gated implementation commit is
+`e313059ea8d56e6f14fe7fb4ec7e59b132bb60e0`. The first ASMA PR-flow attempt
+correctly left that commit intact but found no pending staged commit from which
+to publish the newly created branch. This evidence update is the next durable
+checkpoint and publishes the complete branch through the same ASMA workflow.
