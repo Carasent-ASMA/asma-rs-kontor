@@ -667,6 +667,28 @@ exported_tables! {
         source: String,
         declared_at: String,
     }
+    epic_native_name_tokens: EpicNativeNameTokensRow from "epic_native_name_tokens" key(project_id, mini_project_id) {
+        project_id: String,
+        mini_project_id: String,
+        kontor_backlog_code: String,
+        ai_short_name: Option<String>,
+        declared_at: String,
+    }
+    task_ai_short_names: TaskAiShortNamesRow from "task_ai_short_names" key(project_id, task_id) {
+        project_id: String,
+        task_id: String,
+        ai_short_name: String,
+        declared_at: String,
+    }
+    topology_spec_canonicalization_receipts: TopologySpecCanonicalizationReceiptsRow from "topology_spec_canonicalization_receipts" key(project_id, spec_id, version) {
+        project_id: String,
+        spec_id: String,
+        version: i64,
+        prior_hash: String,
+        canonical_hash: String,
+        migrated_at: String,
+        reason: String,
+    }
     task_dependencies: TaskDependenciesRow from "task_dependencies" key(project_id, task_id, depends_on_task_id) {
         project_id: String,
         task_id: String,

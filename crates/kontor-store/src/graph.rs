@@ -35,6 +35,7 @@ use kontor_core::id::{
     ProjectId, RoleSlotId, RoleTurnId, RuntimeBindingId, SpecVersion, StatusConflictId, TaskId,
     TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, TicketObservationId, Timestamp,
 };
+use kontor_core::naming::AiShortName;
 use kontor_core::repository::{
     MiniProject, Project, RepositoryError, RepositoryResult, Task, TicketLink,
     validate_dependency_graph,
@@ -85,6 +86,9 @@ pub struct EpicTask {
     /// Compact operator-declared display identity used for native containers
     /// and seats. A description, ticket key or path is never substituted.
     pub short_code: Option<ExternalId>,
+    /// Intake-time, exactly two-keyword AI summary. It is durable and is never
+    /// derived again from mutable descriptive prose.
+    pub ai_short_name: Option<AiShortName>,
     /// The module the task contends for, if any. Immutable.
     pub module: Option<ModuleKey>,
     /// The historical source lifecycle state this import declares.
@@ -109,6 +113,11 @@ pub struct EpicExecutionScopeDeclaration {
     pub external_epic_key: ExternalId,
     /// The compact title used when a runtime renders the epic container.
     pub short_title: ExternalName,
+    /// Kontor's immutable backlog identity for this epic (for example QNR-P1).
+    pub kontor_backlog_code: Option<ExternalId>,
+    /// The immutable two-keyword intake summary used only by templates that ask
+    /// for `AI_SHORT_NAME`.
+    pub ai_short_name: Option<AiShortName>,
 }
 
 /// One epic's durable runtime-facing identity.
@@ -122,6 +131,10 @@ pub struct EpicExecutionScope {
     pub external_epic_key: ExternalId,
     /// The compact title used when a runtime renders the epic container.
     pub short_title: ExternalName,
+    /// Kontor's immutable backlog identity, absent only on a legacy record.
+    pub kontor_backlog_code: Option<ExternalId>,
+    /// The intake-time two-keyword summary, absent only on a legacy record.
+    pub ai_short_name: Option<AiShortName>,
     /// When this immutable scope was declared.
     pub created_at: Timestamp,
 }
@@ -199,6 +212,8 @@ pub struct AppliedTask {
     pub task_id: TaskId,
     /// Durable compact display identity, once declared.
     pub short_code: Option<ExternalId>,
+    /// Durable intake-time two-keyword summary, once declared.
+    pub ai_short_name: Option<AiShortName>,
     /// Whether this call created it.
     pub applied: Applied,
     /// Its lifecycle state.
@@ -544,6 +559,46 @@ impl SqliteStore {
         self.evaluate_epic(request, true)
     }
 
+    /// Declare the immutable runtime-facing identity of an epic that already
+    /// exists, such as one created by Quick-session promotion.
+    ///
+    /// This reuses the same insert-once/conflicting-redeclaration rules as
+    /// declarative epic import. It creates no task or topology identity.
+    pub fn declare_epic_execution_scope(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+        declaration: &EpicExecutionScopeDeclaration,
+        declared_at: Timestamp,
+    ) -> RepositoryResult<EpicExecutionScope> {
+        let transaction = self.begin()?;
+        ensure_project_exists(&transaction, project_id)?;
+        let exists = transaction
+            .query_row(
+                "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(backend)?
+            .is_some();
+        if !exists {
+            return Err(RepositoryError::NotFound {
+                subject: "mini project",
+            });
+        }
+        let scope = ensure_epic_execution_scope(
+            &transaction,
+            project_id,
+            mini_project_id,
+            Some(declaration),
+            declared_at,
+        )?
+        .expect("an explicit declaration always returns a scope");
+        transaction.commit().map_err(backend)?;
+        Ok(scope)
+    }
+
     /// Judge one whole epic with the exact apply rules, then roll every
     /// prospective write back.
     ///
@@ -669,29 +724,45 @@ impl SqliteStore {
     ) -> RepositoryResult<Option<EpicExecutionScope>> {
         self.connection
             .query_row(
-                "SELECT external_epic_key, short_title, created_at
-                 FROM epic_execution_scopes
-                 WHERE project_id = ?1 AND mini_project_id = ?2",
+                "SELECT s.external_epic_key, s.short_title, s.created_at,
+                        n.kontor_backlog_code, n.ai_short_name
+                 FROM epic_execution_scopes AS s
+                 LEFT JOIN epic_native_name_tokens AS n
+                   ON n.project_id = s.project_id
+                  AND n.mini_project_id = s.mini_project_id
+                 WHERE s.project_id = ?1 AND s.mini_project_id = ?2",
                 params![project_id.to_string(), mini_project_id.to_string()],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 },
             )
             .optional()
             .map_err(backend)?
-            .map(|(external_epic_key, short_title, created_at)| {
-                Ok(EpicExecutionScope {
-                    project_id,
-                    mini_project_id,
-                    external_epic_key: ExternalId::parse(&external_epic_key)?,
-                    short_title: ExternalName::parse(&short_title)?,
-                    created_at: read_timestamp(&created_at)?,
-                })
-            })
+            .map(
+                |(external_epic_key, short_title, created_at, backlog_code, ai_short_name)| {
+                    Ok(EpicExecutionScope {
+                        project_id,
+                        mini_project_id,
+                        external_epic_key: ExternalId::parse(&external_epic_key)?,
+                        short_title: ExternalName::parse(&short_title)?,
+                        kontor_backlog_code: backlog_code
+                            .as_deref()
+                            .map(ExternalId::parse)
+                            .transpose()?,
+                        ai_short_name: ai_short_name
+                            .as_deref()
+                            .map(AiShortName::parse)
+                            .transpose()?,
+                        created_at: read_timestamp(&created_at)?,
+                    })
+                },
+            )
             .transpose()
     }
 
@@ -1541,26 +1612,38 @@ fn ensure_epic_execution_scope(
 ) -> RepositoryResult<Option<EpicExecutionScope>> {
     let existing = transaction
         .query_row(
-            "SELECT external_epic_key, short_title, created_at
-             FROM epic_execution_scopes
-             WHERE project_id = ?1 AND mini_project_id = ?2",
+            "SELECT s.external_epic_key, s.short_title, s.created_at,
+                    n.kontor_backlog_code, n.ai_short_name
+             FROM epic_execution_scopes AS s
+             LEFT JOIN epic_native_name_tokens AS n
+               ON n.project_id = s.project_id
+              AND n.mini_project_id = s.mini_project_id
+             WHERE s.project_id = ?1 AND s.mini_project_id = ?2",
             params![project_id.to_string(), mini_project_id.to_string()],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         )
         .optional()
         .map_err(backend)?;
-    if let Some((external_epic_key, short_title, stored_at)) = existing {
-        let stored = EpicExecutionScope {
+    if let Some((external_epic_key, short_title, stored_at, backlog_code, ai_short_name)) = existing
+    {
+        let mut stored = EpicExecutionScope {
             project_id,
             mini_project_id,
             external_epic_key: ExternalId::parse(&external_epic_key)?,
             short_title: ExternalName::parse(&short_title)?,
+            kontor_backlog_code: backlog_code.as_deref().map(ExternalId::parse).transpose()?,
+            ai_short_name: ai_short_name
+                .as_deref()
+                .map(AiShortName::parse)
+                .transpose()?,
             created_at: read_timestamp(&stored_at)?,
         };
         if declaration.is_some_and(|declared| {
@@ -1570,6 +1653,49 @@ fn ensure_epic_execution_scope(
             return Err(conflict(
                 "epic execution scope",
                 "the epic already declares a different runtime-facing identity",
+            ));
+        }
+        match (
+            stored.kontor_backlog_code.as_ref(),
+            declaration.and_then(|value| value.kontor_backlog_code.as_ref()),
+        ) {
+            (Some(current), Some(declared)) if current != declared => {
+                return Err(conflict(
+                    "epic native-name tokens",
+                    "the epic already has a different Kontor backlog code",
+                ));
+            }
+            (None, Some(declared)) => {
+                transaction
+                    .execute(
+                        "INSERT INTO epic_native_name_tokens
+                             (project_id, mini_project_id, kontor_backlog_code,
+                              ai_short_name, declared_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            project_id.to_string(),
+                            mini_project_id.to_string(),
+                            declared.as_str(),
+                            declaration
+                                .and_then(|value| value.ai_short_name.as_ref())
+                                .map(AiShortName::as_str),
+                            text(created_at),
+                        ],
+                    )
+                    .map_err(backend)?;
+                stored.kontor_backlog_code = Some(declared.clone());
+                stored.ai_short_name = declaration.and_then(|value| value.ai_short_name.clone());
+            }
+            _ => {}
+        }
+        if stored.kontor_backlog_code.is_some()
+            && declaration.and_then(|value| value.ai_short_name.as_ref())
+                != stored.ai_short_name.as_ref()
+            && declaration.is_some_and(|value| value.ai_short_name.is_some())
+        {
+            return Err(conflict(
+                "epic native-name tokens",
+                "the epic already has a different AI short name",
             ));
         }
         return Ok(Some(stored));
@@ -1592,11 +1718,36 @@ fn ensure_epic_execution_scope(
             ],
         )
         .map_err(backend)?;
+    if let Some(backlog_code) = &declaration.kontor_backlog_code {
+        transaction
+            .execute(
+                "INSERT INTO epic_native_name_tokens
+                     (project_id, mini_project_id, kontor_backlog_code,
+                      ai_short_name, declared_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    project_id.to_string(),
+                    mini_project_id.to_string(),
+                    backlog_code.as_str(),
+                    declaration.ai_short_name.as_ref().map(AiShortName::as_str),
+                    text(created_at),
+                ],
+            )
+            .map_err(backend)?;
+    } else if declaration.ai_short_name.is_some() {
+        return Err(DomainError::invalid(
+            "epic native-name tokens",
+            "AI_SHORT_NAME cannot be declared without KONTOR_BACKLOG_CODE",
+        )
+        .into());
+    }
     Ok(Some(EpicExecutionScope {
         project_id,
         mini_project_id,
         external_epic_key: declaration.external_epic_key.clone(),
         short_title: declaration.short_title.clone(),
+        kontor_backlog_code: declaration.kontor_backlog_code.clone(),
+        ai_short_name: declaration.ai_short_name.clone(),
         created_at,
     }))
 }
@@ -1711,6 +1862,16 @@ fn ensure_task(
     if short_code.inserted && applied == Applied::Unchanged {
         applied = Applied::Updated;
     }
+    let ai_short_name = ensure_task_ai_short_name(
+        transaction,
+        request.project_id,
+        task.id,
+        plan.ai_short_name.as_ref(),
+        request.applied_at,
+    )?;
+    if ai_short_name.inserted && applied == Applied::Unchanged {
+        applied = Applied::Updated;
+    }
 
     // Declared inside the epic's own transaction, so a graph never half-applies
     // into a state where a task exists and its placement does not.
@@ -1729,6 +1890,7 @@ fn ensure_task(
         title: plan.title.clone(),
         task_id: task.id,
         short_code: short_code.value,
+        ai_short_name: ai_short_name.value,
         applied,
         state: task.state,
         revision: task.revision,
@@ -1736,6 +1898,65 @@ fn ensure_task(
         depends_on: BTreeSet::new(),
         links: Vec::new(),
         worktree: read_worktree(transaction, request.project_id, task.id)?,
+    })
+}
+
+struct EnsuredTaskAiShortName {
+    value: Option<AiShortName>,
+    inserted: bool,
+}
+
+fn ensure_task_ai_short_name(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    task_id: TaskId,
+    declared: Option<&AiShortName>,
+    declared_at: Timestamp,
+) -> RepositoryResult<EnsuredTaskAiShortName> {
+    let existing: Option<String> = transaction
+        .query_row(
+            "SELECT ai_short_name FROM task_ai_short_names
+             WHERE project_id = ?1 AND task_id = ?2",
+            params![project_id.to_string(), task_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    if let Some(existing) = existing {
+        let existing = AiShortName::parse(&existing)?;
+        if declared.is_some_and(|declared| declared != &existing) {
+            return Err(conflict(
+                "task AI short name",
+                "the task already has a different durable AI short name",
+            ));
+        }
+        return Ok(EnsuredTaskAiShortName {
+            value: Some(existing),
+            inserted: false,
+        });
+    }
+    let Some(declared) = declared else {
+        return Ok(EnsuredTaskAiShortName {
+            value: None,
+            inserted: false,
+        });
+    };
+    transaction
+        .execute(
+            "INSERT INTO task_ai_short_names
+                 (project_id, task_id, ai_short_name, declared_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                project_id.to_string(),
+                task_id.to_string(),
+                declared.as_str(),
+                text(declared_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(EnsuredTaskAiShortName {
+        value: Some(declared.clone()),
+        inserted: true,
     })
 }
 
@@ -2360,6 +2581,28 @@ impl SqliteStore {
             .optional()
             .map_err(backend)?;
         Ok(found.as_deref().map(ExternalId::parse).transpose()?)
+    }
+
+    /// The task's immutable intake-time two-keyword summary.
+    ///
+    /// `None` is a missing template token, never permission to regenerate it
+    /// from the task title.
+    pub fn task_ai_short_name(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<AiShortName>> {
+        let found: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT ai_short_name FROM task_ai_short_names
+                 WHERE project_id = ?1 AND task_id = ?2",
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(found.as_deref().map(AiShortName::parse).transpose()?)
     }
 }
 

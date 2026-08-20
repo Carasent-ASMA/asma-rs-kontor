@@ -925,6 +925,7 @@ mod tests {
                     worktree: cwd.clone(),
                 },
             ),
+            display_name: ExternalName::parse("Implement • KON-19").expect("display name"),
             agent_run_id,
             team_run_id: slot.team_run_id,
             role_slot_id: slot.role_slot_id.clone(),

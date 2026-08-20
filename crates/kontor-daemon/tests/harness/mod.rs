@@ -373,6 +373,8 @@ impl World {
                 team_run_id: self.team_run,
                 task_id: self.task,
                 workspace_binding_id: WorkspaceBindingId::generate(),
+                display_name: kontor_core::id::ExternalName::parse("TSW • ASMA-1 • TEST-1")
+                    .expect("a native name"),
                 root: WorkspaceRoot::parse("/w/loopback-task").expect("an absolute path"),
                 requested_at: at("2026-08-10T08:59:00Z"),
             })
@@ -381,6 +383,8 @@ impl World {
             .snapshot;
         let parts = LaunchParts {
             scope: execution_scope(self.task, workspace.root().clone()),
+            display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
+                .expect("display name"),
             agent_run_id,
             team_run_id: self.team_run,
             role_slot_id: role_slot_id.clone(),

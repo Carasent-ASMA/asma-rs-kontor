@@ -469,6 +469,8 @@ impl Fixture {
                 team_run_id: self.team_run,
                 task_id: self.task,
                 workspace_binding_id: WorkspaceBindingId::generate(),
+                display_name: kontor_core::id::ExternalName::parse("TSW • ASMA-1 • TEST-1")
+                    .expect("a native name"),
                 scope: execution_scope(self.task, workspace_root.clone()),
                 root: workspace_root,
                 requested_at: now(),

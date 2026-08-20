@@ -14,6 +14,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::naming::{NameSeparator, NativeNameTemplate};
+
 /// Raw reasoning-effort ids exposed by supported runtimes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -596,9 +598,11 @@ pub struct TopologyNodeKindSpec {
     pub projection_capabilities: Vec<NodeProjectionCapability>,
     /// Whether seats hosted by this kind are necessarily read-only.
     pub read_only: bool,
-    /// Deterministic display-name template interpreted by the adapter layer.
-    /// This names the *native container*; it is not the code's full name.
-    pub name_template: ExternalName,
+    /// Deterministic native-container template rendered by the daemon.
+    pub name_template: NativeNameTemplate,
+    /// Deterministic hosted-seat template rendered by the daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_name_template: Option<NativeNameTemplate>,
     /// Server-owned code help for this kind (OP-REQ-041).
     pub code_help: CodeHelp,
 }
@@ -614,6 +618,9 @@ pub struct ProjectSessionTopologySpec {
     pub version: SpecVersion,
     /// Human name.
     pub name: ExternalName,
+    /// Exact bytes joining every multi-segment native display name.
+    #[serde(default)]
+    pub name_separator: NameSeparator,
     /// The unique logical root kind.
     pub root_kind: TopologyKindKey,
     /// Data-defined node-kind vocabulary and rules.
@@ -694,6 +701,22 @@ impl ProjectSessionTopologySpec {
             }
             declared.cardinality.validate()?;
             Self::validate_capabilities(&declared.projection_capabilities)?;
+            declared.name_template.validate()?;
+            if declared
+                .projection_capabilities
+                .contains(&NodeProjectionCapability::SessionHost)
+            {
+                declared
+                    .seat_name_template
+                    .as_ref()
+                    .ok_or_else(|| {
+                        DomainError::invalid(
+                            "ProjectSessionTopologySpec",
+                            "a session_host must declare a seat name template",
+                        )
+                    })?
+                    .validate()?;
+            }
             if declared.code_help.category != CodeCategory::SessionTopology {
                 return Err(DomainError::invalid(
                     "ProjectSessionTopologySpec",

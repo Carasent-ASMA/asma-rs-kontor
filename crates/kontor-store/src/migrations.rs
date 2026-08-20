@@ -24,14 +24,17 @@
 
 use std::time::{Duration, Instant};
 
-use kontor_core::id::{ExternalName, RealmId, SchemaVersion, Timestamp, parse_utc_timestamp};
+use kontor_core::id::{
+    CanonicalDocument, ContentHash, ExternalName, RealmId, SchemaVersion, Timestamp,
+    parse_utc_timestamp,
+};
 use kontor_core::realm::RealmMetadata;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 46;
+pub const SCHEMA_VERSION: i64 = 47;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -201,6 +204,9 @@ const MIGRATIONS: &[&str] = &[
     // Schema v46. Explicit task display identity plus immutable predecessor
     // evidence for persistent Core Team route correction.
     include_str!("../migrations/0046_task_short_codes_and_hosted_route_history.sql"),
+    // Schema v47. Explicit immutable epic AI short names consumed by pinned
+    // native-container naming templates.
+    include_str!("../migrations/0047_configurable_native_names.sql"),
 ];
 
 const _: () = assert!(
@@ -374,6 +380,7 @@ fn apply_pending(
             MIGRATIONS[43],
             MIGRATIONS[44],
             MIGRATIONS[45],
+            MIGRATIONS[46],
         ] {
             transaction.execute_batch(migration)?;
         }
@@ -387,6 +394,14 @@ fn apply_pending(
         for migration in &MIGRATIONS[pending..] {
             transaction.execute_batch(migration)?;
         }
+    }
+
+    // Schema 47's SQL installs the durable receipt before this one guarded
+    // data migration runs. The built-in revision keeps the same identity and
+    // version, so every reference must move to the new canonical hash in this
+    // transaction or none of them may move at all.
+    if version < 47 {
+        canonicalize_operational_topology_v47(&transaction)?;
     }
 
     // The Realm is created exactly once, by the open that created the schema. An
@@ -429,6 +444,225 @@ fn apply_pending(
     }
     transaction.commit()?;
     Ok(())
+}
+
+const OPERATIONAL_TOPOLOGY_SPEC_ID: &str = "01936f5a-1000-7000-8000-000000000001";
+const OPERATIONAL_TOPOLOGY_V1_PRIOR_HASH: &str =
+    "36551ae60f0d354cfe5093b48f482f42227ce99d7cc704a02a3afa92e302dbf1";
+const OPERATIONAL_TOPOLOGY_V1_CANONICAL_HASH: &str =
+    "c112faff3f0ad0d8893bd41a1a53215816e0bd93cd9d65ed359ba74d0822254b";
+
+/// Replace only the known bundled v1 document with its typed naming shape.
+fn canonicalize_operational_topology_v47(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<(), StoreError> {
+    let mut statement = transaction.prepare(
+        "SELECT project_id, definition, definition_hash
+         FROM topology_specs WHERE spec_id = ?1 AND version = 1
+         ORDER BY project_id",
+    )?;
+    let rows = statement
+        .query_map([OPERATIONAL_TOPOLOGY_SPEC_ID], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let prior = ContentHash::parse(OPERATIONAL_TOPOLOGY_V1_PRIOR_HASH)?;
+    let expected = ContentHash::parse(OPERATIONAL_TOPOLOGY_V1_CANONICAL_HASH)?;
+    let migrated_at = Timestamp::now().to_string();
+    let mut replacements = Vec::with_capacity(rows.len());
+    for (project_id, definition, definition_hash) in rows {
+        if definition_hash != prior.as_str() {
+            return Err(StoreError::Integrity {
+                detail:
+                    "schema 47 found the built-in topology id/version with an unknown prior hash"
+                        .to_owned(),
+            });
+        }
+        let stored = CanonicalDocument::from_stored(&definition, &prior)?;
+        let mut value = stored
+            .deserialize::<serde_json::Value>()
+            .map_err(StoreError::Domain)?;
+        canonical_operational_topology_value(&mut value)?;
+        let canonical = CanonicalDocument::from_value(&value)?;
+        if canonical.hash() != &expected {
+            return Err(StoreError::Integrity {
+                detail: "schema 47 built-in topology canonicalization produced an unexpected hash"
+                    .to_owned(),
+            });
+        }
+        for (table, hash_column, version_column) in [
+            ("project_topology_defaults", "canonical_hash", "version"),
+            (
+                "mini_project_topology_snapshots",
+                "canonical_hash",
+                "version",
+            ),
+            ("topology_nodes", "spec_hash", "spec_version"),
+        ] {
+            let sql = format!(
+                "SELECT COUNT(*) FROM {table}
+                 WHERE project_id = ?1 AND spec_id = ?2
+                   AND {version_column} = 1 AND {hash_column} <> ?3"
+            );
+            let mismatches: i64 = transaction.query_row(
+                &sql,
+                params![project_id, OPERATIONAL_TOPOLOGY_SPEC_ID, prior.as_str(),],
+                |row| row.get(0),
+            )?;
+            if mismatches != 0 {
+                return Err(StoreError::Integrity {
+                    detail: "schema 47 found an unknown built-in topology reference hash"
+                        .to_owned(),
+                });
+            }
+        }
+        replacements.push((project_id, canonical.json().to_owned()));
+    }
+
+    transaction.execute_batch("DROP TRIGGER topology_specs_are_immutable;")?;
+    for (project_id, definition) in replacements {
+        transaction.execute(
+            "UPDATE topology_specs SET definition = ?1, definition_hash = ?2
+             WHERE project_id = ?3 AND spec_id = ?4 AND version = 1",
+            params![
+                definition,
+                expected.as_str(),
+                project_id,
+                OPERATIONAL_TOPOLOGY_SPEC_ID,
+            ],
+        )?;
+        for statement in [
+            "UPDATE project_topology_defaults SET canonical_hash = ?1
+             WHERE project_id = ?2 AND spec_id = ?3 AND version = 1 AND canonical_hash = ?4",
+            "UPDATE mini_project_topology_snapshots SET canonical_hash = ?1
+             WHERE project_id = ?2 AND spec_id = ?3 AND version = 1 AND canonical_hash = ?4",
+            "UPDATE topology_nodes SET spec_hash = ?1
+             WHERE project_id = ?2 AND spec_id = ?3 AND spec_version = 1 AND spec_hash = ?4",
+        ] {
+            transaction.execute(
+                statement,
+                params![
+                    expected.as_str(),
+                    project_id,
+                    OPERATIONAL_TOPOLOGY_SPEC_ID,
+                    prior.as_str(),
+                ],
+            )?;
+        }
+        transaction.execute(
+            "INSERT INTO topology_spec_canonicalization_receipts
+                 (project_id, spec_id, version, prior_hash, canonical_hash,
+                  migrated_at, reason)
+             VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6)",
+            params![
+                project_id,
+                OPERATIONAL_TOPOLOGY_SPEC_ID,
+                prior.as_str(),
+                expected.as_str(),
+                migrated_at,
+                "ASMA-7967 typed native-name templates",
+            ],
+        )?;
+    }
+    transaction.execute_batch(
+        "CREATE TRIGGER topology_specs_are_immutable
+         BEFORE UPDATE ON topology_specs
+         BEGIN
+             SELECT RAISE(ABORT, 'topology specification revisions are immutable');
+         END;",
+    )?;
+    Ok(())
+}
+
+fn canonical_operational_topology_value(value: &mut serde_json::Value) -> Result<(), StoreError> {
+    let object = value.as_object_mut().ok_or_else(|| StoreError::Integrity {
+        detail: "schema 47 built-in topology definition is not an object".to_owned(),
+    })?;
+    object.insert("name_separator".to_owned(), serde_json::json!(" • "));
+    let kinds = object
+        .get_mut("node_kinds")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| StoreError::Integrity {
+            detail: "schema 47 built-in topology has no node-kind array".to_owned(),
+        })?;
+    for declared in kinds {
+        let kind = declared
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| StoreError::Integrity {
+                detail: "schema 47 built-in topology has a node kind without a key".to_owned(),
+            })?;
+        let (container, seat) = match kind {
+            "PSW" => (literal_template("Project Session Workspace"), None),
+            "QSW" => (
+                literal_template("Quick Session Workspace"),
+                Some(token_template(&["AREA_CODE"])),
+            ),
+            "ESW" => (scoped_container_template(), None),
+            "ECP" => (
+                scoped_container_template(),
+                Some(scoped_container_template()),
+            ),
+            "TSW" => (
+                scoped_container_template(),
+                Some(token_template(&["AREA_CODE", "KONTOR_BACKLOG_CODE"])),
+            ),
+            "ASW" => (
+                literal_template("Advisor Session Workspace"),
+                Some(token_template(&["AREA_CODE"])),
+            ),
+            "CSW" => (
+                literal_template("Committee Session Workspace"),
+                Some(token_template(&["AREA_CODE"])),
+            ),
+            _ => {
+                return Err(StoreError::Integrity {
+                    detail: "schema 47 built-in topology contains an unknown node kind".to_owned(),
+                });
+            }
+        };
+        let declared = declared
+            .as_object_mut()
+            .expect("a node carrying a string kind is an object");
+        declared.insert("name_template".to_owned(), container);
+        match seat {
+            Some(seat) => {
+                declared.insert("seat_name_template".to_owned(), seat);
+            }
+            None => {
+                declared.remove("seat_name_template");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn scoped_container_template() -> serde_json::Value {
+    token_template(&["AREA_CODE", "JIRA_CODE", "KONTOR_BACKLOG_CODE"])
+}
+
+fn token_template(tokens: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "segments": tokens
+            .iter()
+            .map(|token| serde_json::json!({"kind": "token", "value": token}))
+            .collect::<Vec<_>>()
+    })
+}
+
+fn literal_template(literal: &str) -> serde_json::Value {
+    serde_json::json!({
+        "segments": [{"kind": "literal", "value": literal}]
+    })
 }
 
 fn table_exists(connection: &Connection, table: &str) -> Result<bool, StoreError> {

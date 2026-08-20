@@ -32,7 +32,7 @@ use crate::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
     HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
     HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
-    RuntimeAdapter, RuntimeError, RuntimeResult,
+    RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -283,6 +283,10 @@ pub enum AdapterCall {
     RetitleContainer(TopologyNodeId),
     /// A container's title correction was previewed, and nothing was written.
     PreviewRetitleContainer(TopologyNodeId),
+    /// A persistent seat's visible title was corrected.
+    RetitleSeat(ExternalId),
+    /// A persistent seat's title correction was previewed, and nothing was written.
+    PreviewRetitleSeat(ExternalId),
     /// A run was launched.
     Launch(AgentRunId),
     /// A read-only consultation seat was launched or recovered.
@@ -482,12 +486,17 @@ struct FakeState {
     /// Consultation seats keyed by their durable SeatBinding identity.
     consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    /// Native id -> (container id, provider session id, visible title).
+    seat_titles: BTreeMap<ExternalId, (ExternalId, Option<ExternalId>, String)>,
     /// The visible title each container currently carries.
     ///
     /// Held apart from the binding because it is the one thing about a
     /// container that may change without the binding changing — which is the
     /// whole point of a retitle, and the reason it can be read back.
     container_titles: BTreeMap<TopologyNodeId, String>,
+    /// Container retitles whose native effect succeeds but acknowledgement is
+    /// deliberately dropped once, modelling a transport loss after commit.
+    lose_retitle_ack_once: BTreeSet<TopologyNodeId>,
     /// The ticket scope this plane can render a title from, per task.
     ///
     /// Stands in for what a real plane reads out of its own configuration. A task
@@ -684,18 +693,7 @@ impl FakeState {
             });
         }
 
-        let desired = match request.task_id {
-            Some(task_id) => {
-                let scope = self.task_title_scopes.get(&task_id).ok_or(
-                    RuntimeError::LaunchNotAdmitted {
-                        rule: "this runtime holds no ticket scope for the task the node names",
-                    },
-                )?;
-                ExternalName::parse(&format!("{} · {scope}", request.structural_name.as_str()))
-                    .map_err(RuntimeError::Domain)?
-            }
-            None => request.structural_name.clone(),
-        };
+        let desired = request.desired_title.clone();
         let current = self
             .container_titles
             .get(&request.topology_node_id)
@@ -830,6 +828,18 @@ impl FakeState {
         self.calls.push(AdapterCall::Launch(request.agent_run_id()));
         self.launched_models
             .insert(request.agent_run_id(), request.model_rung().clone());
+        let container_native_id = request
+            .container()
+            .map(|container| container.binding.identity.native_id.clone())
+            .or_else(|| {
+                request
+                    .workspace()
+                    .map(|workspace| workspace.binding.identity.native_id.clone())
+            })
+            .ok_or(RuntimeError::WorkspaceMismatch {
+                rule: "a launched seat has no verified native host",
+            })?;
+        let display_name = request.display_name().as_str().to_owned();
 
         self.minted += 1;
         let native_id = ExternalId::parse(&format!("native-session-{}", self.minted))?;
@@ -869,6 +879,10 @@ impl FakeState {
         // happened.
         self.admissions.occupy(request, native_id.clone())?;
         self.sessions.insert(native_id, session);
+        self.seat_titles.insert(
+            snapshot.identity().native_id.clone(),
+            (container_native_id, None, display_name),
+        );
         // The runtime keeps its own copy of what it just issued. Everything a
         // caller later presents is checked against this one.
         self.placements.insert(request.binding_id());
@@ -933,7 +947,9 @@ impl ScriptedFakeRuntime {
                 containers: BTreeMap::new(),
                 consultations: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
+                seat_titles: BTreeMap::new(),
                 container_titles: BTreeMap::new(),
+                lose_retitle_ack_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
                 bindings: BTreeMap::new(),
                 permissions: PermissionLedger::new(),
@@ -1228,6 +1244,28 @@ impl ScriptedFakeRuntime {
         self.lock()
             .container_titles
             .insert(topology_node_id, title.to_owned());
+    }
+
+    /// Drop the next acknowledgement after this container's retitle has
+    /// already committed its native effect.
+    pub fn lose_next_retitle_ack(&self, topology_node_id: TopologyNodeId) {
+        self.lock().lose_retitle_ack_once.insert(topology_node_id);
+    }
+
+    /// The visible title held by one persistent native seat.
+    #[must_use]
+    pub fn seat_title(&self, native_id: &ExternalId) -> Option<String> {
+        self.lock()
+            .seat_titles
+            .get(native_id)
+            .map(|(_, _, title)| title.clone())
+    }
+
+    /// Reproduce out-of-band title drift for one persistent native seat.
+    pub fn set_seat_title(&self, native_id: &ExternalId, title: &str) {
+        if let Some((_, _, current)) = self.lock().seat_titles.get_mut(native_id) {
+            *current = title.to_owned();
+        }
     }
 
     /// Everything the fake has been asked to do, in order.
@@ -1732,6 +1770,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .get(&request.topology_node_id)
             .cloned()
             .unwrap_or_default();
+        if state
+            .lose_retitle_ack_once
+            .remove(&request.topology_node_id)
+        {
+            return Err(RuntimeError::Transport {
+                rule: "container retitle committed but its acknowledgement was lost",
+            });
+        }
         Ok(RetitleContainerOutcome {
             snapshot,
             changed: current != desired.as_str(),
@@ -1855,6 +1901,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .consultations
             .insert(request.seat_binding_id, outcome.clone());
+        state.seat_titles.insert(
+            outcome.identity.native_id.clone(),
+            (
+                request.container.binding.identity.native_id.clone(),
+                outcome.provider_session_id.clone(),
+                request.display_name.as_str().to_owned(),
+            ),
+        );
         Ok(outcome)
     }
 
@@ -1917,7 +1971,78 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .hosted_seats
             .insert(request.seat_binding_id, outcome.clone());
+        state.seat_titles.insert(
+            outcome.identity.native_id.clone(),
+            (
+                request.container.binding.identity.native_id.clone(),
+                outcome.provider_session_id.clone(),
+                request.display_name.as_str().to_owned(),
+            ),
+        );
         Ok(outcome)
+    }
+
+    async fn preview_retitle_seat(
+        &self,
+        request: &RetitleSeatRequest,
+    ) -> RuntimeResult<RetitleSeatOutcome> {
+        let mut state = self.lock();
+        state.calls.push(AdapterCall::PreviewRetitleSeat(
+            request.identity.native_id.clone(),
+        ));
+        let (container, provider_session_id, title) = state
+            .seat_titles
+            .get(&request.identity.native_id)
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the persistent native seat is absent",
+            })?;
+        if request.identity.runtime_kind != state.runtime_kind
+            || request.identity.host != state.host
+            || request.identity.generation > state.generation
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persistent seat belongs to a runtime generation this adapter has not reached",
+            });
+        }
+        if container != &request.container_native_id
+            || request
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|expected| provider_session_id.as_ref() != Some(expected))
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(RetitleSeatOutcome {
+            identity: request.identity.clone(),
+            provider_session_id: provider_session_id.clone(),
+            container_native_id: container.clone(),
+            observed_title: title.clone(),
+            changed: title != request.desired_title.as_str(),
+        })
+    }
+
+    async fn retitle_seat(
+        &self,
+        request: &RetitleSeatRequest,
+    ) -> RuntimeResult<RetitleSeatOutcome> {
+        let preview = self.preview_retitle_seat(request).await?;
+        self.lock()
+            .calls
+            .push(AdapterCall::RetitleSeat(request.identity.native_id.clone()));
+        if preview.changed {
+            let mut state = self.lock();
+            let (_, _, title) = state
+                .seat_titles
+                .get_mut(&request.identity.native_id)
+                .ok_or(RuntimeError::StaleBinding {
+                    rule: "the persistent native seat is absent",
+                })?;
+            *title = request.desired_title.as_str().to_owned();
+        }
+        Ok(RetitleSeatOutcome {
+            observed_title: request.desired_title.as_str().to_owned(),
+            ..preview
+        })
     }
 
     async fn message_hosted_seat(
@@ -2191,10 +2316,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state.session(&request.binding)?;
         Ok(crate::request::ReconciledSessionLabels {
             identity: request.binding.identity().clone(),
-            title: request
-                .scope
-                .require_task()
-                .map(|task| format!("{} · {}", request.role_slot_id, task.short_code))?,
+            title: request.desired_title.as_str().to_owned(),
             labels: std::collections::BTreeMap::new(),
             changed: false,
             observed_at: request.requested_at,
@@ -2679,5 +2801,106 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             (request.content_hash()?, receipt.clone()),
         );
         Ok(receipt)
+    }
+}
+
+#[cfg(test)]
+mod retitle_seat_generation_tests {
+    use super::*;
+    use crate::capability::{RuntimeLimits, TrustGrade};
+
+    fn capabilities() -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            trust_grade: TrustGrade::A,
+            supported: RuntimeCapability::ALL.iter().copied().collect(),
+            account_env: true,
+            limits: RuntimeLimits {
+                max_message_bytes: 1024,
+                max_history_page: 100,
+                max_concurrent_sessions: 8,
+                context_window: kontor_core::spec::ContextWindowBounds::unknown(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn persisted_seat_generation_is_a_bound_and_future_generation_is_refused() {
+        let runtime = ScriptedFakeRuntime::new(capabilities());
+        let native_id = ExternalId::parse("native-seat-1").expect("native id");
+        let container_native_id = ExternalId::parse("native-container-1").expect("container id");
+        let durable_identity = NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("runtime kind"),
+            host: ExternalName::parse("fake-host").expect("host"),
+            generation: 1,
+            native_id: native_id.clone(),
+        };
+        runtime.lock().seat_titles.insert(
+            native_id.clone(),
+            (
+                container_native_id.clone(),
+                Some(ExternalId::parse("provider-seat-1").expect("provider id")),
+                "stale title".to_owned(),
+            ),
+        );
+        runtime.restart();
+        let request = RetitleSeatRequest {
+            identity: durable_identity.clone(),
+            provider_session_id: Some(ExternalId::parse("provider-seat-1").expect("provider id")),
+            container_native_id: container_native_id.clone(),
+            desired_title: ExternalName::parse("LSA • ASMA-7675 • QNR-P1").expect("desired title"),
+            requested_at: "2026-08-20T12:00:00Z"
+                .parse::<Timestamp>()
+                .expect("timestamp"),
+        };
+
+        let preview = runtime
+            .preview_retitle_seat(&request)
+            .await
+            .expect("an older durable generation remains correlatable");
+        assert_eq!(preview.identity, durable_identity);
+        let applied = runtime
+            .retitle_seat(&request)
+            .await
+            .expect("the older-generation seat is retitled in place");
+        assert_eq!(applied.identity, durable_identity);
+        assert_eq!(applied.container_native_id, container_native_id);
+
+        let current = RetitleSeatRequest {
+            identity: NativeRuntimeIdentity {
+                generation: runtime.generation(),
+                ..durable_identity.clone()
+            },
+            ..request.clone()
+        };
+        let current_preview = runtime
+            .preview_retitle_seat(&current)
+            .await
+            .expect("the current generation is inside the accepted bound");
+        assert_eq!(current_preview.identity, current.identity);
+        assert!(!current_preview.changed);
+
+        let future = RetitleSeatRequest {
+            identity: NativeRuntimeIdentity {
+                generation: runtime.generation() + 1,
+                ..durable_identity
+            },
+            desired_title: ExternalName::parse("must not apply").expect("future title"),
+            ..request
+        };
+        let refused = runtime.retitle_seat(&future).await;
+        assert!(matches!(refused, Err(RuntimeError::StaleBinding { .. })));
+        assert_eq!(
+            runtime.seat_title(&native_id).as_deref(),
+            Some("LSA • ASMA-7675 • QNR-P1")
+        );
+        assert_eq!(
+            runtime
+                .calls()
+                .into_iter()
+                .filter(|call| matches!(call, AdapterCall::RetitleSeat(_)))
+                .count(),
+            1,
+            "the future-generation refusal performs no mutation"
+        );
     }
 }

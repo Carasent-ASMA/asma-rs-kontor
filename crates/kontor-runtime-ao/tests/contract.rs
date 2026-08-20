@@ -325,6 +325,7 @@ fn launch_parts(agent_run_id: AgentRunId) -> LaunchParts {
     let cwd = WorkspaceRoot::parse(PROJECT_PATH).expect("absolute project path");
     LaunchParts {
         scope: execution_scope(task_id, cwd.clone()),
+        display_name: ExternalName::parse("Implement • KON-19").expect("display name"),
         agent_run_id,
         team_run_id: TeamRunId::generate(),
         role_slot_id: slot_of(agent_run_id),
@@ -597,6 +598,8 @@ async fn every_unsupported_operation_is_refused_before_the_daemon_is_called() {
             team_run_id: TeamRunId::generate(),
             task_id: workspace_task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: kontor_core::id::ExternalName::parse("TSW • ASMA-1 • TEST-1")
+                .expect("a native name"),
             root: workspace_root,
             requested_at: at("2026-08-10T08:59:00Z"),
         })

@@ -14,7 +14,7 @@ use kontor_core::compaction::{
 };
 use kontor_core::id::{
     AccountProfileId, AgentRunId, BoundedText, CanonicalDocument, CompactionReceiptId, ContentHash,
-    ExternalId, RoleSlotId, RuntimeBindingId, TaskId, TeamRunId, Timestamp,
+    ExternalId, ExternalName, RoleSlotId, RuntimeBindingId, TaskId, TeamRunId, Timestamp,
 };
 use kontor_core::spec::{ContextEnforcement, ContextPolicySnapshot, ModelRung, SeatAutonomy};
 use kontor_core::state::NativeRuntimeIdentity;
@@ -251,6 +251,9 @@ pub struct LaunchParts {
     /// from this and from nothing else. Reading them from plane configuration is
     /// what stamped one epic's tracker key onto another epic's seats.
     pub scope: ExecutionScope,
+    /// Complete seat display name rendered by the daemon from the pinned
+    /// topology revision. Runtime adapters consume it verbatim.
+    pub display_name: ExternalName,
     /// The coding account this run is pinned to, if any.
     pub account_profile_id: Option<AccountProfileId>,
     /// What the session starts with.
@@ -397,6 +400,12 @@ impl LaunchRequest {
         &self.parts.scope
     }
 
+    /// Complete daemon-rendered seat display name.
+    #[must_use]
+    pub const fn display_name(&self) -> &ExternalName {
+        &self.parts.display_name
+    }
+
     /// The coding account this run is pinned to, if any.
     #[must_use]
     pub const fn account_profile_id(&self) -> Option<AccountProfileId> {
@@ -529,6 +538,8 @@ pub struct ReconcileSessionLabelsRequest {
     pub team_run_id: TeamRunId,
     /// Immutable role slot inside that TeamRun.
     pub role_slot_id: RoleSlotId,
+    /// Complete daemon-rendered desired title, applied verbatim.
+    pub desired_title: ExternalName,
     /// Exact task container the session must still occupy.
     pub container: ContainerBindingSnapshot,
     /// When the read/repair was requested.

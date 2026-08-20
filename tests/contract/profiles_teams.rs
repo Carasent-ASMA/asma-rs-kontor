@@ -229,6 +229,8 @@ impl World {
                 team_run_id,
                 task_id: task,
                 workspace_binding_id: WorkspaceBindingId::generate(),
+                display_name: kontor_core::id::ExternalName::parse("TSW • ASMA-1 • TEST-1")
+                    .expect("a native name"),
                 root: WorkspaceRoot::parse("/w/contract-task").expect("an absolute path"),
                 requested_at: at("2026-08-10T08:59:00Z"),
             })
@@ -270,6 +272,8 @@ impl World {
 
     fn launch_input(&self) -> SlotLaunch {
         SlotLaunch {
+            display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
+                .expect("display name"),
             scope: execution_scope(self.task, self.workspace.root().clone()),
             task_id: self.task,
             binding_id: RuntimeBindingId::generate(),

@@ -346,6 +346,16 @@ const EPIC_EXECUTION_SCOPE: &[FieldSpec] = &[
         ArgType::ExternalName,
         "The compact title used when the runtime renders the epic container.",
     ),
+    optional_field(
+        "kontor_backlog_code",
+        ArgType::ExternalId,
+        "The immutable Kontor backlog code used by native-name templates.",
+    ),
+    optional_field(
+        "ai_short_name",
+        ArgType::ExternalName,
+        "The immutable two-keyword summary captured at intake.",
+    ),
 ];
 
 /// One explicit provider/model route for an authorized recovery operation.
@@ -3042,6 +3052,69 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Repair one bound container's title, idempotently, and read it back.",
     },
+    ToolSpec {
+        name: "kontor_native_names_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/native-names:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The epic whose native names are preflighted.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+        ],
+        about: "Preview every bound container and persistent seat name in one epic.",
+    },
+    ToolSpec {
+        name: "kontor_native_names_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/native-names:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The epic whose exact preview is applied.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The complete identity/name plan hash returned by preview.",
+            ),
+        ],
+        about: "Apply one exact whole-epic native-name repair and read every identity back.",
+    },
     // ---- Native capacity: evidence is collected, never asserted ------------
     ToolSpec {
         name: "kontor_capacity_config_get",
@@ -3572,6 +3645,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Revision,
                 "The revision the caller read.",
+            ),
+            opt(
+                "execution_scope",
+                Place::Body,
+                ArgType::Object(EPIC_EXECUTION_SCOPE),
+                "The promoted epic's durable tracker and naming identity.",
             ),
         ],
         about: "Apply a named promotion preview.",

@@ -281,6 +281,7 @@ async fn run_one(
             team_run_id,
             task_id,
             workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: ExternalName::parse("TSW • ASMA-1 • TEST-1").expect("a native name"),
             root: adapter.config().task_worktree.clone(),
             requested_at: at("2026-08-10T09:00:00Z"),
         })
@@ -304,6 +305,7 @@ async fn run_one(
         .expect("the seat was free")
         .into_request(LaunchParts {
             scope: execution_scope(task_id, adapter.config().task_worktree.clone()),
+            display_name: ExternalName::parse("Implement • KON-19").expect("display name"),
             agent_run_id,
             team_run_id,
             role_slot_id,

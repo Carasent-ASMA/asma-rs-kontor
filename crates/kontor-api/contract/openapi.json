@@ -3341,6 +3341,147 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/native-names:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply an exact whole-epic native-name preview.",
+        "operationId": "apply_native_names",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The owning epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNamesApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedNativeNamesDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/native-names:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview every bound container and persistent seat name in one epic.",
+        "operationId": "preview_native_names",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The owning epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNamesPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNamesPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
       "post": {
         "tags": [
@@ -7926,6 +8067,31 @@
           }
         }
       },
+      "AppliedNativeNamesDto": {
+        "type": "object",
+        "description": "Result of one idempotent, preflighted whole-epic name repair.",
+        "required": [
+          "readback",
+          "changed",
+          "receipt"
+        ],
+        "properties": {
+          "changed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Count of targets changed by this invocation.",
+            "minimum": 0
+          },
+          "readback": {
+            "$ref": "#/components/schemas/NativeNamesPreviewDto",
+            "description": "Fresh complete readback after apply."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Durable command receipt."
+          }
+        }
+      },
       "AppliedProfileDto": {
         "type": "object",
         "description": "One published profile revision and the receipt that froze it.",
@@ -8012,6 +8178,13 @@
           "links"
         ],
         "properties": {
+          "ai_short_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Durable intake-time two-keyword summary, once declared."
+          },
           "applied": {
             "$ref": "#/components/schemas/AppliedDto",
             "description": "Whether this call created it."
@@ -10616,9 +10789,23 @@
           "short_title"
         ],
         "properties": {
+          "ai_short_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Immutable two-keyword summary captured at intake."
+          },
           "external_epic_key": {
             "type": "string",
             "description": "The external tracker key, e.g. `ASMA-7869`."
+          },
+          "kontor_backlog_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Immutable Kontor backlog identity used by the built-in epic templates."
           },
           "short_title": {
             "type": "string",
@@ -10745,6 +10932,13 @@
           "team_runs"
         ],
         "properties": {
+          "ai_short_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Durable intake-time two-keyword summary."
+          },
           "current_phase": {
             "type": [
               "string",
@@ -10844,6 +11038,13 @@
           "title"
         ],
         "properties": {
+          "ai_short_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Immutable two-keyword summary captured at intake for templates that\nexplicitly select `AI_SHORT_NAME`."
+          },
           "depends_on": {
             "type": "array",
             "items": {
@@ -11695,6 +11896,157 @@
           }
         }
       },
+      "NativeNameSubjectKindDto": {
+        "type": "string",
+        "description": "One subject in an epic-wide native-name plan.",
+        "enum": [
+          "container",
+          "seat"
+        ]
+      },
+      "NativeNameTargetDto": {
+        "type": "object",
+        "description": "One exact container or seat target in stable plan order.",
+        "required": [
+          "subject_kind",
+          "topology_node_id",
+          "native_id",
+          "observed_title",
+          "desired_title",
+          "would_change",
+          "capability"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "AgentRun for a delivery-seat target."
+          },
+          "capability": {
+            "type": "string",
+            "description": "Typed capability result (`ready`, `unchanged`, or `rename_pending`)."
+          },
+          "desired_title": {
+            "type": "string",
+            "description": "Exact title rendered by the daemon."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Exact runtime-native identity."
+          },
+          "observed_title": {
+            "type": "string",
+            "description": "Runtime title observed during preflight."
+          },
+          "provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider-native session identity, when reported."
+          },
+          "seat_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Persistent SeatBinding for a seat target."
+          },
+          "subject_kind": {
+            "$ref": "#/components/schemas/NativeNameSubjectKindDto",
+            "description": "Whether this is a container or a persistent seat."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "Owning topology node."
+          },
+          "would_change": {
+            "type": "boolean",
+            "description": "Whether apply would mutate this subject."
+          }
+        }
+      },
+      "NativeNamesApplyRequest": {
+        "type": "object",
+        "description": "Apply request bound to the exact previewed identity/name plan.",
+        "required": [
+          "expected_revision",
+          "preview_hash"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by `native-names:preview`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "NativeNamesPreviewDto": {
+        "type": "object",
+        "description": "Complete identity-bound epic native-name plan.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "epic_id",
+          "targets",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "epic_id": {
+            "type": "string",
+            "description": "Owning epic."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash over every logical/native identity and observed/desired name."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that produced the plan."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Snapshot position."
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NativeNameTargetDto"
+            },
+            "description": "Stable ordered targets."
+          }
+        }
+      },
+      "NativeNamesPreviewRequest": {
+        "type": "object",
+        "description": "Read-only request for a complete epic native-name census.",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "NeedsHumanDto": {
         "type": "object",
         "description": "The mandatory context a `needs_human` completion carries.\n\nBoth fields are required by construction. A stalling path that could enter\nhuman attention without them would be handing an operator a request with no\nrecommendation and no record of what had already been tried.",
@@ -11914,6 +12266,13 @@
           "state"
         ],
         "properties": {
+          "ai_short_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Durable intake-time two-keyword summary apply would preserve or add."
+          },
           "applied": {
             "$ref": "#/components/schemas/AppliedDto",
             "description": "Whether apply would create it or find it unchanged."
@@ -12520,6 +12879,17 @@
           "expected_revision"
         ],
         "properties": {
+          "execution_scope": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EpicExecutionScopeDto",
+                "description": "Durable runtime-facing identity for the promoted epic.\n\nOlder clients may omit this field, but a topology whose published name\ntemplates require epic tokens will then fail closed before native\nplacement. The value is stored once and a conflicting replay refuses."
+              }
+            ]
+          },
           "expected_revision": {
             "type": "integer",
             "format": "int64",

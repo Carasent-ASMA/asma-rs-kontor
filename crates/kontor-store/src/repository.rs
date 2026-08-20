@@ -1828,6 +1828,53 @@ impl SqliteStore {
             .collect()
     }
 
+    /// Read one consultation seat by its persistent topology SeatBinding.
+    pub fn get_consultation_seat_by_binding(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Option<StoredConsultationSeat>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT s.run_id, r.family, s.role_slot_id, s.committee_role,
+                        s.logical_role, s.seat_binding_id, s.model_rung,
+                        s.runtime_kind, s.host, s.generation, s.native_id,
+                        s.provider_session_id, s.observed_at
+                 FROM consultation_seats AS s
+                 JOIN consultation_runs AS r
+                   ON r.project_id = s.project_id AND r.run_id = s.run_id
+                 WHERE s.project_id = ?1 AND s.seat_binding_id = ?2",
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        (
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                            row.get::<_, Option<String>>(8)?,
+                            row.get::<_, Option<i64>>(9)?,
+                            row.get::<_, Option<String>>(10)?,
+                            row.get::<_, Option<String>>(11)?,
+                            row.get::<_, Option<String>>(12)?,
+                        ),
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|(run_id, family, columns)| {
+            let family = kontor_core::consultation::ConsultationFamily::parse(&family)?;
+            read_consultation_seat(consultation_run_id(family, &run_id)?, columns)
+        })
+        .transpose()
+    }
+
     /// Persist the exact native identity a consultation launch read back.
     /// Repeating the same observation is a replay; a different identity for the
     /// same frozen seat is a conflict.

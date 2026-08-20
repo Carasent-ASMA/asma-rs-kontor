@@ -48,6 +48,7 @@ use kontor_core::id::{
     ProjectId, QuickSessionId, RoleCatalogId, RoleCode, RuntimeKindKey, SeatBindingId, SpecVersion,
     TaskId, TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
+use kontor_core::naming::AiShortName;
 use kontor_core::spec::{
     CodeCategory, CodeLifecycle, EpicPresence, RoleSegment, ShareabilityClass,
     ShareabilityClassifier, ShareabilityProvenance,
@@ -976,6 +977,13 @@ pub struct PromotionApplyRequest {
     /// The session revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
+    /// Durable runtime-facing identity for the promoted epic.
+    ///
+    /// Older clients may omit this field, but a topology whose published name
+    /// templates require epic tokens will then fail closed before native
+    /// placement. The value is stored once and a conflicting replay refuses.
+    #[serde(default)]
+    pub execution_scope: Option<EpicExecutionScopeDto>,
 }
 
 /// One promoted Quick session, now an epic.
@@ -1995,6 +2003,101 @@ pub struct AppliedContainerRetitleDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// One subject in an epic-wide native-name plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeNameSubjectKindDto {
+    /// A topology node's bound native project/workspace.
+    Container,
+    /// A persistent delivery, hosted, or consultation session.
+    Seat,
+}
+
+/// Read-only request for a complete epic native-name census.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NativeNamesPreviewRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Apply request bound to the exact previewed identity/name plan.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NativeNamesApplyRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Hash returned by `native-names:preview`.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// One exact container or seat target in stable plan order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct NativeNameTargetDto {
+    /// Whether this is a container or a persistent seat.
+    pub subject_kind: NativeNameSubjectKindDto,
+    /// Owning topology node.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// Persistent SeatBinding for a seat target.
+    #[schema(value_type = Option<String>)]
+    pub seat_binding_id: Option<SeatBindingId>,
+    /// AgentRun for a delivery-seat target.
+    #[schema(value_type = Option<String>)]
+    pub agent_run_id: Option<AgentRunId>,
+    /// Exact runtime-native identity.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// Provider-native session identity, when reported.
+    #[schema(value_type = Option<String>)]
+    pub provider_session_id: Option<ExternalId>,
+    /// Runtime title observed during preflight.
+    pub observed_title: String,
+    /// Exact title rendered by the daemon.
+    #[schema(value_type = String)]
+    pub desired_title: ExternalName,
+    /// Whether apply would mutate this subject.
+    pub would_change: bool,
+    /// Typed capability result (`ready`, `unchanged`, or `rename_pending`).
+    pub capability: String,
+}
+
+/// Complete identity-bound epic native-name plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct NativeNamesPreviewDto {
+    /// Realm that produced the plan.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Owning epic.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Stable ordered targets.
+    pub targets: Vec<NativeNameTargetDto>,
+    /// Hash over every logical/native identity and observed/desired name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Snapshot position.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Result of one idempotent, preflighted whole-epic name repair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedNativeNamesDto {
+    /// Fresh complete readback after apply.
+    pub readback: NativeNamesPreviewDto,
+    /// Count of targets changed by this invocation.
+    pub changed: u64,
+    /// Durable command receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 /// What repairing one bound delivery seat's runtime labels is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -2403,6 +2506,11 @@ pub struct EpicTaskRequest {
     #[serde(default)]
     #[schema(value_type = Option<String>)]
     pub short_code: Option<ExternalId>,
+    /// Immutable two-keyword summary captured at intake for templates that
+    /// explicitly select `AI_SHORT_NAME`.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub ai_short_name: Option<AiShortName>,
     /// The module the task contends for, if any.
     pub module: Option<String>,
     /// The source lifecycle to preserve during this import.
@@ -2441,6 +2549,14 @@ pub struct EpicExecutionScopeDto {
     /// The compact title used when a runtime renders the epic container.
     #[schema(value_type = String)]
     pub short_title: ExternalName,
+    /// Immutable Kontor backlog identity used by the built-in epic templates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub kontor_backlog_code: Option<ExternalId>,
+    /// Immutable two-keyword summary captured at intake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub ai_short_name: Option<AiShortName>,
 }
 
 /// What `epics:apply` is asked for.
@@ -2502,6 +2618,9 @@ pub struct AppliedTaskDto {
     /// Durable compact display identity, once declared.
     #[schema(value_type = Option<String>)]
     pub short_code: Option<ExternalId>,
+    /// Durable intake-time two-keyword summary, once declared.
+    #[schema(value_type = Option<String>)]
+    pub ai_short_name: Option<AiShortName>,
     /// Whether this call created it.
     pub applied: AppliedDto,
     /// Its lifecycle state.
@@ -2576,6 +2695,9 @@ pub struct PreviewEpicTaskDto {
     /// Durable compact display identity apply would preserve or add.
     #[schema(value_type = Option<String>)]
     pub short_code: Option<ExternalId>,
+    /// Durable intake-time two-keyword summary apply would preserve or add.
+    #[schema(value_type = Option<String>)]
+    pub ai_short_name: Option<AiShortName>,
     /// Whether apply would create it or find it unchanged.
     pub applied: AppliedDto,
     /// The lifecycle projection apply would persist.
@@ -2647,6 +2769,9 @@ pub struct EpicTaskProjectionDto {
     /// Durable compact display identity used by native containers and seats.
     #[schema(value_type = Option<String>)]
     pub short_code: Option<ExternalId>,
+    /// Durable intake-time two-keyword summary.
+    #[schema(value_type = Option<String>)]
+    pub ai_short_name: Option<AiShortName>,
     /// Where its work happens. `None` is why a task cannot be seated, so it is
     /// reported rather than left to be discovered at admission.
     #[schema(value_type = Option<String>)]
@@ -4224,6 +4349,23 @@ pub trait ApplicationOperations: Send + Sync {
         request: &ContainerRetitleRequest,
     ) -> Result<AppliedContainerRetitleDto, ApiError>;
 
+    /// Preview a complete epic container/seat name repair with no writes.
+    async fn preview_native_names(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &NativeNamesPreviewRequest,
+    ) -> Result<NativeNamesPreviewDto, ApiError>;
+
+    /// Apply the exact previewed epic name repair and read everything back.
+    async fn apply_native_names(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &NativeNamesApplyRequest,
+    ) -> Result<AppliedNativeNamesDto, ApiError>;
+
     /// Repair one bound delivery seat's labels without changing its identity.
     async fn reconcile_session_labels(
         &self,
@@ -5449,6 +5591,67 @@ pub async fn apply_topology_upgrade(
         state
             .applications()
             .apply_topology_upgrade(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Preview every bound container and persistent seat name in one epic.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/epics/{epic_id}/native-names:preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The owning epic")
+    ),
+    request_body = NativeNamesPreviewRequest,
+    responses((status = 200, body = NativeNamesPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422))
+)]
+pub async fn preview_native_names(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<NativeNamesPreviewRequest>,
+) -> Result<Json<NativeNamesPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_native_names(project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Apply an exact whole-epic native-name preview.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/epics/{epic_id}/native-names:apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The owning epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = NativeNamesApplyRequest,
+    responses((status = 200, body = AppliedNativeNamesDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422))
+)]
+pub async fn apply_native_names(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<NativeNamesApplyRequest>,
+) -> Result<Json<AppliedNativeNamesDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_native_names(&key, project_id, epic_id, &request)
             .await?,
     ))
 }
