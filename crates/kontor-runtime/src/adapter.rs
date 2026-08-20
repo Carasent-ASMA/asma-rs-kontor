@@ -31,8 +31,8 @@ use crate::container::ContainerBindingSnapshot;
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, HistoryRequest, InspectRequest, LaunchRequest,
-    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest, ResumeRequest,
-    SendMessageRequest,
+    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
+    ReconcileSessionLabelsRequest, ReconciledSessionLabels, ResumeRequest, SendMessageRequest,
 };
 use crate::scope::ExecutionScope;
 use crate::timeline::{HistoryPage, LiveSubscription, TimelineBreak, TimelinePosition};
@@ -822,6 +822,33 @@ pub trait RuntimeAdapter: Send + Sync {
         let _ = (binding, at);
         Err(RuntimeError::ReplacementNotEvidenced {
             rule: "this runtime cannot retire a predecessor for replacement",
+        })
+    }
+
+    /// Retire a reachable, never-dispatched seat solely because its exact
+    /// provider is configured unavailable. Implementations must verify the
+    /// native session's provider and idle state before archiving it; callers may
+    /// not turn this into a generic "replace an idle seat" switch.
+    async fn retire_unavailable_provider(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        expected_provider: &str,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        let _ = (binding, expected_provider, at);
+        Err(RuntimeError::ReplacementNotEvidenced {
+            rule: "this runtime cannot prove provider-unavailable retirement",
+        })
+    }
+
+    /// Repair one already-bound seat's runtime-owned labels in place.
+    async fn reconcile_session_labels(
+        &self,
+        request: &ReconcileSessionLabelsRequest,
+    ) -> RuntimeResult<ReconciledSessionLabels> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::Adopt,
         })
     }
 

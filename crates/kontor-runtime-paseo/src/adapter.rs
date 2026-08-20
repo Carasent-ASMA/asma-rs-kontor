@@ -78,7 +78,7 @@ use kontor_runtime::observation::{
 use kontor_runtime::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
     LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
-    ResumeRequest, SendMessageRequest,
+    ReconcileSessionLabelsRequest, ReconciledSessionLabels, ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{
@@ -1590,6 +1590,44 @@ impl PaseoAdapter {
         Ok(())
     }
 
+    /// Refuse a persistent epic leadership seat outside its exact ECP.
+    ///
+    /// An ECP is intentionally a local/directory workspace rooted at the
+    /// epic's stable runtime directory. It is not a ticket worktree. Keeping
+    /// this validator separate preserves the stricter ticket-role rule above
+    /// instead of weakening it for every launch.
+    fn verify_hosted_workspace_placement(
+        &self,
+        workspace: &PaseoWorkspace,
+        project: &PaseoProjectBinding,
+        expected_root: &WorkspaceRoot,
+    ) -> RuntimeResult<()> {
+        if workspace.id.is_empty() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "Paseo reported an ECP workspace with no id",
+            });
+        }
+        if workspace.project_id != project.project_id.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the ECP workspace belongs to another epic project",
+            });
+        }
+        if WorkspaceRoot::parse(&workspace.workspace_directory)? != *expected_root {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the ECP workspace is not rooted at the epic's canonical directory",
+            });
+        }
+        if !matches!(
+            workspace.workspace_kind,
+            PaseoWorkspaceKind::Directory | PaseoWorkspaceKind::LocalCheckout
+        ) {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "a Core Team seat may be placed only in the epic's local ECP workspace",
+            });
+        }
+        Ok(())
+    }
+
     /// The native workspace a launch will be placed in, and the directory it
     /// must be rooted at.
     ///
@@ -2320,21 +2358,29 @@ impl PaseoAdapter {
             })?;
         crate::checkout::prepare_managed_worktree(&self.config.scope.project_root_cwd, cwd).await?;
         let existing = self.fetch_workspaces(project_id.as_str()).await?;
-        let mut mine = existing
-            .into_iter()
+        let same_path = existing
+            .iter()
             .filter(|workspace| {
                 workspace.project_id == project_id.as_str()
-                    && workspace.visible_title() == title
                     && WorkspaceRoot::parse(&workspace.workspace_directory)
                         .is_ok_and(|root| &root == cwd)
             })
             .collect::<Vec<_>>();
-
-        let (workspace, created) = match mine.len() {
+        let (workspace, created) = match same_path.as_slice() {
             // A prior effect of ours whose answer we lost. Adopting it is what
             // stops a lost acknowledgement from leaving two containers behind.
-            1 => (mine.remove(0), false),
-            0 => {
+            [workspace] if workspace.visible_title() == title => ((*workspace).clone(), false),
+            [_, _, ..] => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "several Paseo workspaces claim this canonical container path",
+                });
+            }
+            [_] => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "this canonical path already has a differently titled workspace; retitle it before admission",
+                });
+            }
+            [] => {
                 let command =
                     PaseoCommand::workspace_create(cwd.as_str(), project_id.as_str(), &title);
                 let output = self.transport.run(&command).await?;
@@ -2348,11 +2394,6 @@ impl PaseoAdapter {
                     .find(|workspace| workspace.id == created.workspace_id)
                     .ok_or(RuntimeError::CorrelationFailed)?;
                 (workspace, true)
-            }
-            _ => {
-                return Err(RuntimeError::WorkspaceMismatch {
-                    rule: "several Paseo workspaces carry this task's canonical title and path",
-                });
             }
         };
 
@@ -2985,6 +3026,17 @@ impl PaseoAdapter {
             });
         }
 
+        if request.projection == ContainerProjection::NativeRoot {
+            return Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::RetitleContainer,
+            });
+        }
+        if request.projection != ContainerProjection::NativeChild {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "only a bound native project or workspace can be retitled",
+            });
+        }
+
         let before = self
             .fetch_workspace(request.bound_native_id.as_str())
             .await
@@ -3559,7 +3611,7 @@ impl PaseoAdapter {
         }
         let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
         let workspace = self.fetch_workspace_in(&project, &workspace_id).await?;
-        self.verify_workspace_placement(&workspace, &project, &request.cwd)?;
+        self.verify_hosted_workspace_placement(&workspace, &project, &request.cwd)?;
 
         let labels = self.hosted_seat_labels(request, &project, &workspace_id)?;
         let seat_labels = [(
@@ -4240,18 +4292,33 @@ impl RuntimeAdapter for PaseoAdapter {
             task_scope.short_code.as_str()
         );
         let existing = self.fetch_workspaces(project.project_id.as_str()).await?;
-        let mut exact = existing
-            .into_iter()
+        let same_path = existing
+            .iter()
             .filter(|workspace| {
                 workspace.project_id == project.project_id.as_str()
-                    && workspace.visible_title() == workspace_title
                     && WorkspaceRoot::parse(&workspace.workspace_directory)
                         .is_ok_and(|root| root == request.root)
             })
             .collect::<Vec<_>>();
-        let (workspace, created) = match exact.len() {
-            1 => (exact.remove(0), false),
-            0 => {
+        let (workspace, created) = match same_path.as_slice() {
+            [workspace] if workspace.visible_title() == workspace_title => {
+                ((*workspace).clone(), false)
+            }
+            // Two workspaces at one canonical path inside one project is a
+            // hierarchy that has diverged, even if one happens to carry the
+            // desired title. Picking it would leave the second identity hidden
+            // and let later readbacks split the team run between them.
+            [_, _, ..] => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "several Paseo workspaces claim this canonical task worktree",
+                });
+            }
+            [_] => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "this canonical task worktree already has a differently titled workspace; retitle it before admission",
+                });
+            }
+            [] => {
                 let command = PaseoCommand::workspace_create(
                     request.root.as_str(),
                     project.project_id.as_str(),
@@ -4266,14 +4333,6 @@ impl RuntimeAdapter for PaseoAdapter {
                         .await?,
                     true,
                 )
-            }
-            // Two workspaces at one canonical path inside one project is a
-            // hierarchy that has diverged. Picking one would place half the
-            // roles of a team run in each.
-            _ => {
-                return Err(RuntimeError::WorkspaceMismatch {
-                    rule: "several Paseo workspaces claim this canonical task worktree",
-                });
             }
         };
 
@@ -4571,6 +4630,106 @@ impl RuntimeAdapter for PaseoAdapter {
         at: Timestamp,
     ) -> RuntimeResult<ControlPlaneObservation> {
         self.retire_session(binding, at).await
+    }
+
+    async fn retire_unavailable_provider(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        expected_provider: &str,
+        at: Timestamp,
+    ) -> RuntimeResult<ControlPlaneObservation> {
+        let binding = self.attested(binding)?;
+        let native_id = binding.identity().native_id.as_str();
+        let agent = self.fetch_agent(native_id).await?;
+        let correlation = CorrelationLabel::for_run(binding.agent_run_id()).to_string();
+        if agent.label(label::AGENT_RUN) != Some(correlation.as_str()) {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if agent.provider != expected_provider {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the native session reports a different provider",
+            });
+        }
+        if self.provider_available(expected_provider) {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the native session's provider is currently available",
+            });
+        }
+        if agent.status != PaseoAgentStatus::Idle
+            || agent.is_archived()
+            || !agent.pending_permissions.is_empty()
+        {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "provider-unavailable retirement requires an idle unarchived session with no pending permission",
+            });
+        }
+        self.retire_session(&binding, at).await
+    }
+
+    async fn reconcile_session_labels(
+        &self,
+        request: &ReconcileSessionLabelsRequest,
+    ) -> RuntimeResult<ReconciledSessionLabels> {
+        let binding = self.attested(&request.binding)?;
+        let scope = self.effective_scope(&request.scope)?;
+        let task = scope.require_task()?;
+        let project = self.require_project_for(&scope)?;
+        request.container.ensure_correlated()?;
+        let prepared = self
+            .lock()
+            .containers
+            .get(&request.container.topology_node_id())
+            .cloned()
+            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+        if prepared != request.container {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "this is not the task container this runtime prepared",
+            });
+        }
+        let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
+        let workspace = self.fetch_workspace_in(&project, &workspace_id).await?;
+        self.verify_workspace_placement(&workspace, &project, &task.worktree)?;
+
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        let before = self.fetch_agent(&native_id).await?;
+        self.verify_agent_location(&before, &workspace_id, &task.worktree)?;
+        let correlation = CorrelationLabel::for_run(binding.agent_run_id()).to_string();
+        if before.label(label::AGENT_RUN) != Some(correlation.as_str()) {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let labels = self.seat_labels(
+            binding.agent_run_id(),
+            request.team_run_id,
+            &request.role_slot_id,
+            &scope,
+            &project,
+            &workspace_id,
+        )?;
+        let changed = !before.matches_labels(&labels);
+        if changed {
+            let output = self
+                .transport
+                .run(&PaseoCommand::agent_update_labels(&native_id, &labels))
+                .await?;
+            let updated: PaseoCliAgentUpdated = output.parse("PaseoCliAgentUpdated")?;
+            if updated.agent_id != native_id {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        }
+        let after = self.fetch_agent(&native_id).await?;
+        self.verify_agent_location(&after, &workspace_id, &task.worktree)?;
+        if after.id != before.id
+            || after.provider_session_id() != before.provider_session_id()
+            || !after.matches_labels(&labels)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(ReconciledSessionLabels {
+            identity: binding.identity().clone(),
+            labels: after.labels,
+            changed,
+            observed_at: request.requested_at,
+        })
     }
 
     async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation> {
@@ -5430,6 +5589,29 @@ impl PaseoAdapter {
 mod task_scope_tests {
     use super::*;
 
+    fn adapter() -> PaseoAdapter {
+        PaseoAdapter::new(
+            PaseoConfig {
+                runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("runtime kind"),
+                host_key: ExternalName::parse("fixture-host").expect("host"),
+                mini_project_id: ExternalId::parse("01890000-0000-7000-8000-0000000000c1")
+                    .expect("epic selector"),
+                scope: scope(),
+                max_concurrent_sessions: 8,
+                unavailable_providers: BTreeSet::new(),
+                provider_fallbacks: BTreeMap::new(),
+                adopted_containers: BTreeMap::new(),
+                seat_mcp: None,
+            },
+            Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
+            PaseoCheckpoint::fresh(
+                1,
+                ExternalName::parse("fixture-host").expect("checkpoint host"),
+            ),
+        )
+        .expect("the fixture adapter builds")
+    }
+
     fn task(value: &str) -> TaskId {
         TaskId::parse(value).expect("a canonical task id")
     }
@@ -5447,6 +5629,93 @@ mod task_scope_tests {
             task_scopes: BTreeMap::new(),
             orchestrator_agent_id: ExternalId::parse("orchestrator").expect("agent"),
         }
+    }
+
+    #[test]
+    fn a_core_team_seat_accepts_the_exact_local_ecp_but_ticket_rules_do_not() {
+        let adapter = adapter();
+        let project = PaseoProjectBinding {
+            mini_project_id: ExternalId::parse("01890000-0000-7000-8000-0000000000c1")
+                .expect("epic"),
+            host_key: ExternalName::parse("fixture-host").expect("host"),
+            project_id: ExternalId::parse("prj_epic").expect("project"),
+            observed_name: "Epic · ASMA-7869 · Kontor Operational MVP".to_owned(),
+        };
+        let root = WorkspaceRoot::parse("/repo").expect("root");
+        let workspace = PaseoWorkspace {
+            id: "wks_ecp".to_owned(),
+            project_id: "prj_epic".to_owned(),
+            workspace_directory: "/repo".to_owned(),
+            workspace_kind: PaseoWorkspaceKind::Directory,
+            name: "ECP · ASMA-7869 · Kontor Operational MVP".to_owned(),
+            title: None,
+            git_runtime: None,
+        };
+
+        adapter
+            .verify_hosted_workspace_placement(&workspace, &project, &root)
+            .expect("leadership belongs in the exact local ECP");
+        assert!(matches!(
+            adapter.verify_workspace_placement(&workspace, &project, &root),
+            Err(RuntimeError::WorkspaceMismatch { .. })
+        ));
+    }
+
+    /// Imported epics used to leak their Kontor `MiniProjectId` into the public
+    /// `jira.epic` label. That made a correctly placed QNR seat undiscoverable
+    /// by its Jira identity and made in-place repair reproduce the same defect.
+    /// The external Jira key and the internal Kontor project id are deliberately
+    /// separate facts and both stay pinned here.
+    #[test]
+    fn a_second_epics_seat_labels_keep_external_and_internal_project_identity_distinct() {
+        let adapter = adapter();
+        let qnr_epic =
+            kontor_core::id::MiniProjectId::parse("01a019c0-eee7-72a1-a8a7-7fff1ddce8f3")
+                .expect("the QNR epic id");
+        let qnr_task = task("01a019c0-eee7-72a1-a8a7-8006a40be8c1");
+        let qnr_scope = ExecutionScope::for_task(
+            EpicScope {
+                mini_project_id: qnr_epic,
+                external_epic_key: ExternalId::parse("ASMA-7675").expect("the Jira epic"),
+                short_title: ExternalName::parse("QNR v2 Nonprod Delivery")
+                    .expect("the epic title"),
+            },
+            TaskScope {
+                task_id: qnr_task,
+                external_issue_key: ExternalId::parse("ASMA-7676").expect("the Jira task"),
+                short_code: ExternalId::parse("grid-column-ops").expect("the ticket code"),
+                worktree: WorkspaceRoot::parse("/repo/qnr/asma-7676").expect("the worktree"),
+            },
+        );
+        let project = PaseoProjectBinding {
+            mini_project_id: ExternalId::parse(&qnr_epic.to_string())
+                .expect("the internal project label"),
+            host_key: ExternalName::parse("fixture-host").expect("the host"),
+            project_id: ExternalId::parse("prj_qnr").expect("the native project"),
+            observed_name: "Epic · ASMA-7675 · QNR v2 Nonprod Delivery".to_owned(),
+        };
+
+        let labels = adapter
+            .seat_labels(
+                AgentRunId::generate(),
+                TeamRunId::generate(),
+                &RoleSlotId::parse("builder").expect("the role slot"),
+                &qnr_scope,
+                &project,
+                "wks_qnr_7676",
+            )
+            .expect("the durable scope renders labels");
+
+        assert_eq!(
+            labels.get(label::JIRA_EPIC).map(String::as_str),
+            Some("ASMA-7675")
+        );
+        assert_eq!(
+            labels.get(label::PROJECT_ID).map(String::as_str),
+            Some("01a019c0-eee7-72a1-a8a7-7fff1ddce8f3"),
+            "kontor.project_id remains the documented Kontor epic id"
+        );
+        assert_ne!(labels[label::JIRA_EPIC], labels[label::PROJECT_ID]);
     }
 
     #[test]

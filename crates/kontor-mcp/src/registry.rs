@@ -363,6 +363,25 @@ const RUNTIME_MODEL_ROUTE: &[FieldSpec] = &[
     ),
 ];
 
+/// Exact identity and outage evidence for retiring one never-dispatched seat.
+const UNAVAILABLE_PROVIDER_SEAT: &[FieldSpec] = &[
+    field(
+        "runtime_binding_id",
+        ArgType::Text,
+        "Kontor's immutable runtime binding id.",
+    ),
+    field(
+        "native_id",
+        ArgType::ExternalId,
+        "The exact native session id behind that binding.",
+    ),
+    field(
+        "provider",
+        ArgType::Text,
+        "The provider reported by the session and marked unavailable.",
+    ),
+];
+
 /// The two bounds a streamed read is taken under.
 const MAX_FRAMES: ArgSpec = opt(
     "max_frames",
@@ -1532,9 +1551,50 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Object(RUNTIME_MODEL_ROUTE),
                 "The Admin-authorized provider/model route for the successor.",
             ),
+            opt(
+                "unavailable_provider",
+                Place::Body,
+                ArgType::Object(UNAVAILABLE_PROVIDER_SEAT),
+                "Exact evidence authorizing retirement of a never-dispatched provider-blocked seat.",
+            ),
             IDEMPOTENCY,
         ],
         about: "Replace one runtime-terminal unusable seat with its linked successor.",
+    },
+    ToolSpec {
+        name: "kontor_session_labels_reconcile",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/labels:reconcile",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The already-bound delivery run.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the caller read.",
+            ),
+            req(
+                "binding_generation",
+                Place::Body,
+                ArgType::U64,
+                "The immutable native binding generation.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Repair one delivery seat's runtime-owned labels without changing its identity.",
     },
     ToolSpec {
         name: "kontor_runtime_abandon",

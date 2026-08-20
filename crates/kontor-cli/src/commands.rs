@@ -319,6 +319,8 @@ mod tests {
                 "1",
                 "--model-route",
                 r#"{"provider":"codex","model":"gpt-5.6-sol","effort":"xhigh"}"#,
+                "--unavailable-provider",
+                r#"{"runtime_binding_id":"01890000-0000-7000-8000-0000000000b1","native_id":"native-claude-1","provider":"claude"}"#,
                 "--idempotency-key",
                 "replace-1",
             ])
@@ -331,6 +333,14 @@ mod tests {
                 "provider": "codex",
                 "model": "gpt-5.6-sol",
                 "effort": "xhigh"
+            })
+        );
+        assert_eq!(
+            arguments["unavailable_provider"],
+            serde_json::json!({
+                "runtime_binding_id": "01890000-0000-7000-8000-0000000000b1",
+                "native_id": "native-claude-1",
+                "provider": "claude"
             })
         );
     }

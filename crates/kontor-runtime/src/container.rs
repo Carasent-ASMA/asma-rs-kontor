@@ -409,9 +409,11 @@ pub struct ContainerBinding {
 /// Change one already-bound container's visible title.
 ///
 /// Every field is an identity Kontor already holds. There is deliberately no
-/// parent, no working directory and no projection: a retitle changes the name
-/// and nothing else, so a request that could carry a placement would be a
-/// re-placement wearing a smaller word.
+/// parent or working directory. It does carry the projection Kontor persisted:
+/// a native root is a project while a native child is a workspace, and treating
+/// the former as the latter is an attempt to rename a session that does not
+/// exist. The projection is evidence about the addressed identity, not authority
+/// to move it.
 ///
 /// The native container is addressed by `bound_native_id` and by nothing else.
 /// Not by title — which is the very thing being corrected and therefore the one
@@ -433,6 +435,8 @@ pub struct RetitleContainerRequest {
     /// Carried so a runtime rebuilt since the container was bound answers about
     /// the binding Kontor is repairing rather than minting a new identity for it.
     pub container_binding_id: ContainerBindingId,
+    /// The native shape Kontor read back when this binding was established.
+    pub projection: ContainerProjection,
     /// The exact native container to address. The only handle in this request.
     pub bound_native_id: ExternalId,
     /// The generation `bound_native_id` is meaningful in.

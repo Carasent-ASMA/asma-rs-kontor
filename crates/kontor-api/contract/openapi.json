@@ -975,6 +975,84 @@
         }
       }
     },
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/labels:reconcile": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Repair one already-bound delivery seat's runtime-owned labels.",
+        "operationId": "reconcile_session_labels",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The bound delivery run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionLabelsReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionLabelsReconciledDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon": {
       "post": {
         "tags": [
@@ -12504,6 +12582,17 @@
           "role_slot": {
             "type": "string",
             "description": "The role slot whose terminal attempt is being replaced."
+          },
+          "unavailable_provider": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UnavailableProviderSeatRequest",
+                "description": "Exact evidence authorizing retirement of a never-dispatched seat whose\nprovider is temporarily unavailable. Absent preserves normal persistent\nidle-seat reuse."
+              }
+            ]
           }
         }
       },
@@ -13699,6 +13788,68 @@
           }
         ],
         "description": "The scope a semantic topology operation acts on.\n\nA closed tagged union of the semantic ids Kontor already owns. This is the\nwhole of what a model may say about *where* it wants topology: it names a\nmeaning, and the server derives the kind, the parent and the native shape\nfrom the pinned specification. Adding a published kind to a specification\ntherefore needs no change here, and inventing a kind per call stays\nimpossible — which is the same rule stated as a type rather than as a\nvalidation."
+      },
+      "SessionLabelsReconcileRequest": {
+        "type": "object",
+        "description": "What repairing one bound delivery seat's runtime labels is asked for.",
+        "required": [
+          "expected_revision",
+          "binding_generation"
+        ],
+        "properties": {
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact generation of the immutable native binding.",
+            "minimum": 0
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the caller read.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionLabelsReconciledDto": {
+        "type": "object",
+        "description": "Fresh native readback after an in-place label repair.",
+        "required": [
+          "agent_run_id",
+          "native_id",
+          "labels",
+          "changed",
+          "receipt"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The unchanged Kontor run."
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "Whether this call corrected anything."
+          },
+          "labels": {
+            "type": "object",
+            "description": "Full label map reported by the runtime afterwards.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The unchanged native session."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Mutation receipt, or replay receipt."
+          }
+        }
       },
       "SettleConsultationRequest": {
         "type": "object",
@@ -15437,6 +15588,30 @@
             "description": "The slot the work was handed to."
           }
         }
+      },
+      "UnavailableProviderSeatRequest": {
+        "type": "object",
+        "description": "Exact identity and outage evidence for retiring one unused native seat.",
+        "required": [
+          "runtime_binding_id",
+          "native_id",
+          "provider"
+        ],
+        "properties": {
+          "native_id": {
+            "type": "string",
+            "description": "The exact native session id behind that binding."
+          },
+          "provider": {
+            "type": "string",
+            "description": "Provider the native session reports and runtime configuration marks down."
+          },
+          "runtime_binding_id": {
+            "type": "string",
+            "description": "Kontor's immutable runtime binding id."
+          }
+        },
+        "additionalProperties": false
       },
       "ValidateTopologySpecRequest": {
         "type": "object",

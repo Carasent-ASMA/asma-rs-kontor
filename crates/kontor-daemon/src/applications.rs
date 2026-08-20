@@ -68,8 +68,9 @@ use kontor_api::applications::{
 use kontor_api::applications::{
     AppliedContainerRetitleDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
     ContainerRetitlePreviewDto, ContainerRetitleRequest, DesiredBindingDto, PinnedSpecDto,
-    SemanticTopologyRequest, SemanticTopologyTargetDto, ShareabilityDto, TopologyMutationDto,
-    TopologyNodeDto, TopologyNodeRequest, TopologyProjectionDto, TopologyUpgradeApplyRequest,
+    SemanticTopologyRequest, SemanticTopologyTargetDto, SessionLabelsReconcileRequest,
+    SessionLabelsReconciledDto, ShareabilityDto, TopologyMutationDto, TopologyNodeDto,
+    TopologyNodeRequest, TopologyProjectionDto, TopologyUpgradeApplyRequest,
     TopologyUpgradeEffectDto, TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
 };
 use kontor_api::applications::{
@@ -164,7 +165,9 @@ use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
     ContainerRequest, RetitleContainerRequest,
 };
-use kontor_runtime::request::{LaunchParts, LaunchPlacement, MessageId};
+use kontor_runtime::request::{
+    LaunchParts, LaunchPlacement, MessageId, ReconcileSessionLabelsRequest,
+};
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_scheduler::model::{
@@ -360,10 +363,11 @@ impl Services {
     /// Build the runtime-neutral scope for one epic or task from durable state.
     ///
     /// A legacy adapter may supply its exact configured scope only while the
-    /// epic has no durable declaration. If neither exists, old and
-    /// promotion-created epics receive an identity made from their durable ids
-    /// and whole stored title. Nothing is parsed out of a display name, and an
-    /// explicit declaration always wins.
+    /// epic has no durable declaration. If neither exists, a legacy import in
+    /// canonical `<external key> · <short title>` form is recovered without
+    /// leaking internal ids. Older non-imported epics retain their historical
+    /// id/title fallback until they gain an explicit scope; an explicit
+    /// declaration always wins.
     fn execution_scope(
         &self,
         project_id: ProjectId,
@@ -396,12 +400,7 @@ impl Services {
                             "the runtime execution scope names no durable epic",
                         )
                     })?;
-                EpicScope {
-                    mini_project_id: epic_id,
-                    external_epic_key: ExternalId::parse(&epic_id.to_string())
-                        .map_err(|error| self.refuse_domain(&error))?,
-                    short_title: epic.name,
-                }
+                self.legacy_epic_scope(epic)?
             }
         };
         let Some(task_id) = task_id else {
@@ -443,15 +442,95 @@ impl Services {
                 "the task has more than one Jira link for its runtime execution scope",
             ));
         }
+        let short_code = self.legacy_task_short_code(&task.title, &external_issue_key)?;
         Ok(ExecutionScope::for_task(
             epic,
             TaskScope {
                 task_id,
-                short_code: external_issue_key.clone(),
+                short_code,
                 external_issue_key,
                 worktree,
             },
         ))
+    }
+
+    /// Recover the runtime identity of an imported epic that predates the typed
+    /// execution-scope column. Only the published canonical spelling is
+    /// accepted; an arbitrary display name is not identity.
+    fn legacy_epic_scope(
+        &self,
+        epic: kontor_core::repository::MiniProject,
+    ) -> Result<EpicScope, ApiError> {
+        if let Some((external, short)) = epic.name.as_str().split_once(" · ")
+            && let (Ok(external_epic_key), Ok(short_title)) =
+                (ExternalId::parse(external), ExternalName::parse(short))
+        {
+            return Ok(EpicScope {
+                mini_project_id: epic.id,
+                external_epic_key,
+                short_title,
+            });
+        }
+        // Pre-schema-43 realms used the internal id and whole stored title.
+        // Preserve that compatibility for unrelated legacy epics. Imported
+        // canonical names take the branch above and no longer leak ids.
+        Ok(EpicScope {
+            mini_project_id: epic.id,
+            external_epic_key: ExternalId::parse(&epic.id.to_string())
+                .map_err(|error| self.refuse_domain(&error))?,
+            short_title: epic.name,
+        })
+    }
+
+    /// Render a stable ticket code for legacy tasks that predate a typed short
+    /// code. A declared `OP-<n>` token wins; otherwise the semantic suffix after
+    /// the Jira key is slugged deterministically. Repeating the Jira key is
+    /// refused because it recreates the malformed title this bridge repairs.
+    fn legacy_task_short_code(
+        &self,
+        title: &ExternalName,
+        external_issue_key: &ExternalId,
+    ) -> Result<ExternalId, ApiError> {
+        let text = title.as_str();
+        if let Some(start) = text.find("OP-") {
+            let code = text[start..]
+                .chars()
+                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+                .collect::<String>();
+            if code.len() > 3
+                && code[3..].chars().all(|ch| ch.is_ascii_digit())
+                && code != external_issue_key.as_str()
+            {
+                return ExternalId::parse(&code).map_err(|error| self.refuse_domain(&error));
+            }
+        }
+        let Some(semantic) = text
+            .strip_prefix(external_issue_key.as_str())
+            .and_then(|rest| rest.strip_prefix(" · "))
+        else {
+            return Ok(external_issue_key.clone());
+        };
+        let mut slug = String::new();
+        let mut separator = false;
+        for ch in semantic.chars() {
+            if ch.is_ascii_alphanumeric() {
+                if separator && !slug.is_empty() {
+                    slug.push('-');
+                }
+                slug.push(ch.to_ascii_lowercase());
+                separator = false;
+            } else {
+                separator = true;
+            }
+        }
+        let slug = slug.trim_end_matches('-');
+        if slug.is_empty() || slug == external_issue_key.as_str().to_ascii_lowercase() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "a legacy task has no distinct semantic short code",
+            ));
+        }
+        ExternalId::parse(slug).map_err(|error| self.refuse_domain(&error))
     }
 
     /// Turn a repository refusal into the one the caller is owed.
@@ -4066,11 +4145,15 @@ impl Services {
                     binding.container_binding_id.as_str(),
                 )
                 .map_err(|error| self.refuse_domain(&error))?,
+                projection: match binding.observed_kind {
+                    ObservedContainerKind::Project => ContainerProjection::NativeRoot,
+                    ObservedContainerKind::Workspace => ContainerProjection::NativeChild,
+                },
                 bound_native_id: binding.identity.native_id.clone(),
                 generation: binding.identity.generation,
-                scope,
+                scope: scope.clone(),
                 task_id: node.task_id,
-                structural_name: self.container_name(&spec, &node)?,
+                structural_name: self.container_name(&spec, &node, scope.as_ref())?,
                 requested_at: kontor_api::now(),
             },
             adapter,
@@ -8868,6 +8951,145 @@ impl ApplicationOperations for Services {
                     AppliedDto::Created
                 },
                 revision: project.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    async fn reconcile_session_labels(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &SessionLabelsReconcileRequest,
+    ) -> Result<SessionLabelsReconciledDto, ApiError> {
+        let state = self.state()?;
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "no such agent run exists"))?;
+        if run.revision != request.expected_revision {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the run moved since the caller read it",
+            ));
+        }
+        if run.terminal.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a terminal run's native labels are immutable evidence",
+            ));
+        }
+        let binding = run.binding.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the run has no immutable native binding to repair",
+            )
+        })?;
+        if binding.identity.generation != request.binding_generation {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the immutable binding generation differs from the label repair",
+            ));
+        }
+        let held = state.sessions().get(binding.id).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "this process holds no frozen capability snapshot for the run",
+            )
+        })?;
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the run's runtime is not configured in this daemon",
+                )
+            })?;
+        let task_id = self.task_for_team_run(project_id, run.team_run_id)?;
+        let task = self.task_row(project_id, task_id)?;
+        let epic_id = task.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the run's task is not scoped to an epic",
+            )
+        })?;
+        let node = state
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the run's task has no ticket session workspace",
+                )
+            })?;
+        let root = self.task_root(project_id, task_id)?;
+        let container = self
+            .ensure_container(project_id, &node, &root, adapter.as_ref())
+            .await?;
+        let scope = self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
+        let role_slot_id =
+            RoleSlotId::parse(run.role.as_str()).map_err(|error| self.refuse_domain(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "reconcile_session_labels",
+            "agent_run_id": agent_run_id.to_string(),
+            "runtime_binding_id": binding.id.to_string(),
+            "native_id": binding.identity.native_id.as_str(),
+            "binding_generation": binding.identity.generation,
+        }))?;
+        // This is the session half of the existing native-projection repair
+        // family. Schema 44 deliberately has one durable command kind for
+        // correcting runtime-owned display/correlation projection; the exact
+        // AgentRun, binding and native id remain in the canonical intent while
+        // its authority is witnessed against the owning project, just like a
+        // container retitle.
+        let project = state
+            .with_store(|store| store.get_project(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "no such project exists"))?;
+        let target = AggregateRef::Project { project_id };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+        let outcome = adapter
+            .reconcile_session_labels(&ReconcileSessionLabelsRequest {
+                binding: held,
+                scope,
+                team_run_id: run.team_run_id,
+                role_slot_id,
+                container,
+                requested_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if outcome.identity != binding.identity {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the label repair read back another native session identity",
+            ));
+        }
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::RetitleContainer,
+            target,
+            project.revision,
+            &intent,
+        )?;
+        Ok(SessionLabelsReconciledDto {
+            agent_run_id: agent_run_id.to_string(),
+            native_id: outcome.identity.native_id.as_str().to_owned(),
+            labels: outcome.labels,
+            changed: !replayed && outcome.changed,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Created
+                },
+                revision: run.revision,
                 snapshot_cursor: self.cursor()?,
             },
         })
@@ -14176,7 +14398,7 @@ impl ApplicationOperations for Services {
             ));
         }
 
-        let intent = self.intent(&serde_json::json!({
+        let mut intent_document = serde_json::json!({
             "schema_version": 1,
             "operation": "replace_seat",
             "predecessor_agent_run_id": agent_run_id.to_string(),
@@ -14184,7 +14406,15 @@ impl ApplicationOperations for Services {
             "role_slot": role_slot.as_role_key().as_str(),
             "task_revision": task.revision.get(),
             "binding_generation": binding.identity.generation,
-        }))?;
+        });
+        if let Some(evidence) = &request.unavailable_provider {
+            intent_document["unavailable_provider"] = serde_json::json!({
+                "runtime_binding_id": evidence.runtime_binding_id,
+                "native_id": evidence.native_id,
+                "provider": evidence.provider,
+            });
+        }
+        let intent = self.intent(&intent_document)?;
         let target = AggregateRef::TeamRun {
             team_run_id: predecessor.team_run_id,
         };
@@ -14202,7 +14432,13 @@ impl ApplicationOperations for Services {
 
         if predecessor.terminal.is_none() {
             predecessor = self
-                .retire_predecessor_for_replacement(project_id, &predecessor, &binding, now)
+                .retire_predecessor_for_replacement(
+                    project_id,
+                    &predecessor,
+                    &binding,
+                    request.unavailable_provider.as_ref(),
+                    now,
+                )
                 .await?;
         }
         let terminal = predecessor.terminal.as_ref().ok_or_else(|| {
@@ -15670,6 +15906,7 @@ impl Services {
         project_id: ProjectId,
         predecessor: &kontor_core::repository::AgentRun,
         binding: &RuntimeBinding,
+        unavailable: Option<&kontor_api::applications::UnavailableProviderSeatRequest>,
         now: Timestamp,
     ) -> Result<kontor_core::repository::AgentRun, ApiError> {
         let state = self.state()?;
@@ -15688,6 +15925,31 @@ impl Services {
                     "this daemon is not configured with the predecessor's runtime",
                 )
             })?;
+        if let Some(evidence) = unavailable {
+            if evidence.runtime_binding_id != binding.id.to_string()
+                || evidence.native_id != binding.identity.native_id.as_str()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the provider-outage evidence names another immutable binding",
+                ));
+            }
+            ExternalId::parse(&evidence.provider).map_err(|error| self.refuse_domain(&error))?;
+            if predecessor.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
+                || predecessor.projection.desired != kontor_core::state::DesiredRunState::NoIntent
+            {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "provider-unavailable retirement is limited to a queued seat with no dispatch intent",
+                ));
+            }
+            if adapter.provider_available(&evidence.provider) {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the evidenced provider is currently available and the persistent seat must be reused",
+                ));
+            }
+        }
         let issued = adapter
             .issued_binding(&held)
             .await
@@ -15707,6 +15969,11 @@ impl Services {
                 // before persisting that readback. The fresh archive evidence is
                 // sufficient; repeating the native effect is unnecessary.
                 liveness
+            } else if let Some(evidence) = unavailable {
+                adapter
+                    .retire_unavailable_provider(issued.snapshot(), &evidence.provider, now)
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
             } else {
                 if liveness.contact != RuntimeContact::ProcessMissing {
                     return Err(self.deny(
@@ -17093,9 +17360,9 @@ impl Services {
                 container_binding_id: ContainerBindingId::generate(),
                 topology_node_id: level.id,
                 topology: level.topology.clone(),
-                scope: level_scope,
+                scope: level_scope.clone(),
                 capabilities,
-                display_name: self.container_name(&spec, level)?,
+                display_name: self.container_name(&spec, level, Some(&level_scope))?,
                 parent: match projection {
                     ContainerProjection::NativeChild => parent.clone(),
                     ContainerProjection::NativeRoot | ContainerProjection::LogicalOnly => None,
@@ -17163,6 +17430,7 @@ impl Services {
         &self,
         spec: &kontor_core::spec::ProjectSessionTopologySpec,
         node: &SessionTopologyNode,
+        scope: Option<&ExecutionScope>,
     ) -> Result<ExternalName, ApiError> {
         let template = spec
             .node_kinds
@@ -17175,8 +17443,30 @@ impl Services {
                     "a node's kind is not declared by its pinned topology revision",
                 )
             })?;
-        ExternalName::parse(&format!("{template} · {}", node.id))
-            .map_err(|error| self.refuse_domain(&error))
+        let rendered = match scope {
+            Some(scope) if node.kind == self.domain.delivery.epic_kind => format!(
+                "Epic · {} · {}",
+                scope.epic.external_epic_key.as_str(),
+                scope.epic.short_title.as_str()
+            ),
+            Some(scope) if node.kind == self.domain.delivery.control_kind => format!(
+                "ECP · {} · {}",
+                scope.epic.external_epic_key.as_str(),
+                scope.epic.short_title.as_str()
+            ),
+            Some(scope) if node.kind == self.domain.delivery.task_kind => {
+                let task = scope
+                    .require_task()
+                    .map_err(|error| ApiError::from_runtime(self.realm_id, &error))?;
+                format!(
+                    "TSW · {} · {}",
+                    task.external_issue_key.as_str(),
+                    task.short_code.as_str()
+                )
+            }
+            _ => format!("{template} · {}", node.id),
+        };
+        ExternalName::parse(&rendered).map_err(|error| self.refuse_domain(&error))
     }
 
     /// Persist the native container a runtime read back for one node.

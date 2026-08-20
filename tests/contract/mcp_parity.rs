@@ -531,7 +531,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        123,
+        124,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -541,7 +541,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        124,
+        125,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -733,6 +733,9 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // title rather than accepting one.
         ("kontor_container_retitle_preview", CallerTier::Admin),
         ("kontor_container_retitle_apply", CallerTier::Admin),
+        // Runtime-owned correlation labels are immutable placement evidence.
+        // Repair is exact-id/generation fenced and therefore Admin-only.
+        ("kontor_session_labels_reconcile", CallerTier::Admin),
         // Publishing a trigger may declare a bounded auto-arm, which is the
         // capability to start work with no human in the loop. That is an
         // authority grant, so the daemon requires admin on the route.

@@ -9942,6 +9942,235 @@ async fn an_admin_replacement_retires_a_bound_nonterminal_predecessor_first() {
     );
 }
 
+/// A provider outage may retire a reachable idle seat only when Kontor never
+/// dispatched it and Admin names the immutable binding exactly. This is the
+/// supported replacement path for the dormant Claude seats; omitting the typed
+/// evidence keeps the ordinary persistent-seat reuse rule unchanged.
+#[tokio::test]
+async fn an_admin_retires_an_exact_never_dispatched_provider_blocked_seat() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "replace-provider-seat").await;
+    let seat = seats.as_array().expect("the seated roster")[1].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    assert_eq!(
+        run.projection.desired,
+        kontor_core::state::DesiredRunState::NoIntent,
+        "the outage path is for a seat that was materialized but never dispatched"
+    );
+    let binding = run.binding.as_ref().expect("the dormant seat is bound");
+    let provider = world
+        .fake
+        .launched_model(predecessor_id)
+        .expect("the frozen model route")
+        .provider
+        .0;
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+
+    let ordinary = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-provider-seat-ordinary")
+    .send(&world)
+    .await;
+    assert_eq!(ordinary.status, 422, "{}", ordinary.body);
+    assert!(
+        !world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Retire(id) if *id == binding.id)),
+        "an ordinary reachable idle seat is not retired"
+    );
+
+    world.fake.provider_outage(
+        &provider,
+        Some(kontor_core::spec::ModelRung {
+            provider: kontor_core::spec::ProviderRef("codex".to_owned()),
+            model: kontor_core::spec::ModelRef("gpt-5.6-sol".to_owned()),
+            effort: Some(kontor_core::spec::EffortLevel::Xhigh),
+        }),
+    );
+    let calls_before_mismatch = world.fake.calls().len();
+    let mismatched = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "unavailable_provider": {
+                "runtime_binding_id": binding.id,
+                "native_id": "another-native-session",
+                "provider": provider,
+            },
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-provider-seat-mismatch")
+    .send(&world)
+    .await;
+    assert_eq!(mismatched.status, 409, "{}", mismatched.body);
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_mismatch,
+        "identity mismatch is refused before contacting the runtime"
+    );
+    assert!(
+        !world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Retire(id) if *id == binding.id)),
+        "mismatched outage evidence cannot retire the seat"
+    );
+
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "unavailable_provider": {
+                "runtime_binding_id": binding.id,
+                "native_id": binding.identity.native_id,
+                "provider": provider,
+            },
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-provider-seat-exact")
+    .send(&world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the successor id"),
+    )
+    .expect("a successor id");
+    assert_eq!(
+        world
+            .fake
+            .launched_model(successor_id)
+            .expect("the successor route")
+            .provider
+            .0,
+        "codex"
+    );
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Retire(id) if *id == binding.id))
+    );
+    let retired = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor remains as evidence")
+    });
+    assert_eq!(
+        retired.terminal.expect("the retirement is durable").outcome,
+        TerminalOutcome::Cancelled
+    );
+    let successor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor_id)
+            .expect("the successor reads")
+            .expect("the successor exists")
+    });
+    assert_eq!(successor.parent_agent_run_id, Some(predecessor_id));
+}
+
+/// Label repair is an exact, idempotent mutation of one already-bound native
+/// session. It never invents a replacement run and a stale generation cannot
+/// retarget the operation after a runtime restart.
+#[tokio::test]
+async fn session_label_repair_preserves_the_bound_identity_and_replays_once() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, _epic, _account, seats) = seated_turns(&world, "repair-session-labels").await;
+    let seat = seats.as_array().expect("the seated roster")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("the run id");
+    let project_id = ProjectId::parse(&project).expect("the project id");
+    let agent_run_id = AgentRunId::parse(agent_run).expect("the agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = run.binding.as_ref().expect("the run is bound");
+    let uri = format!("/v1/projects/{project}/agent-runs/{agent_run}/labels:reconcile");
+    let body = serde_json::json!({
+        "expected_revision": run.revision,
+        "binding_generation": binding.identity.generation,
+    });
+
+    let repaired = Call::post(&uri, &body)
+        .signed_as(&world, "admin")
+        .with_key("repair-session-labels-once")
+        .send(&world)
+        .await;
+    assert_eq!(repaired.status, 200, "{}", repaired.body);
+    assert_eq!(repaired.json()["agent_run_id"], agent_run);
+    assert_eq!(
+        repaired.json()["native_id"],
+        binding.identity.native_id.as_str(),
+        "label repair preserves the exact native session"
+    );
+    assert_eq!(repaired.json()["receipt"]["applied"], "created");
+
+    let replayed = Call::post(&uri, &body)
+        .signed_as(&world, "admin")
+        .with_key("repair-session-labels-once")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        repaired.json()["receipt"]["receipt_id"]
+    );
+
+    let stale = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": run.revision,
+            "binding_generation": binding.identity.generation + 1,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("repair-session-labels-stale-generation")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+}
+
 /// BLK-009. A bounded Kontor role turn settles on Kontor's own authority, and
 /// the seat it was taken in stays live: settling a turn is not a claim that the
 /// runtime ended anything, and the persistent Paseo session is expected to still
@@ -14205,6 +14434,179 @@ async fn compose_realm(root: &str) -> Composed {
         account,
         epic,
     }
+}
+
+/// A legacy import has no typed execution-scope row, so admission must recover
+/// names from the durable Jira-linked epic/task metadata. This is the live QNR
+/// shape that previously produced a raw epic UUID, an unresolved ECP template,
+/// and `TSW · ASMA-7676 · ASMA-7676`.
+#[tokio::test]
+async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titles() {
+    let world = World::open_empty_with_a_plane().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "legacy-naming-project",
+        "Kontor Operational MVP · Ad-hoc Planning",
+        "/tmp/kontor-legacy-naming",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("the project id")
+        .to_owned();
+    let project_revision = created.json()["revision"]
+        .as_u64()
+        .expect("the project revision");
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "QNR Codex fallback",
+            "harness": "fake.runtime",
+            "credential_alias": "qnr-codex",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("legacy-naming-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("the account id")
+        .to_owned();
+
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_revision,
+            "ASMA-7675 · QNR v2 Nonprod Delivery",
+            &category,
+            serde_json::json!([{
+                "title": "ASMA-7676 · grid-column ops and question-ownership invariant",
+                "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-7676"}],
+                "worktree": "/tmp/kontor-legacy-naming/asma-7676"
+            }]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("legacy-naming-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("the epic id")
+        .to_owned();
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_read.json()["revision"],
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Prove canonical legacy-import placement"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("legacy-naming-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan.json()["plan_hash"]}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("legacy-naming-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert!(
+        started.json()["started"]
+            .as_array()
+            .is_some_and(|started| !started.is_empty()),
+        "the task's declared seats are admitted: {}",
+        started.body
+    );
+
+    // Ticket admission binds ESW + TSW. The ECP is a sibling and is bound by
+    // its own supported materialization operation; doing it here also proves
+    // the canonical title reaches a real native control workspace.
+    let materialized_control = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": epic},
+            "expected_revision": project_revision,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("legacy-naming-control")
+    .send(&world)
+    .await;
+    assert_eq!(
+        materialized_control.status, 200,
+        "{}",
+        materialized_control.body
+    );
+
+    let topology = Call::get(format!(
+        "/v1/projects/{project}/topology:inspect?epic_id={epic}"
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(topology.status, 200, "{}", topology.body);
+    let topology_json = topology.json();
+    let title_for = |kind: &str| {
+        let node = topology_json["nodes"]
+            .as_array()
+            .expect("the topology nodes")
+            .iter()
+            .find(|node| node["kind_key"] == kind)
+            .unwrap_or_else(|| panic!("the {kind} node exists: {}", topology.body));
+        let node_id = kontor_core::id::TopologyNodeId::parse(
+            node["topology_node_id"].as_str().expect("the node id"),
+        )
+        .expect("a canonical node id");
+        world
+            .fake
+            .container_title(node_id)
+            .unwrap_or_else(|| panic!("the {kind} native container is bound"))
+    };
+
+    assert_eq!(
+        title_for("ESW"),
+        "Epic · ASMA-7675 · QNR v2 Nonprod Delivery"
+    );
+    assert_eq!(
+        title_for("ECP"),
+        "ECP · ASMA-7675 · QNR v2 Nonprod Delivery"
+    );
+    assert_eq!(
+        title_for("TSW"),
+        "TSW · ASMA-7676 · grid-column-ops-and-question-ownership-invariant"
+    );
 }
 
 /// Ensuring a scope creates the chain the specification declares.

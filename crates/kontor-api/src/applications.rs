@@ -35,7 +35,7 @@
 //! runtime, and both use the same durable admission path a background scheduler
 //! would.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::body::Json;
@@ -1888,6 +1888,32 @@ pub struct AppliedContainerRetitleDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// What repairing one bound delivery seat's runtime labels is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionLabelsReconcileRequest {
+    /// The run revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact generation of the immutable native binding.
+    pub binding_generation: u64,
+}
+
+/// Fresh native readback after an in-place label repair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SessionLabelsReconciledDto {
+    /// The unchanged Kontor run.
+    pub agent_run_id: String,
+    /// The unchanged native session.
+    pub native_id: String,
+    /// Full label map reported by the runtime afterwards.
+    pub labels: BTreeMap<String, String>,
+    /// Whether this call corrected anything.
+    pub changed: bool,
+    /// Mutation receipt, or replay receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 /// What applying a named upgrade preview is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -3344,6 +3370,23 @@ pub struct ReplaceSeatRequest {
     /// Absent means the first currently eligible rung in the frozen chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_route: Option<RuntimeModelRouteRequest>,
+    /// Exact evidence authorizing retirement of a never-dispatched seat whose
+    /// provider is temporarily unavailable. Absent preserves normal persistent
+    /// idle-seat reuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_provider: Option<UnavailableProviderSeatRequest>,
+}
+
+/// Exact identity and outage evidence for retiring one unused native seat.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UnavailableProviderSeatRequest {
+    /// Kontor's immutable runtime binding id.
+    pub runtime_binding_id: String,
+    /// The exact native session id behind that binding.
+    pub native_id: String,
+    /// Provider the native session reports and runtime configuration marks down.
+    pub provider: String,
 }
 
 /// One explicit runtime route used by an authorized recovery operation.
@@ -3997,6 +4040,15 @@ pub trait ApplicationOperations: Send + Sync {
         topology_node_id: TopologyNodeId,
         request: &ContainerRetitleRequest,
     ) -> Result<AppliedContainerRetitleDto, ApiError>;
+
+    /// Repair one bound delivery seat's labels without changing its identity.
+    async fn reconcile_session_labels(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &SessionLabelsReconcileRequest,
+    ) -> Result<SessionLabelsReconciledDto, ApiError>;
 
     /// Apply the named preview and return the new immutable pin.
     async fn apply_topology_upgrade(
@@ -5219,6 +5271,42 @@ pub async fn apply_container_retitle(
         state
             .applications()
             .apply_container_retitle(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Repair one already-bound delivery seat's runtime-owned labels.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/labels:reconcile",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The bound delivery run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = SessionLabelsReconcileRequest,
+    responses(
+        (status = 200, body = SessionLabelsReconciledDto),
+        (status = 400), (status = 401), (status = 403), (status = 404),
+        (status = 409), (status = 422)
+    )
+)]
+pub async fn reconcile_session_labels(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<SessionLabelsReconcileRequest>,
+) -> Result<Json<SessionLabelsReconciledDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .reconcile_session_labels(&key, project_id, agent_run_id, &request)
             .await?,
     ))
 }

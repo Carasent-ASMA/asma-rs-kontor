@@ -37,18 +37,20 @@ use std::sync::Arc;
 
 use kontor_core::id::{
     AgentRunId, ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeBindingId,
-    RuntimeKindKey, TaskId, TeamRunId,
+    RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
 };
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
-use kontor_runtime::adapter::{LaunchOutcome, RuntimeAdapter, RuntimeError, RuntimeResult};
+use kontor_runtime::adapter::{
+    HostedSeatLaunchRequest, LaunchOutcome, RuntimeAdapter, RuntimeError, RuntimeResult,
+};
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
 use kontor_runtime::observation::{ReconciliationAction, ReconciliationFinding};
 use kontor_runtime::request::{
     AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchParts, LaunchPlacement,
     LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
-    ResumeRequest, SendMessageRequest,
+    ReconcileSessionLabelsRequest, ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{HistoryCursor, TimelineBreak, TimelinePosition};
@@ -846,6 +848,74 @@ async fn provider_outage_refuses_before_launch_instead_of_waking_the_seat() {
     assert_eq!(plane.daemon.count("agent run"), 0);
 }
 
+/// A provider outage is the sole exception to persistent idle-seat reuse, and
+/// only for the exact provider the native session itself reports. The
+/// predecessor is archived in place and its transcript/native id remain the
+/// evidence a linked successor will cite.
+#[tokio::test]
+async fn provider_outage_retires_only_the_exact_idle_provider_seat() {
+    let (_, binding) = launched().await;
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_ONE));
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT_IDLE_FINISHED));
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_ARCHIVED_ONLY));
+    let mut runtime_config = config();
+    runtime_config
+        .unavailable_providers
+        .insert("claude".to_owned());
+    let plane = Plane::build_with_config(
+        recorded,
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+        runtime_config,
+    );
+    assert_eq!(
+        plane
+            .adapter
+            .restore_bindings(std::slice::from_ref(&binding))
+            .await
+            .expect("the exact idle seat reattests"),
+        vec![binding.clone()]
+    );
+
+    let mismatch = plane
+        .adapter
+        .retire_unavailable_provider(&binding, "codex", at("2026-08-20T05:00:00Z"))
+        .await
+        .expect_err("another provider cannot authorize this retirement");
+    assert!(matches!(
+        mismatch,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+    assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 0);
+
+    let mut foreign = v(AGENT_IDLE_FINISHED);
+    foreign["agent"]["labels"][label::AGENT_RUN] =
+        serde_json::json!("kontor-run-01890000-0000-7000-8000-000000000099");
+    plane.daemon.set_answer_rpc("fetch_agent_request", foreign);
+    let foreign = plane
+        .adapter
+        .retire_unavailable_provider(&binding, "claude", at("2026-08-20T05:00:30Z"))
+        .await
+        .expect_err("a recycled native id cannot retire another run's session");
+    assert_eq!(foreign, RuntimeError::CorrelationFailed);
+    assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 0);
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", v(AGENT_IDLE_FINISHED));
+
+    let retired = plane
+        .adapter
+        .retire_unavailable_provider(&binding, "claude", at("2026-08-20T05:01:00Z"))
+        .await
+        .expect("the configured unavailable provider retires the exact idle seat");
+    assert_eq!(
+        closes(&plane.adapter, &retired, &binding).await,
+        Some(TerminalOutcome::Cancelled)
+    );
+    assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 1);
+}
+
 #[tokio::test]
 async fn hierarchy_two_live_agents_in_one_slot_block_rather_than_pick_one() {
     let (plane, _) = Plane::prepared(daemon()).await;
@@ -1195,7 +1265,10 @@ async fn preparation_refuses_two_projects_carrying_one_epic_name() {
 async fn preparation_refuses_duplicate_canonical_workspace_aliases() {
     let recorded = daemon();
     recorded.forget_queued_rpc("fetch_workspaces_request");
-    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_TWO));
+    let mut duplicate = v(WORKSPACE_LIST_TWO);
+    duplicate["entries"][1]["name"] = serde_json::json!("stale ticket workspace title");
+    duplicate["entries"][1]["title"] = serde_json::json!("stale ticket workspace title");
+    recorded.set_answer_rpc("fetch_workspaces_request", duplicate);
     let plane = Plane::fresh(recorded);
     plane
         .adapter
@@ -1206,7 +1279,7 @@ async fn preparation_refuses_duplicate_canonical_workspace_aliases() {
     let refused = plane
         .prepare_workspace()
         .await
-        .expect_err("two workspaces with one title and path are ambiguous");
+        .expect_err("an exact alias may not hide a stale duplicate at the same path");
     assert!(matches!(refused, RuntimeError::WorkspaceMismatch { .. }));
     assert_eq!(
         plane.daemon.count("workspace create"),
@@ -3485,6 +3558,107 @@ async fn security_the_full_label_set_is_planted_and_verified() {
     }
 }
 
+/// A legacy internal-id leak is repaired on the same AgentRun/native session,
+/// and a second pass proves idempotence by issuing no second label mutation.
+#[tokio::test]
+async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place_once() {
+    let plane = Plane::fresh(daemon());
+    plane
+        .adapter
+        .prepare_project("prepare-label-repair-project")
+        .await
+        .expect("the epic project is prepared");
+    let container = plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the task container is prepared")
+        .snapshot;
+    let binding_id = RuntimeBindingId::generate();
+    let authority = plane
+        .adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            agent_run_id: run(RUN_IMPLEMENT),
+            binding_id,
+            replaces: None,
+            requested_at: at("2026-08-20T05:00:00Z"),
+        })
+        .await
+        .expect("the seat is admitted")
+        .into_authority()
+        .expect("new launch authority");
+    let launched = plane
+        .adapter
+        .launch(&authority.into_request(LaunchParts {
+            scope: execution_scope(),
+            agent_run_id: run(RUN_IMPLEMENT),
+            team_run_id: team_run(),
+            role_slot_id: slot("implement-a"),
+            task_id: task(),
+            binding_id,
+            placement: Some(LaunchPlacement::Container(container.clone())),
+            cwd: root(),
+            account_profile_id: None,
+            prompt: text("bootstrap the role"),
+            model_rung: model_rung(),
+            context_policy: standard_context_policy(),
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
+            requested_at: at("2026-08-20T05:00:00Z"),
+        }))
+        .await
+        .expect("the seat launches");
+
+    let mut leaked = v(AGENT);
+    leaked["agent"]["labels"][label::JIRA_EPIC] = serde_json::json!(MINI_PROJECT);
+    plane.daemon.queue_answer_rpc("fetch_agent_request", leaked);
+    plane
+        .daemon
+        .queue_answer_rpc("fetch_agent_request", v(AGENT));
+    plane.daemon.set_answer(
+        &PaseoCommand::agent_update_labels(AGENT_ID, &BTreeMap::new()),
+        r#"{"agentId":"agt_implement"}"#,
+    );
+
+    let request = ReconcileSessionLabelsRequest {
+        binding: launched.snapshot.clone(),
+        scope: execution_scope(),
+        team_run_id: team_run(),
+        role_slot_id: slot("implement-a"),
+        container,
+        requested_at: at("2026-08-20T05:01:00Z"),
+    };
+    let repaired = plane
+        .adapter
+        .reconcile_session_labels(&request)
+        .await
+        .expect("the stale labels are repaired");
+    assert!(repaired.changed);
+    assert_eq!(repaired.identity, *launched.snapshot.identity());
+    assert_eq!(
+        repaired.labels.get(label::JIRA_EPIC).map(String::as_str),
+        Some("ASMA-7744")
+    );
+    assert_eq!(
+        repaired.labels.get(label::PROJECT_ID).map(String::as_str),
+        Some(MINI_PROJECT)
+    );
+    assert_eq!(plane.daemon.count("agent update agt_implement"), 1);
+
+    let replayed = plane
+        .adapter
+        .reconcile_session_labels(&request)
+        .await
+        .expect("already-correct labels are unchanged");
+    assert!(!replayed.changed);
+    assert_eq!(replayed.identity, repaired.identity);
+    assert_eq!(
+        plane.daemon.count("agent update agt_implement"),
+        1,
+        "an idempotent repair performs no second mutation"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // compaction_
 // ---------------------------------------------------------------------------
@@ -3890,6 +4064,27 @@ fn child_request(node_id: TopologyNodeId, parent: Option<ContainerBinding>) -> C
     }
 }
 
+fn ecp_request(node_id: TopologyNodeId, parent: ContainerBinding) -> ContainerRequest {
+    ContainerRequest {
+        container_binding_id: ContainerBindingId::generate(),
+        topology_node_id: node_id,
+        topology: topology(),
+        scope: epic_execution_scope(),
+        capabilities: vec![
+            NodeProjectionCapability::NativeChild,
+            NodeProjectionCapability::SessionHost,
+        ],
+        display_name: name("ECP · ASMA-7744 · Kontor MVP"),
+        parent: Some(parent),
+        cwd: Some(root()),
+        bound_native_id: None,
+        epic_container: false,
+        task_id: None,
+        team_run_id: None,
+        requested_at: at("2026-08-16T09:05:00Z"),
+    }
+}
+
 /// The retitle request for `NODE_A`'s bound container.
 ///
 /// The structural name is what the control plane can render on its own — the node
@@ -3899,6 +4094,7 @@ fn retitle(node_id: TopologyNodeId) -> RetitleContainerRequest {
     RetitleContainerRequest {
         topology_node_id: node_id,
         container_binding_id: ContainerBindingId::generate(),
+        projection: ContainerProjection::NativeChild,
         bound_native_id: external(WORKSPACE_ID),
         generation: 1,
         scope: Some(execution_scope()),
@@ -4083,32 +4279,125 @@ async fn duplicate_canonical_titles_and_paths_block_creation() {
     assert!(plane.daemon.mutations().is_empty());
 }
 
-/// A workspace without the exact clean alias is somebody else's work.
+/// A title migration may leave one workspace at the canonical path under its
+/// old title. Admission must stop and ask for an in-place retitle; creating a
+/// second workspace at the same cwd is identity duplication, not recovery.
 #[tokio::test]
-async fn a_nonmatching_alias_is_foreign_and_unmanaged() {
+async fn a_differently_titled_workspace_at_the_canonical_path_blocks_creation() {
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
         .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
         .announcing(&v(SERVER_INFO))
         .answering_rpc("project.list.request", v(PROJECT_LIST))
-        // This fixture carries a legacy suffixed title.
-        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_OTHER_NODE))
-        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+        .answering_rpc(
+            "fetch_workspaces_request",
+            v(WORKSPACE_LIST_NODE_STALE_TITLE),
+        );
     let plane = Plane::fresh(recorded);
 
-    let outcome = plane
+    let refused = plane
         .adapter
         .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
         .await
-        .expect("the foreign workspace is left alone");
-    assert!(outcome.created, "only the exact clean alias may be adopted");
+        .expect_err("title drift at the same cwd is not a vacant placement");
+
+    assert!(matches!(refused, RuntimeError::WorkspaceMismatch { .. }));
+    assert_eq!(
+        plane.daemon.count("workspace create"),
+        0,
+        "the existing identity must be retitled, never duplicated"
+    );
+}
+
+/// Regression for the live legacy-Core-Team bootstrap refusal. An ECP is a
+/// deliberately local workspace; invoking the real hosted-seat entry point is
+/// what proves that only leadership uses the ECP validator. A helper-only test
+/// would stay green if this call site were accidentally wired back to the
+/// ticket-worktree validator.
+#[tokio::test]
+async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut workspace = v(WORKSPACE_ROOT_LOCAL);
+    workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+    workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+
+    let mut agent = v(AGENT);
+    agent["agent"]["title"] = serde_json::json!("LSA · ASMA-7744");
+    agent["agent"]["labels"] = serde_json::json!({
+        "jira.epic": "ASMA-7744",
+        "kontor.project_id": MINI_PROJECT,
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+        "kontor.role": "lsa",
+        "kontor.role_slot_id": "lsa",
+        "kontor.workspace_id": WORKSPACE_ID,
+        "kontor.worktree": CWD,
+        "paseo.parent-agent-id": ORCHESTRATOR,
+    });
+
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_agent_run(), CLI_AGENT_STARTED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", workspace)
+        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc("fetch_agent_request", agent);
+    let plane = Plane::fresh(recorded);
+    plane
+        .adapter
+        .prepare_project("cmd-hosted-ecp")
+        .await
+        .expect("the epic project is prepared");
+    let container = plane
+        .adapter
+        .prepare_container(&ecp_request(node(NODE_A), bound_root(node(NODE_B))))
+        .await
+        .expect("the existing exact ECP is bound")
+        .snapshot;
+
+    let outcome = plane
+        .adapter
+        .launch_hosted_seat(&HostedSeatLaunchRequest {
+            seat_binding_id,
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA · ASMA-7744"),
+            container,
+            cwd: root(),
+            scope: epic_execution_scope(),
+            prompt: text("continue epic leadership through Kontor"),
+            model_rung: model_rung(),
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-08-16T09:10:00Z"),
+        })
+        .await
+        .expect("the Core Team seat launches in the local ECP");
+
+    assert!(outcome.created);
+    assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
+    assert_eq!(plane.daemon.count("agent run"), 1);
+}
+
+/// A legacy alias at the canonical path is retitle-required, not vacancy.
+#[tokio::test]
+async fn a_nonmatching_alias_at_the_canonical_path_blocks_duplication() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        // This fixture carries a legacy suffixed title.
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_OTHER_NODE));
+    let plane = Plane::fresh(recorded);
+
+    let refused = plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect_err("the existing identity must be retitled, not duplicated");
+    assert!(matches!(refused, RuntimeError::WorkspaceMismatch { .. }));
     assert!(
-        !plane
-            .daemon
-            .mutations()
-            .iter()
-            .any(|call| call.contains("archive") || call.contains("rename")),
-        "an unmanaged child is never renamed or archived: {:?}",
+        plane.daemon.mutations().is_empty(),
+        "the refusal neither creates nor mutates the existing identity: {:?}",
         plane.daemon.mutations()
     );
 }
@@ -4796,6 +5085,43 @@ async fn a_plane_with_no_facade_route_refuses_to_retitle_and_reaches_nothing() {
         plane.daemon.titles("workspace create").is_empty(),
         "and it must certainly not create a replacement container"
     );
+}
+
+/// An ESW binding names a native Paseo project, not a workspace/session. Paseo
+/// 0.4 exposes no project rename operation, so Kontor must report the missing
+/// capability without trying the workspace retitle surface.
+#[tokio::test]
+async fn a_native_project_retitle_refuses_without_treating_the_project_as_a_workspace() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO));
+    let facade = std::sync::Arc::new(RecordedMcp::new());
+    let plane = Plane::with_facade(recorded, std::sync::Arc::clone(&facade));
+    let request = RetitleContainerRequest {
+        projection: ContainerProjection::NativeRoot,
+        bound_native_id: external(PROJECT_ID),
+        task_id: None,
+        scope: Some(epic_execution_scope()),
+        structural_name: name("Epic · ASMA-7744 · Kontor MVP"),
+        ..retitle(node(NODE_B))
+    };
+
+    for refused in [
+        plane.adapter.preview_retitle_container(&request).await,
+        plane.adapter.retitle_container(&request).await,
+    ] {
+        assert!(matches!(
+            refused,
+            Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::RetitleContainer
+            })
+        ));
+    }
+    assert!(
+        facade.calls().is_empty(),
+        "no workspace rename was attempted"
+    );
+    assert!(plane.daemon.mutations().is_empty());
 }
 
 /// The capability is declared from the route, so a caller can tell before asking.

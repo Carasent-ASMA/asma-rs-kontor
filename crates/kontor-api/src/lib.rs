@@ -360,6 +360,10 @@ pub fn router(state: ApiState) -> Router {
             post(applications::apply_container_retitle),
         )
         .route(
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/labels:reconcile",
+            post(applications::reconcile_session_labels),
+        )
+        .route(
             "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
             post(applications::preview_topology_upgrade),
         )
