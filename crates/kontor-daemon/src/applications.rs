@@ -8440,14 +8440,27 @@ impl ApplicationOperations for Services {
             "project": project_id.to_string(),
             "scope": scope.intent_key(),
         }))?;
+        let epic_id = scope.epic_id().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this scope has no epic for a materialization receipt to name",
+            )
+        })?;
         let replayed = self
-            .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
+            .replayed(
+                key,
+                &intent,
+                Some(&AggregateRef::MiniProject {
+                    mini_project_id: epic_id,
+                }),
+            )?
             .is_some();
 
         if !replayed {
-            // Materializing is ensuring plus binding the seats the scope hosts.
-            // The chain comes first because a seat can only ever belong to a
-            // node that exists.
+            // Materializing is ensuring plus preparing the exact native
+            // container and binding the seats the scope hosts. The chain comes
+            // first because neither a native binding nor a seat can ever
+            // belong to a node that does not exist.
             let leaf = self.ensure_scope_chain(project_id, &scope)?;
             let spec = self.pinned_spec(project_id)?;
             let declared = spec
@@ -8460,6 +8473,27 @@ impl ApplicationOperations for Services {
                         "the pinned specification no longer declares this node's kind",
                     )
                 })?;
+            let projection = ContainerProjection::resolve(&declared.projection_capabilities)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            if projection != ContainerProjection::LogicalOnly {
+                let runtime_kind = self.node_runtime_kind()?;
+                let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the node's configured runtime family is unavailable",
+                    )
+                })?;
+                adapter
+                    .prepare_plane()
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                let cwd = match leaf.task_id {
+                    Some(task_id) => self.task_root(project_id, task_id)?,
+                    None => self.runtime_root(project_id, leaf.mini_project_id)?,
+                };
+                self.ensure_container(project_id, &leaf, &cwd, adapter.as_ref())
+                    .await?;
+            }
             // Capability-dispatched, exactly as OP-02 does it: only a kind the
             // specification declares as a session host may hold a seat. A kind
             // that is a native root hosts nothing, and opening a seat on one
@@ -8507,12 +8541,7 @@ impl ApplicationOperations for Services {
             project_id,
             CommandKind::StartScheduledWork,
             AggregateRef::MiniProject {
-                mini_project_id: scope.epic_id().ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "this scope has no epic for a materialization receipt to name",
-                    )
-                })?,
+                mini_project_id: epic_id,
             },
             project.revision,
             &intent,
