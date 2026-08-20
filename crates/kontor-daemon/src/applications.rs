@@ -13252,14 +13252,6 @@ impl ApplicationOperations for Services {
                         "that task does not belong to this epic",
                     ));
                 }
-                if task.revision != request.expected_revision {
-                    return Err(self
-                        .deny(
-                            ApiErrorCode::RevisionConflict,
-                            "the task moved since the caller read it",
-                        )
-                        .with_revision(Some(task.revision)));
-                }
                 self.task_lifecycle(key, project_id, &task, request)
             }
         }
@@ -15860,27 +15852,40 @@ impl ApplicationOperations for Services {
         let target = AggregateRef::Project { project_id };
         let replayed = self.replayed(key, &intent, Some(&target))?;
         let (receipt_id, applied, revision) = if let Some(receipt) = replayed {
-            let project = self.project_row(project_id)?;
-            (receipt.id, Applied::Unchanged, project.revision)
+            let revision = state
+                .with_store(|store| store.workflow_install_result_revision(&receipt))
+                .map_err(|error| self.refuse(&error))?;
+            (receipt.id, Applied::Unchanged, revision)
         } else {
-            let (_, revision, applied) = state
+            let now = kontor_api::now();
+            let command = ReceiptEnvelope::new(
+                state.realm_id(),
+                NewCommandIntent {
+                    project_id,
+                    receipt_id: CommandReceiptId::generate(),
+                    idempotency_key: key.clone(),
+                    kind: CommandKind::InstallWorkflowSpec,
+                    target,
+                    target_revision: request.expected_revision,
+                    intent: intent.clone(),
+                    payload: intent.clone(),
+                    desired: None,
+                    not_before: now,
+                    created_at: now,
+                },
+            );
+            let (_, revision, applied, receipt) = state
                 .with_store(|store| {
-                    store.install_external_workflow_spec(
+                    store.install_external_workflow_spec_with_intent(
                         project_id,
                         request.expected_revision,
                         compiled.spec(),
+                        &command,
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
-            let receipt_id = self.record(
-                key,
-                project_id,
-                CommandKind::InstallWorkflowSpec,
-                target,
-                request.expected_revision,
-                &intent,
-            )?;
-            (receipt_id, applied, revision)
+            state.signals().appended();
+            (receipt.id, applied, revision)
         };
         let spec = compiled.spec();
         Ok(kontor_api::applications::InstalledWorkflowSpecDto {
@@ -17907,7 +17912,7 @@ impl Services {
         // A replayed transition answers from the task rather than attempting the
         // move again: the second attempt would be judged against a revision the
         // first one already advanced past.
-        if self.replayed(key, &intent, Some(&target))?.is_some() {
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
             let current = state
                 .with_store(|store| store.get_task(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?
@@ -17922,11 +17927,16 @@ impl Services {
                 target: current.id.to_string(),
                 state: current.state.as_str().to_owned(),
                 revision: current.revision,
-                receipt_id: self
-                    .replayed(key, &intent, Some(&target))?
-                    .map(|receipt| receipt.id.to_string())
-                    .unwrap_or_default(),
+                receipt_id: receipt.id.to_string(),
             });
+        }
+        if task.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the task moved since the caller read it",
+                )
+                .with_revision(Some(task.revision)));
         }
         if request.action == LifecycleAction::WithdrawTask {
             if !matches!(
@@ -17975,8 +17985,6 @@ impl Services {
             LifecycleAction::WithdrawTask => CommandKind::WithdrawTask,
             _ => CommandKind::TransitionTask,
         };
-        let receipt = self.record(key, project_id, kind, target, task.revision, &intent)?;
-
         let to = match request.action {
             LifecycleAction::Block => TaskState::Blocked,
             LifecycleAction::Resume => TaskState::Ready,
@@ -18025,34 +18033,50 @@ impl Services {
             TaskTeamClosure::NoTeam
         };
 
-        let moved = state
-            .with_store(|store| {
-                store.transition_task(&TaskTransitionRequest {
-                    project_id,
-                    task_id: task.id,
-                    expected_revision: task.revision,
-                    to,
-                    resume_receipt: matches!(
-                        request.action,
-                        LifecycleAction::Resume | LifecycleAction::ReopenTask
-                    )
-                    .then_some(receipt),
-                    // Only `reopen_task` may pass a terminal task's immutability,
-                    // and it says so here rather than letting the store infer it
-                    // from the receipt: a plain `resume` carries the same kind of
-                    // receipt and must keep being refused.
-                    reopen: matches!(request.action, LifecycleAction::ReopenTask),
-                    run_outcome: None,
-                    produced_artifacts: artifacts.clone(),
-                    completed_phases: if to == TaskState::Done {
-                        completed.clone()
-                    } else {
-                        BTreeSet::new()
-                    },
-                    team_closure: team_closure.clone(),
-                    occurred_at: now,
-                })
-            })
+        let receipt_id = CommandReceiptId::generate();
+        let transition = TaskTransitionRequest {
+            project_id,
+            task_id: task.id,
+            expected_revision: task.revision,
+            to,
+            resume_receipt: matches!(
+                request.action,
+                LifecycleAction::Resume | LifecycleAction::ReopenTask
+            )
+            .then_some(receipt_id),
+            // Only `reopen_task` may pass a terminal task's immutability,
+            // and it says so here rather than letting the store infer it
+            // from the receipt: a plain `resume` carries the same kind of
+            // receipt and must keep being refused.
+            reopen: matches!(request.action, LifecycleAction::ReopenTask),
+            run_outcome: None,
+            produced_artifacts: artifacts.clone(),
+            completed_phases: if to == TaskState::Done {
+                completed.clone()
+            } else {
+                BTreeSet::new()
+            },
+            team_closure: team_closure.clone(),
+            occurred_at: now,
+        };
+        let command = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewCommandIntent {
+                project_id,
+                receipt_id,
+                idempotency_key: key.clone(),
+                kind,
+                target,
+                target_revision: task.revision,
+                intent: intent.clone(),
+                payload: intent.clone(),
+                desired: None,
+                not_before: now,
+                created_at: now,
+            },
+        );
+        let (moved, receipt, _) = state
+            .with_store(|store| store.transition_task_with_intent(&transition, &command))
             .map_err(|error| self.refuse(&error))?;
         state.signals().appended();
         Ok(LifecycleOutcomeDto {
@@ -18060,7 +18084,7 @@ impl Services {
             target: moved.id.to_string(),
             state: moved.state.as_str().to_owned(),
             revision: moved.revision,
-            receipt_id: receipt.to_string(),
+            receipt_id: receipt.id.to_string(),
         })
     }
 

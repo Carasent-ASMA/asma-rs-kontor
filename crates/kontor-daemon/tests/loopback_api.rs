@@ -39,15 +39,17 @@ use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, 
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
-    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ContentHash, ExternalName,
-    MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, TaskId, TeamRunId,
-    TicketLinkId, TopologyNodeId,
+    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash,
+    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, MiniProjectId, ProjectId,
+    QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId, TeamRunId, TicketLinkId,
+    TopologyNodeId,
 };
 use kontor_core::repository::{
-    CommandRepository, NewMiniProject, NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding,
-    NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink, ProjectRepository, RealmRepository,
-    RunClosure, RunRepository, SourceDisposition, StoredEpicCompletion, StoredEpicRoster,
-    StoredPromotion, StoredQuickSession, TicketRepository, TopologyRepository, WorkflowRepository,
+    CommandRepository, ConnectorSpecSelector, NewMiniProject, NewObservation, NewProject,
+    NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    ProjectRepository, RealmRepository, RunClosure, RunRepository, SourceDisposition,
+    SpecRepository, StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
+    TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{
@@ -4515,6 +4517,49 @@ async fn withdrawal_is_a_terminal_audited_scope_change_not_a_block_or_delete() {
     let second = applied.json()["tasks"][1].clone();
     let lifecycle = format!("/v1/projects/{project}/epics/{epic}/lifecycle");
 
+    let invalid_withdrawal = serde_json::json!({
+        "action": "withdraw_task",
+        "task_id": second["task_id"],
+        "expected_revision": second["revision"],
+        "reason": "Invalid evidence must not leave withdrawal authority behind",
+        "evidence": ["not a valid artifact key"]
+    });
+    for _ in 0..2 {
+        let invalid = Call::post(&lifecycle, &invalid_withdrawal)
+            .signed_as(&world, "operator")
+            .with_key("withdraw-invalid-evidence")
+            .send(&world)
+            .await;
+        assert_eq!(invalid.status, 400, "{}", invalid.body);
+        assert_eq!(invalid.code(), "invalid_request");
+    }
+    let (invalid_receipt, untouched) = world.daemon.state().with_store(|store| {
+        let receipt = store
+            .get_receipt_by_key(
+                &kontor_core::id::IdempotencyKey::parse("withdraw-invalid-evidence")
+                    .expect("the test key is valid"),
+            )
+            .expect("the receipt lookup succeeds");
+        let task = store
+            .get_task(
+                kontor_core::id::ProjectId::parse(&project).expect("project id"),
+                kontor_core::id::TaskId::parse(second["task_id"].as_str().expect("task id"))
+                    .expect("task id"),
+            )
+            .expect("the task reads")
+            .expect("the task remains");
+        (receipt, task)
+    });
+    assert!(
+        invalid_receipt.is_none(),
+        "a refused withdrawal records no authority receipt"
+    );
+    assert_eq!(untouched.state, kontor_core::state::TaskState::Ready);
+    assert_eq!(
+        untouched.revision.get(),
+        second["revision"].as_u64().unwrap()
+    );
+
     let unresolved = Call::post(
         &lifecycle,
         &serde_json::json!({
@@ -4562,19 +4607,17 @@ async fn withdrawal_is_a_terminal_audited_scope_change_not_a_block_or_delete() {
     assert_eq!(blocked.status, 200, "{}", blocked.body);
     assert_eq!(blocked.json()["state"], "blocked");
 
-    let withdrawn = Call::post(
-        &lifecycle,
-        &serde_json::json!({
-            "action": "withdraw_task",
-            "task_id": first["task_id"],
-            "expected_revision": blocked.json()["revision"],
-            "reason": "ASMA-7687 left this epic's active scope"
-        }),
-    )
-    .signed_as(&world, "operator")
-    .with_key("withdraw-first")
-    .send(&world)
-    .await;
+    let withdraw_first_request = serde_json::json!({
+        "action": "withdraw_task",
+        "task_id": first["task_id"],
+        "expected_revision": blocked.json()["revision"],
+        "reason": "ASMA-7687 left this epic's active scope"
+    });
+    let withdrawn = Call::post(&lifecycle, &withdraw_first_request)
+        .signed_as(&world, "operator")
+        .with_key("withdraw-first")
+        .send(&world)
+        .await;
     assert_eq!(withdrawn.status, 200, "{}", withdrawn.body);
     assert_eq!(withdrawn.json()["state"], "withdrawn");
     assert!(
@@ -4596,6 +4639,16 @@ async fn withdrawal_is_a_terminal_audited_scope_change_not_a_block_or_delete() {
         withdrawal_receipt.kind,
         kontor_core::receipt::CommandKind::WithdrawTask
     );
+
+    let replay = Call::post(&lifecycle, &withdraw_first_request)
+        .signed_as(&world, "operator")
+        .with_key("withdraw-first")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["state"], "withdrawn");
+    assert_eq!(replay.json()["revision"], withdrawn.json()["revision"]);
+    assert_eq!(replay.json()["receipt_id"], withdrawn.json()["receipt_id"]);
 
     let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(&world, "observer")
@@ -6876,6 +6929,51 @@ async fn an_admin_installs_the_exact_shipped_workflow_revision_under_project_cas
     .await;
     assert_eq!(readback.status, 200, "{}", readback.body);
     assert_eq!(readback.json()[0]["installed"], true);
+
+    let project_id = ProjectId::parse(&seed.project).expect("project id");
+    let selector = ConnectorSpecSelector {
+        project_id,
+        connector: ConnectorKey::parse(shipped["connector"].as_str().expect("connector key"))
+            .expect("connector key"),
+        project: ExternalProjectKey::parse(
+            shipped["external_project"]
+                .as_str()
+                .expect("external project"),
+        )
+        .expect("external project"),
+        issue_type: ExternalIssueTypeKey::parse(
+            shipped["issue_type"].as_str().expect("issue type"),
+        )
+        .expect("issue type"),
+        version: SpecVersion::parse(
+            u32::try_from(shipped["version"].as_u64().expect("version")).expect("u32 version"),
+        )
+        .expect("version"),
+    };
+    world.daemon.state().with_store(|store| {
+        let mut second_spec = store
+            .get_external_workflow_spec(&selector)
+            .expect("the installed spec reads")
+            .expect("the installed spec exists");
+        second_spec.version = second_spec.version.next().expect("a next spec revision");
+        let (_, moved, _) = store
+            .install_external_workflow_spec(
+                project_id,
+                AggregateRevision::parse(revision + 1).expect("project revision"),
+                &second_spec,
+            )
+            .expect("an intervening workflow revision moves the project");
+        assert_eq!(moved.get(), revision + 2);
+    });
+    let moved_project = Call::get(format!("/v1/projects/{}", seed.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(moved_project.status, 200, "{}", moved_project.body);
+    assert!(
+        moved_project.json()["revision"].as_u64().expect("revision") > revision + 1,
+        "the replay must be tested after the project has moved again"
+    );
 
     let replay = Call::post(&uri, &request)
         .signed_as(&world, "admin")
