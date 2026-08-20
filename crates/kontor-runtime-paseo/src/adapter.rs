@@ -25,7 +25,7 @@
 //!
 //! # What Paseo 0.3.1 cannot do
 //!
-//! No supported project rename, no supported compaction, and no per-run coding
+//! No supported compaction and no per-run coding
 //! account. None is filled in with a guess: the first two are typed adapter
 //! outcomes, and the third is declared unsupported so an account-pinned run is
 //! refused before dispatch.
@@ -100,11 +100,11 @@ use crate::wire::{
     MAX_DIRECTORY_PAGE, MAX_DIRECTORY_PAGES, MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES,
     PASEO_APP_VERSION, PaseoAgent, PaseoAgentAnswer, PaseoAgentPage, PaseoAgentStatus,
     PaseoCliAgentReloaded, PaseoCliAgentStarted, PaseoCliAgentUpdated, PaseoCliArchived,
-    PaseoCliStopped, PaseoCliWorkspaceCreated, PaseoDirection, PaseoFeature,
-    PaseoPermissionResolved, PaseoProject, PaseoProjectAdded, PaseoProjectList,
-    PaseoProjectRenamed, PaseoProjection, PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame,
-    PaseoSubscriptionAck, PaseoTimelineCursor, PaseoTimelinePage, PaseoWorkspace,
-    PaseoWorkspaceKind, PaseoWorkspacePage, label, normalize_entry, stream_permission_external_id,
+    PaseoCliStopped, PaseoCliWorkspaceCreated, PaseoDirection, PaseoPermissionResolved,
+    PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection,
+    PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck,
+    PaseoTimelineCursor, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage,
+    label, normalize_entry, stream_permission_external_id,
 };
 
 /// Everything Paseo 0.3.1 can prove at trust grade A.
@@ -3032,7 +3032,7 @@ impl PaseoAdapter {
 
         if request.projection == ContainerProjection::NativeRoot {
             let info = self.fetch_server_info().await?;
-            if !info.supports(PaseoFeature::ProjectRename) {
+            if !info.supports_project_rename() {
                 return Err(RuntimeError::UnsupportedCapability {
                     capability: RuntimeCapability::RetitleContainer,
                 });
@@ -3227,7 +3227,7 @@ impl PaseoAdapter {
             .lock()
             .server
             .as_ref()
-            .is_some_and(|info| info.supports(PaseoFeature::ProjectRename));
+            .is_some_and(PaseoServerInfo::supports_project_rename);
         if self.mcp.is_some() || supports_project_rename {
             capabilities
                 .supported
