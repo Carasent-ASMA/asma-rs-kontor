@@ -4442,6 +4442,29 @@ async fn lifecycle_transitions_are_legal_revisioned_and_gated() {
     .await;
     assert_eq!(resumed.status, 200, "{}", resumed.body);
     assert_eq!(resumed.json()["state"], "ready");
+    let resumed_revision = resumed.json()["revision"].as_u64().expect("revision");
+    assert!(
+        resumed_revision > held_revision,
+        "resume is a material mutation after the original block"
+    );
+
+    let replayed_block = Call::post(
+        &lifecycle,
+        &serde_json::json!({
+            "action": "block", "task_id": task,
+            "expected_revision": task_revision, "reason": "Hold it"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("life-block")
+    .send(&world)
+    .await;
+    assert_eq!(replayed_block.status, 200, "{}", replayed_block.body);
+    assert_eq!(
+        replayed_block.json(),
+        blocked.json(),
+        "K1 must replay its original blocked state and revision after K2 resumed the live task"
+    );
 
     // Closing the epic while a task is still open is refused.
     let premature = Call::post(

@@ -5275,6 +5275,101 @@ fn workflow_install_result_in_transaction(
     parse_workflow_install_result(&json, &hash, receipt)
 }
 
+/// The durable public answer produced by one task lifecycle command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskTransitionResult {
+    pub task_id: TaskId,
+    pub state: TaskState,
+    pub revision: AggregateRevision,
+}
+
+fn task_transition_result_payload(
+    intent: &CanonicalDocument,
+    task: &Task,
+) -> RepositoryResult<CanonicalDocument> {
+    let mut payload: serde_json::Value = from_json(intent.json())?;
+    let fields = payload
+        .as_object_mut()
+        .ok_or_else(|| DomainError::invalid("task lifecycle intent", "must be an object"))?;
+    fields.insert(
+        "result".to_owned(),
+        serde_json::json!({
+            "intent_hash": intent.hash().as_str(),
+            "task_id": task.id.to_string(),
+            "state": task.state.as_str(),
+            "resulting_revision": task.revision.get(),
+        }),
+    );
+    Ok(CanonicalDocument::from_value(&payload)?)
+}
+
+fn parse_task_transition_result(
+    json: &str,
+    hash: &str,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<TaskTransitionResult> {
+    let result: serde_json::Value = stored_document(json, hash)?;
+    if result["operation"] != "lifecycle"
+        || result["result"]["intent_hash"].as_str() != Some(receipt.intent.hash().as_str())
+    {
+        return Err(RepositoryError::Conflict {
+            subject: "task lifecycle receipt",
+            rule: "the persisted result does not belong to the recorded intent",
+        });
+    }
+    let task_id = result["result"]["task_id"]
+        .as_str()
+        .ok_or(RepositoryError::Conflict {
+            subject: "task lifecycle receipt",
+            rule: "the persisted result has no task identity",
+        })
+        .and_then(|value| TaskId::parse(value).map_err(Into::into))?;
+    if receipt.target != (AggregateRef::Task { task_id }) {
+        return Err(RepositoryError::Conflict {
+            subject: "task lifecycle receipt",
+            rule: "the persisted result does not name the receipt target",
+        });
+    }
+    let state = result["result"]["state"]
+        .as_str()
+        .ok_or(RepositoryError::Conflict {
+            subject: "task lifecycle receipt",
+            rule: "the persisted result has no task state",
+        })
+        .and_then(|value| TaskState::parse(value).map_err(Into::into))?;
+    let revision =
+        result["result"]["resulting_revision"]
+            .as_u64()
+            .ok_or(RepositoryError::Conflict {
+                subject: "task lifecycle receipt",
+                rule: "the persisted result has no resulting task revision",
+            })?;
+    Ok(TaskTransitionResult {
+        task_id,
+        state,
+        revision: AggregateRevision::parse(revision)?,
+    })
+}
+
+fn task_transition_result_in_transaction(
+    transaction: &Transaction<'_>,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<TaskTransitionResult> {
+    let stored: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT payload, payload_hash FROM command_outbox
+             WHERE project_id = ?1 AND receipt_id = ?2",
+            params![receipt.project_id.to_string(), receipt.id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let (json, hash) = stored.ok_or(RepositoryError::NotFound {
+        subject: "task lifecycle result",
+    })?;
+    parse_task_transition_result(&json, &hash, receipt)
+}
+
 impl SqliteStore {
     /// Pin one immutable external-workflow revision to a project.
     ///
@@ -5380,6 +5475,27 @@ impl SqliteStore {
             subject: "workflow installation result",
         })?;
         parse_workflow_install_result(&json, &hash, receipt)
+    }
+
+    /// Read the original state and revision retained by a task lifecycle receipt.
+    pub fn task_transition_result(
+        &self,
+        receipt: &CommandReceipt,
+    ) -> RepositoryResult<TaskTransitionResult> {
+        let stored: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT payload, payload_hash FROM command_outbox
+                 WHERE project_id = ?1 AND receipt_id = ?2",
+                params![receipt.project_id.to_string(), receipt.id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let (json, hash) = stored.ok_or(RepositoryError::NotFound {
+            subject: "task lifecycle result",
+        })?;
+        parse_task_transition_result(&json, &hash, receipt)
     }
 }
 
@@ -6729,13 +6845,13 @@ impl SqliteStore {
     /// Move one task and record the authority for that move in the same transaction.
     ///
     /// A refused transition rolls the receipt back with it. An exact concurrent
-    /// replay reads the already-moved task and original receipt without trying
-    /// the compare-and-swap again.
+    /// replay reads the original durable result and receipt without trying the
+    /// compare-and-swap again or substituting the task's current state.
     pub fn transition_task_with_intent(
         &self,
         request: &TaskTransitionRequest,
         envelope: &ReceiptEnvelope<NewCommandIntent>,
-    ) -> RepositoryResult<(Task, CommandReceipt, crate::graph::Applied)> {
+    ) -> RepositoryResult<(TaskTransitionResult, CommandReceipt, crate::graph::Applied)> {
         let intent = envelope.peek(self.realm_id())?;
         let target = AggregateRef::Task {
             task_id: request.task_id,
@@ -6756,21 +6872,14 @@ impl SqliteStore {
         let transaction = self.begin()?;
         if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
             ensure_atomic_replay(&existing, intent)?;
-            let current = transaction
-                .query_row(
-                    &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 AND id = ?2"),
-                    params![request.project_id.to_string(), request.task_id.to_string()],
-                    |row| Ok(read_task(row)),
-                )
-                .optional()
-                .map_err(backend)?
-                .transpose()?
-                .ok_or(RepositoryError::NotFound { subject: "task" })?;
-            return Ok((current, existing, crate::graph::Applied::Unchanged));
+            let result = task_transition_result_in_transaction(&transaction, &existing)?;
+            return Ok((result, existing, crate::graph::Applied::Unchanged));
         }
 
         let moved = transition_task_in_transaction(&transaction, request)?;
-        let replayed = crate::commands::intent::insert_intent(&transaction, intent)?;
+        let mut recorded = intent.clone();
+        recorded.payload = task_transition_result_payload(&intent.intent, &moved)?;
+        let replayed = crate::commands::intent::insert_intent(&transaction, &recorded)?;
         if replayed.is_some() {
             return Err(conflict(
                 "command receipt",
@@ -6783,7 +6892,15 @@ impl SqliteStore {
             },
         )?;
         transaction.commit().map_err(backend)?;
-        Ok((moved, receipt, crate::graph::Applied::Created))
+        Ok((
+            TaskTransitionResult {
+                task_id: moved.id,
+                state: moved.state,
+                revision: moved.revision,
+            },
+            receipt,
+            crate::graph::Applied::Created,
+        ))
     }
 }
 

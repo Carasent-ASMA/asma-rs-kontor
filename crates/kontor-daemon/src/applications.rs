@@ -17909,24 +17909,17 @@ impl Services {
             "evidence": request.evidence,
         }))?;
         let target = AggregateRef::Task { task_id: task.id };
-        // A replayed transition answers from the task rather than attempting the
-        // move again: the second attempt would be judged against a revision the
-        // first one already advanced past.
+        // A replayed transition answers from the command's durable result rather
+        // than attempting the move again or substituting the task's live state.
         if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
-            let current = state
-                .with_store(|store| store.get_task(project_id, task.id))
-                .map_err(|error| self.refuse(&error))?
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::NotFound,
-                        "no such task exists in this project",
-                    )
-                })?;
+            let result = state
+                .with_store(|store| store.task_transition_result(&receipt))
+                .map_err(|error| self.refuse(&error))?;
             return Ok(LifecycleOutcomeDto {
                 realm_id: state.realm_id(),
-                target: current.id.to_string(),
-                state: current.state.as_str().to_owned(),
-                revision: current.revision,
+                target: result.task_id.to_string(),
+                state: result.state.as_str().to_owned(),
+                revision: result.revision,
                 receipt_id: receipt.id.to_string(),
             });
         }
@@ -18075,15 +18068,15 @@ impl Services {
                 created_at: now,
             },
         );
-        let (moved, receipt, _) = state
+        let (result, receipt, _) = state
             .with_store(|store| store.transition_task_with_intent(&transition, &command))
             .map_err(|error| self.refuse(&error))?;
         state.signals().appended();
         Ok(LifecycleOutcomeDto {
             realm_id: state.realm_id(),
-            target: moved.id.to_string(),
-            state: moved.state.as_str().to_owned(),
-            revision: moved.revision,
+            target: result.task_id.to_string(),
+            state: result.state.as_str().to_owned(),
+            revision: result.revision,
             receipt_id: receipt.id.to_string(),
         })
     }
