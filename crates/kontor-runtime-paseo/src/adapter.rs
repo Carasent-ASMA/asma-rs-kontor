@@ -1279,13 +1279,16 @@ impl PaseoAdapter {
     ///
     /// 0.3.1 resolves `agentId` by full id, unique prefix *or* exact title, and
     /// answers an unknown one with `agent: null` and an error string. Both are
-    /// refusals here: a prefix that resolved to somebody else's session is not
-    /// this seat, and a null agent is not a readback.
+    /// refusals here, but they are not the same refusal: a null agent means the
+    /// exact persisted binding is stale, while a prefix that resolved to
+    /// somebody else's session is correlation drift.
     async fn fetch_agent(&self, agent_id: &str) -> RuntimeResult<PaseoAgent> {
         let request = PaseoRpc::agent_fetch(self.next_request_id(), agent_id);
         let frame = self.transport.request(&request).await?;
         let answer: PaseoAgentAnswer = frame.resolve(&request, "PaseoAgentAnswer")?;
-        let agent = answer.agent.ok_or(RuntimeError::CorrelationFailed)?;
+        let agent = answer.agent.ok_or(RuntimeError::StaleBinding {
+            rule: "the exact native agent no longer exists",
+        })?;
         if agent.id != agent_id {
             return Err(RuntimeError::CorrelationFailed);
         }

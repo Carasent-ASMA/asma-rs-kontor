@@ -36,6 +36,7 @@
 | M10 | Apply the same strict-generation mutant to Paseo `preview_retitle_seat` | `seat_retitle_accepts_an_older_persisted_generation_and_refuses_a_future_one` | killed: exact-current generation preview was rejected before correlation readback |
 | M11 | Suppress the empty-AgentRun guard so a declared logical seat is forced through replacement-chain leaf resolution | same whole-epic QNR regression | killed: preview returned 409 `a delivery role has no current replacement-chain leaf` instead of omitting the not-yet-native seat and repairing existing targets |
 | M12 | Stop classifying an exact stale runtime seat as `rename_pending` | same whole-epic QNR regression | killed: preview returned 409 `the binding no longer names a session this runtime will act on` instead of retaining the exact identity as pending while repairing the independent stale TSW |
+| M13 | Classify Paseo's exact `agent: null` readback as generic correlation drift | `seat_retitle_classifies_an_exact_missing_native_agent_as_stale` | killed: the contract observed `CorrelationFailed` instead of the typed `StaleBinding` that whole-epic repair preserves as `rename_pending` |
 
 The M9 and M10 killers also retain the complementary future-generation case and assert that it is refused before mutation. The QNR regression restarts the fake runtime between durable binding and repair, then proves the old-generation hosted and delivery identities remain unchanged.
 
@@ -46,6 +47,13 @@ apply preserve that identity as `rename_pending` and still repair a stale native
 container in the same complete plan. Both mutations failed before the restored
 test reran green.
 
+M13 reproduces Paseo 0.4.0's live missing-agent wire shape using the durable
+`protocol/agent-not-found.json` fixture. Returning to the former
+`CorrelationFailed` classification makes the new adapter contract fail at its
+exact `StaleBinding` assertion. The restored distinction keeps a missing exact
+id recoverable as evidence while a response carrying another agent id remains
+hard correlation drift.
+
 ## Restoration receipt
 
 No mutant remains. The following focused restored runs passed after their respective mutations:
@@ -55,6 +63,7 @@ cargo test -p kontor-core --test native_naming the_backlog_code_wins_when_a_desc
 cargo test -p kontor-core --test native_naming the_v1_matrix_renders_exact_bullet_separated_bytes -- --exact
 cargo test -p kontor-runtime fake::retitle_seat_generation_tests::persisted_seat_generation_is_a_bound_and_future_generation_is_refused -- --exact
 cargo test -p kontor-runtime-paseo --test contract seat_retitle_accepts_an_older_persisted_generation_and_refuses_a_future_one -- --exact
+cargo test -p kontor-runtime-paseo --test contract seat_retitle_classifies_an_exact_missing_native_agent_as_stale -- --exact
 cargo test -p kontor-runtime-paseo --test contract two_epics_share_one_plane_without_sharing_a_project_or_static_task_scope -- --exact
 cargo test -p kontor-daemon --test loopback_api a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titles -- --exact
 ```
