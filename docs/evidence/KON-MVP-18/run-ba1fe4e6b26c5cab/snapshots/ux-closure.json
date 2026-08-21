@@ -1,0 +1,121 @@
+{
+  "bundle_hash": "cab2b15572c2fb1d86b697ab90682296006f2d8289c25f52f1c3b71946ff641f",
+  "category": "ux-ui-layout",
+  "closed_when_everything_passed": true,
+  "definition_hash": "0d5738312e904ffe371fa327876805c25485df9b07e1eb6246a54abda8deae1d",
+  "gates": [
+    {
+      "evaluator_roles": [
+        "inspector"
+      ],
+      "gate": "design-review-gate",
+      "phase": "design-review",
+      "waiver_allowed": false
+    },
+    {
+      "evaluator_roles": [
+        "inspector"
+      ],
+      "gate": "layout-code-review-gate",
+      "phase": "code-review",
+      "waiver_allowed": false
+    },
+    {
+      "evaluator_roles": [
+        "tester",
+        "therapist-verifier"
+      ],
+      "gate": "functionality-qa-gate",
+      "phase": "functionality-qa",
+      "waiver_allowed": false
+    },
+    {
+      "evaluator_roles": [
+        "inspector"
+      ],
+      "gate": "design-qa-gate",
+      "phase": "design-qa",
+      "waiver_allowed": false
+    },
+    {
+      "evaluator_roles": [
+        "architect"
+      ],
+      "gate": "final-audit-gate",
+      "phase": "final-audit",
+      "waiver_allowed": false
+    },
+    {
+      "evaluator_roles": [
+        "architect"
+      ],
+      "gate": "layout-release-gate",
+      "phase": "release",
+      "waiver_allowed": false
+    }
+  ],
+  "phases": [
+    "design",
+    "design-review",
+    "implementation",
+    "code-review",
+    "functionality-qa",
+    "design-qa",
+    "final-audit",
+    "release"
+  ],
+  "profile": "ux-ui-layout",
+  "profile_version": 1,
+  "refused": [
+    {
+      "case": "only functionality-qa-gate withheld",
+      "closed": false,
+      "refusal": "missing evidence for task closure: a profile gate has not passed or been waived",
+      "withheld_gates": [
+        "functionality-qa-gate"
+      ],
+      "withheld_state": "active"
+    },
+    {
+      "case": "only design-qa-gate withheld",
+      "closed": false,
+      "refusal": "missing evidence for task closure: a profile gate has not passed or been waived",
+      "withheld_gates": [
+        "design-qa-gate"
+      ],
+      "withheld_state": "active"
+    },
+    {
+      "case": "only final-audit-gate withheld",
+      "closed": false,
+      "refusal": "missing evidence for task closure: a profile gate has not passed or been waived",
+      "withheld_gates": [
+        "final-audit-gate"
+      ],
+      "withheld_state": "active"
+    },
+    {
+      "case": "all three withheld",
+      "closed": false,
+      "refusal": "missing evidence for task closure: a profile gate has not passed or been waived",
+      "withheld_gates": [
+        "functionality-qa-gate",
+        "design-qa-gate",
+        "final-audit-gate"
+      ],
+      "withheld_state": "active"
+    }
+  ],
+  "team_policy_digest": "4028b5804a559f3bbddf2497a84382385fdfd773c8ac5ce61cdf8812e16eeffc",
+  "team_run_id": "0192f0c0-0000-7000-8000-0000000000df",
+  "waiver_attempt": {
+    "authorized_by": "architect",
+    "cited_evidence": [
+      "functional-tests"
+    ],
+    "closed": false,
+    "gate": "functionality-qa-gate",
+    "refusal": "missing authority for task closure: a gate was waived that the profile forbids waiving",
+    "waiver_allowed_by_profile": false
+  }
+}

@@ -1128,13 +1128,13 @@ describe('the fixtures', () => {
         ]),
       ),
     )
-    // Rung 3 departs from the policy on purpose: the policy's second Codex rung
-    // cannot fire once Codex is known to pool its quota. See SEED_TEAMS.
+    // Terra at rung 4, not rung 3: the policy separated the two Codex rungs on
+    // 2026-08-21 because adjacent they were one rung. Same four pins.
     expect(chains['implementer']).toEqual([
       'deepseek/deepseek-v4-flash@max',
       'codex/gpt-5.6-luna@xhigh',
-      'claude/claude-opus-5@high',
       'openrouter/nvidia/nemotron-3-ultra-550b-a55b:free@high',
+      'codex/gpt-5.6-terra@high',
     ])
     expect(chains['qa']?.[2]).toBe('codex/gpt-5.6-luna@high')
     // Luna is pinned at the orchestrator's rung 4 and 5.4-mini at the chore

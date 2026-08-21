@@ -275,21 +275,43 @@ the next available pair, titled with its rung and account; the predecessor is
 retired with its evidence intact; a watchdog firing twice produces exactly one
 successor.
 
-## Open question
+## Resolved: the fleet policy's adjacent Codex rungs
 
-Correcting `codex.pooledUsage` in step 1 promotes the seeded standard-builder
-chain from a visible notice to unpublishable — see `SEED_TEAMS` at
-`apps/console/src/state/teams.ts:1590`, whose contract is that every chain is
-"copied rung-for-rung from the fleet policy, and the copying is the point". The
-policy really does place two Codex rungs together. With Codex correctly pooled,
-that is not a deviation worth flagging, it is a fallback that cannot fire.
+Correcting `codex.pooledUsage` proved the standard builder's rung 3 unreachable —
+the policy placed `codex/gpt-5.6-luna` and `codex/gpt-5.6-terra` adjacently, and
+one Codex allowance serves both, so whatever blocked the second blocked the third.
 
-So either the fleet policy is amended and the seed follows, or the seed keeps
-mirroring the policy verbatim and `seeds no draft that could not be published`
-(`apps/console/src/state/teams.test.ts:1145`) has to become a weaker claim. This
-needs whoever owns the fleet policy document; it is not a call to make inside the
-console fixture.
+Fixed in the policy on 2026-08-21 by **reordering rather than re-pinning**:
+Terra moves from rung 3 to rung 4 and Nemotron takes rung 3. Section 3 of that
+document requires a calibration ticket before any seat moves to a different
+model, and reordering four existing pins moves none of them. Three of the four
+rungs are now reachable during a Codex outage where two were before. The console
+seed follows it rung for rung again, as its contract requires.
 
-Related consequence worth noting: with every real vendor pooling except Cursor,
-the `provider_repeat` *notice* severity becomes nearly unreachable in practice.
-Only a Cursor repeat can produce one.
+The precedent was already in the document: the Committee Judge chain carries the
+note "while Codex is blocked, rungs a and c are the same pool — skip to d rather
+than walking into the same wall". The policy understood pooled fallback; the
+builder chain had simply not been checked against it.
+
+## Also worth knowing
+
+The policy's own KON-OP-13 amendment (2026-08-16) settles two things this
+implementation does not yet honour:
+
+* **Account before rung.** "A second account on the same rung costs nothing while
+  descending costs quality, so `codex:team` is tried before dropping off
+  `codex:prolite`'s rung." That is the design recorded above, and it is blocked
+  upstream on Paseo exposing an account selector.
+* **Wait rather than descend when the reset is near.** "Step 4's descent is
+  skipped entirely when the blocking window resets inside the declared short
+  horizon: waiting beats shipping worse work." The walk here descends
+  immediately. Honouring this needs the short horizon as configuration and a
+  scheduler that can hold a seat rather than route it — genuinely open work, and
+  it is the difference between routing around an outage and routing around a
+  five-minute blip.
+
+The policy also records the one provider fact KON-OP-13 still has to establish:
+whether `codex:team` exposes its own rate-limit readings from its own effective
+home or shares `codex:prolite`'s. Account-before-rung resolution depends on the
+answer, and the per-account grain of `provider_quota_states` is built to hold
+either.

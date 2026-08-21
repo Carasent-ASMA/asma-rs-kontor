@@ -1566,13 +1566,10 @@ function observedBand(minTokens: number, rationale: string, role: string): SeatN
  * a plausible neighbour instead of re-reading the document the chains came from,
  * and put it on a chain the policy never assigns it to.
  *
- * There is exactly one deliberate departure, and it is recorded rather than
- * quiet: the standard builder's rung 3 in the policy is a second Codex rung,
- * which `codex.pooledUsage` now proves unreachable — it draws on the quota rung
- * 2 just drained. A seeded draft that cannot be published would make the editor
- * useless the moment it opens, so the seed carries a distinct provider there and
- * the policy document is the thing that needs amending. See
- * `docs/QUOTA-FALLBACK-PLAN.md`, "Open question".
+ * The standard builder's two Codex rungs were adjacent until 2026-08-21, which
+ * `codex.pooledUsage` proved could never both fire — whatever blocked the first
+ * blocked the second. The fleet policy reordered them rather than re-pinning
+ * anything, and this seed follows it rung for rung as before.
  *
  * Need bands are derived from observed AgentsRoom token telemetry. They remain
  * explicitly unpromoted until a later review signs the measurements; unlike the
@@ -1621,25 +1618,22 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
         },
       },
       {
-        // Builder — standard. This is the one seat that deliberately departs
-        // from the fleet policy: the policy places two adjacent Codex rungs
-        // here, and with `codex.pooledUsage` corrected to true that second rung
-        // draws on the quota the first one just drained, so it can never fire.
-        // Rung 3 is a distinct provider instead, and the policy document itself
-        // needs the same correction — tracked in
-        // `docs/QUOTA-FALLBACK-PLAN.md`, "Open question".
+        // Builder — standard. Terra sits at rung 4 rather than rung 3, matching
+        // the fleet policy's 2026-08-21 reordering: Luna and Terra draw on one
+        // Codex allowance, so adjacent they were one rung, not two. No pin
+        // changed — the same four models, separated.
         id: 'implementer',
         role: selects('SWE'),
         capabilities: {
           chain: [
             { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'max' },
             { provider: 'codex', model: 'gpt-5.6-luna', effort: 'xhigh' },
-            { provider: 'claude', model: 'claude-opus-5', effort: 'high' },
             {
               provider: 'openrouter',
               model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
               effort: 'high',
             },
+            { provider: 'codex', model: 'gpt-5.6-terra', effort: 'high' },
           ],
           context: { class: 'standard', enforcement: 'best_effort' },
           need: observedBand(36_000, 'Median observed Full-Stack Developer token movement.', 'Full-Stack Developer'),
