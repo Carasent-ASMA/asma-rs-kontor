@@ -396,7 +396,9 @@ pub struct HostedSeatRetireOutcome {
 pub struct RetitleSeatRequest {
     /// Exact native session identity already persisted by Kontor.
     pub identity: NativeRuntimeIdentity,
-    /// Provider-native conversation id captured with that identity, when any.
+    /// Provider-native conversation id that apply must still observe, when any.
+    /// Preview may omit it to learn the current provider handle from the exact
+    /// native-agent and container readback before freezing the apply request.
     pub provider_session_id: Option<ExternalId>,
     /// Exact native container the session must remain in.
     pub container_native_id: ExternalId,
@@ -411,7 +413,7 @@ pub struct RetitleSeatRequest {
 pub struct RetitleSeatOutcome {
     /// Unchanged native identity.
     pub identity: NativeRuntimeIdentity,
-    /// Unchanged provider-native conversation id.
+    /// Provider-native conversation id read from the exact native agent.
     pub provider_session_id: Option<ExternalId>,
     /// Unchanged native container.
     pub container_native_id: ExternalId,

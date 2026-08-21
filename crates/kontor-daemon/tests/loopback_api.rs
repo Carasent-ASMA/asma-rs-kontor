@@ -16173,6 +16173,21 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
         Some("LSA • ASMA-7675 • QNR-P1"),
         "provider-route replacement must consume the pinned ECP seat template"
     );
+    let hosted_before_resume = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(
+                ProjectId::parse(&project).expect("a canonical project id"),
+                lsa_binding,
+            )
+            .expect("the hosted LSA reads")
+            .expect("the hosted LSA exists")
+    });
+    let resumed_provider_session =
+        kontor_core::id::ExternalId::parse("provider-hosted-seat-resumed")
+            .expect("a provider session id");
+    world
+        .fake
+        .set_seat_provider_session(&lsa_native, Some(resumed_provider_session.clone()));
 
     // Start a real delivery team, then replace one role so the repository's
     // oldest-first enumeration contains a bound predecessor and bound leaf.
@@ -16430,6 +16445,11 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
         .clone();
     assert_eq!(hosted_target["native_id"], lsa_native.as_str());
     assert_eq!(hosted_target["desired_title"], "LSA • ASMA-7675 • QNR-P1");
+    assert_eq!(
+        hosted_target["provider_session_id"],
+        resumed_provider_session.as_str(),
+        "preview learns a resumed provider thread from the unchanged exact native agent"
+    );
     let mixed_body = serde_json::json!({
         "expected_revision": project_revision,
         "preview_hash": mixed_preview.json()["preview_hash"],
@@ -16454,6 +16474,26 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
     assert_eq!(
         world.fake.seat_title(&lsa_native).as_deref(),
         Some("LSA • ASMA-7675 • QNR-P1")
+    );
+    let hosted_after_repair = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(project_id, lsa_binding)
+            .expect("the repaired hosted LSA reads")
+            .expect("the repaired hosted LSA exists")
+    });
+    assert_eq!(hosted_after_repair.seat_binding_id, lsa_binding);
+    assert_eq!(
+        hosted_after_repair.native_identity, hosted_before_resume.native_identity,
+        "a provider-thread resume must not replace the native LSA"
+    );
+    assert_eq!(
+        hosted_after_repair.model_rung, hosted_before_resume.model_rung,
+        "a provider-thread resume must not change the frozen route"
+    );
+    assert_eq!(
+        hosted_after_repair.provider_session_id.as_ref(),
+        Some(&resumed_provider_session),
+        "the current provider thread becomes the durable readback for later messages"
     );
     assert_eq!(
         world

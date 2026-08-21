@@ -1268,6 +1268,18 @@ impl ScriptedFakeRuntime {
         }
     }
 
+    /// Reproduce a provider resuming the same native seat onto a new
+    /// conversation handle without moving or replacing the native agent.
+    pub fn set_seat_provider_session(
+        &self,
+        native_id: &ExternalId,
+        provider_session_id: Option<ExternalId>,
+    ) {
+        if let Some((_, current, _)) = self.lock().seat_titles.get_mut(native_id) {
+            *current = provider_session_id;
+        }
+    }
+
     /// Make one previously materialized seat unreachable without changing its
     /// durable Kontor identity. This is a test-only reproduction of a runtime
     /// that no longer returns a persisted native session.
