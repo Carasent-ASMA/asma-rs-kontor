@@ -94,7 +94,7 @@ pub(crate) fn paseo_mode(
 ) -> RuntimeResult<Option<&'static str>> {
     match autonomy {
         SeatAutonomy::Supervised => permission_mode(provider),
-        SeatAutonomy::Bounded => match provider {
+        SeatAutonomy::Bounded => match built_in_provider(provider) {
             "claude" => Ok(Some("bypassPermissions")),
             "codex" => Ok(Some("full-access")),
             "copilot" => Ok(Some("allow-all")),
@@ -105,7 +105,7 @@ pub(crate) fn paseo_mode(
                 provider: other.to_owned(),
             }),
         },
-        SeatAutonomy::Advisory => match provider {
+        SeatAutonomy::Advisory => match built_in_provider(provider) {
             "claude" | "opencode" => Ok(Some("plan")),
             "copilot" => Ok(Some(
                 "https://agentclientprotocol.com/protocol/session-modes#plan",
@@ -124,7 +124,7 @@ pub(crate) fn paseo_mode(
 /// [`paseo_mode`] selects this branch for supervised seats and the readback path
 /// uses the same function, so launch and verification cannot disagree.
 pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
-    match provider {
+    match built_in_provider(provider) {
         "claude" => Ok(Some("auto")),
         "codex" => Ok(Some("auto-review")),
         "copilot" => Ok(Some(
@@ -141,7 +141,7 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
 
 /// The provider-native non-mutating mode used by consultation seats.
 pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
-    match provider {
+    match built_in_provider(provider) {
         "claude" | "cursor" => Ok(Some("plan")),
         "codex" => Ok(Some("auto-review")),
         // Providers without a proven read-only mode are not consultation-safe.
@@ -149,6 +149,39 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
             provider: other.to_owned(),
         }),
     }
+}
+
+/// The built-in Paseo provider an id resolves to.
+///
+/// A second account for the same provider is an ordinary `agents.providers`
+/// entry that `extends` a built-in one, so `codex-team` and `codex-prolite` are
+/// two provider ids over one harness. The mode tables above are keyed by the
+/// built-in because the mode vocabulary belongs to the harness, not to the
+/// account; `--provider` still carries the full id, which is what selects the
+/// account's own credential home.
+///
+/// The derivation is a prefix match against the built-in set, not a split on
+/// the last `-`: `deepseek-harness` is an `acp` provider whose id contains a
+/// hyphen and whose harness is not `deepseek`. No built-in is a prefix of
+/// another, so the match is unique, and an id that resolves to no built-in is
+/// returned unchanged so the callers above still fail closed on it.
+///
+/// A Paseo provider id matches `^[a-z][a-z0-9-]*$`, so a colon cannot appear in
+/// one: the `codex:team` spelling the fleet policy uses for an account is a
+/// label, never a provider id.
+fn built_in_provider(provider: &str) -> &str {
+    const BUILT_INS: [&str; 6] = ["claude", "codex", "copilot", "opencode", "pi", "omp"];
+    for built_in in BUILT_INS {
+        if provider == built_in {
+            return built_in;
+        }
+        if let Some(account) = provider.strip_prefix(built_in)
+            && account.starts_with('-')
+        {
+            return built_in;
+        }
+    }
+    provider
 }
 
 // ---------------------------------------------------------------------------
@@ -1677,6 +1710,75 @@ mod tests {
             permission_mode("new-provider"),
             Err(RuntimeError::PermissionModeUnsupported { .. })
         ));
+    }
+
+    /// A second account for one provider is a second provider id, so the mode
+    /// has to come from the harness while `--provider` keeps the account.
+    ///
+    /// Getting this backwards is not a cosmetic error in either direction:
+    /// resolving the mode from the full id refuses the launch outright, and
+    /// sending the built-in on `--provider` would silently run the seat on
+    /// whichever account the ambient credential home happens to hold.
+    #[test]
+    fn an_account_qualified_provider_resolves_its_harness_mode_and_keeps_its_own_id() {
+        for (provider, built_in) in [
+            ("codex", "codex"),
+            ("codex-team", "codex"),
+            ("codex-prolite", "codex"),
+            ("claude", "claude"),
+            ("claude-work", "claude"),
+            ("opencode-personal", "opencode"),
+            ("omp-second", "omp"),
+            ("pi-second", "pi"),
+            // An `acp` provider whose id merely contains a hyphen, and an id
+            // that only shares a prefix: neither names an account.
+            ("deepseek-harness", "deepseek-harness"),
+            ("codexfoo", "codexfoo"),
+        ] {
+            assert_eq!(built_in_provider(provider), built_in, "{provider}");
+        }
+
+        assert_eq!(
+            permission_mode("codex-team").expect("an account of a supported provider"),
+            Some("auto-review")
+        );
+        assert_eq!(
+            paseo_mode("claude-work", SeatAutonomy::Bounded).expect("an account of Claude"),
+            Some("bypassPermissions")
+        );
+        assert_eq!(
+            consultation_permission_mode("codex-prolite").expect("an account of Codex"),
+            Some("auto-review")
+        );
+
+        // An id that resolves to no built-in still fails closed.
+        assert!(matches!(
+            permission_mode("deepseek-harness"),
+            Err(RuntimeError::PermissionModeUnsupported { .. })
+        ));
+
+        let command = PaseoCommand::agent_run(
+            "wks_1",
+            "/w/task-1",
+            &route("codex-team", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+            SeatAutonomy::Supervised,
+            "KON-OP-13 Implement",
+            &labels(),
+            "agt_orchestrator",
+            "do the work",
+        )
+        .expect("an account of Codex has a pinned permission mode");
+        let argv = command.argv();
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair == ["--provider", "codex-team"]),
+            "the account id selects the credential home and must reach Paseo verbatim"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair == ["--mode", "auto-review"]),
+            "the mode comes from the harness, not from the account id"
+        );
     }
 
     #[test]
