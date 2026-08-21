@@ -2208,8 +2208,9 @@ impl SqliteStore {
     }
 
     /// Freeze the first exact native readback for one persistent topology seat.
-    /// The same row is a replay; moving the SeatBinding or changing its route is
-    /// a conflict.
+    /// The same native agent and route may report a newer provider conversation
+    /// handle after a supported runtime resume; that observation refreshes in
+    /// place. Moving the SeatBinding, route, or native agent is a conflict.
     pub fn bind_hosted_topology_seat(
         &self,
         seat: &StoredHostedTopologySeat,
@@ -2219,15 +2220,16 @@ impl SqliteStore {
         {
             if existing.model_rung == seat.model_rung
                 && existing.native_identity == seat.native_identity
-                && existing.provider_session_id == seat.provider_session_id
             {
                 self.connection
                     .execute(
-                        "UPDATE hosted_topology_seats SET observed_at = ?3
+                        "UPDATE hosted_topology_seats
+                         SET provider_session_id = ?3, observed_at = ?4
                          WHERE project_id = ?1 AND seat_binding_id = ?2",
                         params![
                             seat.project_id.to_string(),
                             seat.seat_binding_id.to_string(),
+                            seat.provider_session_id.as_ref().map(ExternalId::as_str),
                             text(seat.observed_at),
                         ],
                     )

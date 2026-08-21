@@ -37,6 +37,8 @@
 | M11 | Suppress the empty-AgentRun guard so a declared logical seat is forced through replacement-chain leaf resolution | same whole-epic QNR regression | killed: preview returned 409 `a delivery role has no current replacement-chain leaf` instead of omitting the not-yet-native seat and repairing existing targets |
 | M12 | Stop classifying an exact stale runtime seat as `rename_pending` | same whole-epic QNR regression | killed: preview returned 409 `the binding no longer names a session this runtime will act on` instead of retaining the exact identity as pending while repairing the independent stale TSW |
 | M13 | Classify Paseo's exact `agent: null` readback as generic correlation drift | `seat_retitle_classifies_an_exact_missing_native_agent_as_stale` | killed: the contract observed `CorrelationFailed` instead of the typed `StaleBinding` that whole-epic repair preserves as `rename_pending` |
+| M14 | Restore the persisted provider-session id as a strict native-name preview prerequisite after the same Paseo agent resumes onto a new provider thread | `a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titles` | killed: whole-epic preview returned 409 `stale_binding` instead of learning the new thread from the unchanged native agent and workspace |
+| M15 | Refuse to refresh the provider-session observation unless it still equals the first hosted-seat binding | same whole-epic QNR regression | killed: apply returned 409 `revision_conflict` instead of preserving the SeatBinding/native agent/model route and durably recording the resumed thread |
 
 The M9 and M10 killers also retain the complementary future-generation case and assert that it is refused before mutation. The QNR regression restarts the fake runtime between durable binding and repair, then proves the old-generation hosted and delivery identities remain unchanged.
 
@@ -53,6 +55,14 @@ M13 reproduces Paseo 0.4.0's live missing-agent wire shape using the durable
 exact `StaleBinding` assertion. The restored distinction keeps a missing exact
 id recoverable as evidence while a response carrying another agent id remains
 hard correlation drift.
+
+M14/M15 reproduce the live QNR LSA shape: Paseo kept native agent
+`10c16ec0-…` in the same ECP workspace but resumed it from provider thread
+`01a01ea3-…` onto `01a02084-…`. The restored behavior uses the exact native
+agent plus container as the stable identity, freezes the freshly read provider
+thread into apply correlation, and refreshes only that observation in the
+hosted-seat row. The logical SeatBinding, native identity, and frozen model
+route remain byte-for-byte unchanged.
 
 ## Restoration receipt
 

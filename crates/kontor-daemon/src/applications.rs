@@ -263,6 +263,7 @@ enum NativeNameAction {
     Seat {
         request: RetitleSeatRequest,
         adapter: Arc<dyn RuntimeAdapter>,
+        hosted_seat_binding_id: Option<SeatBindingId>,
     },
 }
 
@@ -4752,13 +4753,17 @@ impl Services {
                 } else {
                     None
                 };
-                let (identity, provider_session_id, agent_run_id) = if let Some(hosted) = hosted {
-                    (hosted.native_identity, hosted.provider_session_id, None)
+                let hosted_seat_binding_id = hosted.as_ref().map(|seat| seat.seat_binding_id);
+                let persisted_hosted_provider_session = hosted
+                    .as_ref()
+                    .and_then(|seat| seat.provider_session_id.clone());
+                let (identity, agent_run_id) = if let Some(hosted) = hosted {
+                    (hosted.native_identity, None)
                 } else if let Some(consultation) = consultation {
                     let Some(identity) = consultation.native_identity else {
                         continue;
                     };
-                    (identity, consultation.provider_session_id, None)
+                    (identity, None)
                 } else if let Some(delivery) = delivery {
                     let agent_run_id = delivery.id;
                     let Some(binding) = delivery.binding else {
@@ -4766,7 +4771,7 @@ impl Services {
                         // unbound. A bound predecessor never substitutes for it.
                         continue;
                     };
-                    (binding.identity, None, Some(agent_run_id))
+                    (binding.identity, Some(agent_run_id))
                 } else {
                     // A declared but not-yet-materialized seat has no native
                     // title to repair and therefore is not an apply target.
@@ -4796,7 +4801,11 @@ impl Services {
                     self.seat_name(project_id, &node, &scope, &seat.role.role_code)?;
                 let mut request = RetitleSeatRequest {
                     identity,
-                    provider_session_id,
+                    // The durable native agent and its exact host are the stable
+                    // identity. Paseo may resume that same agent onto a new
+                    // provider conversation, so preview learns the current
+                    // handle and freezes it into the apply request below.
+                    provider_session_id: None,
                     container_native_id: container.identity.native_id,
                     desired_title,
                     requested_at: kontor_api::now(),
@@ -4844,7 +4853,7 @@ impl Services {
                     seat_binding_id: Some(seat.id),
                     agent_run_id,
                     native_id: request.identity.native_id.clone(),
-                    provider_session_id: outcome.provider_session_id,
+                    provider_session_id: outcome.provider_session_id.clone(),
                     observed_title: Some(outcome.observed_title),
                     desired_title: request.desired_title.clone(),
                     would_change: outcome.changed,
@@ -4854,8 +4863,15 @@ impl Services {
                         "unchanged".to_owned()
                     },
                 });
-                if outcome.changed {
-                    actions.push(NativeNameAction::Seat { request, adapter });
+                if outcome.changed
+                    || (hosted_seat_binding_id.is_some()
+                        && persisted_hosted_provider_session != outcome.provider_session_id)
+                {
+                    actions.push(NativeNameAction::Seat {
+                        request,
+                        adapter,
+                        hosted_seat_binding_id,
+                    });
                 }
             }
         }
@@ -9935,7 +9951,11 @@ impl ApplicationOperations for Services {
                     }
                     changed += u64::from(outcome.changed);
                 }
-                NativeNameAction::Seat { request, adapter } => {
+                NativeNameAction::Seat {
+                    request,
+                    adapter,
+                    hosted_seat_binding_id,
+                } => {
                     let outcome = adapter
                         .retitle_seat(&request)
                         .await
@@ -9949,6 +9969,25 @@ impl ApplicationOperations for Services {
                             ApiErrorCode::StaleBinding,
                             "seat retitle did not preserve every native identity and host",
                         ));
+                    }
+                    if let Some(seat_binding_id) = hosted_seat_binding_id {
+                        let mut hosted = state
+                            .with_store(|store| {
+                                store.get_hosted_topology_seat(project_id, seat_binding_id)
+                            })
+                            .map_err(|error| self.refuse(&error))?
+                            .ok_or_else(|| {
+                                self.deny(
+                                    ApiErrorCode::StaleBinding,
+                                    "the hosted seat disappeared during its native-name repair",
+                                )
+                            })?;
+                        hosted.native_identity = outcome.identity.clone();
+                        hosted.provider_session_id = outcome.provider_session_id.clone();
+                        hosted.observed_at = kontor_api::now();
+                        state
+                            .with_store(|store| store.bind_hosted_topology_seat(&hosted))
+                            .map_err(|error| self.refuse(&error))?;
                     }
                     changed += u64::from(outcome.changed);
                 }
