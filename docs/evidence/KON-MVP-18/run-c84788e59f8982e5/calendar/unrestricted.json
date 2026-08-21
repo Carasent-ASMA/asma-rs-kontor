@@ -1,0 +1,11 @@
+{
+  "admits_new_work": true,
+  "armed_admitted": 1,
+  "effective_state": "unrestricted",
+  "policy_evidence": null,
+  "unarmed_admitted": 0,
+  "unarmed_every_blocker": [
+    "authorization_missing"
+  ],
+  "unarmed_first_blocker": "authorization_missing"
+}

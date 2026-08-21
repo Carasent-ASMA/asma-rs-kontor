@@ -4734,6 +4734,107 @@
         }
       }
     },
+    "/v1/projects/{project_id}/provider-quota-states": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every recorded provider quota state in one project.",
+        "operationId": "provider_quota_states",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderQuotaStateDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/provider-quota-states:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record or replace one account's quota state for one provider.",
+        "operationId": "record_provider_quota",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordProviderQuotaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderQuotaStateDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/quick-roles": {
       "get": {
         "tags": [
@@ -12995,6 +13096,58 @@
           }
         }
       },
+      "ProviderQuotaStateDto": {
+        "type": "object",
+        "description": "One account's quota state for one provider, as a projection reports it.",
+        "required": [
+          "account_profile_id",
+          "provider",
+          "state",
+          "source",
+          "observed_at",
+          "blocking",
+          "revision"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "The account the state is about."
+          },
+          "blocking": {
+            "type": "boolean",
+            "description": "Whether it still holds a launch back, as of this read."
+          },
+          "observed_at": {
+            "type": "string",
+            "description": "When it was concluded."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The provider, spelled as the model catalog spells it."
+          },
+          "resets_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When an exhausted allowance returns. Absent for every other state."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision a write must present.",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "`runtime_observation` or `operator`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`available`, `exhausted`, `drained` or `unknown`."
+          }
+        }
+      },
       "PublishTopologySpecRequest": {
         "type": "object",
         "description": "What `topology-specs:publish` is asked for.\n\nIt names the hash validation returned, so the server can prove it is\npublishing the document that was judged rather than one edited after the\nverdict — and it revalidates anyway, because a hash proves identity and not\ncurrency.",
@@ -13387,6 +13540,44 @@
             "description": "The verdict. `waived` is an admin decision; the rest are operator work."
           }
         }
+      },
+      "RecordProviderQuotaRequest": {
+        "type": "object",
+        "description": "What `provider-quota-states:record` is asked for.\n\nThere is no free-text note and no place for the provider's own message. The\nmessage is vendor output carrying account hints and URLs; what a record needs\nfrom it is the state and the instant, and those are typed fields.",
+        "required": [
+          "account_profile_id",
+          "provider",
+          "state",
+          "expected_revision"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "The account the state is about."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision the caller believes is current; `1` for the first record.",
+            "minimum": 0
+          },
+          "provider": {
+            "type": "string",
+            "description": "The provider."
+          },
+          "resets_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When an exhausted allowance returns. Required for `exhausted` and\nrefused for everything else — a drained balance recovers on payment, not\non a clock, and a reset instant here would put it on a retry timer."
+          },
+          "state": {
+            "type": "string",
+            "description": "`available`, `exhausted`, `drained` or `unknown`."
+          }
+        },
+        "additionalProperties": false
       },
       "RedactionDto": {
         "type": "object",

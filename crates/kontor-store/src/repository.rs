@@ -51,12 +51,12 @@ use kontor_core::repository::{
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewGateEvaluation, NewIntakeDecision,
     NewIntakeDecisionRecord, NewIntakeReevaluation, NewMiniProject, NewNativeContainerBinding,
-    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, RealmEventPage,
-    RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
-    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
+    NewObservation, NewProject, NewProviderQuotaState, NewRuntimeEvent, NewSeatBinding,
+    NewSessionTopologyNode, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow,
+    NewTeamRun, NewTicketLink, PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault,
+    ProviderQuotaState, RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome,
+    RepositoryError, RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding,
+    RuntimeEvent, SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
     StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
     StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
     StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
@@ -67,10 +67,11 @@ use kontor_core::repository::{
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
-    PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
-    ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability, ShareabilityClass,
-    ShareabilityClassifier, ShareabilityProvenance, ShareabilityTier, SourceIdentity,
-    TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
+    PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec, ProviderQuotaKind,
+    ProviderQuotaSource, ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability,
+    ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance, ShareabilityTier,
+    SourceIdentity, TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec,
+    WorkProfileSpec,
 };
 use kontor_core::state::{
     AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
@@ -5271,6 +5272,25 @@ const CAPACITY_OBSERVATION_COLUMNS: &str = "id, project_id, account_profile_id, 
 const AVAILABILITY_OVERRIDE_COLUMNS: &str = "project_id, account_profile_id, available, reason, \
     expires_at, revision, updated_at";
 
+const PROVIDER_QUOTA_STATE_COLUMNS: &str = "project_id, account_profile_id, provider, state, \
+    resets_at, evidence_hash, source, observed_at, revision, updated_at";
+
+fn read_provider_quota_state(row: &Row<'_>) -> RepositoryResult<ProviderQuotaState> {
+    let resets_at: Option<String> = row.get(4).map_err(backend)?;
+    Ok(ProviderQuotaState {
+        project_id: ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        account_profile_id: AccountProfileId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        provider: row.get::<_, String>(2).map_err(backend)?,
+        state: ProviderQuotaKind::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+        resets_at: resets_at.as_deref().map(read_timestamp).transpose()?,
+        evidence_hash: ContentHash::parse(&row.get::<_, String>(5).map_err(backend)?)?,
+        source: ProviderQuotaSource::parse(&row.get::<_, String>(6).map_err(backend)?)?,
+        observed_at: read_timestamp(&row.get::<_, String>(7).map_err(backend)?)?,
+        revision: revision_of(row.get::<_, i64>(8).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(9).map_err(backend)?)?,
+    })
+}
+
 fn read_capacity_observation(row: &Row<'_>) -> RepositoryResult<CapacityObservation> {
     let cooling_until: Option<String> = row.get(8).map_err(backend)?;
     Ok(CapacityObservation {
@@ -5495,6 +5515,130 @@ impl CapacityRepository for SqliteStore {
             .map_err(backend)??;
         transaction.commit().map_err(backend)?;
         Ok(stored)
+    }
+
+    fn set_provider_quota_state(
+        &self,
+        request: &NewProviderQuotaState,
+    ) -> RepositoryResult<ProviderQuotaState> {
+        // The pairing the database also enforces. Checked here too so a caller
+        // gets a typed refusal naming the rule rather than a CHECK violation
+        // surfacing as an opaque backend error.
+        let paired = match request.state {
+            ProviderQuotaKind::Exhausted => request.resets_at.is_some(),
+            _ => request.resets_at.is_none(),
+        };
+        if !paired {
+            return Err(RepositoryError::Domain(DomainError::invalid(
+                "ProviderQuotaState",
+                "only an exhausted allowance carries a reset instant, and it must carry one",
+            )));
+        }
+        let transaction = self.begin()?;
+        if read_account_profile_in(&transaction, request.project_id, request.account_profile_id)?
+            .is_none()
+        {
+            return Err(RepositoryError::NotFound {
+                subject: "account profile",
+            });
+        }
+        let current: Option<RepositoryResult<ProviderQuotaState>> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {PROVIDER_QUOTA_STATE_COLUMNS} FROM provider_quota_states
+                     WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    request.provider.as_str(),
+                ],
+                |row| Ok(read_provider_quota_state(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let current = current.transpose()?;
+        // Same first-write rule as an availability override, for the same
+        // reason: revision one is how "I read it as absent" is stated, and
+        // accepting any revision there would make it unsayable.
+        let next = match &current {
+            Some(existing) => {
+                existing
+                    .revision
+                    .expect("provider quota state", request.expected_revision)?;
+                existing.revision.next()?
+            }
+            None => {
+                AggregateRevision::INITIAL
+                    .expect("provider quota state", request.expected_revision)?;
+                AggregateRevision::INITIAL
+            }
+        };
+        transaction
+            .execute(
+                "INSERT INTO provider_quota_states
+                     (project_id, account_profile_id, provider, state, resets_at, evidence_hash,
+                      source, observed_at, revision, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT (project_id, account_profile_id, provider) DO UPDATE SET
+                     state = excluded.state,
+                     resets_at = excluded.resets_at,
+                     evidence_hash = excluded.evidence_hash,
+                     source = excluded.source,
+                     observed_at = excluded.observed_at,
+                     revision = excluded.revision,
+                     updated_at = excluded.updated_at",
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    request.provider.as_str(),
+                    request.state.as_str(),
+                    request.resets_at.map(text),
+                    request.evidence_hash.as_str(),
+                    request.source.as_str(),
+                    text(request.observed_at),
+                    revision_column(next)?,
+                    text(request.updated_at),
+                ],
+            )
+            .map_err(backend)?;
+        let stored = transaction
+            .query_row(
+                &format!(
+                    "SELECT {PROVIDER_QUOTA_STATE_COLUMNS} FROM provider_quota_states
+                     WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    request.provider.as_str(),
+                ],
+                |row| Ok(read_provider_quota_state(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn list_provider_quota_states(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<ProviderQuotaState>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {PROVIDER_QUOTA_STATE_COLUMNS} FROM provider_quota_states
+                 WHERE project_id = ?1 ORDER BY account_profile_id, provider"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut states = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            states.push(read_provider_quota_state(row)?);
+        }
+        Ok(states)
     }
 
     fn list_availability_overrides(

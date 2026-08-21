@@ -1,0 +1,167 @@
+{
+  "accessibility": {
+    "annotated_sources": [
+      {
+        "aria_attributes": 2,
+        "explicit_roles": 0,
+        "file": "apps/console/src/components/CodeHelp.test.tsx"
+      },
+      {
+        "aria_attributes": 2,
+        "explicit_roles": 1,
+        "file": "apps/console/src/components/CodeHelp.tsx"
+      },
+      {
+        "aria_attributes": 1,
+        "explicit_roles": 0,
+        "file": "apps/console/src/components/IntakeInbox.tsx"
+      },
+      {
+        "aria_attributes": 1,
+        "explicit_roles": 3,
+        "file": "apps/console/src/components/PersonaEvidence.tsx"
+      },
+      {
+        "aria_attributes": 1,
+        "explicit_roles": 0,
+        "file": "apps/console/src/components/PhaseGraph.test.tsx"
+      },
+      {
+        "aria_attributes": 5,
+        "explicit_roles": 0,
+        "file": "apps/console/src/components/PhaseGraph.tsx"
+      },
+      {
+        "aria_attributes": 2,
+        "explicit_roles": 0,
+        "file": "apps/console/src/components/SchedulingPanel.tsx"
+      },
+      {
+        "aria_attributes": 1,
+        "explicit_roles": 1,
+        "file": "apps/console/src/components/TeamLedger.tsx"
+      },
+      {
+        "aria_attributes": 1,
+        "explicit_roles": 0,
+        "file": "apps/console/src/components/TimelineItemView.tsx"
+      },
+      {
+        "aria_attributes": 1,
+        "explicit_roles": 0,
+        "file": "apps/console/src/components/WorkflowInspector.tsx"
+      },
+      {
+        "aria_attributes": 0,
+        "explicit_roles": 2,
+        "file": "apps/console/src/components/inspectors.test.tsx"
+      },
+      {
+        "aria_attributes": 2,
+        "explicit_roles": 0,
+        "file": "apps/console/src/components/primitives.tsx"
+      },
+      {
+        "aria_attributes": 0,
+        "explicit_roles": 1,
+        "file": "apps/console/src/shell/App.tsx"
+      },
+      {
+        "aria_attributes": 0,
+        "explicit_roles": 2,
+        "file": "apps/console/src/shell/Connect.tsx"
+      },
+      {
+        "aria_attributes": 5,
+        "explicit_roles": 1,
+        "file": "apps/console/src/shell/MasterDetail.tsx"
+      },
+      {
+        "aria_attributes": 3,
+        "explicit_roles": 0,
+        "file": "apps/console/src/shell/NavRail.tsx"
+      },
+      {
+        "aria_attributes": 0,
+        "explicit_roles": 2,
+        "file": "apps/console/src/shell/TopBar.tsx"
+      },
+      {
+        "aria_attributes": 2,
+        "explicit_roles": 0,
+        "file": "apps/console/src/shell/shell.test.tsx"
+      },
+      {
+        "aria_attributes": 0,
+        "explicit_roles": 1,
+        "file": "apps/console/src/state/teams.ts"
+      },
+      {
+        "aria_attributes": 2,
+        "explicit_roles": 1,
+        "file": "apps/console/src/views/BoardView.tsx"
+      },
+      {
+        "aria_attributes": 3,
+        "explicit_roles": 0,
+        "file": "apps/console/src/views/GatedViews.tsx"
+      },
+      {
+        "aria_attributes": 1,
+        "explicit_roles": 0,
+        "file": "apps/console/src/views/ProjectView.test.tsx"
+      },
+      {
+        "aria_attributes": 14,
+        "explicit_roles": 9,
+        "file": "apps/console/src/views/ProjectView.tsx"
+      },
+      {
+        "aria_attributes": 0,
+        "explicit_roles": 2,
+        "file": "apps/console/src/views/SessionView.tsx"
+      },
+      {
+        "aria_attributes": 3,
+        "explicit_roles": 0,
+        "file": "apps/console/src/views/TeamsView.test.tsx"
+      },
+      {
+        "aria_attributes": 12,
+        "explicit_roles": 3,
+        "file": "apps/console/src/views/TeamsView.tsx"
+      }
+    ],
+    "note": "no axe sweep runs in this tree; what is machine-checked is the role and keyboard behaviour the console's own suite asserts"
+  },
+  "claim": "desktop and phone see one canonical session; the width changes the layout, never the history, the ids, the cursors or the permission ledger",
+  "client_half": {
+    "helper": "apps/console/src/test/viewport.ts",
+    "mechanism": "jsdom performs no layout, so the console stubs `matchMedia` and the suite asserts which component tree each width produces",
+    "rerun": "pnpm install --frozen-lockfile && pnpm -r test",
+    "suites": [
+      {
+        "desktop_cases": 1,
+        "file": "apps/console/src/shell/App.test.tsx",
+        "phone_cases": 1
+      },
+      {
+        "desktop_cases": 2,
+        "file": "apps/console/src/shell/shell.test.tsx",
+        "phone_cases": 4
+      },
+      {
+        "desktop_cases": 1,
+        "file": "apps/console/src/views/TeamsView.test.tsx",
+        "phone_cases": 0
+      }
+    ]
+  },
+  "contract_half": "proved by the `session.history-parity` and `session.live-parity` cases against the daemon, which is where the invariant actually lives",
+  "deviation": {
+    "delivered": "a component-tree and keyboard-reach audit from the console's vitest suite, and this inventory",
+    "owner": "unassigned — no KON-MVP ticket establishes browser test infrastructure",
+    "reason": "a browser harness exists but this driver does not drive it",
+    "requested": "desktop and phone screenshots plus an accessibility audit"
+  }
+}

@@ -1278,14 +1278,22 @@ export const FIXTURE_CATALOG: ModelCatalog = {
       // prints — flagged accordingly and never promoted.
       basis: unverified<ChargingBasis>('metered'),
       reachedVia: 'opencode',
-      pooledUsage: false,
+      // One credit balance serves every route, so pooling is definitional here
+      // rather than observed: a drained balance drains all of them at once.
+      pooledUsage: true,
     },
     {
       id: 'codex',
       label: 'Codex',
+      // Pooled, on the evidence of the 2026-08-21 outage: every Codex route
+      // died together when the plan allowance ran out. Note what `pooledUsage`
+      // claims and what it does not: one quota covers all of a provider's
+      // routes *for one account*. So a Codex rung under a Codex rung is worth
+      // nothing, while a second Codex account is a real fallback — which is why
+      // the account axis belongs below the rung rather than as another rung.
       basis: unverified<ChargingBasis>('plan_allowance'),
       reachedVia: null,
-      pooledUsage: false,
+      pooledUsage: true,
     },
     {
       id: 'claude',
@@ -1302,7 +1310,8 @@ export const FIXTURE_CATALOG: ModelCatalog = {
       // Same as DeepSeek: reached through opencode, not itself enabled.
       basis: unverified<ChargingBasis>('request_quota'),
       reachedVia: 'opencode',
-      pooledUsage: false,
+      // Same balance argument as DeepSeek.
+      pooledUsage: true,
     },
   ],
   models: [
@@ -1555,9 +1564,12 @@ function observedBand(minTokens: number, rationale: string, role: string): SeatN
  * Every chain below is copied rung-for-rung from the fleet policy, and the
  * copying is the point: an earlier pass replaced a route that did not exist with
  * a plausible neighbour instead of re-reading the document the chains came from,
- * and put it on a chain the policy never assigns it to. Where a seed deviates
- * from the policy now it is because the policy itself does — the standard
- * builder really does place two Codex rungs together, and the editor flags it.
+ * and put it on a chain the policy never assigns it to.
+ *
+ * The standard builder's two Codex rungs were adjacent until 2026-08-21, which
+ * `codex.pooledUsage` proved could never both fire — whatever blocked the first
+ * blocked the second. The fleet policy reordered them rather than re-pinning
+ * anything, and this seed follows it rung for rung as before.
  *
  * Need bands are derived from observed AgentsRoom token telemetry. They remain
  * explicitly unpromoted until a later review signs the measurements; unlike the
@@ -1606,20 +1618,22 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
         },
       },
       {
-        // Builder — standard. The policy's own rung order, including the two
-        // adjacent Codex rungs the editor flags as a notice.
+        // Builder — standard. Terra sits at rung 4 rather than rung 3, matching
+        // the fleet policy's 2026-08-21 reordering: Luna and Terra draw on one
+        // Codex allowance, so adjacent they were one rung, not two. No pin
+        // changed — the same four models, separated.
         id: 'implementer',
         role: selects('SWE'),
         capabilities: {
           chain: [
             { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'max' },
             { provider: 'codex', model: 'gpt-5.6-luna', effort: 'xhigh' },
-            { provider: 'codex', model: 'gpt-5.6-terra', effort: 'high' },
             {
               provider: 'openrouter',
               model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
               effort: 'high',
             },
+            { provider: 'codex', model: 'gpt-5.6-terra', effort: 'high' },
           ],
           context: { class: 'standard', enforcement: 'best_effort' },
           need: observedBand(36_000, 'Median observed Full-Stack Developer token movement.', 'Full-Stack Developer'),

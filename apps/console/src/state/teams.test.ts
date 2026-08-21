@@ -425,6 +425,24 @@ describe('validateChain', () => {
     expect(issues.find((issue) => issue.code === 'pooled_provider_repeat')?.rung).toBe(3)
   })
 
+  it('blocks Codex under Codex in the real catalog, on both rules', () => {
+    // The 2026-08-21 outage is the evidence: both Codex accounts hit the plan
+    // allowance and every Codex route stopped together, so a chain that falls
+    // back onto Codex is unreachable at exactly the moment it is needed. This
+    // pins the catalog value, not the rule — the rule is covered by
+    // QUOTA_CATALOG above, and this fails if `codex.pooledUsage` goes back to
+    // false. The real fallback for one dead Codex account is the other Codex
+    // account, which is resolved below the rung rather than as another rung.
+    const issues = validateChain(
+      [rung('codex', 'gpt-5.6-sol', 'xhigh'), rung('codex', 'gpt-5.6-terra', 'high')],
+      FIXTURE_CATALOG,
+    )
+    expect(codesAt(issues, 'blocking')).toEqual([
+      'rung_2_same_provider',
+      'pooled_provider_repeat',
+    ])
+  })
+
   it('flags a provider repeated further down the chain without blocking it', () => {
     const issues = validateChain(
       [
@@ -1110,11 +1128,13 @@ describe('the fixtures', () => {
         ]),
       ),
     )
+    // Terra at rung 4, not rung 3: the policy separated the two Codex rungs on
+    // 2026-08-21 because adjacent they were one rung. Same four pins.
     expect(chains['implementer']).toEqual([
       'deepseek/deepseek-v4-flash@max',
       'codex/gpt-5.6-luna@xhigh',
-      'codex/gpt-5.6-terra@high',
       'openrouter/nvidia/nemotron-3-ultra-550b-a55b:free@high',
+      'codex/gpt-5.6-terra@high',
     ])
     expect(chains['qa']?.[2]).toBe('codex/gpt-5.6-luna@high')
     // Luna is pinned at the orchestrator's rung 4 and 5.4-mini at the chore
@@ -1136,11 +1156,27 @@ describe('the fixtures', () => {
     }
   })
 
-  it('keeps the policy deviation the fleet itself carries visible', () => {
-    const team = SEED_TEAMS.find((draft) => draft.id === 'draft-plan-build-verify')
-    const implementer = team?.slots.find((slot) => slot.id === 'implementer')
-    const review = reviewSeat(implementer?.capabilities as SeatCapabilities, FIXTURE_CATALOG)
-    expect(codesAt(review.issues, 'notice')).toContain('provider_repeat')
+  it('stacks no pooled provider on itself in any seeded chain', () => {
+    // This replaced an assertion that the standard builder carried a
+    // `provider_repeat` *notice* — the fixture's way of showing it did not hide
+    // a deviation the fleet policy carries. Once `codex.pooledUsage` is true
+    // that same repeat is `pooled_provider_repeat`, blocking, so the honest
+    // invariant is structural: an unreachable rung is not a deviation to
+    // display, it is a rung that never runs. The policy document still needs the
+    // same correction — `docs/QUOTA-FALLBACK-PLAN.md`, "Open question".
+    for (const draft of SEED_TEAMS) {
+      for (const slot of draft.slots) {
+        const chain = slot.capabilities.chain
+        const pooledRepeat = chain.some(
+          (rung, index) =>
+            index > 0 &&
+            rung.provider === chain[index - 1]?.provider &&
+            FIXTURE_CATALOG.providers.find((entry) => entry.id === rung.provider)
+              ?.pooledUsage === true,
+        )
+        expect({ slot: slot.id, pooledRepeat }).toEqual({ slot: slot.id, pooledRepeat: false })
+      }
+    }
   })
 
   it('names every class the closed set names, and no other', () => {

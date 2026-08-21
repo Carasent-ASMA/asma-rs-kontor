@@ -2116,6 +2116,84 @@ pub struct NewAvailabilityOverride {
     pub updated_at: Timestamp,
 }
 
+/// One account's quota state for one provider.
+///
+/// Distinct from [`AvailabilityOverride`] and from [`CapacityObservation`], both
+/// of which are keyed on the account alone. Under Paseo a single account profile
+/// serves every provider, so "Codex is exhausted and Claude is fine" is not a
+/// fact either of those can hold — and it is the fact a rung advance turns on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderQuotaState {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account the state is about.
+    pub account_profile_id: AccountProfileId,
+    /// The provider, spelled as the model catalog spells it.
+    pub provider: String,
+    /// What the quota is doing.
+    pub state: crate::spec::ProviderQuotaKind,
+    /// When an exhausted allowance returns. `None` for every other state, which
+    /// the database enforces rather than trusting call sites.
+    pub resets_at: Option<Timestamp>,
+    /// Digest of the evidence. Never the evidence: a provider's own message
+    /// carries account hints and URLs, and nothing here needs to keep them.
+    pub evidence_hash: ContentHash,
+    /// Who concluded it.
+    pub source: crate::spec::ProviderQuotaSource,
+    /// When it was concluded.
+    pub observed_at: Timestamp,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+impl ProviderQuotaState {
+    /// Whether this state still holds back a launch at `now`.
+    ///
+    /// An exhausted allowance whose reset instant has passed no longer blocks —
+    /// the row is stale rather than wrong, and waiting for a collector to
+    /// rewrite it would keep work parked past the moment it could have run.
+    /// `Drained` never expires on its own, which is the whole difference.
+    #[must_use]
+    pub fn blocks_at(&self, now: Timestamp) -> bool {
+        match self.state {
+            crate::spec::ProviderQuotaKind::Available => false,
+            crate::spec::ProviderQuotaKind::Exhausted => {
+                self.resets_at.is_some_and(|resets_at| now < resets_at)
+            }
+            crate::spec::ProviderQuotaKind::Drained | crate::spec::ProviderQuotaKind::Unknown => {
+                true
+            }
+        }
+    }
+}
+
+/// One provider quota state to record, under its expected revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewProviderQuotaState {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account the state is about.
+    pub account_profile_id: AccountProfileId,
+    /// The provider.
+    pub provider: String,
+    /// What the quota is doing.
+    pub state: crate::spec::ProviderQuotaKind,
+    /// When an exhausted allowance returns.
+    pub resets_at: Option<Timestamp>,
+    /// Digest of the evidence.
+    pub evidence_hash: ContentHash,
+    /// Who concluded it.
+    pub source: crate::spec::ProviderQuotaSource,
+    /// When it was concluded.
+    pub observed_at: Timestamp,
+    /// The revision the caller believes is current; `1` for the first.
+    pub expected_revision: AggregateRevision,
+    /// Mutation instant.
+    pub updated_at: Timestamp,
+}
+
 /// Account-owned capacity evidence and the judgement standing beside it.
 ///
 /// Raw first: [`CapacityRepository::record_capacity_observation`] is the only
@@ -2168,6 +2246,34 @@ pub trait CapacityRepository {
         &self,
         request: &NewAvailabilityOverride,
     ) -> RepositoryResult<AvailabilityOverride>;
+
+    /// Record or replace one account's quota state for one provider.
+    ///
+    /// Same first-write rule as [`Self::set_availability_override`]: the first
+    /// state for a `(account, provider)` pair is written at
+    /// [`AggregateRevision::INITIAL`] and must be presented as such.
+    ///
+    /// # Errors
+    /// Refuses an unknown account profile, a stale expected revision, and a
+    /// state whose reset instant contradicts it — an exhausted allowance without
+    /// one, or any other state with one.
+    fn set_provider_quota_state(
+        &self,
+        request: &NewProviderQuotaState,
+    ) -> RepositoryResult<ProviderQuotaState>;
+
+    /// Every provider quota state in one project.
+    ///
+    /// Returned whole rather than filtered by provider: a rung walk asks about
+    /// each provider in a chain in turn, and one read it can index is cheaper
+    /// and more consistent than one query per rung.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_provider_quota_states(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<ProviderQuotaState>>;
 
     /// A project's standing operator judgements, including lapsed ones.
     ///

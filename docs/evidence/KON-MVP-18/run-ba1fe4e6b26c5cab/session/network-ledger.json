@@ -1,0 +1,139 @@
+{
+  "fetch_call_sites": [
+    "apps/console/src/api/client.ts:609",
+    "apps/console/src/api/client.ts:710"
+  ],
+  "forbidden_hits": [],
+  "rules": {
+    "base_url_rule": "`apps/console/src/api/endpoint.ts` is the only place a base URL enters, and its `Endpoint` carries a base URL and a realm bearer with no field for a runtime endpoint or credential",
+    "constructors_refused": [
+      "new WebSocket(",
+      "new EventSource("
+    ],
+    "path_rule": "every path the typed client builds begins `/v1/`",
+    "reserved_tlds_allowed_in_tests": [
+      ".test",
+      ".example",
+      ".invalid",
+      ".localhost"
+    ],
+    "runtime_vocabulary_refused": [
+      "paseo",
+      "agent-orchestrator",
+      "runtime_endpoint"
+    ],
+    "schemes_refused": [
+      "ws://",
+      "wss://"
+    ]
+  },
+  "scanned_directories": [
+    "apps/console/src",
+    "apps/desktop/src-tauri/src"
+  ],
+  "transport_mentions_in_prose": [
+    "apps/console/src/api/sse.ts:4"
+  ],
+  "typed_client_paths": [
+    "/v1",
+    "/v1/events",
+    "/v1",
+    "/v1/health",
+    "/v1/realm",
+    "/v1/runs/",
+    "/v1/projects/",
+    "/v1/catalog",
+    "/v1/teams",
+    "/v1/teams/drafts:save",
+    "/v1/teams/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/projects/",
+    "/v1/sessions/",
+    "/v1/sessions/",
+    "/v1/sessions/",
+    "/v1/events",
+    "/v1/sessions/"
+  ],
+  "url_literals": [
+    {
+      "file": "apps/console/src/api/client.test.ts",
+      "line": 14,
+      "literal": "http://127.0.0.1:7777",
+      "test_file": true,
+      "verdict": "loopback"
+    },
+    {
+      "file": "apps/console/src/api/client.test.ts",
+      "line": 196,
+      "literal": "http://127.0.0.1:7777/v1/events?after=41",
+      "test_file": true,
+      "verdict": "loopback"
+    },
+    {
+      "file": "apps/console/src/shell/App.test.tsx",
+      "line": 90,
+      "literal": "http://127.0.0.1:7777",
+      "test_file": true,
+      "verdict": "loopback"
+    },
+    {
+      "file": "apps/console/src/shell/App.test.tsx",
+      "line": 107,
+      "literal": "http://127.0.0.1:7777",
+      "test_file": true,
+      "verdict": "loopback"
+    },
+    {
+      "file": "apps/console/src/shell/App.test.tsx",
+      "line": 117,
+      "literal": "https://somewhere.example",
+      "test_file": true,
+      "verdict": "reserved-test-host"
+    },
+    {
+      "file": "apps/console/src/shell/App.test.tsx",
+      "line": 462,
+      "literal": "http://127.0.0.1:7777",
+      "test_file": true,
+      "verdict": "loopback"
+    },
+    {
+      "file": "apps/console/src/shell/Connect.tsx",
+      "line": 88,
+      "literal": "http://127.0.0.1:7777",
+      "test_file": false,
+      "verdict": "loopback"
+    },
+    {
+      "file": "apps/console/src/shell/shell.test.tsx",
+      "line": 21,
+      "literal": "http://127.0.0.1:7777",
+      "test_file": true,
+      "verdict": "loopback"
+    },
+    {
+      "file": "apps/console/src/shell/shell.test.tsx",
+      "line": 182,
+      "literal": "https://example.test",
+      "test_file": true,
+      "verdict": "reserved-test-host"
+    }
+  ]
+}
