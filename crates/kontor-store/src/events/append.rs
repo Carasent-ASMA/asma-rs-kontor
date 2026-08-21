@@ -21,7 +21,7 @@ use kontor_core::repository::{
 };
 use kontor_core::state::{
     DerivedRunState, Freshness, NativeRuntimeIdentity, ObservedRunState, RunDerivation,
-    RunProjection, RuntimeContact, RuntimeObservation,
+    RunLifecycle, RunProjection, RuntimeContact, RuntimeObservation, reduce_run_lifecycle,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -254,13 +254,16 @@ pub(crate) fn reduce_observation(
         run.projection.last_confirmed_at.map(text)
     };
     let next_revision = run.revision.next()?;
+    let lifecycle = reduce_run_lifecycle(run.projection.lifecycle, observed);
     let changed = transaction
         .execute(
             "UPDATE agent_runs
-             SET observed_state = ?1, derived_state = ?2, last_confirmed_at = ?3,
-                 last_cursor = ?4, last_native_sequence = ?5, revision = ?6
-             WHERE project_id = ?7 AND id = ?8 AND revision = ?9",
+             SET lifecycle = ?1, observed_state = ?2, derived_state = ?3,
+                 last_confirmed_at = ?4, last_cursor = ?5,
+                 last_native_sequence = ?6, revision = ?7
+             WHERE project_id = ?8 AND id = ?9 AND revision = ?10",
             params![
+                lifecycle.as_str(),
                 observed.as_str(),
                 derived.as_str(),
                 confirmed_at,
@@ -279,8 +282,9 @@ pub(crate) fn reduce_observation(
             "the run revision moved during the write",
         ));
     }
+    reduce_team_lifecycle(transaction, run, observed)?;
     Ok(RunProjection {
-        lifecycle: run.projection.lifecycle,
+        lifecycle,
         desired: run.projection.desired,
         observed,
         derived,
@@ -290,6 +294,61 @@ pub(crate) fn reduce_observation(
             .transpose()?,
         last_cursor: Some(cursor),
     })
+}
+
+/// Move the owning TeamRun from the same fresh child observation.
+///
+/// This lives in the observation transaction so `/v1/runs` and the epic view
+/// cannot disagree merely because the process stopped between two writes. A
+/// team may skip the unobserved `launching` intermediate for the same reason as
+/// its child: an exact native report of `running` or `waiting_input` proves the
+/// dispatch already happened.
+fn reduce_team_lifecycle(
+    transaction: &Transaction<'_>,
+    run: &AgentRun,
+    observed: ObservedRunState,
+) -> RepositoryResult<()> {
+    let row: Option<(String, i64)> = transaction
+        .query_row(
+            "SELECT lifecycle, revision FROM team_runs WHERE project_id = ?1 AND id = ?2",
+            params![run.project_id.to_string(), run.team_run_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((stored, revision)) = row else {
+        return Err(RepositoryError::NotFound {
+            subject: "team run",
+        });
+    };
+    let current = RunLifecycle::parse(&stored)?;
+    let lifecycle = reduce_run_lifecycle(current, observed);
+    if lifecycle == current {
+        return Ok(());
+    }
+    let next_revision = revision.checked_add(1).ok_or(RepositoryError::Backend {
+        detail: "team run revision overflow".to_owned(),
+    })?;
+    let changed = transaction
+        .execute(
+            "UPDATE team_runs SET lifecycle = ?1, revision = ?2
+             WHERE project_id = ?3 AND id = ?4 AND revision = ?5",
+            params![
+                lifecycle.as_str(),
+                next_revision,
+                run.project_id.to_string(),
+                run.team_run_id.to_string(),
+                revision
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(conflict(
+            "team run",
+            "the run revision moved during observation reduction",
+        ));
+    }
+    Ok(())
 }
 
 /// The highest native sequence this run has actually reduced.

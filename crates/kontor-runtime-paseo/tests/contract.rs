@@ -54,7 +54,7 @@ use kontor_runtime::request::{
     ReconcileSessionLabelsRequest, ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
-use kontor_runtime::timeline::{HistoryCursor, TimelineBreak, TimelinePosition};
+use kontor_runtime::timeline::{HistoryCursor, HistoryReader, TimelineBreak, TimelinePosition};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -2348,6 +2348,248 @@ async fn timeline_history_then_live_has_no_gap_and_no_overlap() {
     assert!(
         live.closed_without_terminal(),
         "a stream that ends is a channel fact, never a completion"
+    );
+}
+
+#[tokio::test]
+async fn timeline_cursor_free_read_walks_back_to_the_epoch_origin() {
+    let (plane, binding) = with_history().await;
+    let epoch = "8f2b1c34-0000-4000-8000-000000000001";
+    let tail = (101..=200).map(assistant_entry).collect::<Vec<_>>();
+    let origin = (1..=100).map(assistant_entry).collect::<Vec<_>>();
+
+    plane.daemon.queue_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "req-fixture",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": "tail",
+            "projection": "canonical",
+            "epoch": epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 101, "maxSeq": 200, "nextSeq": 201 },
+            "startCursor": { "epoch": epoch, "seq": 101 },
+            "endCursor": { "epoch": epoch, "seq": 200 },
+            "hasOlder": true,
+            "hasNewer": false,
+            "entries": tail,
+            "error": serde_json::Value::Null,
+        }),
+    );
+    plane.daemon.queue_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "req-fixture",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": "before",
+            "projection": "canonical",
+            "epoch": epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 1, "maxSeq": 100, "nextSeq": 101 },
+            "startCursor": { "epoch": epoch, "seq": 1 },
+            "endCursor": { "epoch": epoch, "seq": 100 },
+            "hasOlder": false,
+            "hasNewer": true,
+            "entries": origin,
+            "error": serde_json::Value::Null,
+        }),
+    );
+    plane.daemon.queue_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "req-fixture",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": "after",
+            "projection": "canonical",
+            "epoch": epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 101, "maxSeq": 200, "nextSeq": 201 },
+            "startCursor": { "epoch": epoch, "seq": 101 },
+            "endCursor": { "epoch": epoch, "seq": 200 },
+            "hasOlder": true,
+            "hasNewer": false,
+            "entries": (101..=200).map(assistant_entry).collect::<Vec<_>>(),
+            "error": serde_json::Value::Null,
+        }),
+    );
+
+    let mut first = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding: binding.clone(),
+            cursor: None,
+            page_size: 100,
+        })
+        .await
+        .expect("a cursor-free read reaches the epoch origin");
+    let mut reader = HistoryReader::start(binding.binding_id(), first.epoch);
+    reader
+        .accept_page(&mut first)
+        .expect("the epoch-origin page is continuous from sequence one");
+    assert_eq!(
+        first.items.first().map(|event| event.position.sequence),
+        Some(1)
+    );
+    assert_eq!(
+        first.items.last().map(|event| event.position.sequence),
+        Some(100)
+    );
+    let continuation = first.next.clone().expect("newer history remains");
+
+    let mut second = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding: binding.clone(),
+            cursor: Some(continuation),
+            page_size: 100,
+        })
+        .await
+        .expect("the continuation reads strictly after the origin page");
+    let mut resumed = HistoryReader::resuming(binding.binding_id(), reader.anchor());
+    resumed
+        .accept_page(&mut second)
+        .expect("the after page has no gap or overlap");
+    assert_eq!(
+        second.items.first().map(|event| event.position.sequence),
+        Some(101)
+    );
+    assert_eq!(
+        second.items.last().map(|event| event.position.sequence),
+        Some(200)
+    );
+    assert_eq!(
+        plane.daemon.count("rpc fetch_agent_timeline_request"),
+        3,
+        "the runtime is read tail, before, then after"
+    );
+}
+
+#[tokio::test]
+async fn timeline_cursor_free_read_restarts_from_a_fresh_tail_after_runtime_refetch() {
+    let (plane, binding) = with_history().await;
+    let invalidated_epoch = "8f2b1c34-0000-4000-8000-000000000011";
+    let stable_epoch = "8f2b1c34-0000-4000-8000-000000000012";
+
+    // The first discovery succeeds, but Paseo invalidates the numbering while
+    // Kontor is walking from that tail towards the epoch origin. Nothing from
+    // this attempt may escape: the only safe recovery is a new cursor-free tail.
+    plane.daemon.queue_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "req-invalidated-tail",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": "tail",
+            "projection": "canonical",
+            "epoch": invalidated_epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 3, "maxSeq": 4, "nextSeq": 5 },
+            "startCursor": { "epoch": invalidated_epoch, "seq": 3 },
+            "endCursor": { "epoch": invalidated_epoch, "seq": 4 },
+            "hasOlder": true,
+            "hasNewer": false,
+            "entries": [assistant_entry(3), assistant_entry(4)],
+            "error": serde_json::Value::Null,
+        }),
+    );
+    plane.daemon.queue_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "req-invalidated-before",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": "before",
+            "projection": "canonical",
+            "epoch": invalidated_epoch,
+            "reset": true,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 1, "maxSeq": 2, "nextSeq": 3 },
+            "startCursor": { "epoch": invalidated_epoch, "seq": 1 },
+            "endCursor": { "epoch": invalidated_epoch, "seq": 2 },
+            "hasOlder": false,
+            "hasNewer": true,
+            "entries": [assistant_entry(1), assistant_entry(2)],
+            "error": serde_json::Value::Null,
+        }),
+    );
+
+    // A fresh tail now names a stable epoch and reaches its origin. The page
+    // Kontor returns must belong wholly to this second attempt.
+    plane.daemon.queue_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "req-stable-tail",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": "tail",
+            "projection": "canonical",
+            "epoch": stable_epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 3, "maxSeq": 4, "nextSeq": 5 },
+            "startCursor": { "epoch": stable_epoch, "seq": 3 },
+            "endCursor": { "epoch": stable_epoch, "seq": 4 },
+            "hasOlder": true,
+            "hasNewer": false,
+            "entries": [assistant_entry(3), assistant_entry(4)],
+            "error": serde_json::Value::Null,
+        }),
+    );
+    plane.daemon.queue_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "req-stable-origin",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": "before",
+            "projection": "canonical",
+            "epoch": stable_epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 1, "maxSeq": 2, "nextSeq": 3 },
+            "startCursor": { "epoch": stable_epoch, "seq": 1 },
+            "endCursor": { "epoch": stable_epoch, "seq": 2 },
+            "hasOlder": false,
+            "hasNewer": true,
+            "entries": [assistant_entry(1), assistant_entry(2)],
+            "error": serde_json::Value::Null,
+        }),
+    );
+
+    let page = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 2,
+        })
+        .await
+        .expect("a fresh cursor-free walk recovers after runtime invalidation");
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|event| event.position.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(
+        plane.daemon.count("rpc fetch_agent_timeline_request"),
+        4,
+        "the invalidated walk is discarded and restarted from a new tail"
     );
 }
 

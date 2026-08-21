@@ -43,8 +43,8 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::request::CompactRequest;
 use kontor_runtime::request::{
-    HistoryRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest,
-    SendMessageRequest,
+    HistoryRequest, InspectRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest,
+    ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::timeline::{EventSubject, HistoryCursor, HistoryReader, SessionEventKind};
 use serde::Deserialize;
@@ -468,6 +468,10 @@ pub async fn send_message(
         .map_err(|error| ApiError::from_domain(realm_id, &error))?;
     let demand = LimitDemand::MessageBytes(body.as_str().len() as u64);
     session.preflight(realm_id, RuntimeCapability::SendMessage, Some(demand))?;
+    // A message is not considered successfully projected unless the exact
+    // issued binding can be inspected afterwards. Refuse before delivery when
+    // that evidence surface was not frozen into this binding.
+    session.preflight(realm_id, RuntimeCapability::Inspect, None)?;
 
     // A persistent seat may be between native processes. Resume is a no-op for
     // an already-live session and reloads a closed, resumable one in place. A
@@ -491,6 +495,26 @@ pub async fn send_message(
         })
         .await
         .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+    // Acceptance says only that the message effect landed. The runtime's fresh
+    // readback decides whether the same native seat is running, waiting or in
+    // another state, and the shared reducer advances its AgentRun and TeamRun
+    // together. A replay follows this same path, repairing a projection left
+    // stale when an earlier acknowledgement or post-send inspect was lost.
+    let reduced_at = now();
+    let observation = session
+        .adapter
+        .inspect(&InspectRequest {
+            binding: session.snapshot.clone(),
+            requested_at: reduced_at,
+        })
+        .await
+        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+    state.applications().persist_session_observation(
+        session.project_id,
+        session.agent_run_id,
+        &observation,
+        reduced_at,
+    )?;
     Ok(Json(ReceiptEnvelope::new(
         realm_id,
         MessageAckDto::from(&acknowledged),

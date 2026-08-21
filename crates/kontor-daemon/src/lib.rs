@@ -471,6 +471,34 @@ impl Daemon {
     /// that basis is exactly the mistake the barrier exists to prevent.
     pub async fn reconcile(&self) -> BarrierState {
         let realm_id = self.realm_id();
+        // Older builds could commit an epic's topology pin before moving the
+        // existing node stamps. Finish only those durable partial moves, using
+        // the same compatibility proof as a fresh atomic upgrade. This creates
+        // no topology identity, command or event and changes no aggregate
+        // revision; an incompatible mismatch keeps the barrier shut.
+        let topology_repairs = self
+            .state
+            .with_store(SqliteStore::reconcile_mini_project_topology_nodes);
+        match &topology_repairs {
+            Ok(repaired) => {
+                for snapshot in repaired {
+                    info!(
+                        realm_id = %realm_id,
+                        project_id = %snapshot.project_id,
+                        epic_id = %snapshot.mini_project_id,
+                        topology_spec_id = %snapshot.topology.spec_id,
+                        topology_spec_version = snapshot.topology.version.get(),
+                        topology_spec_hash = %snapshot.topology.canonical_hash,
+                        "legacy partial topology upgrade converged"
+                    );
+                }
+            }
+            Err(detail) => warn!(
+                realm_id = %realm_id,
+                detail = %detail,
+                "legacy partial topology upgrades could not be converged"
+            ),
+        }
         let recovered = self.state.with_store(recover);
         match &recovered {
             Ok(report) => info!(
@@ -488,8 +516,8 @@ impl Daemon {
         }
 
         let bindings = self.state.with_store(SqliteStore::open_bindings);
-        let outcome = match (recovered, bindings) {
-            (Ok(_), Ok(bindings)) => self.reconcile_bindings(&bindings).await,
+        let outcome = match (topology_repairs, recovered, bindings) {
+            (Ok(_), Ok(_), Ok(bindings)) => self.reconcile_bindings(&bindings).await,
             _ => BarrierState::Failed,
         };
         self.state.barrier().settle(outcome);

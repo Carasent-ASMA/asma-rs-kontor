@@ -52,7 +52,7 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
-    ReconciliationFinding, ReconciliationReport, reconcile,
+    ReconciliationFinding, ReconciliationReport, reconcile, timestamp_control_sequence,
 };
 use kontor_runtime::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
@@ -935,17 +935,18 @@ impl AoAdapter {
         source: ObservationSource,
     ) -> RuntimeResult<ControlPlaneObservation> {
         let lifecycle = normalize_lifecycle(view);
+        let observed_at = view.observed_at()?;
         Ok(ControlPlaneObservation {
             agent_run_id,
             contact: lifecycle.contact,
             state: lifecycle.state,
             identity,
             native_event_id: None,
-            // AO exposes no per-session ordering on its REST surface. Its only
-            // monotonic ordering is the global change log, which is validated in
-            // `observe_events` and does not belong to a single read.
-            native_sequence: 0,
-            observed_at: view.observed_at()?,
+            // AO exposes no per-session revision. Order fresh control readbacks
+            // by their observed instant; the global change log belongs to the
+            // inventory stream and cannot order one session's direct reads.
+            native_sequence: timestamp_control_sequence(observed_at)?,
+            observed_at,
             evidence: Self::session_evidence(raw, view, lifecycle)?,
             source,
         })
@@ -1637,7 +1638,7 @@ impl RuntimeAdapter for AoAdapter {
             state: ObservedRunState::Cancelled,
             identity: binding.identity().clone(),
             native_event_id: None,
-            native_sequence: 0,
+            native_sequence: timestamp_control_sequence(request.requested_at)?,
             observed_at: request.requested_at,
             evidence,
             source: ObservationSource::CommandAck,

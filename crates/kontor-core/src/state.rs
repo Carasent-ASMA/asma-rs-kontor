@@ -774,6 +774,65 @@ impl ObservedRunState {
     }
 }
 
+/// Reduce fresh runtime evidence into the non-terminal lifecycle dimension.
+///
+/// Runtime evidence may legitimately arrive after an acknowledgement was lost:
+/// a run persisted as `queued` can already be reported `running` by its exact
+/// bound session. In that case the observation proves the intermediate launch
+/// happened, so reduction converges directly instead of requiring an invented
+/// acknowledgement. Terminal observations remain separate: only the
+/// evidence-bearing closure path may make a lifecycle terminal.
+#[must_use]
+pub const fn reduce_run_lifecycle(
+    current: RunLifecycle,
+    observed: ObservedRunState,
+) -> RunLifecycle {
+    if current.is_terminal() {
+        return current;
+    }
+    match observed {
+        ObservedRunState::Launching if matches!(current, RunLifecycle::Queued) => {
+            RunLifecycle::Launching
+        }
+        ObservedRunState::Running
+            if matches!(
+                current,
+                RunLifecycle::Queued
+                    | RunLifecycle::Launching
+                    | RunLifecycle::WaitingInput
+                    | RunLifecycle::Blocked
+            ) =>
+        {
+            RunLifecycle::Running
+        }
+        ObservedRunState::WaitingInput
+            if matches!(
+                current,
+                RunLifecycle::Queued
+                    | RunLifecycle::Launching
+                    | RunLifecycle::Running
+                    | RunLifecycle::Blocked
+            ) =>
+        {
+            RunLifecycle::WaitingInput
+        }
+        ObservedRunState::Blocked
+            if matches!(
+                current,
+                RunLifecycle::Queued
+                    | RunLifecycle::Launching
+                    | RunLifecycle::Running
+                    | RunLifecycle::WaitingInput
+            ) =>
+        {
+            RunLifecycle::Blocked
+        }
+        // `queued`/`unknown` are not evidence of dispatch; a late `launching`
+        // report never regresses active work; terminal reports wait for closure.
+        _ => current,
+    }
+}
+
 closed_enum! {
     /// How a run finally closed.
     TerminalOutcome, "TerminalOutcome" {

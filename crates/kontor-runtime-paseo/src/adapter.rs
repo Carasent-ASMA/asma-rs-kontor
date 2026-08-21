@@ -142,6 +142,14 @@ const DEGRADED: &[RuntimeCapability] = &[RuntimeCapability::Discovery, RuntimeCa
 /// walk of the whole transcript.
 const RECONCILE_PAGE_BUDGET: usize = 4;
 
+/// How many complete cursor-free origin walks may be attempted after Paseo
+/// invalidates the numbering mid-walk.
+///
+/// A retry always starts at a fresh tail and discards every cursor and item
+/// from the invalidated attempt. The bound prevents a runtime that keeps
+/// renumbering from turning one read into an unbounded request.
+const CURSOR_FREE_REFETCH_ATTEMPTS: usize = 3;
+
 // ---------------------------------------------------------------------------
 // Configuration and scope
 // ---------------------------------------------------------------------------
@@ -5160,24 +5168,93 @@ impl RuntimeAdapter for PaseoAdapter {
             )?),
             None => None,
         };
-        let page = self
-            .fetch_canonical(
-                &native_id,
-                if cursor.is_some() {
-                    PaseoDirection::After
-                } else {
-                    PaseoDirection::Tail
-                },
-                cursor.as_ref(),
-                request.page_size,
-                // Canonical, always. `projected` collapses tool lifecycles into
-                // single entries, so a cursor built on it advances over
-                // sequences that were never delivered.
-                PaseoProjection::Canonical,
-            )
-            .await?;
-        let epoch = self.resolve_epoch(&page.epoch, anchor.map(|position| position.epoch))?;
-        let items = self.normalize_page(&page, epoch)?;
+        let (page, epoch, items) = if let Some(cursor) = cursor.as_ref() {
+            let page = self
+                .fetch_canonical(
+                    &native_id,
+                    PaseoDirection::After,
+                    Some(cursor),
+                    request.page_size,
+                    // Canonical, always. `projected` collapses tool lifecycles into
+                    // single entries, so a cursor built on it advances over
+                    // sequences that were never delivered.
+                    PaseoProjection::Canonical,
+                )
+                .await?;
+            let epoch = self.resolve_epoch(&page.epoch, anchor.map(|position| position.epoch))?;
+            let items = self.normalize_page(&page, epoch)?;
+            (page, epoch, items)
+        } else {
+            // Paseo's only cursor-free read is a bounded tail window. It is a
+            // discovery point, not an origin page: serving it through
+            // `HistoryReader::start` would claim every preceding sequence was
+            // seen. Follow the runtime's own start cursor backwards until it
+            // says no older content remains; the caller then receives that
+            // epoch-origin page and every continuation still runs `after`.
+            let mut attempt = 0;
+            loop {
+                attempt += 1;
+                let walked = async {
+                    let mut page = self
+                        .fetch_canonical(
+                            &native_id,
+                            PaseoDirection::Tail,
+                            None,
+                            request.page_size,
+                            PaseoProjection::Canonical,
+                        )
+                        .await?;
+                    let epoch = self.resolve_epoch(&page.epoch, None)?;
+                    let mut items = self.normalize_page(&page, epoch)?;
+                    while page.has_older {
+                        let before = page.start_cursor.clone().ok_or(
+                            RuntimeError::TimelineRefetchRequired {
+                                reason: TimelineBreak::SequenceGap,
+                            },
+                        )?;
+                        if before.epoch != page.epoch {
+                            return Err(RuntimeError::TimelineRefetchRequired {
+                                reason: TimelineBreak::EpochChanged,
+                            });
+                        }
+                        let older = self
+                            .fetch_canonical(
+                                &native_id,
+                                PaseoDirection::Before,
+                                Some(&before),
+                                request.page_size,
+                                PaseoProjection::Canonical,
+                            )
+                            .await?;
+                        self.resolve_epoch(&older.epoch, Some(epoch))?;
+                        let older_items = self.normalize_page(&older, epoch)?;
+                        if older_items
+                            .last()
+                            .is_none_or(|event| event.position.sequence >= before.seq)
+                        {
+                            return Err(RuntimeError::TimelineRefetchRequired {
+                                reason: TimelineBreak::SequenceGap,
+                            });
+                        }
+                        page = older;
+                        items = older_items;
+                    }
+                    Ok((page, epoch, items))
+                }
+                .await;
+                match walked {
+                    Ok(origin) => break origin,
+                    Err(RuntimeError::TimelineRefetchRequired { .. })
+                        if attempt < CURSOR_FREE_REFETCH_ATTEMPTS =>
+                    {
+                        // The runtime invalidated an attempt that had not issued
+                        // a Kontor cursor yet. Discard it wholesale and discover
+                        // the current numbering from a new tail.
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        };
         let end = items.last().map_or(
             anchor.unwrap_or(TimelinePosition::start_of(epoch)),
             |event| event.position,

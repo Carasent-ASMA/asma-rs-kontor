@@ -965,8 +965,12 @@ impl TicketDelegation<'_> {
         // whole point is to converge the owner first and let the next
         // observation decide. Demanding the destination here would report a
         // fully successful assignment as contested state and invite a retry.
+        // A staged hop is judged against the status it was going to, not the
+        // milestone: demanding the milestone here would report a hop that landed
+        // exactly as planned as contested state and invite a retry of a move Jira
+        // has already made.
         let status_arrived =
-            plan.transition.is_none() || now.status.status_id == plan.target.status_id;
+            plan.transition.is_none() || now.status.status_id == plan.destination().status_id;
         let holder_arrived = now.assignee_account_id == expected_holder;
         if status_arrived && holder_arrived {
             return Ok(AmbiguityVerdict::AlreadyConfirmed(after));
@@ -1157,7 +1161,13 @@ impl TicketDelegation<'_> {
                 observation_hash: Some(observed.observation.payload_hash.clone()),
             }),
             field_writes: compile_field_writes(self.projection, self.field_spec)?,
-            destination: Some(plan.target.clone()),
+            // The destination this request declares travels with the transition
+            // below it, so it is *this attempt's* destination rather than the
+            // milestone. A staged hop that declared the milestone here would hand
+            // the connector a route to one status while naming another — the
+            // internally inconsistent request that turns a hop into a
+            // false-success receipt.
+            destination: Some(plan.destination().clone()),
             ownership_action,
             transition,
             authorized_apply: authority.is_some(),
@@ -1182,7 +1192,7 @@ impl TicketDelegation<'_> {
                     "the selected transition was not offered by this observation",
                 )
             })?;
-        if offered.to.status_id != plan.target.status_id {
+        if offered.to.status_id != plan.destination().status_id {
             return Err(AsmaError::refused(
                 operation,
                 "the selected transition no longer reaches the planned destination",

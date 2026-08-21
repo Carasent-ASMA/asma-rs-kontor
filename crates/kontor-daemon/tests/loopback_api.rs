@@ -1191,6 +1191,104 @@ async fn a_caught_up_live_stream_waits_instead_of_claiming_it_ended() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn a_message_resume_reduces_the_run_and_team_run_back_to_running() {
+    let world = World::open().await;
+    let (run_id, snapshot) = world.launch().await;
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let waiting_at = at("2026-08-10T09:05:00Z");
+    let payload = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "observed_state": "waiting_input",
+        "contact": "reachable",
+        "native_sequence": 1,
+        "observed_at": waiting_at.to_string(),
+    }))
+    .expect("control metadata");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_observation(&NewObservation {
+                event: NewRuntimeEvent {
+                    project_id: world.project,
+                    agent_run_id: run_id,
+                    identity: snapshot.identity().clone(),
+                    native_event_id: None,
+                    native_sequence: 1,
+                    payload,
+                    observed_at: waiting_at,
+                },
+                observed: ObservedRunState::WaitingInput,
+                contact: RuntimeContact::Reachable,
+                freshness: Freshness::Fresh,
+                expected_revision: before.revision,
+            })
+            .expect("waiting input is persisted through the shared reducer");
+    });
+    let waiting_run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let waiting_team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(world.project, world.team_run)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert_eq!(waiting_run.projection.lifecycle.as_str(), "waiting_input");
+    assert_eq!(waiting_team.lifecycle.as_str(), "waiting_input");
+
+    let message_id = kontor_runtime::request::MessageId::generate().to_string();
+    let sent = Call::post(
+        format!("/v1/sessions/{run_id}/messages"),
+        &serde_json::json!({"body": "Continue the same bounded turn."}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(&message_id)
+    .send(&world)
+    .await;
+    assert_eq!(sent.status, 200, "{}", sent.body);
+
+    let after_run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let after_team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(world.project, world.team_run)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert_eq!(after_run.id, run_id, "the AgentRun identity is unchanged");
+    assert_eq!(
+        after_run.binding.as_ref().map(|binding| binding.id),
+        Some(snapshot.binding_id()),
+        "the exact issued binding was observed"
+    );
+    assert_eq!(after_run.projection.lifecycle.as_str(), "running");
+    assert_eq!(
+        after_team.id, world.team_run,
+        "the TeamRun identity is unchanged"
+    );
+    assert_eq!(after_team.lifecycle.as_str(), "running");
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Inspect(binding) if *binding == snapshot.binding_id())),
+        "the acknowledged message is followed by an exact-binding inspect"
+    );
+}
+
+#[tokio::test]
 async fn a_lost_acknowledgement_is_replayed_without_a_second_native_effect() {
     let world = World::open().await;
     world.script(HISTORY_LIVE);
@@ -1751,7 +1849,15 @@ async fn no_response_or_stored_row_carries_a_secret_a_runtime_endpoint_or_a_tran
     .with_key(&key)
     .send(&world)
     .await;
-    observe(&world, run, 1, 1);
+    let revision = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(world.project, run)
+            .expect("the run reads")
+            .expect("the run exists")
+            .revision
+            .get()
+    });
+    observe(&world, run, 1, revision);
     world.daemon.state().signals().stop();
 
     let secrets: Vec<String> = ["observer", "operator", "admin"]
@@ -4466,7 +4572,44 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
             seat["attached"].as_bool().expect("a flag"),
             "this process holds the frozen snapshot for every seat it launched"
         );
+        let run = Call::get(format!(
+            "/v1/runs/{}",
+            seat["agent_run_id"].as_str().expect("an agent run id")
+        ))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+        assert_eq!(run.status, 200, "{}", run.body);
+        assert_eq!(
+            run.json()["value"]["projection"]["desired"],
+            "run_requested",
+            "every native launch has durable launch intent: {}",
+            run.body
+        );
+        assert_eq!(
+            run.json()["value"]["projection"]["observed"],
+            "launching",
+            "the runtime-issued launch observation is durable: {}",
+            run.body
+        );
+        assert_eq!(
+            run.json()["value"]["projection"]["derived"],
+            "confirmed",
+            "the binding, intent and launch observation agree: {}",
+            run.body
+        );
+        assert_eq!(
+            run.json()["value"]["projection"]["lifecycle"],
+            "launching",
+            "runtime evidence advances the AgentRun lifecycle: {}",
+            run.body
+        );
     }
+    assert_eq!(
+        runs[0]["lifecycle"], "launching",
+        "runtime evidence advances the owning TeamRun too: {}",
+        projection.body
+    );
 }
 
 #[tokio::test]
@@ -6311,18 +6454,36 @@ async fn settling_a_run_takes_a_fresh_inspect_and_never_a_supplied_verdict() {
 
 #[tokio::test]
 async fn a_run_the_runtime_says_is_still_working_is_not_settled() {
-    let world = World::open_empty().await;
-    // The default script reports a live session, so `inspect` answers with a
-    // non-terminal state.
+    let world = World::open().await;
+    // This harness launch deliberately models the historical projection gap: a
+    // native binding exists, but no launch intent or observation was stored.
     world.script(HISTORY_LIVE);
-    world.daemon.reconcile().await;
-    let (seed, runs) = seated(&world, "live").await;
-    let run = runs[0].clone();
+    let (run, _) = world.launch().await;
+    let before = Call::get(format!("/v1/runs/{run}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(before.json()["value"]["projection"]["desired"], "no_intent");
+    assert_eq!(before.json()["value"]["projection"]["observed"], "unknown");
 
-    let refused = Call::post(
+    // A supported native operation makes the exact existing session report
+    // running. Reconciliation must inspect this binding; it must not launch or
+    // replace anything to repair the omitted projection writes.
+    let message_id = kontor_runtime::request::MessageId::generate().to_string();
+    let sent = Call::post(
+        format!("/v1/sessions/{run}/messages"),
+        &serde_json::json!({"body": "continue the existing run"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(message_id)
+    .send(&world)
+    .await;
+    assert_eq!(sent.status, 200, "{}", sent.body);
+
+    let reconciled = Call::post(
         format!(
             "/v1/projects/{}/agent-runs/{run}/runtime:settle",
-            seed.project
+            world.project
         ),
         &serde_json::json!({}),
     )
@@ -6330,18 +6491,40 @@ async fn a_run_the_runtime_says_is_still_working_is_not_settled() {
     .with_key("live-settle")
     .send(&world)
     .await;
-    assert_eq!(refused.status, 422, "{}", refused.body);
-    assert_eq!(refused.code(), "unsupported_capability");
+    assert_eq!(reconciled.status, 200, "{}", reconciled.body);
+    assert_eq!(reconciled.json()["observed"], "running");
+    assert!(reconciled.json()["outcome"].is_null());
+    assert!(reconciled.json()["team_run_closed"].is_null());
 
-    // And the run is still open: an uncertain answer closes nothing.
+    // The run is still open, but its projection now states exactly what the
+    // supported runtime evidence proved. The TeamRun moves with its child.
     let snapshot = Call::get(format!("/v1/runs/{run}"))
         .signed_as(&world, "observer")
         .send(&world)
         .await;
-    assert_ne!(
-        snapshot.json()["value"]["projection"]["derived"],
-        "terminal"
+    assert_eq!(
+        snapshot.json()["value"]["projection"]["desired"],
+        "run_requested"
     );
+    assert_eq!(
+        snapshot.json()["value"]["projection"]["observed"],
+        "running"
+    );
+    assert_eq!(
+        snapshot.json()["value"]["projection"]["derived"],
+        "confirmed"
+    );
+    assert_eq!(
+        snapshot.json()["value"]["projection"]["lifecycle"],
+        "running"
+    );
+    let team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(world.project, world.team_run)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert_eq!(team.lifecycle, kontor_core::state::RunLifecycle::Running);
 }
 
 /// Settle every seat of one seated task, and return the last answer.
@@ -7739,6 +7922,223 @@ async fn admission_prepares_the_plane_itself_rather_than_relying_on_startup() {
             .is_empty(),
         "{}",
         started.body
+    );
+}
+
+/// OP-08's dynamic-scope tracer. The runtime starts with no task inventory:
+/// the applied task itself is the durable source for its ticket title, Jira
+/// issue and canonical worktree. Materialization binds that exact ticket
+/// workspace before scheduling, and an exact scheduler replay reuses the same
+/// TeamRun, runs, seats and native container.
+#[tokio::test]
+async fn an_applied_task_materializes_and_replays_without_a_startup_task_scope() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project(
+        &world,
+        "dynamic-scope",
+        "Kontor",
+        "/tmp/kontor-dynamic-scope",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_revision = created.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let category = first_category(&world).await;
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Implement",
+            "harness": "fake.runtime",
+            "credential_alias": "implement",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("dynamic-scope-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &serde_json::json!({
+            "expected_revision": project_revision,
+            "name": "Operational control surfaces",
+            "work_profile_category": category,
+            "runtime_family": "fake.runtime",
+            "account_profile_id": account_id,
+            "execution_scope": {
+                "external_epic_key": "ASMA-7877",
+                "short_title": "Operational control surfaces",
+                "kontor_backlog_code": "OP-08",
+                "ai_short_name": "Operational Control"
+            },
+            "tasks": [{
+                "title": "OP-08",
+                "short_code": "OP-08",
+                "ticket_links": [{
+                    "connector": "jira",
+                    "external_issue_key": "ASMA-7877"
+                }],
+                "worktree": "/w/op-08"
+            }]
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("dynamic-scope-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let epic_revision = applied.json()["revision"]
+        .as_u64()
+        .expect("an epic revision");
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("dynamic-scope-materialize")
+    .send(&world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let task_node = materialized.json()["projection"]["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .iter()
+        .find(|node| node["kind_key"] == "TSW")
+        .expect("the task node")
+        .clone();
+    assert_eq!(
+        task_node["observed_binding"]["cwd"], "/w/op-08",
+        "materialization read the applied worktree back: {}",
+        materialized.body
+    );
+    let task_node_id = TopologyNodeId::parse(
+        task_node["topology_node_id"]
+            .as_str()
+            .expect("a topology node id"),
+    )
+    .expect("a topology node id");
+    assert_eq!(
+        world.fake.container_title(task_node_id).as_deref(),
+        Some("TSW • ASMA-7877 • OP-08"),
+        "the runtime rendered the workspace from durable task scope"
+    );
+    assert!(
+        task_node["seats"]
+            .as_array()
+            .expect("task seats")
+            .is_empty(),
+        "materialization does not admit a TeamRun or pre-create a delivery seat"
+    );
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10,
+                       "max_duration_seconds": 600, "max_cost_minor_units": 100,
+                       "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Trace dynamic materialization through admission"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("dynamic-scope-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a plan hash")
+        .to_owned();
+    let start_uri = format!("/v1/projects/{project}/epics/{epic}/scheduler:start");
+    let start_body = serde_json::json!({"plan_hash": plan_hash});
+    let first = Call::post(&start_uri, &start_body)
+        .signed_as(&world, "operator")
+        .with_key("dynamic-scope-start")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_seats = first.json()["started"]
+        .as_array()
+        .expect("started seats")
+        .clone();
+    assert!(!first_seats.is_empty(), "{}", first.body);
+
+    let replay = Call::post(&start_uri, &start_body)
+        .signed_as(&world, "operator")
+        .with_key("dynamic-scope-start")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    let replayed_seats = replay.json()["started"]
+        .as_array()
+        .expect("replayed seats")
+        .clone();
+    assert_eq!(replayed_seats.len(), first_seats.len(), "{}", replay.body);
+    for (first, replayed) in first_seats.iter().zip(&replayed_seats) {
+        assert_eq!(replayed["team_run_id"], first["team_run_id"]);
+        assert_eq!(replayed["agent_run_id"], first["agent_run_id"]);
+        assert_eq!(replayed["native_id"], first["native_id"]);
+        assert_eq!(replayed["applied"], "unchanged");
+    }
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let projected = projection.json();
+    let runs = projected["tasks"][0]["team_runs"]
+        .as_array()
+        .expect("team runs");
+    assert_eq!(
+        runs.len(),
+        1,
+        "replay created no TeamRun: {}",
+        projection.body
+    );
+    assert_eq!(
+        runs[0]["seats"].as_array().expect("team seats").len(),
+        first_seats.len(),
+        "one attached seat exists per declared slot: {}",
+        projection.body
     );
 }
 
@@ -9394,7 +9794,7 @@ async fn a_run_no_runtime_ever_took_is_abandoned_so_its_task_can_be_scheduled_ag
     // The wreckage: a committed, unbound, non-terminal run.
     let project_id = ProjectId::parse(&project).expect("a project id");
     let task_id = TaskId::parse(&task).expect("a task id");
-    let (run_id, run_revision) = world.daemon.state().with_store(|store| {
+    let (team_run_id, run_id, run_revision) = world.daemon.state().with_store(|store| {
         let runs = store
             .list_team_runs_for_task(project_id, task_id)
             .expect("the team runs read");
@@ -9411,7 +9811,7 @@ async fn a_run_no_runtime_ever_took_is_abandoned_so_its_task_can_be_scheduled_ag
             .expect("the run exists");
         assert!(run.binding.is_none(), "the run was never bound");
         assert!(run.terminal.is_none(), "the run is not terminal");
-        (run.id, run.revision)
+        (*team_run_id, run.id, run.revision)
     });
 
     // And the consequence: the task is in flight, so nothing can be planned for
@@ -9511,6 +9911,124 @@ async fn a_run_no_runtime_ever_took_is_abandoned_so_its_task_can_be_scheduled_ag
             .expect("the lease read succeeds")
             .is_empty(),
         "an abandoned run hands back every lease it still held"
+    );
+
+    // A terminal TeamRun is historical evidence, not the task's live seat. A
+    // snapshot must refuse rather than bind new context to the abandoned run.
+    let context = Call::post(
+        format!("/v1/projects/{project}/tasks/{task}/context:resolve"),
+        &serde_json::json!({"snapshot": true}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("phantom-context-after-abandon")
+    .send(&world)
+    .await;
+    assert_eq!(context.status, 422, "{}", context.body);
+    assert_eq!(context.code(), "unsupported_capability");
+
+    // Once the missing checkout becomes available, admission traverses the
+    // whole public path again. The terminal team's topology seats are history,
+    // not a placement lock: a new TeamRun receives fresh seats on the same TSW.
+    world.fake.verifying_placement_at(
+        kontor_runtime::workspace::WorkspaceRoot::parse("/w/not-yet-created")
+            .expect("a valid root"),
+    );
+    let replanned = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(replanned.status, 200, "{}", replanned.body);
+    let replanned_hash = replanned.json()["plan_hash"]
+        .as_str()
+        .expect("a plan hash")
+        .to_owned();
+    let restarted = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": replanned_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("phantom-restart")
+    .send(&world)
+    .await;
+    assert_eq!(restarted.status, 200, "{}", restarted.body);
+    let restarted_body = restarted.json();
+    let restarted_seats = restarted_body["started"]
+        .as_array()
+        .expect("restarted seats");
+    assert!(!restarted_seats.is_empty(), "{}", restarted.body);
+    assert!(
+        restarted_seats
+            .iter()
+            .all(|seat| seat["team_run_id"] != team_run_id.to_string()),
+        "a new generation must not adopt the abandoned TeamRun: {}",
+        restarted.body
+    );
+}
+
+/// A terminal member of an otherwise-live TeamRun is historical evidence, not
+/// the run a new context snapshot belongs to. The resolver skips it and binds
+/// the snapshot to one of the team's still-live seats.
+#[tokio::test]
+async fn a_terminal_agent_run_is_not_the_live_seat_of_its_still_open_team() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "terminal-member").await;
+    let seats = seats.as_array().expect("started seats").clone();
+    assert!(seats.len() > 1, "the bundled team has several live seats");
+    let terminal = seats[0]["agent_run_id"]
+        .as_str()
+        .expect("a run id")
+        .to_owned();
+
+    finish_natively(&world, &terminal).await;
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{terminal}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("terminal-member-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert!(
+        settled.json()["team_run_closed"].is_null(),
+        "other live seats keep the TeamRun open: {}",
+        settled.body
+    );
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task = projection.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+    let context = Call::post(
+        format!("/v1/projects/{project}/tasks/{task}/context:resolve"),
+        &serde_json::json!({"snapshot": true}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("terminal-member-context")
+    .send(&world)
+    .await;
+    assert_eq!(context.status, 200, "{}", context.body);
+    let selected = context.json()["agent_run_id"]
+        .as_str()
+        .expect("the selected live seat")
+        .to_owned();
+    assert_ne!(selected, terminal, "a terminal run cannot own new context");
+    assert!(
+        seats
+            .iter()
+            .skip(1)
+            .any(|seat| seat["agent_run_id"] == selected),
+        "the snapshot belongs to another live seat in the same team: {}",
+        context.body
     );
 }
 
@@ -10626,10 +11144,11 @@ async fn an_admin_replacement_retires_a_bound_nonterminal_predecessor_first() {
     );
 }
 
-/// A provider outage may retire a reachable idle seat only when Kontor never
-/// dispatched it and Admin names the immutable binding exactly. This is the
-/// supported replacement path for the dormant Claude seats; omitting the typed
-/// evidence keeps the ordinary persistent-seat reuse rule unchanged.
+/// A provider outage may retire a reachable idle seat only while its durable
+/// evidence has never advanced beyond launch and Admin names the immutable
+/// binding exactly. This is the supported replacement path for the dormant
+/// Claude seats; omitting the typed evidence keeps the ordinary persistent-seat
+/// reuse rule unchanged.
 #[tokio::test]
 async fn an_admin_retires_an_exact_never_dispatched_provider_blocked_seat() {
     let world = World::open_empty_with_a_plane().await;
@@ -10649,8 +11168,13 @@ async fn an_admin_retires_an_exact_never_dispatched_provider_blocked_seat() {
     });
     assert_eq!(
         run.projection.desired,
-        kontor_core::state::DesiredRunState::NoIntent,
-        "the outage path is for a seat that was materialized but never dispatched"
+        kontor_core::state::DesiredRunState::RunRequested,
+        "every native session has its actual launch intent"
+    );
+    assert_eq!(
+        run.projection.observed,
+        kontor_core::state::ObservedRunState::Launching,
+        "the outage path is limited to a seat with launch-only evidence"
     );
     let binding = run.binding.as_ref().expect("the dormant seat is bound");
     let provider = world
@@ -11597,6 +12121,35 @@ async fn a_team_closes_on_settled_turns_while_every_seat_stays_live() {
             settled.body
         );
     }
+
+    // A closed TeamRun is not a live task seat even when every native agent is
+    // deliberately left reusable. Context for the next generation must never
+    // attach itself to one of the previous generation's sessions.
+    let context = Call::post(
+        format!("/v1/projects/{project}/tasks/{task_id}/context:resolve"),
+        &serde_json::json!({"snapshot": true}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("close-live-context-after-team")
+    .send(&world)
+    .await;
+    assert_eq!(context.status, 422, "{}", context.body);
+    assert_eq!(context.code(), "unsupported_capability");
+    let task_id_value = TaskId::parse(&task_id).expect("a task id");
+    world.daemon.state().with_store(|store| {
+        let node = store
+            .get_task_topology_node(project_id, task_id_value)
+            .expect("the task node reads")
+            .expect("the task node exists");
+        let bindings = store
+            .list_seat_bindings(project_id, node.id)
+            .expect("the task seats read");
+        assert!(!bindings.is_empty(), "the closed team had topology seats");
+        assert!(
+            bindings.iter().all(|binding| !binding.is_non_terminal()),
+            "a terminal TeamRun releases every topology seat it held: {bindings:?}"
+        );
+    });
 
     // The profile's own gates, read from the projection and discharged.
     let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
@@ -13319,8 +13872,15 @@ async fn a_public_waiver_is_refused_without_authority_policy_or_evidence() {
         seats,
         ..
     } = &seeded;
-    let revision = |body: &serde_json::Value| body["team_run_revision"].as_u64();
-    let _ = revision;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a team run id");
+    let team_revision = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+            .revision
+    });
 
     let waive = |slot: &'static str,
                  role: &'static str,
@@ -13331,7 +13891,7 @@ async fn a_public_waiver_is_refused_without_authority_policy_or_evidence() {
         Call::post(
             uri,
             &serde_json::json!({
-                "expected_team_revision": 1,
+                "expected_team_revision": team_revision,
                 "authorized_by_role": role,
                 "evidence": evidence
             }),
@@ -13703,12 +14263,22 @@ async fn a_waived_slot_is_never_given_a_follow_up() {
         ..
     } = &seeded;
 
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a team run id");
+    let team_revision = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+            .revision
+    });
+
     // Waive first, while the other slots are still outstanding: the team cannot
     // close yet, so settlement still happens afterwards.
     let waived = Call::post(
         format!("/v1/projects/{project}/team-runs/{team_run}/role-slots/omega-k3/waivers"),
         &serde_json::json!({
-            "expected_team_revision": 1,
+            "expected_team_revision": team_revision,
             "authorized_by_role": "omega-r1",
             "evidence": ["omega-a3"]
         }),
@@ -16262,6 +16832,224 @@ async fn materializing_a_ticket_binds_its_native_workspace_without_admitting_a_r
     );
 }
 
+#[tokio::test]
+async fn ticket_materialization_retires_an_unrouted_legacy_tpm_without_creating_identity() {
+    let composed = compose_realm("/tmp/kontor-op08-unrouted-task-tpm").await;
+    let world = &composed.world;
+    let epic = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    let task = epic.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the composed task id")
+        .to_owned();
+    let project_id = ProjectId::parse(&composed.project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let uri = format!("/v1/projects/{}/topology:materialize", composed.project);
+    let request = serde_json::json!({
+        "target": {"scope": "ticket", "task_id": task},
+        "expected_revision": composed.project_revision,
+    });
+
+    let first = Call::post(&uri, &request)
+        .signed_as(world, "operator")
+        .with_key("materialize-ticket-with-legacy-tpm")
+        .send(world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let node_id = TopologyNodeId::parse(
+        first.json()["projection"]["nodes"]
+            .as_array()
+            .expect("topology nodes")
+            .iter()
+            .find(|node| node["kind_key"] == "TSW")
+            .expect("the TSW node")["topology_node_id"]
+            .as_str()
+            .expect("the TSW id"),
+    )
+    .expect("a topology node id");
+    let legacy_binding_id = SeatBindingId::generate();
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    let catalog = domain
+        .role_catalogs
+        .first()
+        .expect("a bundled role catalog");
+    let tpm = catalog
+        .role(&RoleCode::parse("TPM").expect("the TPM role code"))
+        .expect("the catalog has TPM");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_seat_binding(&NewSeatBinding {
+                id: legacy_binding_id,
+                project_id,
+                topology_node_id: node_id,
+                role_slot_id: kontor_core::id::RoleSlotId::parse("tpm").expect("a role slot"),
+                role: CatalogRoleRef {
+                    catalog_id: catalog.catalog_id,
+                    catalog_revision: catalog.version,
+                    role_code: tpm.role_code.clone(),
+                    standard_title: tpm.standard_title.clone(),
+                    custom_display_name: None,
+                },
+                task_id: Some(task_id),
+                team_run_id: None,
+                attach_deadline: at("2099-01-01T00:00:00Z"),
+                parent_seat_binding_id: None,
+                created_at: at("2026-08-10T09:00:00Z"),
+            })
+            .expect("the legacy logical-only TPM is reproduced");
+        assert!(
+            store
+                .get_hosted_topology_seat(project_id, legacy_binding_id)
+                .expect("the hosted route reads")
+                .is_none(),
+            "the legacy row starts with no topology-message route"
+        );
+    });
+    let calls_before = world.fake.calls().len();
+
+    let repaired = Call::post(&uri, &request)
+        .signed_as(world, "operator")
+        .with_key("materialize-ticket-with-legacy-tpm")
+        .send(world)
+        .await;
+    assert_eq!(repaired.status, 200, "{}", repaired.body);
+    assert_eq!(repaired.json()["receipt"]["applied"], "unchanged");
+    let preserved = world.daemon.state().with_store(|store| {
+        let binding = store
+            .get_seat_binding(project_id, legacy_binding_id)
+            .expect("the binding reads")
+            .expect("the binding is preserved as evidence");
+        assert!(
+            store
+                .get_hosted_topology_seat(project_id, legacy_binding_id)
+                .expect("the hosted route reads")
+                .is_none(),
+            "repair must not invent a native route"
+        );
+        binding
+    });
+    assert_eq!(preserved.id, legacy_binding_id);
+    assert_eq!(preserved.lifecycle.as_str(), "retired");
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before,
+        "replay has no native effect"
+    );
+
+    let message = Call::post(
+        format!(
+            "/v1/projects/{}/seat-bindings/{legacy_binding_id}/messages",
+            composed.project
+        ),
+        &serde_json::json!({"body": "This must not materialize the missing seat."}),
+    )
+    .signed_as(world, "operator")
+    .with_key(kontor_runtime::request::MessageId::generate().to_string())
+    .send(world)
+    .await;
+    assert_eq!(message.status, 404, "{}", message.body);
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before,
+        "messaging an inactive logical row cannot create a native identity"
+    );
+}
+
+/// An idempotent materialization replay repairs the logical placement chain
+/// without repeating the already acknowledged native effect.
+///
+/// Schema-46 realms can contain a TSW written by an older admission path whose
+/// sibling ECP was never created. The receipt still makes a retry a replay, but
+/// that cannot turn the missing owner into permanent state: reconciliation must
+/// ensure the durable chain again while preserving the exact native TSW binding.
+#[tokio::test]
+async fn replaying_ticket_materialization_repairs_a_missing_epic_control_plane() {
+    let composed = compose_realm("/tmp/kontor-op08-materialize-repair").await;
+    let world = &composed.world;
+    let epic = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    let task = epic.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the composed task id")
+        .to_owned();
+    let uri = format!("/v1/projects/{}/topology:materialize", composed.project);
+    let request = serde_json::json!({
+        "target": {"scope": "ticket", "task_id": task},
+        "expected_revision": composed.project_revision,
+    });
+
+    let first = Call::post(&uri, &request)
+        .signed_as(world, "operator")
+        .with_key("materialize-ticket-repair")
+        .send(world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_json = first.json();
+    let tsw = first_json["projection"]["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .iter()
+        .find(|node| node["kind_key"] == "TSW")
+        .expect("the ticket workspace node");
+    let tsw_node_id = tsw["topology_node_id"].clone();
+    let native_id = tsw["observed_binding"]["native_id"].clone();
+
+    // Recreate the exact durable shape left by the legacy writer: the task's
+    // TSW and native binding exist, but the epic's owner/control node does not.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    let removed = connection
+        .execute(
+            "DELETE FROM topology_nodes
+             WHERE project_id = ?1 AND mini_project_id = ?2 AND kind = 'ECP'",
+            rusqlite::params![composed.project.to_string(), composed.epic.to_string()],
+        )
+        .expect("the legacy gap is seeded");
+    assert_eq!(removed, 1, "the original control plane existed");
+    drop(connection);
+
+    let replayed = Call::post(&uri, &request)
+        .signed_as(world, "operator")
+        .with_key("materialize-ticket-repair")
+        .send(world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    let nodes = replayed.json()["projection"]["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .clone();
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["kind_key"] == "ECP")
+            .count(),
+        1,
+        "a replay restores exactly one epic control plane: {}",
+        replayed.body
+    );
+    let repaired_tsw = nodes
+        .iter()
+        .find(|node| node["topology_node_id"] == tsw_node_id)
+        .expect("the original ticket workspace remains");
+    assert_eq!(
+        repaired_tsw["observed_binding"]["native_id"], native_id,
+        "logical repair must not replace or repeat the native workspace"
+    );
+}
+
 /// A node is retired by the id an answer already returned, and not otherwise.
 #[tokio::test]
 async fn a_node_is_retired_by_the_id_an_answer_returned_and_children_block_it() {
@@ -17480,17 +18268,52 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(ensured.status, 200, "{}", ensured.body);
     let pinned_before = ensured.json()["projection"]["pinned_spec"].clone();
+    let materialized = Call::post(
+        format!("/v1/projects/{}/topology:materialize", composed.project),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": composed.epic},
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("upgrade-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
 
-    // Publish a second revision of the *bundled* lineage: a vocabulary that
-    // keeps the root and the epic kind but drops the control plane.
+    // Publish a second revision of the *bundled* lineage whose sole semantic
+    // change is the ESW native-name template. Existing kinds, hierarchy,
+    // capabilities, nodes, containers and seats remain valid in place.
     let bundled = pinned_before["id"].as_str().expect("a spec id").to_owned();
+    let current = Call::get(format!(
+        "/v1/projects/{}/topology-specs/{bundled}/{}",
+        composed.project, pinned_before["version"]
+    ))
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(current.status, 200, "{}", current.body);
+    let mut node_kinds = current.json()["document"]["node_kinds"].clone();
+    node_kinds
+        .as_array_mut()
+        .expect("node kinds")
+        .iter_mut()
+        .find(|kind| kind["kind"] == "ESW")
+        .expect("the ESW kind")["name_template"] = serde_json::json!({
+        "segments": [
+            {"kind": "literal", "value": "Upgraded ESW"},
+            {"kind": "token", "value": "JIRA_CODE"},
+            {"kind": "token", "value": "KONTOR_BACKLOG_CODE"}
+        ]
+    });
     let drafted = Call::post(
         format!("/v1/projects/{}/topology-specs:draft", composed.project),
         &serde_json::json!({
             "base": {"id": bundled, "version": pinned_before["version"]},
-            "name": "Narrowed vocabulary",
+            "name": "Retitled epic workspace vocabulary",
             "root_kind": "PSW",
-            "node_kinds": vocabulary("PSW", Some("ESW")),
+            "node_kinds": node_kinds,
+            "historical_codes": current.json()["document"]["historical_codes"],
         }),
     )
     .signed_as(world, "admin")
@@ -17544,15 +18367,8 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
         .expect("effects")
         .clone();
     assert!(
-        effects.iter().any(|effect| effect["effect"] == "withdrawn"),
-        "dropping a kind is named: {}",
-        preview.body
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|effect| effect["subject"] == "node" && effect["effect"] == "orphaned"),
-        "the control-plane node standing on the dropped kind is named: {}",
+        effects.is_empty(),
+        "a name-template-only upgrade preserves every topology subject: {}",
         preview.body
     );
     let preview_hash = preview.json()["preview_hash"]
@@ -17627,7 +18443,81 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     assert_eq!(applied.json()["pinned_spec"]["version"], 2);
+    assert_eq!(
+        applied.json()["projection"]["pinned_spec"]["version"],
+        2,
+        "the embedded epic projection reports the epic pin: {}",
+        applied.body
+    );
     assert_eq!(applied.json()["receipt"]["applied"], "created");
+
+    let project_id = ProjectId::parse(&composed.project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&composed.epic).expect("an epic id");
+    let nodes = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+        .expect("the epic nodes read");
+    assert!(
+        nodes.iter().all(|node| node.topology.version.get() == 2),
+        "the exact existing nodes move to the target revision in place"
+    );
+
+    let epic_node = applied.json()["projection"]["nodes"]
+        .as_array()
+        .expect("projected nodes")
+        .iter()
+        .find(|node| node["kind_key"] == "ESW")
+        .expect("the ESW node")
+        .clone();
+    let epic_node_id = epic_node["topology_node_id"]
+        .as_str()
+        .expect("the ESW node id");
+    let parsed_epic_node = TopologyNodeId::parse(epic_node_id).expect("a topology node id");
+    let old_title = world
+        .fake
+        .container_title(parsed_epic_node)
+        .expect("the existing ESW native container keeps its identity");
+    let preview_retitle = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{epic_node_id}/container:retitle-preview",
+            composed.project
+        ),
+        &serde_json::json!({"expected_revision": composed.project_revision}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview_retitle.status, 200, "{}", preview_retitle.body);
+    let desired_title = preview_retitle.json()["desired_title"]
+        .as_str()
+        .expect("a desired title")
+        .to_owned();
+    assert!(
+        desired_title.starts_with("Upgraded ESW • ")
+            && !desired_title.contains('<')
+            && desired_title != old_title,
+        "the v2 template is rendered from typed scope: {}",
+        preview_retitle.body
+    );
+    let retitled = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{epic_node_id}/container:retitle-apply",
+            composed.project
+        ),
+        &serde_json::json!({"expected_revision": composed.project_revision}),
+    )
+    .signed_as(world, "admin")
+    .with_key("upgrade-retitle-apply")
+    .send(world)
+    .await;
+    assert_eq!(retitled.status, 200, "{}", retitled.body);
+    assert_eq!(retitled.json()["observed_title"], desired_title);
+    assert_eq!(
+        world.fake.container_title(parsed_epic_node).as_deref(),
+        Some(desired_title.as_str()),
+        "retitle preserves the exact native container and reads the new title back"
+    );
 
     // The replay answers from what is durable and moves nothing again.
     let replayed = Call::post(

@@ -66,11 +66,11 @@ use kontor_core::repository::{
     WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
-    CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, PersonaScenarioSnapshot,
-    PersonaScenarioSpec, ProjectSessionTopologySpec, ResolvedWorkProfileSnapshot,
-    RoleCatalogRevision, Shareability, ShareabilityClass, ShareabilityClassifier,
-    ShareabilityProvenance, ShareabilityTier, SourceIdentity, TeamRunSnapshot,
-    TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
+    CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
+    PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
+    ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability, ShareabilityClass,
+    ShareabilityClassifier, ShareabilityProvenance, ShareabilityTier, SourceIdentity,
+    TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use kontor_core::state::{
     AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
@@ -1309,6 +1309,206 @@ fn topology_spec_in(
         ));
     }
     stored_document(&json, hash.as_str())
+}
+
+/// Move every existing node in one epic onto the target immutable topology
+/// stamp, after proving that the target can still represent the exact hierarchy,
+/// native containers and seats already held.
+///
+/// This deliberately changes no node identity, lifecycle, placement or revision.
+/// A topology upgrade changes the vocabulary those same nodes cite; it is not a
+/// second node mutation and must never make optimistic-concurrency clients think
+/// a seat or container moved.
+fn repin_mini_project_nodes_in(
+    transaction: &Transaction<'_>,
+    snapshot: &MiniProjectTopologySnapshot,
+) -> RepositoryResult<usize> {
+    let spec = topology_spec_in(transaction, snapshot.project_id, &snapshot.topology)?;
+    let mut statement = transaction
+        .prepare(&format!(
+            "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+             WHERE project_id = ?1 AND mini_project_id = ?2
+             ORDER BY created_at, id"
+        ))
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![
+            snapshot.project_id.to_string(),
+            snapshot.mini_project_id.to_string()
+        ])
+        .map_err(backend)?;
+    let mut nodes = Vec::new();
+    while let Some(row) = rows.next().map_err(backend)? {
+        nodes.push(read_topology_node(row)?);
+    }
+    drop(rows);
+    drop(statement);
+
+    for node in &nodes {
+        let declared = spec
+            .node_kinds
+            .iter()
+            .find(|candidate| candidate.kind == node.kind)
+            .ok_or_else(|| {
+                conflict(
+                    "topology upgrade",
+                    "the target specification does not declare an existing epic node kind",
+                )
+            })?;
+
+        match node.parent_id {
+            Some(parent_id) => {
+                let parent_kind: Option<String> = transaction
+                    .query_row(
+                        "SELECT kind FROM topology_nodes WHERE project_id = ?1 AND id = ?2",
+                        params![snapshot.project_id.to_string(), parent_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(backend)?;
+                let parent_kind = parent_kind
+                    .as_deref()
+                    .map(TopologyKindKey::parse)
+                    .transpose()?
+                    .ok_or(RepositoryError::NotFound {
+                        subject: "topology parent",
+                    })?;
+                if !declared.allowed_parents.contains(&parent_kind) {
+                    return Err(conflict(
+                        "topology upgrade",
+                        "the target specification does not permit an existing parent-child relation",
+                    ));
+                }
+            }
+            None if node.kind != spec.root_kind => {
+                return Err(conflict(
+                    "topology upgrade",
+                    "the target specification does not permit an existing root relation",
+                ));
+            }
+            None => {}
+        }
+
+        let observed_kind: Option<String> = transaction
+            .query_row(
+                "SELECT observed_kind FROM topology_node_containers
+                 WHERE project_id = ?1 AND topology_node_id = ?2",
+                params![snapshot.project_id.to_string(), node.id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let required_projection = observed_kind
+            .as_deref()
+            .map(ObservedContainerKind::parse)
+            .transpose()?
+            .map(|observed| match observed {
+                ObservedContainerKind::Project => NodeProjectionCapability::NativeRoot,
+                ObservedContainerKind::Workspace => NodeProjectionCapability::NativeChild,
+            });
+        if required_projection
+            .is_some_and(|required| !declared.projection_capabilities.contains(&required))
+        {
+            return Err(conflict(
+                "topology upgrade",
+                "the target specification cannot project an existing native container",
+            ));
+        }
+
+        let seats: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM seat_bindings
+                 WHERE project_id = ?1 AND topology_node_id = ?2",
+                params![snapshot.project_id.to_string(), node.id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if seats > 0
+            && !declared
+                .projection_capabilities
+                .contains(&NodeProjectionCapability::SessionHost)
+        {
+            return Err(conflict(
+                "topology upgrade",
+                "the target specification cannot host an existing seat",
+            ));
+        }
+    }
+
+    transaction
+        .execute(
+            "UPDATE topology_nodes
+             SET spec_id = ?1, spec_version = ?2, spec_hash = ?3, updated_at = ?4
+             WHERE project_id = ?5 AND mini_project_id = ?6
+               AND (spec_id <> ?1 OR spec_version <> ?2 OR spec_hash <> ?3)",
+            params![
+                snapshot.topology.spec_id.to_string(),
+                version_column(snapshot.topology.version),
+                snapshot.topology.canonical_hash.as_str(),
+                text(snapshot.pinned_at),
+                snapshot.project_id.to_string(),
+                snapshot.mini_project_id.to_string(),
+            ],
+        )
+        .map_err(backend)
+}
+
+impl SqliteStore {
+    /// Repair a legacy partial topology upgrade whose epic pin committed but
+    /// whose existing nodes still cite the previous immutable revision.
+    ///
+    /// This is intentionally a startup-only convergence primitive. It creates
+    /// no node, seat, native binding, event or command receipt and changes no
+    /// aggregate revision. Every repair is revalidated through the same
+    /// hierarchy/capability proof as a fresh atomic repin; an incompatible
+    /// mismatch fails closed and rolls back the whole sweep.
+    ///
+    /// # Errors
+    /// Returns the repository's typed refusal if a target specification is
+    /// missing, incompatible, or the repair cannot be committed atomically.
+    pub fn reconcile_mini_project_topology_nodes(
+        &self,
+    ) -> RepositoryResult<Vec<MiniProjectTopologySnapshot>> {
+        let transaction = self.begin()?;
+        let mut statement = transaction
+            .prepare(
+                "SELECT snapshot.project_id, snapshot.mini_project_id, snapshot.spec_id,
+                        snapshot.version, snapshot.canonical_hash, snapshot.pinned_at
+                 FROM mini_project_topology_snapshots snapshot
+                 WHERE EXISTS (
+                     SELECT 1 FROM topology_nodes node
+                     WHERE node.project_id = snapshot.project_id
+                       AND node.mini_project_id = snapshot.mini_project_id
+                       AND (node.spec_id <> snapshot.spec_id
+                            OR node.spec_version <> snapshot.version
+                            OR node.spec_hash <> snapshot.canonical_hash)
+                 )
+                 ORDER BY snapshot.project_id, snapshot.mini_project_id",
+            )
+            .map_err(backend)?;
+        let mut rows = statement.query([]).map_err(backend)?;
+        let mut mismatches = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            mismatches.push(MiniProjectTopologySnapshot {
+                project_id: ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+                mini_project_id: MiniProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+                topology: TopologySnapshot {
+                    spec_id: TopologySpecId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+                    version: read_version(row.get::<_, i64>(3).map_err(backend)?)?,
+                    canonical_hash: ContentHash::parse(&row.get::<_, String>(4).map_err(backend)?)?,
+                },
+                pinned_at: read_timestamp(&row.get::<_, String>(5).map_err(backend)?)?,
+            });
+        }
+        drop(rows);
+        drop(statement);
+
+        for snapshot in &mismatches {
+            repin_mini_project_nodes_in(&transaction, snapshot)?;
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(mismatches)
+    }
 }
 
 fn role_catalog_in(
@@ -3996,8 +4196,11 @@ impl TopologyRepository for SqliteStore {
                 subject: "mini-project topology snapshot",
             });
         }
-        // And the revision it moves to must be one this project published.
-        topology_spec_in(&transaction, snapshot.project_id, &snapshot.topology)?;
+        // And the revision it moves to must be one this project published and
+        // able to represent the exact nodes, hierarchy, native containers and
+        // seats the epic already owns. The node stamps and the epic pin move in
+        // this one transaction; neither half may become visible on its own.
+        repin_mini_project_nodes_in(&transaction, snapshot)?;
         transaction
             .execute(
                 "UPDATE mini_project_topology_snapshots

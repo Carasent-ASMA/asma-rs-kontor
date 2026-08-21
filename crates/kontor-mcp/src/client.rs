@@ -640,6 +640,13 @@ impl HttpTransport {
             // Environment proxies are ignored for the same reason: a loopback call
             // that went through a proxy would carry the credential off-machine.
             .no_proxy()
+            // The MCP process is intentionally long-lived while the supervised
+            // daemon may be replaced in place. Do not retain an idle connection
+            // across that ownership boundary: a poisoned pooled socket made
+            // every later read report `unavailable` even after the same realm
+            // was serving again. Loopback setup is cheap and one fresh
+            // connection per bounded call makes recovery observable immediately.
+            .pool_max_idle_per_host(0)
             .build()
             .map_err(|_| LocalError::Client)?;
         Ok(Self {

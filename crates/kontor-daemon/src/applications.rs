@@ -113,7 +113,7 @@ use kontor_core::id::{
     SpecVersion, StatusConflictId, TaskId, TeamRunId, TicketProjectionId, Timestamp,
     TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
 };
-use kontor_core::naming::NativeNameValues;
+use kontor_core::naming::{NativeNameTemplate, NativeNameValues};
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
@@ -144,8 +144,8 @@ use kontor_core::state::{
     TopologyLifecycle,
 };
 use kontor_core::ticket::{
-    CommentPolicy, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, TicketSyncProjection,
-    TransitionPlan,
+    CommentPolicy, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, StatusConflictKind,
+    TicketSyncProjection, TransitionPlan,
 };
 use kontor_integrations_asma::AsmaExecutable;
 use kontor_integrations_asma::jira::{
@@ -171,6 +171,7 @@ use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
     ContainerRequest, RetitleContainerRequest,
 };
+use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
     LaunchParts, LaunchPlacement, MessageId, ReconcileSessionLabelsRequest,
 };
@@ -1355,6 +1356,7 @@ impl Services {
                 })
             })
             .map_err(|error| self.refuse(&error))?;
+        self.release_team_seats(project_id, run.team_run_id, now)?;
         Ok(Some(run.team_run_id.to_string()))
     }
 
@@ -1376,6 +1378,7 @@ impl Services {
             ));
         };
         if team.lifecycle.is_terminal() {
+            self.release_team_seats(project_id, run.team_run_id, now)?;
             return Ok((Some(run.team_run_id.to_string()), None));
         }
         let certificate = match self.certify_team(project_id, run.team_run_id)? {
@@ -1406,6 +1409,7 @@ impl Services {
                 })
             })
             .map_err(|error| self.refuse(&error))?;
+        self.release_team_seats(project_id, run.team_run_id, now)?;
         state.signals().appended();
         Ok((Some(run.team_run_id.to_string()), None))
     }
@@ -1562,10 +1566,9 @@ impl Services {
     fn refuse_asma(&self, error: &kontor_integrations_asma::AsmaError) -> ApiError {
         tracing::warn!(detail = %error, "the configured Jira connector refused reconciliation");
         match error {
-            kontor_integrations_asma::AsmaError::Conflict { .. } => self.deny(
-                ApiErrorCode::RevisionConflict,
-                "fresh Jira evidence conflicts with the pinned external-workflow policy",
-            ),
+            kontor_integrations_asma::AsmaError::Conflict { kind, .. } => {
+                self.deny(ApiErrorCode::RevisionConflict, jira_conflict_rule(*kind))
+            }
             kontor_integrations_asma::AsmaError::Domain(_)
             | kontor_integrations_asma::AsmaError::Selection { .. }
             | kontor_integrations_asma::AsmaError::Refused { .. } => self.deny(
@@ -2252,12 +2255,20 @@ impl Services {
         let runs = state
             .with_store(|store| store.list_team_runs_for_task(project_id, task_id))
             .map_err(|error| self.refuse(&error))?;
-        for (team_run_id, _) in runs {
+        for (team_run_id, lifecycle) in runs {
+            if lifecycle.is_terminal() {
+                continue;
+            }
             let seats = state
                 .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
                 .map_err(|error| self.refuse(&error))?;
-            if let Some(seat) = seats.into_iter().next() {
-                return Ok(Some(seat.agent_run_id));
+            for seat in seats {
+                let run = state
+                    .with_store(|store| store.get_agent_run(project_id, seat.agent_run_id))
+                    .map_err(|error| self.refuse(&error))?;
+                if run.is_some_and(|run| !run.projection.lifecycle.is_terminal()) {
+                    return Ok(Some(seat.agent_run_id));
+                }
             }
         }
         Ok(None)
@@ -2499,6 +2510,146 @@ impl Services {
         })?;
         state.signals().appended();
         Ok(receipt)
+    }
+
+    /// Ensure an open native-bound run has the launch intent Kontor actually
+    /// exercised when it created that session.
+    ///
+    /// New downstream and replacement seats call this before runtime contact.
+    /// The bound-run reconciliation path calls it only after loading the exact
+    /// immutable binding. That second use repairs the historical write omission;
+    /// it never authorizes another launch.
+    fn ensure_launch_intent(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> Result<kontor_core::repository::AgentRun, ApiError> {
+        let state = self.state()?;
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the agent run no longer exists"))?;
+        if run.terminal.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a terminal run cannot receive launch intent",
+            ));
+        }
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, run.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the team run no longer exists"))?;
+        if team.lifecycle.is_terminal() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a terminal team run cannot receive launch intent",
+            ));
+        }
+        match run.projection.desired {
+            kontor_core::state::DesiredRunState::RunRequested => return Ok(run),
+            kontor_core::state::DesiredRunState::NoIntent => {}
+            _ => {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the run already carries a contradictory desired state",
+                ));
+            }
+        }
+
+        let key = IdempotencyKey::parse(&format!("launch-run-{agent_run_id}"))
+            .map_err(|error| self.refuse_domain(&error))?;
+        let document = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "launch_run",
+            "agent_run_id": agent_run_id.to_string(),
+            "team_run_id": run.team_run_id.to_string(),
+            "role_slot": run.role.as_str(),
+        }))?;
+        let now = kontor_api::now();
+        let envelope = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewCommandIntent {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key,
+                kind: CommandKind::LaunchRun,
+                target: AggregateRef::AgentRun { agent_run_id },
+                target_revision: run.revision,
+                intent: document.clone(),
+                payload: document,
+                desired: Some(kontor_core::state::DesiredRunState::RunRequested),
+                not_before: now,
+                created_at: now,
+            },
+        );
+        state
+            .with_store(|store| store.record_intent_in_realm(&envelope))
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the agent run vanished"))
+    }
+
+    /// Persist one runtime-issued control observation and reduce both the child
+    /// and its owning TeamRun in the same store transaction.
+    fn persist_run_observation(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        observation: &ControlPlaneObservation,
+        now: Timestamp,
+    ) -> Result<(kontor_core::state::RunProjection, CanonicalDocument), ApiError> {
+        let state = self.state()?;
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the agent run no longer exists"))?;
+        let payload = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "observed_state": observation.state.as_str(),
+            "contact": observation.contact.as_str(),
+            "native_sequence": observation.native_sequence,
+            "observed_at": observation.observed_at.to_string(),
+        }))?;
+        let projection = state
+            .with_store(|store| {
+                store.record_observation(&kontor_core::repository::NewObservation {
+                    event: kontor_core::repository::NewRuntimeEvent {
+                        project_id,
+                        agent_run_id,
+                        identity: observation.identity.clone(),
+                        native_event_id: observation.native_event_id.clone(),
+                        native_sequence: observation.native_sequence,
+                        payload: payload.clone(),
+                        observed_at: observation.observed_at,
+                    },
+                    observed: observation.state,
+                    contact: observation.contact,
+                    freshness: kontor_core::state::Freshness::evaluate(
+                        Some(observation.observed_at),
+                        now,
+                        jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                    ),
+                    expected_revision: run.revision,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        self.observe_seat(
+            project_id,
+            self.task_for_team_run(project_id, run.team_run_id)?,
+            run.team_run_id,
+            &RoleSlotId::new(run.role.clone()),
+            &SeatLivenessObservation {
+                attached_at: Some(observation.observed_at),
+                runtime_reported: Some(observation.state),
+                ..SeatLivenessObservation::default()
+            },
+            now,
+        )?;
+        Ok((projection, payload))
     }
 
     /// Build the scheduling snapshot one epic is judged against.
@@ -4858,8 +5009,26 @@ impl Services {
         epic_id: Option<MiniProjectId>,
     ) -> Result<TopologyProjectionDto, ApiError> {
         let state = self.state()?;
-        let topology = self.project_topology(project_id)?;
-        let spec = self.pinned_spec(project_id)?;
+        // An epic-scoped projection reports the epic's immutable pin, not the
+        // project's default. The two intentionally diverge after an authorized
+        // per-epic upgrade; reading the default here made a successful apply
+        // appear to remain on the old revision and interpreted every node
+        // through the wrong vocabulary.
+        let topology = match epic_id {
+            Some(epic_id) => self.epic_pin(project_id, epic_id)?,
+            None => self.project_topology(project_id)?,
+        };
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, topology.spec_id, topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the projected topology revision is not published in this project",
+                )
+            })?;
         let nodes = state
             .with_store(|store| store.list_project_topology_nodes(project_id))
             .map_err(|error| self.refuse(&error))?;
@@ -8101,6 +8270,53 @@ impl Services {
     }
 }
 
+/// The static rule sentence for one typed reconciliation conflict.
+///
+/// Reconciliation has always produced a *typed* conflict; this surface used to
+/// collapse every one of them into a single sentence about "the pinned
+/// external-workflow policy". That told an operator that a policy refused without
+/// saying which, and the live ASMA-7877 run is what it costs: a ticket that could
+/// not move from `DRAFT` to `In Development` reported the same prose as an
+/// ownership dispute or a stale read.
+///
+/// An error's `rule` is `&'static str` by contract — never a stored value — so the
+/// kind is surfaced by choosing a sentence per kind rather than by formatting one.
+/// The match is exhaustive over a closed enum, so a new conflict kind cannot be
+/// added without deciding what it tells a caller.
+const fn jira_conflict_rule(kind: StatusConflictKind) -> &'static str {
+    match kind {
+        StatusConflictKind::StaleObservation => {
+            "the newest Jira observation is too old to act on; observe again"
+        }
+        StatusConflictKind::NoLiveTransition => {
+            "this Jira workflow offers no route Kontor may take to the target status"
+        }
+        StatusConflictKind::MultipleLiveTransitions => {
+            "several Jira transitions reach the target status; the pinned specification does not \
+             say which"
+        }
+        StatusConflictKind::IncompatibleHumanMove => {
+            "the ticket was moved to a status the pinned specification cannot start from"
+        }
+        StatusConflictKind::ExternalTerminalBeforeInternalEvidence => {
+            "the ticket is closed in Jira while Kontor holds no closure evidence"
+        }
+        StatusConflictKind::UnknownStatusClass => {
+            "the observed Jira status is not declared by the pinned specification"
+        }
+        StatusConflictKind::UnknownTransitionPath => {
+            "the target status is not declared by the pinned specification"
+        }
+        StatusConflictKind::OwnershipUnresolved => {
+            "Kontor should hold this ticket but no Jira assignee could be resolved"
+        }
+        StatusConflictKind::OwnershipMismatch => "somebody else holds this Jira ticket",
+        StatusConflictKind::TerminalOwnershipViolation => {
+            "a closed ticket's owner changed while the pinned policy preserves it"
+        }
+    }
+}
+
 /// One phase as its wire projection.
 fn completion_phase_dto(phase: CompletionPhase) -> CompletionPhaseDto {
     match phase {
@@ -8245,6 +8461,17 @@ fn needs_human_dto(payload: &NeedsHumanPayload) -> NeedsHumanDto {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    fn persist_session_observation(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        observation: &ControlPlaneObservation,
+        reduced_at: Timestamp,
+    ) -> Result<(), ApiError> {
+        self.persist_run_observation(project_id, agent_run_id, observation, reduced_at)
+            .map(|_| ())
+    }
+
     fn projects(&self) -> Result<Vec<kontor_api::applications::ProjectReadDto>, ApiError> {
         let state = self.state()?;
         Ok(state
@@ -9263,6 +9490,17 @@ impl ApplicationOperations for Services {
             )?
             .is_some();
 
+        // Idempotency suppresses a second native effect; it does not freeze a
+        // repairable hole in Kontor's own logical topology. Older admissions
+        // could persist a task node without its sibling ECP, so a replay must
+        // re-ensure that durable chain before returning the unchanged receipt.
+        // `ensure_task_node` is store-only and idempotent: the runtime remains
+        // untouched and the already bound TSW keeps its native identity.
+        if replayed && let Some(task_id) = scope.task_id {
+            let leaf = self.ensure_task_node(project_id, task_id)?;
+            self.retire_unrouted_task_persistent_seats(project_id, task_id, leaf.id)?;
+        }
+
         if !replayed {
             // A ticket's semantic identity is a placement prerequisite, not a
             // value to improvise after the root and workspace have already
@@ -9284,7 +9522,13 @@ impl ApplicationOperations for Services {
             // container and binding the seats the scope hosts. The chain comes
             // first because neither a native binding nor a seat can ever
             // belong to a node that does not exist.
-            let leaf = self.ensure_scope_chain(project_id, &scope)?;
+            let leaf = match scope.task_id {
+                // Ticket admission also needs the ECP node that owns delivery
+                // seats. `ensure_task_node` creates that durable chain without
+                // admitting a TeamRun or opening a delivery seat.
+                Some(task_id) => self.ensure_task_node(project_id, task_id)?,
+                None => self.ensure_scope_chain(project_id, &scope)?,
+            };
             let spec = self.pinned_spec(project_id)?;
             let declared = spec
                 .node_kinds
@@ -9322,9 +9566,14 @@ impl ApplicationOperations for Services {
             // that is a native root hosts nothing, and opening a seat on one
             // would be Kontor placing work where the vocabulary says it cannot
             // go.
-            if declared
-                .projection_capabilities
-                .contains(&NodeProjectionCapability::SessionHost)
+            // Ticket materialization binds the durable TSW container but does
+            // not admit a TeamRun or pre-create a delivery seat. Scheduler
+            // start owns delivery-seat creation. Structural session hosts keep
+            // their control seat.
+            if scope.task_id.is_none()
+                && declared
+                    .projection_capabilities
+                    .contains(&NodeProjectionCapability::SessionHost)
             {
                 let slot = self.control_slot()?;
                 let held = state
@@ -9356,6 +9605,9 @@ impl ApplicationOperations for Services {
                         })
                         .map_err(|error| self.refuse(&error))?;
                 }
+            }
+            if let Some(task_id) = leaf.task_id {
+                self.retire_unrouted_task_persistent_seats(project_id, task_id, leaf.id)?;
             }
         }
 
@@ -10862,10 +11114,10 @@ impl ApplicationOperations for Services {
                     "the persistent Core Team seat is not active in this project",
                 )
             })?;
-        if binding.task_id.is_some() || binding.team_run_id.is_some() {
+        if binding.team_run_id.is_some() {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
-                "delivery seats are messaged through the session message surface",
+                "TeamRun delivery seats are messaged through the session message surface",
             ));
         }
         let hosted = state
@@ -15018,6 +15270,7 @@ impl ApplicationOperations for Services {
             .map_err(|error| self.refuse(&error))?
             .is_some_and(|team| team.lifecycle.is_terminal());
         if already {
+            self.release_team_seats(project_id, team_run_id, now)?;
             return Ok(self.waiver_dto(state.realm_id(), stored, applied, Some(team_run_id)));
         }
         let team_run_closed = match self.certify_team(project_id, team_run_id)? {
@@ -15044,6 +15297,7 @@ impl ApplicationOperations for Services {
                         })
                     })
                     .map_err(|error| self.refuse(&error))?;
+                self.release_team_seats(project_id, team_run_id, now)?;
                 state.signals().appended();
                 Some(team_run_id.to_string())
             }
@@ -15583,6 +15837,7 @@ impl ApplicationOperations for Services {
                 .with_store(|store| store.create_agent_run(&successor_row))
                 .map_err(|error| self.refuse(&error))?;
         }
+        self.ensure_launch_intent(project_id, successor_agent_run_id)?;
 
         adapter
             .prepare_plane()
@@ -15678,6 +15933,12 @@ impl ApplicationOperations for Services {
                 store.record_run_context_policy(project_id, successor_agent_run_id, &context_policy)
             })
             .map_err(|error| self.refuse(&error))?;
+        self.persist_run_observation(
+            project_id,
+            successor_agent_run_id,
+            &outcome.observation,
+            now,
+        )?;
         self.hold(&outcome.snapshot)?;
         self.retry_undelivered_dispatches().await?;
 
@@ -15870,7 +16131,7 @@ impl ApplicationOperations for Services {
 
         // (1) The run and its *immutable* binding. A run that was never bound has
         // no session to ask about, which is not the same as a session that ended.
-        let run = state
+        let mut run = state
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| {
@@ -15879,12 +16140,21 @@ impl ApplicationOperations for Services {
                     "no such agent run exists in this project",
                 )
             })?;
-        let binding = run.binding.as_ref().ok_or_else(|| {
+        let binding = run.binding.clone().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::NotFound,
                 "this run was never bound to a native session, so there is nothing to settle",
             )
         })?;
+
+        // A bound open session with `no_intent` is the historical replay gap:
+        // Kontor launched and bound it, but omitted the desired-state write.
+        // Repair that durable half before reducing the runtime's exact binding.
+        if run.terminal.is_none()
+            && run.projection.desired == kontor_core::state::DesiredRunState::NoIntent
+        {
+            run = self.ensure_launch_intent(project_id, agent_run_id)?;
+        }
 
         if run.terminal.is_none() && self.latest_handoff_receipt(project_id, &run)?.is_some() {
             let task_id = self.task_for_team_run(project_id, run.team_run_id)?;
@@ -15997,55 +16267,8 @@ impl ApplicationOperations for Services {
         // whatever the runtime told it. The digest below is therefore the digest of
         // this document, which is what the closure cites and what the store
         // re-loads and compares.
-        let payload = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "observed_state": observation.state.as_str(),
-            "contact": observation.contact.as_str(),
-            "native_sequence": observation.native_sequence,
-            "observed_at": observation.observed_at.to_string(),
-        }))?;
-        let projection = state
-            .with_store(|store| {
-                store.record_observation(&kontor_core::repository::NewObservation {
-                    event: kontor_core::repository::NewRuntimeEvent {
-                        project_id,
-                        agent_run_id,
-                        identity: observation.identity.clone(),
-                        native_event_id: observation.native_event_id.clone(),
-                        native_sequence: observation.native_sequence,
-                        payload: payload.clone(),
-                        observed_at: observation.observed_at,
-                    },
-                    observed: observation.state,
-                    contact: observation.contact,
-                    freshness: kontor_core::state::Freshness::evaluate(
-                        Some(observation.observed_at),
-                        now,
-                        jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
-                    ),
-                    expected_revision: run.revision,
-                })
-            })
-            .map_err(|error| self.refuse(&error))?;
-        state.signals().appended();
-
-        // (3b) The same readback, against the seat's own binding. A successful
-        // inspect proves the session is *there*, so it records attachment and
-        // quotes what the runtime said about itself — and it deliberately
-        // records no activity. Treating `running` as activity is the shortcut
-        // that makes a hung seat look busy for as long as its process survives.
-        self.observe_seat(
-            project_id,
-            self.task_for_team_run(project_id, run.team_run_id)?,
-            run.team_run_id,
-            &RoleSlotId::new(run.role.clone()),
-            &SeatLivenessObservation {
-                attached_at: Some(observation.observed_at),
-                runtime_reported: Some(observation.state),
-                ..SeatLivenessObservation::default()
-            },
-            now,
-        )?;
+        let (projection, payload) =
+            self.persist_run_observation(project_id, agent_run_id, &observation, now)?;
 
         // (4) The only place an outcome comes from. It is derived from the
         // observation against the *issued* binding, and it refuses every uncertain
@@ -16055,10 +16278,28 @@ impl ApplicationOperations for Services {
         let Some(outcome) =
             observation.terminal_evidence(&issued, now, state.evidence_window_seconds())
         else {
-            return Err(self.deny(
-                ApiErrorCode::UnsupportedCapability,
-                "the runtime does not currently evidence a terminal state for this run",
-            ));
+            let reconciled = state
+                .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the run vanished during reconciliation",
+                    )
+                })?;
+            let (team_run_closed, team_pending) =
+                self.team_closure_state(project_id, &reconciled)?;
+            return Ok(RuntimeSettlementDto {
+                realm_id,
+                agent_run_id: agent_run_id.to_string(),
+                observed: observation.state.as_str().to_owned(),
+                outcome: None,
+                evidence_cursor: projection.last_cursor,
+                applied: AppliedDto::Created,
+                team_run_closed,
+                team_pending,
+                receipt_id: receipt.to_string(),
+            });
         };
         let cursor = projection.last_cursor.ok_or_else(|| {
             self.deny(
@@ -17086,12 +17327,15 @@ impl Services {
                 ));
             }
             ExternalId::parse(&evidence.provider).map_err(|error| self.refuse_domain(&error))?;
-            if predecessor.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
-                || predecessor.projection.desired != kontor_core::state::DesiredRunState::NoIntent
+            if predecessor.projection.lifecycle != kontor_core::state::RunLifecycle::Launching
+                || predecessor.projection.desired
+                    != kontor_core::state::DesiredRunState::RunRequested
+                || predecessor.projection.observed
+                    != kontor_core::state::ObservedRunState::Launching
             {
                 return Err(self.deny(
                     ApiErrorCode::UnsupportedCapability,
-                    "provider-unavailable retirement is limited to a queued seat with no dispatch intent",
+                    "provider-unavailable retirement is limited to a seat evidenced only at launch",
                 ));
             }
             if adapter.provider_available(&evidence.provider) {
@@ -17675,6 +17919,7 @@ impl Services {
                     store.record_run_context_policy(project_id, agent_run_id, &context_policy)
                 })
                 .map_err(|error| self.refuse(&error))?;
+            self.persist_run_observation(project_id, agent_run_id, &outcome.observation, now)?;
             // The launch read a native session back for this seat: it is
             // attached, and starting is itself an observed runtime event, so it
             // is the seat's first activity. Recording only attachment here would
@@ -17952,12 +18197,9 @@ impl Services {
         task_id: TaskId,
     ) -> Result<SessionTopologyNode, ApiError> {
         let state = self.state()?;
-        if let Some(node) = state
+        let existing_task = state
             .with_store(|store| store.get_task_topology_node(project_id, task_id))
-            .map_err(|error| self.refuse(&error))?
-        {
-            return Ok(node);
-        }
+            .map_err(|error| self.refuse(&error))?;
 
         // A task outside an epic has no place in this topology: the delivery
         // kind is declared below the epic kind, and inventing an epic for it
@@ -18075,6 +18317,14 @@ impl Services {
             },
         )?;
 
+        // A task row can predate the ECP repair above. Return it only after the
+        // whole owning chain has been ensured; returning at function entry
+        // would make the legacy hole permanent, including on idempotent
+        // materialization replays.
+        if let Some(node) = existing_task {
+            return Ok(node);
+        }
+
         self.ensure_node(
             None,
             NewSessionTopologyNode {
@@ -18088,6 +18338,55 @@ impl Services {
                 created_at: now,
             },
         )
+    }
+
+    /// Retire legacy task control rows that have no supported message route.
+    ///
+    /// Current Operational semantics admit TSW delivery seats only with a
+    /// TeamRun; persistent LSA/TPM control seats belong to the epic Core Team.
+    /// Older ticket materialization could leave an active task-bound TPM with
+    /// neither a TeamRun/AgentRun session route nor a hosted native route. A
+    /// materialization replay reconciles that durable row in place: it remains
+    /// evidence under the same `SeatBindingId`, but no longer publishes itself
+    /// active. An already-hosted task seat is left alone and remains addressable
+    /// through topology messaging; this repair never invents its route.
+    fn retire_unrouted_task_persistent_seats(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        task_node_id: TopologyNodeId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let bindings = state
+            .with_store(|store| store.list_seat_bindings(project_id, task_node_id))
+            .map_err(|error| self.refuse(&error))?;
+        let now = kontor_api::now();
+        for binding in bindings.into_iter().filter(|binding| {
+            binding.is_non_terminal()
+                && binding.task_id == Some(task_id)
+                && binding.team_run_id.is_none()
+        }) {
+            let hosted = state
+                .with_store(|store| store.get_hosted_topology_seat(project_id, binding.id))
+                .map_err(|error| self.refuse(&error))?;
+            if hosted.is_some() {
+                continue;
+            }
+            state
+                .with_store(|store| {
+                    store.observe_seat_binding(
+                        project_id,
+                        binding.id,
+                        &SeatLivenessObservation {
+                            released_at: Some(now),
+                            ..SeatLivenessObservation::default()
+                        },
+                        now,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        Ok(())
     }
 
     /// The seat that owns one epic's delivery seats, opened once per epic.
@@ -18212,6 +18511,60 @@ impl Services {
         Ok(())
     }
 
+    /// Retire every topology seat owned by one terminal TeamRun.
+    ///
+    /// The rows remain historical evidence; retiring them only releases the
+    /// active `(node, role slot)` key so a later admitted generation receives
+    /// fresh bindings instead of adopting the old team's seats.
+    fn release_team_seats(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        released_at: Timestamp,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let Some(team) = state
+            .with_store(|store| store.get_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(());
+        };
+        if !team.lifecycle.is_terminal() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a non-terminal TeamRun's seats cannot be released",
+            ));
+        }
+        let Some(node) = state
+            .with_store(|store| store.get_task_topology_node(project_id, team.task_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(());
+        };
+        let bindings = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?;
+        for binding in bindings
+            .into_iter()
+            .filter(|binding| binding.team_run_id == Some(team_run_id) && binding.is_non_terminal())
+        {
+            state
+                .with_store(|store| {
+                    store.observe_seat_binding(
+                        project_id,
+                        binding.id,
+                        &SeatLivenessObservation {
+                            released_at: Some(released_at),
+                            ..SeatLivenessObservation::default()
+                        },
+                        released_at,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        Ok(())
+    }
+
     /// Release the seat that owns one epic's delivery seats.
     ///
     /// The live half of parent-derived orphanhood. Until something closes the
@@ -18319,11 +18672,17 @@ impl Services {
         let held = state
             .with_store(|store| store.list_seat_bindings(project_id, node.id))
             .map_err(|error| self.refuse(&error))?;
-        if held
+        if let Some(binding) = held
             .iter()
-            .any(|binding| &binding.role_slot_id == slot && binding.is_non_terminal())
+            .find(|binding| &binding.role_slot_id == slot && binding.is_non_terminal())
         {
-            return Ok(());
+            if binding.task_id == Some(task_id) && binding.team_run_id == Some(team_run_id) {
+                return Ok(());
+            }
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this role slot is held by another live task or TeamRun",
+            ));
         }
         let now = kontor_api::now();
         let deadline = now
@@ -18614,6 +18973,10 @@ impl Services {
                     "a node's kind is not declared by its pinned topology revision",
                 )
             })?;
+        if let NativeNameTemplate::Legacy(template) = template {
+            return render_legacy_container_name(template, scope)
+                .map_err(|error| self.refuse_domain(&error));
+        }
         let mut values = NativeNameValues::new().with_area_code(node.kind.as_str());
         if let Some(scope) = scope {
             if let Some(task) = scope.task.as_ref() {
@@ -18869,6 +19232,7 @@ impl Services {
                 })
                 .map_err(|error| self.refuse(&error))?;
         }
+        self.ensure_launch_intent(project_id, agent_run_id)?;
 
         // The seat resolves its context window against the team run's own frozen
         // inputs, read back from storage rather than recomposed from whatever
@@ -18948,6 +19312,7 @@ impl Services {
                 store.record_run_context_policy(project_id, agent_run_id, &context_policy)
             })
             .map_err(|error| self.refuse(&error))?;
+        self.persist_run_observation(project_id, agent_run_id, &outcome.observation, now)?;
         // As in `seat`: the launch read a session back, and starting is the
         // seat's first observed activity.
         self.observe_seat(
@@ -19264,6 +19629,37 @@ impl Services {
     }
 }
 
+/// Render a pre-v47 immutable template only when it names the old closed scope
+/// placeholders explicitly. Opaque legacy prose remains read-only: it cannot be
+/// guessed into a native identity after the typed naming contract exists.
+fn render_legacy_container_name(
+    template: &ExternalName,
+    scope: Option<&ExecutionScope>,
+) -> kontor_core::DomainResult<ExternalName> {
+    let scope = scope.ok_or_else(|| {
+        kontor_core::DomainError::invalid(
+            "NativeNameTemplate",
+            "a legacy placeholder template needs an explicit execution scope",
+        )
+    })?;
+    let mut rendered = template
+        .as_str()
+        .replace("<Jira epic>", scope.epic.external_epic_key.as_str())
+        .replace("<short title>", scope.epic.short_title.as_str());
+    if let Some(task) = scope.task.as_ref() {
+        rendered = rendered
+            .replace("<Jira issue>", task.external_issue_key.as_str())
+            .replace("<short ticket code>", task.short_code.as_str());
+    }
+    if rendered == template.as_str() || rendered.contains(['<', '>']) {
+        return Err(kontor_core::DomainError::invalid(
+            "NativeNameTemplate",
+            "a legacy template must use only the recognized scope placeholders",
+        ));
+    }
+    ExternalName::parse(&rendered)
+}
+
 /// One profile pack, as the catalogue advertises it.
 fn pack_dto(
     pack: &ProfilePackSpec,
@@ -19401,8 +19797,38 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{counts_towards_completion, eligible_roots, slot_prompt};
+    use super::{
+        counts_towards_completion, eligible_roots, render_legacy_container_name, slot_prompt,
+    };
+    use kontor_core::id::{ExternalId, ExternalName, MiniProjectId};
     use kontor_core::state::TaskState;
+    use kontor_runtime::scope::{EpicScope, ExecutionScope};
+
+    #[test]
+    fn a_pre_v47_placeholder_template_renders_from_the_exact_epic_scope() {
+        let template = ExternalName::parse("ESW · <Jira epic> · <short title>")
+            .expect("the historical immutable template");
+        let scope = ExecutionScope::for_epic(EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-7675").expect("the Jira epic"),
+            short_title: ExternalName::parse("QNR-P1").expect("the short title"),
+        });
+
+        assert_eq!(
+            render_legacy_container_name(&template, Some(&scope))
+                .expect("the explicit historical placeholders render")
+                .as_str(),
+            "ESW · ASMA-7675 · QNR-P1"
+        );
+        assert!(
+            render_legacy_container_name(
+                &ExternalName::parse("Epic Session Workspace").expect("legacy prose"),
+                Some(&scope),
+            )
+            .is_err(),
+            "opaque legacy prose stays read-only"
+        );
+    }
 
     #[test]
     fn withdrawal_alone_leaves_the_epic_completion_census() {

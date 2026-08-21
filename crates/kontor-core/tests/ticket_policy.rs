@@ -1116,6 +1116,197 @@ fn the_two_fixtures_produce_the_same_decisions() {
 }
 
 // ---------------------------------------------------------------------------
+// Staged multi-hop convergence
+// ---------------------------------------------------------------------------
+
+/// One live transition, built from what a workflow actually offers.
+fn route(id: &str, to: &StatusSelector) -> LiveTransition {
+    LiveTransition {
+        transition_id: external(id),
+        to: to.clone(),
+    }
+}
+
+/// The input shape every staged-hop case shares: ownership already converged, so
+/// the assignment prerequisite is behind us and the status is the only question.
+fn held_input<'a>(
+    spec: &'a ExternalWorkflowSpec,
+    observation: &'a ExternalTicketObservation,
+    facts: &'a InternalTaskFacts,
+    principal: &'a TicketPrincipal,
+    live: &'a [LiveTransition],
+) -> ReconciliationInput<'a> {
+    ReconciliationInput {
+        spec,
+        observation,
+        freshness: Freshness::Fresh,
+        facts,
+        live_transitions: live,
+        principal,
+    }
+}
+
+/// A target that needs two moves is reached by two planned moves, not by one
+/// forced one.
+///
+/// This is the shape a real Jira workflow produced: the milestone wanted
+/// `In Development`, the ticket was standing somewhere that offered no direct
+/// route there, and the only route on offer led to the status the specification
+/// already declares as its reopen selector. Kontor plans that hop, keeps citing
+/// the milestone it is converging to, and lets the next observation finish the
+/// job.
+#[test]
+fn a_target_two_moves_away_is_reached_through_the_declared_intermediate() {
+    let spec = workflows().remove(0);
+    let target = target_of(&spec, "milestone.development-started");
+    let hop = spec
+        .reopen
+        .clone()
+        .expect("the fixture declares a reopen status");
+    let standing = spec
+        .inbound_compatible
+        .iter()
+        .find(|status| status.status_id != hop.status_id && status.status_id != target.status_id)
+        .cloned()
+        .expect("the fixture declares a third inbound status to stand on");
+
+    let principal = principal();
+    let standing_at = observation(&standing, Some(&principal.account_id));
+    let facts = facts(TaskState::InProgress, false, None);
+    // Only the hop is on offer. Nothing reaches the milestone in one move.
+    let live = vec![route("15", &hop)];
+
+    let outcome = reconcile(&held_input(&spec, &standing_at, &facts, &principal, &live));
+
+    let ReconciliationOutcome::Transition(plan) = outcome else {
+        panic!("a reachable intermediate is a plan, not a conflict: {outcome:?}");
+    };
+    assert_eq!(
+        plan.target.status_id, target.status_id,
+        "the plan still names the milestone it is converging to"
+    );
+    assert_eq!(
+        plan.destination().status_id,
+        hop.status_id,
+        "this attempt goes to the declared intermediate"
+    );
+    assert_eq!(
+        plan.transition
+            .as_ref()
+            .expect("a hop invokes a transition")
+            .transition_id,
+        external("15"),
+        "the hop uses the route the observation offered, not a remembered id"
+    );
+    assert!(
+        plan.is_staged_hop(),
+        "a hop is progress, not convergence, and has to say so"
+    );
+    assert!(
+        !plan.assignment_prerequisite,
+        "ownership already converged; this attempt is about the status"
+    );
+
+    // The next observation stands on the hop, and now the milestone is reachable.
+    let arrived = observation(&hop, Some(&principal.account_id));
+    let onward = vec![route("21", &target)];
+    let outcome = reconcile(&held_input(&spec, &arrived, &facts, &principal, &onward));
+    let ReconciliationOutcome::Transition(plan) = outcome else {
+        panic!("the second move is an ordinary convergence: {outcome:?}");
+    };
+    assert_eq!(plan.destination().status_id, target.status_id);
+    assert!(
+        !plan.is_staged_hop(),
+        "the second move reaches the milestone, so it is not a hop"
+    );
+}
+
+/// Every shape that is not "the declared intermediate, directly reachable, once"
+/// stays a typed conflict.
+///
+/// The hop is a narrow allowance, not a search. Each case below would be a route
+/// Kontor invented rather than one the specification declared, so each one keeps
+/// the conflict a human resolves.
+#[test]
+fn an_intermediate_kontor_was_not_given_is_refused_rather_than_invented() {
+    let base = workflows().remove(0);
+    let target = target_of(&base, "milestone.development-started");
+    let hop = base
+        .reopen
+        .clone()
+        .expect("the fixture declares a reopen status");
+    let standing = base
+        .inbound_compatible
+        .iter()
+        .find(|status| status.status_id != hop.status_id && status.status_id != target.status_id)
+        .cloned()
+        .expect("the fixture declares a third inbound status");
+    let principal = principal();
+    let facts = facts(TaskState::InProgress, false, None);
+
+    // No reopen selector at all: nothing is declared safe to route through.
+    let mut undeclared = base.clone();
+    undeclared.reopen = None;
+    let standing_at = observation(&standing, Some(&principal.account_id));
+    let live = vec![route("15", &hop)];
+    assert_eq!(
+        reconcile(&held_input(
+            &undeclared,
+            &standing_at,
+            &facts,
+            &principal,
+            &live
+        )),
+        ReconciliationOutcome::Conflict(StatusConflictKind::NoLiveTransition),
+        "with no declared intermediate the offered route is not Kontor's to take"
+    );
+
+    // The intermediate is declared but not currently offered.
+    let elsewhere = vec![route("99", &hold_status(&base))];
+    assert_eq!(
+        reconcile(&held_input(
+            &base,
+            &standing_at,
+            &facts,
+            &principal,
+            &elsewhere
+        )),
+        ReconciliationOutcome::Conflict(StatusConflictKind::NoLiveTransition),
+        "a declared intermediate that is not on offer is still not reachable"
+    );
+
+    // Already standing on the intermediate, and the milestone is still not
+    // reachable. Hopping again would be a loop between two statuses.
+    let on_hop = observation(&hop, Some(&principal.account_id));
+    let back_to_hop = vec![route("15", &hop)];
+    assert_eq!(
+        reconcile(&held_input(
+            &base,
+            &on_hop,
+            &facts,
+            &principal,
+            &back_to_hop
+        )),
+        ReconciliationOutcome::Conflict(StatusConflictKind::NoLiveTransition),
+        "a hop to where the ticket already stands makes no progress"
+    );
+
+    // Two routes reach the intermediate: which one runs is not determined.
+    let ambiguous = vec![route("15", &hop), route("16", &hop)];
+    assert_eq!(
+        reconcile(&held_input(
+            &base,
+            &standing_at,
+            &facts,
+            &principal,
+            &ambiguous
+        )),
+        ReconciliationOutcome::Conflict(StatusConflictKind::MultipleLiveTransitions),
+        "an ambiguous hop is a conflict, not a coin flip"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Transition receipts
 // ---------------------------------------------------------------------------
 

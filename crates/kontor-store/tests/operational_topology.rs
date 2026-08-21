@@ -2,8 +2,9 @@
 
 use kontor_core::id::{
     AggregateRevision, ExternalId, ExternalName, MiniProjectId, ProjectId, RoleCode, RoleSlotId,
-    SeatBindingId, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
+    SeatBindingId, SpecVersion, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
 };
+use kontor_core::naming::{NativeNameSegment, NativeNameTemplate, NativeNameToken};
 use kontor_core::repository::{
     AdaptiveAdmissionAdvance, MiniProjectTopologySnapshot, NewAdaptiveAdmissionState,
     NewMiniProject, NewProject, NewSeatBinding, NewSessionTopologyNode, ProjectRepository,
@@ -410,5 +411,201 @@ fn publishing_refuses_a_class_nobody_chose() {
             .expect("the read succeeds"),
         None,
         "a refused publish leaves nothing behind"
+    );
+}
+
+#[test]
+fn repinning_an_epic_migrates_compatible_nodes_without_changing_their_identities_or_revisions() {
+    let home = TempDir::new().expect("a temporary directory");
+    let database = home.path().join("kontor.db");
+    let store = SqliteStore::open(&database).expect("the store opens");
+    let project_id = ProjectId::generate();
+    let mini_project_id = MiniProjectId::generate();
+    let created_at = at("2026-08-20T20:00:00Z");
+    store
+        .create_project(&NewProject {
+            id: project_id,
+            name: name("Topology upgrade project"),
+            root_path: name("/tmp/topology-upgrade-project"),
+            created_at,
+        })
+        .expect("the project is created");
+    store
+        .create_mini_project(&NewMiniProject {
+            id: mini_project_id,
+            project_id,
+            name: name("Topology upgrade epic"),
+            created_at,
+        })
+        .expect("the epic is created");
+
+    let domain = bundled_operational_domain().expect("the bundled domain validates");
+    let first = domain.topology_specs.first().expect("a topology").clone();
+    let first_hash = store
+        .publish_topology_spec(project_id, &first, &default_stamp(), created_at)
+        .expect("version one is published");
+    let first_snapshot = TopologySnapshot {
+        spec_id: first.spec_id,
+        version: first.version,
+        canonical_hash: first_hash,
+    };
+    store
+        .set_project_topology_default(&ProjectTopologyDefault {
+            project_id,
+            topology: first_snapshot.clone(),
+            selected_at: created_at,
+        })
+        .expect("the project default is selected");
+    store
+        .pin_mini_project_topology(&MiniProjectTopologySnapshot {
+            project_id,
+            mini_project_id,
+            topology: first_snapshot.clone(),
+            pinned_at: created_at,
+        })
+        .expect("the epic is pinned");
+
+    let root_id = TopologyNodeId::generate();
+    store
+        .create_topology_node(&NewSessionTopologyNode {
+            id: root_id,
+            project_id,
+            mini_project_id: None,
+            topology: first_snapshot.clone(),
+            kind: TopologyKindKey::parse("PSW").expect("the root kind"),
+            parent_id: None,
+            task_id: None,
+            created_at,
+        })
+        .expect("the project root is created");
+    let epic_node_id = TopologyNodeId::generate();
+    store
+        .create_topology_node(&NewSessionTopologyNode {
+            id: epic_node_id,
+            project_id,
+            mini_project_id: Some(mini_project_id),
+            topology: first_snapshot.clone(),
+            kind: TopologyKindKey::parse("ESW").expect("the epic kind"),
+            parent_id: Some(root_id),
+            task_id: None,
+            created_at,
+        })
+        .expect("the epic node is created");
+    let control_node_id = TopologyNodeId::generate();
+    store
+        .create_topology_node(&NewSessionTopologyNode {
+            id: control_node_id,
+            project_id,
+            mini_project_id: Some(mini_project_id),
+            topology: first_snapshot.clone(),
+            kind: TopologyKindKey::parse("ECP").expect("the control kind"),
+            parent_id: Some(epic_node_id),
+            task_id: None,
+            created_at,
+        })
+        .expect("the control node is created");
+    let revisions_before = store
+        .list_topology_nodes(project_id, Some(mini_project_id))
+        .expect("the nodes read")
+        .into_iter()
+        .map(|node| (node.id, node.revision))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let mut second = first.clone();
+    second.version = SpecVersion::parse(2).expect("version two");
+    second
+        .node_kinds
+        .iter_mut()
+        .find(|kind| kind.kind.as_str() == "ESW")
+        .expect("the epic kind")
+        .name_template = NativeNameTemplate::from_segments(vec![
+        NativeNameSegment::Literal(name("Upgraded ESW")),
+        NativeNameSegment::Token(NativeNameToken::JiraCode),
+        NativeNameSegment::Token(NativeNameToken::KontorBacklogCode),
+    ])
+    .expect("the upgraded template is valid");
+    let second_hash = store
+        .publish_topology_spec(
+            project_id,
+            &second,
+            &default_stamp(),
+            at("2026-08-20T20:01:00Z"),
+        )
+        .expect("version two is published");
+    let second_snapshot = TopologySnapshot {
+        spec_id: second.spec_id,
+        version: second.version,
+        canonical_hash: second_hash,
+    };
+    store
+        .repin_mini_project_topology(&MiniProjectTopologySnapshot {
+            project_id,
+            mini_project_id,
+            topology: second_snapshot.clone(),
+            pinned_at: at("2026-08-20T20:02:00Z"),
+        })
+        .expect("the compatible upgrade is atomic");
+
+    let nodes = store
+        .list_topology_nodes(project_id, Some(mini_project_id))
+        .expect("the upgraded nodes read");
+    assert_eq!(
+        nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+        vec![epic_node_id, control_node_id],
+        "the upgrade creates or replaces no node"
+    );
+    assert!(
+        nodes.iter().all(|node| node.topology == second_snapshot),
+        "every node in the epic cites the exact immutable target revision"
+    );
+    assert!(
+        nodes
+            .iter()
+            .all(|node| { revisions_before.get(&node.id).copied() == Some(node.revision) }),
+        "repinning changes no node revision"
+    );
+    assert_eq!(
+        store
+            .get_topology_node(project_id, root_id)
+            .expect("the root reads")
+            .expect("the root remains")
+            .topology,
+        first_snapshot,
+        "the project root remains on the project default"
+    );
+
+    // Reproduce the legacy failure shape exactly: the epic pin is durable at
+    // v2 while every existing epic node still cites v1. Startup convergence
+    // must finish that same move without creating a successor or changing a
+    // revision.
+    let direct = rusqlite::Connection::open(&database).expect("a direct connection");
+    direct
+        .execute(
+            "UPDATE topology_nodes
+             SET spec_id = ?1, spec_version = ?2, spec_hash = ?3
+             WHERE project_id = ?4 AND mini_project_id = ?5",
+            rusqlite::params![
+                first_snapshot.spec_id.to_string(),
+                i64::from(first_snapshot.version.get()),
+                first_snapshot.canonical_hash.as_str(),
+                project_id.to_string(),
+                mini_project_id.to_string(),
+            ],
+        )
+        .expect("the legacy partial state is reproduced");
+    drop(direct);
+
+    let repaired = store
+        .reconcile_mini_project_topology_nodes()
+        .expect("startup convergence repairs the partial move");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(repaired[0].mini_project_id, mini_project_id);
+    let converged = store
+        .list_topology_nodes(project_id, Some(mini_project_id))
+        .expect("the repaired nodes read");
+    assert!(
+        converged.iter().all(|node| node.topology == second_snapshot
+            && revisions_before.get(&node.id).copied() == Some(node.revision)),
+        "startup convergence changes only the stale topology stamps"
     );
 }

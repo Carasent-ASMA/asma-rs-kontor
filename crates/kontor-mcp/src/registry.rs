@@ -2572,7 +2572,7 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "root_kind",
                 Place::Body,
-                ArgType::OpenKey,
+                ArgType::Text,
                 "The unique logical root kind.",
             ),
             req(
@@ -4550,6 +4550,21 @@ mod tests {
             settle.args_in(Place::Body).count(),
             0,
             "a client that could name an outcome could decide how a run ended"
+        );
+    }
+
+    #[test]
+    fn topology_draft_accepts_the_servers_canonical_uppercase_root_kind() {
+        let draft = ToolSpec::find("kontor_topology_spec_draft").expect("the draft tool");
+        let root = draft
+            .args
+            .iter()
+            .find(|argument| argument.name == "root_kind")
+            .expect("the root-kind argument");
+        assert_eq!(
+            root.ty,
+            ArgType::Text,
+            "PSW is a canonical TopologyKindKey and must reach server validation"
         );
     }
 

@@ -1453,6 +1453,17 @@ fn a_raw_event_is_appended_before_state_is_reduced_and_replays_are_idempotent() 
         .expect("the observation is recorded");
     assert_eq!(projection.observed, ObservedRunState::Running);
     assert_eq!(projection.derived, DerivedRunState::Confirmed);
+    assert_eq!(projection.lifecycle, RunLifecycle::Running);
+    assert_eq!(
+        fixture
+            .store
+            .get_team_run(fixture.project, current.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+            .lifecycle,
+        RunLifecycle::Running,
+        "one observation transaction advances the child and its TeamRun"
+    );
     assert_eq!(
         fixture
             .store
@@ -1540,7 +1551,7 @@ fn desired_observed_and_derived_all_survive_a_restart_with_different_values() {
     assert_eq!(projection.derived, DerivedRunState::Diverged);
     assert_eq!(
         projection.lifecycle,
-        kontor_core::state::RunLifecycle::Queued
+        kontor_core::state::RunLifecycle::Running
     );
 
     // Reopen the same file through a fresh connection: every dimension is still
@@ -1558,7 +1569,7 @@ fn desired_observed_and_derived_all_survive_a_restart_with_different_values() {
     assert_eq!(restored.projection.derived, DerivedRunState::Diverged);
     assert_eq!(
         restored.projection.lifecycle,
-        kontor_core::state::RunLifecycle::Queued
+        kontor_core::state::RunLifecycle::Running
     );
     assert!(restored.terminal.is_none());
     assert!(restored.projection.last_cursor.is_some());
