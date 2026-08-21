@@ -53,6 +53,7 @@ mod admission;
 mod capacity;
 mod launch;
 mod profile;
+mod quota;
 mod resolver;
 
 pub use admission::{AdaptivePosition, fold};
@@ -68,6 +69,7 @@ pub use launch::{
 pub use profile::{
     AccountEnvironmentMap, AccountError, AccountProfileDraft, AccountService, ENVIRONMENT_SCHEMA,
 };
+pub use quota::{ObservedQuota, QuotaBasis, QuotaSignal, classify};
 pub use resolver::{
     AccountResolver, KeychainBackend, KeychainFailure, KeychainTarget, PolicyError,
     ResolutionError, ResolutionReason, ResolvedAccountEnvironment, ResolverPolicy,
