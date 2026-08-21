@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 47;
+pub const SCHEMA_VERSION: i64 = 48;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -207,6 +207,9 @@ const MIGRATIONS: &[&str] = &[
     // Schema v47. Explicit immutable epic AI short names consumed by pinned
     // native-container naming templates.
     include_str!("../migrations/0047_configurable_native_names.sql"),
+    // Schema v48. Per-account, per-provider quota state: durable, self-expiring
+    // and finer-grained than the composition-time `unavailable_providers` set.
+    include_str!("../migrations/0048_provider_quota_states.sql"),
 ];
 
 const _: () = assert!(
@@ -367,21 +370,17 @@ fn apply_pending(
     let operational_hardening_lineage = matches!(version, 34 | 35)
         && !table_exists(&transaction, "consultation_profile_revisions")?;
     if operational_hardening_lineage {
-        for migration in [
-            MIGRATIONS[33],
-            MIGRATIONS[34],
-            MIGRATIONS[35],
-            MIGRATIONS[37],
-            MIGRATIONS[38],
-            MIGRATIONS[39],
-            MIGRATIONS[40],
-            MIGRATIONS[41],
-            MIGRATIONS[42],
-            MIGRATIONS[43],
-            MIGRATIONS[44],
-            MIGRATIONS[45],
-            MIGRATIONS[46],
-        ] {
+        // Everything from 33 onward except the escalation brief this lineage
+        // already installed by hand. Enumerated rather than listed: the list
+        // used to be spelled out index by index and ended at the last migration
+        // that existed when it was written, so appending a migration left this
+        // one lineage stranded a version short and `verify_applied` refused the
+        // open. A skip-set cannot fall behind.
+        const ALREADY_INSTALLED: usize = 36;
+        for (index, migration) in MIGRATIONS.iter().enumerate().skip(33) {
+            if index == ALREADY_INSTALLED {
+                continue;
+            }
             transaction.execute_batch(migration)?;
         }
     } else {

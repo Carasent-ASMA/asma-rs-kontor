@@ -2420,6 +2420,52 @@ pub struct AccountProfileDto {
     pub applied: AppliedDto,
 }
 
+/// One account's quota state for one provider, as a projection reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProviderQuotaStateDto {
+    /// The account the state is about.
+    #[schema(value_type = String)]
+    pub account_profile_id: AccountProfileId,
+    /// The provider, spelled as the model catalog spells it.
+    pub provider: String,
+    /// `available`, `exhausted`, `drained` or `unknown`.
+    pub state: String,
+    /// When an exhausted allowance returns. Absent for every other state.
+    pub resets_at: Option<String>,
+    /// `runtime_observation` or `operator`.
+    pub source: String,
+    /// When it was concluded.
+    pub observed_at: String,
+    /// Whether it still holds a launch back, as of this read.
+    pub blocking: bool,
+    /// The revision a write must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+}
+
+/// What `provider-quota-states:record` is asked for.
+///
+/// There is no free-text note and no place for the provider's own message. The
+/// message is vendor output carrying account hints and URLs; what a record needs
+/// from it is the state and the instant, and those are typed fields.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordProviderQuotaRequest {
+    /// The account the state is about.
+    pub account_profile_id: String,
+    /// The provider.
+    pub provider: String,
+    /// `available`, `exhausted`, `drained` or `unknown`.
+    pub state: String,
+    /// When an exhausted allowance returns. Required for `exhausted` and
+    /// refused for everything else — a drained balance recovers on payment, not
+    /// on a clock, and a reset instant here would put it on a retry timer.
+    pub resets_at: Option<String>,
+    /// The revision the caller believes is current; `1` for the first record.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
 /// What `provider-account-profiles:ensure` is asked for.
 ///
 /// The label is the stable caller key. Only the two mutable fields a profile has
@@ -4207,6 +4253,20 @@ pub trait ApplicationOperations: Send + Sync {
     /// The live model catalog for this Realm.
     fn model_catalog(&self) -> Result<ModelCatalogDto, ApiError>;
 
+    /// Every recorded provider quota state in one project.
+    fn provider_quota_states(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<ProviderQuotaStateDto>, ApiError>;
+
+    /// Record or replace one account's quota state for one provider.
+    async fn record_provider_quota(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &RecordProviderQuotaRequest,
+    ) -> Result<ProviderQuotaStateDto, ApiError>;
+
     /// Current Teams drafts and immutable revisions.
     fn teams(&self) -> Result<TeamsProjectionDto, ApiError>;
 
@@ -5186,6 +5246,55 @@ pub async fn ensure_account_profile(
         state
             .applications()
             .ensure_account_profile(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Every recorded provider quota state in one project.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/provider-quota-states", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    responses((status = 200, body = Vec<ProviderQuotaStateDto>), (status = 401), (status = 403))
+)]
+pub async fn provider_quota_states(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<Vec<ProviderQuotaStateDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state.applications().provider_quota_states(project_id)?,
+    ))
+}
+
+/// Record or replace one account's quota state for one provider.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/provider-quota-states:record", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = RecordProviderQuotaRequest,
+    responses(
+        (status = 200, body = ProviderQuotaStateDto),
+        (status = 401), (status = 403), (status = 409)
+    )
+)]
+pub async fn record_provider_quota(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<RecordProviderQuotaRequest>,
+) -> Result<Json<ProviderQuotaStateDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .record_provider_quota(&key, project_id, &request)
             .await?,
     ))
 }

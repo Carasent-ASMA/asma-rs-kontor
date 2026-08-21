@@ -84,6 +84,51 @@ pub struct ModelChainPolicy {
     pub rungs: Vec<ModelRung>,
 }
 
+crate::closed_enum! {
+    /// What one provider's quota is doing, for one account.
+    ///
+    /// Two exhaustion states rather than one, because they recover by different
+    /// means and a scheduler that conflates them retries forever. A plan
+    /// allowance comes back on a clock and carries the instant it does; a credit
+    /// balance comes back only when someone pays, and carries nothing. The
+    /// database enforces exactly that pairing.
+    ProviderQuotaKind, "ProviderQuotaKind" {
+        /// Nothing is standing in the way.
+        Available => "available",
+        /// A plan allowance ran out. Recovers at a known instant.
+        Exhausted => "exhausted",
+        /// A credit balance ran out. Recovers only on payment.
+        Drained => "drained",
+        /// Something refused and this state cannot say what.
+        Unknown => "unknown",
+    }
+}
+
+impl ProviderQuotaKind {
+    /// Whether a launch may be placed on this provider now.
+    ///
+    /// `Unknown` fails closed, the same way account availability does: a state
+    /// nobody could establish is not a permission.
+    #[must_use]
+    pub const fn is_usable(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
+crate::closed_enum! {
+    /// Who concluded a provider quota state.
+    ///
+    /// A parsed runtime message and an operator's assertion are different
+    /// authorities, and a projection that cannot tell them apart cannot show an
+    /// operator that their own override is what is holding work back.
+    ProviderQuotaSource, "ProviderQuotaSource" {
+        /// Derived from what a runtime reported.
+        RuntimeObservation => "runtime_observation",
+        /// Asserted by an operator.
+        Operator => "operator",
+    }
+}
+
 impl ModelChainPolicy {
     /// Structural validation independent of a live catalog.
     pub fn validate(&self) -> crate::DomainResult<()> {

@@ -36,19 +36,20 @@ use kontor_api::applications::{
     AuthorizationProjectionDto, BlockedTaskDto, DisarmRequest, EnsureAccountProfileRequest,
     EnsureProjectRequest, EpicExecutionScopeDto, EpicImportStateDto, EpicProjectionDto,
     EpicTaskProjectionDto, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto,
-    PreviewEpicDto, PreviewEpicTaskDto, ProjectDto, PublishedTeamRevisionDto, ReadyTaskDto,
-    ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
-    SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto,
-    TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
-    TeamsProjectionDto, WorkProfileCatalogDto,
+    PreviewEpicDto, PreviewEpicTaskDto, ProjectDto, ProviderQuotaStateDto,
+    PublishedTeamRevisionDto, ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto,
+    RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
+    SeatProjectionDto, StartRequest, StartedSeatDto, TeamDraftDto, TeamDraftRequest,
+    TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto, TeamsProjectionDto,
+    WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
     AvailabilityOverrideRequest, CapacityCeilingsDto, CapacityConfigurationDto,
     CapacityConfigurationPreviewDto, CapacityConfigurationRequest, CapacityObservationDto,
     CapacityRefreshRequest, MutationReceiptDto, ObservedBindingDto, ProjectCapacityDto,
-    PublishTriggerRequest, ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest,
-    TopologySeatDto,
+    PublishTriggerRequest, RecordProviderQuotaRequest, ResolvedRoleRefDto, SeatBindingOutcomeDto,
+    SeatBindingRequest, TopologySeatDto,
 };
 use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CloseoutEvidenceDto,
@@ -121,14 +122,14 @@ use kontor_core::repository::{
     CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository, MiniProject,
     MiniProjectTopologySnapshot, NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun,
     NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent, NewGateEvaluation,
-    NewMiniProject, NewNativeContainerBinding, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault, RealmRepository,
-    RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
-    SpecRepository, StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
-    StoredConsultationProfileRevision, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal, TaskTransitionRequest,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding,
+    NewSessionTopologyNode, NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault,
+    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
+    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredConsultationProfileRevision, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    TaskTransitionRequest, TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -6943,10 +6944,53 @@ fn freeze_seat_autonomy(
 }
 
 /// Select the primary model rung from the team run's immutable template.
+/// The recorded quota states, asked one provider at a time during a rung walk.
+///
+/// This is the durable half of provider availability. The adapter's own
+/// `provider_available` reads `unavailable_providers`, a settings field resolved
+/// when the adapter is composed: excluding a provider that way needs a daemon
+/// restart, applies to every account at once, and never stops being true. A
+/// recorded state is per account, survives a restart, and — for an allowance
+/// that returns at a known instant — stops blocking on its own.
+///
+/// Both are consulted, and either can hold a rung back. An operator who
+/// excluded a provider in settings does not want a stored row overriding them,
+/// and a provider observed out of quota is out whatever the settings say.
+struct QuotaOutlook<'a> {
+    states: &'a [kontor_core::repository::ProviderQuotaState],
+    /// The account the run is pinned to, when it is pinned to one.
+    account: Option<AccountProfileId>,
+    now: Timestamp,
+}
+
+impl QuotaOutlook<'_> {
+    /// Whether a recorded state holds this provider back right now.
+    ///
+    /// Absence permits: no row is not the same fact as
+    /// [`kontor_core::spec::ProviderQuotaKind::Unknown`], which is an explicit
+    /// refusal, and blocking on absence would stop every launch in a realm that
+    /// has never recorded a state.
+    ///
+    /// `all`, not `any`: one exhausted account does not exhaust a provider that
+    /// another account can still serve. The realm holds a single account profile
+    /// today so the two coincide, but `any` would silently become wrong the
+    /// moment a second one is registered.
+    fn blocks(&self, provider: &str) -> bool {
+        let mut relevant = self
+            .states
+            .iter()
+            .filter(|entry| entry.provider == provider)
+            .filter(|entry| self.account.is_none_or(|id| entry.account_profile_id == id))
+            .peekable();
+        relevant.peek().is_some() && relevant.all(|entry| entry.blocks_at(self.now))
+    }
+}
+
 fn freeze_seat_model_rung(
     adapter: &dyn RuntimeAdapter,
     snapshot: &TeamRunSnapshot,
     slot: &RoleSlotId,
+    quota: &QuotaOutlook<'_>,
 ) -> kontor_core::DomainResult<ModelRung> {
     let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?;
     let chain = template
@@ -6958,13 +7002,17 @@ fn freeze_seat_model_rung(
     Ok(chain
         .rungs
         .iter()
-        .find(|rung| adapter.provider_available(rung.provider.0.as_str()))
+        .find(|rung| {
+            adapter.provider_available(rung.provider.0.as_str())
+                && !quota.blocks(rung.provider.0.as_str())
+        })
         .cloned()
         .or_else(|| {
             chain
                 .rungs
                 .iter()
                 .find_map(|rung| adapter.fallback_model_rung(rung))
+                .filter(|fallback| !quota.blocks(fallback.provider.0.as_str()))
         })
         // Preserve the frozen primary when every route is temporarily
         // unavailable. The adapter then returns the typed provider-outage
@@ -7663,6 +7711,28 @@ fn teams_projection_dto(
         drafts,
         revisions,
     })
+}
+
+/// One quota state as a projection reports it.
+///
+/// `blocking` is computed at read time rather than stored: an exhausted
+/// allowance stops holding work back the moment its instant passes, and a
+/// projection that reported a stale `true` would have an operator hunting for a
+/// block that had already lifted.
+fn provider_quota_state_dto(
+    entry: &kontor_core::repository::ProviderQuotaState,
+    now: Timestamp,
+) -> ProviderQuotaStateDto {
+    ProviderQuotaStateDto {
+        account_profile_id: entry.account_profile_id,
+        provider: entry.provider.clone(),
+        state: entry.state.as_str().to_owned(),
+        resets_at: entry.resets_at.map(|instant| instant.to_string()),
+        source: entry.source.as_str().to_owned(),
+        observed_at: entry.observed_at.to_string(),
+        blocking: entry.blocks_at(now),
+        revision: entry.revision,
+    }
 }
 
 fn resolved_policy(slots: &[TeamDraftSlotDto]) -> Vec<serde_json::Value> {
@@ -8724,6 +8794,98 @@ impl ApplicationOperations for Services {
             providers,
             models,
         })
+    }
+
+    fn provider_quota_states(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<ProviderQuotaStateDto>, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(states
+            .iter()
+            .map(|entry| provider_quota_state_dto(entry, now))
+            .collect())
+    }
+
+    async fn record_provider_quota(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &RecordProviderQuotaRequest,
+    ) -> Result<ProviderQuotaStateDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let project = self.project_row(project_id)?;
+        let account_profile_id = AccountProfileId::parse(&request.account_profile_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let quota_state = kontor_core::spec::ProviderQuotaKind::parse(&request.state)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let resets_at = request
+            .resets_at
+            .as_deref()
+            .map(kontor_core::id::parse_utc_timestamp)
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "record_provider_quota",
+            "project": project_id.to_string(),
+            "account": account_profile_id.to_string(),
+            "provider": request.provider.as_str(),
+            "state": quota_state.as_str(),
+            "resets_at": resets_at.map(|instant| instant.to_string()),
+        }))?;
+        let replayed = self
+            .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
+            .is_some();
+        if !replayed {
+            state
+                .with_store(|store| {
+                    store.set_provider_quota_state(&NewProviderQuotaState {
+                        project_id,
+                        account_profile_id,
+                        provider: request.provider.clone(),
+                        state: quota_state,
+                        resets_at,
+                        // The operator's own assertion is the evidence, so the
+                        // intent digest is what a record can honestly cite. A
+                        // parsed runtime message will cite the frame instead —
+                        // never the message text, which is vendor output.
+                        evidence_hash: intent.hash().clone(),
+                        source: kontor_core::spec::ProviderQuotaSource::Operator,
+                        observed_at: now,
+                        expected_revision: request.expected_revision,
+                        updated_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        self.record(
+            key,
+            project_id,
+            CommandKind::OverrideAvailability,
+            AggregateRef::Project { project_id },
+            project.revision,
+            &intent,
+        )?;
+        let stored = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|entry| {
+                entry.account_profile_id == account_profile_id && entry.provider == request.provider
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the provider quota state could not be read back after the record",
+                )
+            })?;
+        Ok(provider_quota_state_dto(&stored, now))
     }
 
     fn teams(&self) -> Result<TeamsProjectionDto, ApiError> {
@@ -15897,11 +16059,19 @@ impl ApplicationOperations for Services {
             )
         })?;
         let scope = self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let outlook = QuotaOutlook {
+            states: &quota_states,
+            account: predecessor.account_profile_id,
+            now,
+        };
         let model_rung = request
             .model_route
             .as_ref()
             .map_or_else(
-                || freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot),
+                || freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook),
                 parse_runtime_model_route,
             )
             .map_err(|error| self.refuse_domain(&error))?;
@@ -17909,8 +18079,20 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
                 .into_authority()
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            let model_rung = freeze_seat_model_rung(adapter.as_ref(), &team_snapshot, &slot)
-                .map_err(|error| self.refuse_domain(&error))?;
+            let quota_states = state
+                .with_store(|store| store.list_provider_quota_states(project_id))
+                .map_err(|error| self.refuse(&error))?;
+            let model_rung = freeze_seat_model_rung(
+                adapter.as_ref(),
+                &team_snapshot,
+                &slot,
+                &QuotaOutlook {
+                    states: &quota_states,
+                    account: admitted.account_profile_id,
+                    now,
+                },
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
             let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -19304,8 +19486,20 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?
             .into_authority()
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
-        let model_rung = freeze_seat_model_rung(adapter.as_ref(), &team_snapshot, slot)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let model_rung = freeze_seat_model_rung(
+            adapter.as_ref(),
+            &team_snapshot,
+            slot,
+            &QuotaOutlook {
+                states: &quota_states,
+                account: admitted.account_profile_id,
+                now,
+            },
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;

@@ -1278,14 +1278,22 @@ export const FIXTURE_CATALOG: ModelCatalog = {
       // prints — flagged accordingly and never promoted.
       basis: unverified<ChargingBasis>('metered'),
       reachedVia: 'opencode',
-      pooledUsage: false,
+      // One credit balance serves every route, so pooling is definitional here
+      // rather than observed: a drained balance drains all of them at once.
+      pooledUsage: true,
     },
     {
       id: 'codex',
       label: 'Codex',
+      // Pooled, on the evidence of the 2026-08-21 outage: every Codex route
+      // died together when the plan allowance ran out. Note what `pooledUsage`
+      // claims and what it does not: one quota covers all of a provider's
+      // routes *for one account*. So a Codex rung under a Codex rung is worth
+      // nothing, while a second Codex account is a real fallback — which is why
+      // the account axis belongs below the rung rather than as another rung.
       basis: unverified<ChargingBasis>('plan_allowance'),
       reachedVia: null,
-      pooledUsage: false,
+      pooledUsage: true,
     },
     {
       id: 'claude',
@@ -1302,7 +1310,8 @@ export const FIXTURE_CATALOG: ModelCatalog = {
       // Same as DeepSeek: reached through opencode, not itself enabled.
       basis: unverified<ChargingBasis>('request_quota'),
       reachedVia: 'opencode',
-      pooledUsage: false,
+      // Same balance argument as DeepSeek.
+      pooledUsage: true,
     },
   ],
   models: [
@@ -1555,9 +1564,15 @@ function observedBand(minTokens: number, rationale: string, role: string): SeatN
  * Every chain below is copied rung-for-rung from the fleet policy, and the
  * copying is the point: an earlier pass replaced a route that did not exist with
  * a plausible neighbour instead of re-reading the document the chains came from,
- * and put it on a chain the policy never assigns it to. Where a seed deviates
- * from the policy now it is because the policy itself does — the standard
- * builder really does place two Codex rungs together, and the editor flags it.
+ * and put it on a chain the policy never assigns it to.
+ *
+ * There is exactly one deliberate departure, and it is recorded rather than
+ * quiet: the standard builder's rung 3 in the policy is a second Codex rung,
+ * which `codex.pooledUsage` now proves unreachable — it draws on the quota rung
+ * 2 just drained. A seeded draft that cannot be published would make the editor
+ * useless the moment it opens, so the seed carries a distinct provider there and
+ * the policy document is the thing that needs amending. See
+ * `docs/QUOTA-FALLBACK-PLAN.md`, "Open question".
  *
  * Need bands are derived from observed AgentsRoom token telemetry. They remain
  * explicitly unpromoted until a later review signs the measurements; unlike the
@@ -1606,15 +1621,20 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
         },
       },
       {
-        // Builder — standard. The policy's own rung order, including the two
-        // adjacent Codex rungs the editor flags as a notice.
+        // Builder — standard. This is the one seat that deliberately departs
+        // from the fleet policy: the policy places two adjacent Codex rungs
+        // here, and with `codex.pooledUsage` corrected to true that second rung
+        // draws on the quota the first one just drained, so it can never fire.
+        // Rung 3 is a distinct provider instead, and the policy document itself
+        // needs the same correction — tracked in
+        // `docs/QUOTA-FALLBACK-PLAN.md`, "Open question".
         id: 'implementer',
         role: selects('SWE'),
         capabilities: {
           chain: [
             { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'max' },
             { provider: 'codex', model: 'gpt-5.6-luna', effort: 'xhigh' },
-            { provider: 'codex', model: 'gpt-5.6-terra', effort: 'high' },
+            { provider: 'claude', model: 'claude-opus-5', effort: 'high' },
             {
               provider: 'openrouter',
               model: 'nvidia/nemotron-3-ultra-550b-a55b:free',

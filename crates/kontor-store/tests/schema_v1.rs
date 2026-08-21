@@ -111,6 +111,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "policy_evaluations",
     "projects",
     "project_topology_defaults",
+    "provider_quota_states",
     "quick_session_promotions",
     "quick_sessions",
     "realm_idempotency_bindings",
@@ -449,7 +450,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 47);
+    assert_eq!(SCHEMA_VERSION, 48);
 }
 
 #[test]
@@ -468,7 +469,12 @@ fn v46_to_v47_canonicalizes_only_the_known_builtin_hash_and_every_reference() {
     }
 
     let store = SqliteStore::open(&path).expect("the known v46 topology upgrades");
-    assert_eq!(store.schema_version().expect("the version reads"), 47);
+    // Opening migrates all the way forward, so this is the current version
+    // rather than 47; what this test is about is the v47 canonicalization below.
+    assert_eq!(
+        store.schema_version().expect("the version reads"),
+        SCHEMA_VERSION
+    );
     drop(store);
     let connection = raw(&directory);
     const CANONICAL: &str = "c112faff3f0ad0d8893bd41a1a53215816e0bd93cd9d65ed359ba74d0822254b";

@@ -27,7 +27,7 @@ use kontor_core::id::{
     SourceEventId, SpecVersion, TaskId, Timestamp, WorkProfileKey, parse_utc_timestamp,
     validate_open_key,
 };
-use kontor_core::id::{CalendarProfileId, SCHEMA_VERSION, WorkCalendarId};
+use kontor_core::id::{AggregateRevision, CalendarProfileId, SCHEMA_VERSION, WorkCalendarId};
 use kontor_core::spec::ProjectSessionTopologySpec;
 use kontor_core::spec::{
     ApprovalReceipt, AutoArmPolicy, ContextCapabilityResult, ContextClamp, ContextEnforcement,
@@ -35,9 +35,10 @@ use kontor_core::spec::{
     ContextWindowClass, ContextWindowPolicy, DedupExpression, EffectiveContextPolicy, EffortLevel,
     EnvironmentKind, IntakeReceipt, IntakeResult, JsonPointer, ModelChainPolicy, ModelRef,
     ModelRung, PersonaScenarioSnapshot, PersonaScenarioSpec, PhaseEdge, ProposedWorkGraph,
-    ProviderRef, RequestedContextPolicy, ResolvedWorkProfileSnapshot, RoleContextSeed,
-    Shareability, ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance,
-    ShareabilityTier, TeamContextPolicySeed, TriggerSpec, WorkProfileSpec, resolve_context_window,
+    ProviderQuotaKind, ProviderQuotaSource, ProviderRef, RequestedContextPolicy,
+    ResolvedWorkProfileSnapshot, RoleContextSeed, Shareability, ShareabilityClass,
+    ShareabilityClassifier, ShareabilityProvenance, ShareabilityTier, TeamContextPolicySeed,
+    TriggerSpec, WorkProfileSpec, resolve_context_window,
 };
 use proptest::prelude::*;
 
@@ -1761,6 +1762,40 @@ fn a_model_chain_is_closed_and_bounded() {
         .validate()
         .is_err()
     );
+}
+
+#[test]
+fn only_an_exhausted_allowance_recovers_on_a_clock() {
+    use kontor_core::repository::ProviderQuotaState;
+    let at = |second: i64| Timestamp::from_second(second).expect("a valid instant");
+    let state = |kind: ProviderQuotaKind, resets_at: Option<Timestamp>| ProviderQuotaState {
+        project_id: ProjectId::generate(),
+        account_profile_id: AccountProfileId::generate(),
+        provider: "codex".to_owned(),
+        state: kind,
+        resets_at,
+        evidence_hash: ContentHash::of(b"evidence"),
+        source: ProviderQuotaSource::RuntimeObservation,
+        observed_at: at(1_000),
+        revision: AggregateRevision::INITIAL,
+        updated_at: at(1_000),
+    };
+
+    assert!(!state(ProviderQuotaKind::Available, None).blocks_at(at(1_000)));
+
+    // An allowance blocks until its instant and then stops blocking on its own.
+    // Waiting for a collector to rewrite the row would park work past the moment
+    // it could have run.
+    let exhausted = state(ProviderQuotaKind::Exhausted, Some(at(2_000)));
+    assert!(exhausted.blocks_at(at(1_999)));
+    assert!(!exhausted.blocks_at(at(2_000)));
+
+    // A drained balance never expires on its own: it recovers when someone pays.
+    // A timer here would be a retry loop against a dead key.
+    assert!(state(ProviderQuotaKind::Drained, None).blocks_at(at(9_999_999)));
+
+    // Unknown fails closed, the way account availability does.
+    assert!(state(ProviderQuotaKind::Unknown, None).blocks_at(at(9_999_999)));
 }
 
 // ---------------------------------------------------------------------------

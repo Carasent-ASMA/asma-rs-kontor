@@ -561,6 +561,14 @@ pub fn router(state: ApiState) -> Router {
             post(applications::ensure_account_profile),
         )
         .route(
+            "/v1/projects/{project_id}/provider-quota-states",
+            get(applications::provider_quota_states),
+        )
+        .route(
+            "/v1/projects/{project_id}/provider-quota-states:record",
+            post(applications::record_provider_quota),
+        )
+        .route(
             "/v1/projects/{project_id}/epics:preview",
             post(applications::preview_epic),
         )
