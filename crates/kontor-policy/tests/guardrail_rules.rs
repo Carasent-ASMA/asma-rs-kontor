@@ -325,6 +325,7 @@ fn verdict_row(
         evaluator_account: AccountProfileId::generate(),
         evidence: Vec::new(),
         agent_run_id: run,
+        session_evidence: None,
         reviewer_principal: principal.map(external),
         policy_evaluation_id: None,
         recorded_at: now(),

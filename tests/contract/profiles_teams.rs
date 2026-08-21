@@ -476,6 +476,7 @@ impl World {
                     // verdict attributable to nobody counts towards nobody's
                     // rejection stream.
                     agent_run_id: None,
+                    session_evidence: None,
                     reviewer_principal: None,
                     policy_evaluation_id: None,
                     recorded_at: now(),

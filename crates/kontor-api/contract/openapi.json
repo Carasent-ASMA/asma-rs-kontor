@@ -11822,6 +11822,17 @@
             "description": "Its position in the gate's append-only history, starting at 1.",
             "minimum": 0
           },
+          "session_evidence": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SessionVerdictCitationDto",
+                "description": "The session record this verdict was transcribed from, when it was\nrecorded on behalf of a closed evaluator seat."
+              }
+            ]
+          },
           "state": {
             "type": "string",
             "description": "The gate's state once this verdict is reduced in."
@@ -14064,6 +14075,20 @@
             "description": "The revision the caller read the task's workflow at.",
             "minimum": 0
           },
+          "recovery_agent_run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The evaluator's own agent run whose session record the verdict is\ntranscribed from, on the recovery path.\n\nSupplied together with `recovery_session_digest`, it records the verdict\n*on behalf of* a closed evaluator seat — the only supported way to\nrecord a verdict the evaluator cannot record itself — and is refused\nwhile that seat is still able to act. Omitting both records the verdict\nexactly as before: the evaluator's own recording, attributed to\nwhatever seat is live."
+          },
+          "recovery_session_digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A digest of the verdict content as the cited session record rendered it,\non the recovery path."
+          },
           "reviewer_principal": {
             "type": [
               "string",
@@ -15591,6 +15616,24 @@
           "title": {
             "type": "string",
             "description": "Canonical native seat title read back after repair."
+          }
+        }
+      },
+      "SessionVerdictCitationDto": {
+        "type": "object",
+        "description": "The session record one recovery verdict is transcribed from.\n\nA recovery verdict is recorded on behalf of an evaluator seat whose runtime\nis closed or unreachable: the citation names the evaluator's own session\nrecord (the agent run) and the digest of the verdict content that session\nrendered. Both halves are recorded as durable evidence on the evaluation.",
+        "required": [
+          "agent_run_id",
+          "digest"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The evaluator's own agent run whose session record holds the verdict."
+          },
+          "digest": {
+            "type": "string",
+            "description": "A digest of the verdict content as that session record rendered it."
           }
         }
       },

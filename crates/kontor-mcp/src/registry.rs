@@ -392,6 +392,30 @@ const UNAVAILABLE_PROVIDER_SEAT: &[FieldSpec] = &[
     ),
 ];
 
+/// The session record a recovery gate verdict is transcribed from.
+///
+/// The two arguments mirror `RecordGateRequest.recovery_agent_run_id` and
+/// `RecordGateRequest.recovery_session_digest`; the daemon refuses one without
+/// the other.
+const RECOVERY_AGENT_RUN: ArgSpec = opt(
+    "recovery_agent_run_id",
+    Place::Body,
+    ArgType::AgentRunId,
+    "The evaluator's own agent run whose session record the verdict is \
+     transcribed from, on the recovery path: records the verdict on behalf \
+     of a closed evaluator seat, refused while that seat is still able to \
+     act. Supplied together with `recovery_session_digest`.",
+);
+
+const RECOVERY_SESSION_DIGEST: ArgSpec = opt(
+    "recovery_session_digest",
+    Place::Body,
+    ArgType::Text,
+    "A digest of the verdict content as the cited session record rendered \
+     it, on the recovery path. Supplied together with \
+    `recovery_agent_run_id`.",
+);
+
 /// The two bounds a streamed read is taken under.
 const MAX_FRAMES: ArgSpec = opt(
     "max_frames",
@@ -1477,6 +1501,8 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::TextArray,
                 "The artifacts cited. A pass or a waiver requires the declared ones.",
             ),
+            RECOVERY_AGENT_RUN,
+            RECOVERY_SESSION_DIGEST,
             opt(
                 "reviewer_principal",
                 Place::Body,

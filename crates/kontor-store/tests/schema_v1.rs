@@ -457,9 +457,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v54 replaces realm-global memory authority with immutable
-    // per-project memory/backlog origin and one-way authority evidence.
-    assert_eq!(SCHEMA_VERSION, 54);
+    // side effect. v55 adds evidence for verdicts transcribed from closed
+    // evaluator sessions without weakening the ordinary gate path.
+    assert_eq!(SCHEMA_VERSION, 55);
 }
 
 #[test]

@@ -3535,6 +3535,22 @@ pub struct ResolvedContextDto {
     pub redactions: Vec<RedactionDto>,
 }
 
+/// The session record one recovery verdict is transcribed from.
+///
+/// A recovery verdict is recorded on behalf of an evaluator seat whose runtime
+/// is closed or unreachable: the citation names the evaluator's own session
+/// record (the agent run) and the digest of the verdict content that session
+/// rendered. Both halves are recorded as durable evidence on the evaluation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SessionVerdictCitationDto {
+    /// The evaluator's own agent run whose session record holds the verdict.
+    #[schema(value_type = String)]
+    pub agent_run_id: kontor_core::id::AgentRunId,
+    /// A digest of the verdict content as that session record rendered it.
+    #[schema(value_type = String)]
+    pub digest: kontor_core::id::ContentHash,
+}
+
 /// What `gates/{gate_id}:record` is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 pub struct RecordGateRequest {
@@ -3552,6 +3568,23 @@ pub struct RecordGateRequest {
     /// declares.
     #[serde(default)]
     pub evidence: Vec<String>,
+    /// The evaluator's own agent run whose session record the verdict is
+    /// transcribed from, on the recovery path.
+    ///
+    /// Supplied together with `recovery_session_digest`, it records the verdict
+    /// *on behalf of* a closed evaluator seat — the only supported way to
+    /// record a verdict the evaluator cannot record itself — and is refused
+    /// while that seat is still able to act. Omitting both records the verdict
+    /// exactly as before: the evaluator's own recording, attributed to
+    /// whatever seat is live.
+    #[schema(value_type = Option<String>)]
+    #[serde(default)]
+    pub recovery_agent_run_id: Option<kontor_core::id::AgentRunId>,
+    /// A digest of the verdict content as the cited session record rendered it,
+    /// on the recovery path.
+    #[schema(value_type = Option<String>)]
+    #[serde(default)]
+    pub recovery_session_digest: Option<String>,
     /// The stable authenticated principal recording it.
     ///
     /// Omitting it records the verdict and attributes it to nobody; it never
@@ -3576,6 +3609,9 @@ pub struct GateVerdictDto {
     pub verdict: String,
     /// The gate's state once this verdict is reduced in.
     pub state: String,
+    /// The session record this verdict was transcribed from, when it was
+    /// recorded on behalf of a closed evaluator seat.
+    pub session_evidence: Option<SessionVerdictCitationDto>,
     /// The command receipt that authorizes it.
     pub receipt_id: String,
 }

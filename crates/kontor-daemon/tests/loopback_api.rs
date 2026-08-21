@@ -6068,6 +6068,415 @@ async fn a_gate_verdict_is_append_only_authority_checked_and_waiver_is_admin() {
     assert_eq!(stale.code(), "revision_conflict");
 }
 
+// ---------------------------------------------------------------------------
+// Gate recovery: recording a verdict on behalf of a closed evaluator seat
+// ---------------------------------------------------------------------------
+
+/// The record route, the workflow revision and the first gate, all read from
+/// the public projection so the test never names them itself.
+async fn gate_record_target(world: &World, seed: &Bootstrapped) -> (String, u64, String) {
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    let task = &projection.json()["tasks"][0];
+    let gate = task["gates"]
+        .as_array()
+        .expect("the pinned profile declares gates")[0]["gate"]
+        .as_str()
+        .expect("a gate id")
+        .to_owned();
+    let revision = task["workflow_revision"]
+        .as_u64()
+        .expect("a workflow revision");
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/gates/{gate}/record",
+        seed.project, seed.task
+    );
+    (uri, revision, gate)
+}
+
+/// The run filling the `inspector` slot, found through the public snapshot.
+async fn inspector_run(world: &World, runs: &[String]) -> String {
+    for run in runs {
+        let snapshot = Call::get(format!("/v1/runs/{run}"))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        assert_eq!(snapshot.status, 200, "{}", snapshot.body);
+        if snapshot.json()["value"]["role"] == "inspector" {
+            return run.clone();
+        }
+    }
+    panic!("the seated team has no inspector seat")
+}
+
+/// Close one seat through the supported runtime-settlement path.
+async fn close_seat(world: &World, seed: &Bootstrapped, run: &str, key: &str) -> Answer {
+    finish_natively(world, run).await;
+    let settled = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run}/runtime:settle",
+            seed.project
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    settled
+}
+
+/// The task's active workflow, addressed from the seeded ids.
+fn active_workflow(world: &World, seed: &Bootstrapped) -> kontor_core::repository::TaskWorkflow {
+    let project = ProjectId::parse(&seed.project).expect("the seeded project id parses");
+    let task = TaskId::parse(&seed.task).expect("the seeded task id parses");
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.get_active_task_workflow(project, task))
+        .expect("the workflow reads back")
+        .expect("the task has an active workflow")
+}
+
+/// A closed evaluator seat can no longer record its own gate: the gate that
+/// was rendered in its session must be transcribed through the recovery path,
+/// and the citation is refused *while* the seat is still able to act.
+#[tokio::test]
+async fn gate_recovery_is_refused_while_the_evaluator_seat_is_alive() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "rec-alive").await;
+    let inspector = inspector_run(&world, &runs).await;
+    let (uri, revision, _) = gate_record_target(&world, &seed).await;
+
+    // The seat is running, so recovery is refused: it can record its own
+    // verdict, and a citation must never let an operator pre-record one.
+    let refused = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "inspector",
+            "evaluator_account": seed.account,
+            "recovery_agent_run_id": inspector,
+            "recovery_session_digest": ContentHash::of(b"REQUEST CHANGES: the fix is incomplete").as_str(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("rec-alive-refused")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "revision_conflict");
+
+    // Nothing was appended: the gate's history is still empty.
+    let workflow = active_workflow(&world, &seed);
+    let evaluations = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_gate_evaluations(
+                ProjectId::parse(&seed.project).expect("the seeded project id parses"),
+                workflow.id,
+            )
+        })
+        .expect("the evaluations read back");
+    assert!(
+        evaluations.is_empty(),
+        "a refused recovery appends nothing: {evaluations:#?}"
+    );
+
+    // The ordinary path is unchanged: the evaluator's own recording — no
+    // citation, attributed to the live seat — still works while the seat is
+    // alive.
+    let normal = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "inspector",
+            "evaluator_account": seed.account,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("rec-alive-normal")
+    .send(&world)
+    .await;
+    assert_eq!(normal.status, 200, "{}", normal.body);
+    assert!(
+        normal.json()["session_evidence"].is_null(),
+        "an ordinary recording carries no citation: {}",
+        normal.body
+    );
+}
+
+/// The recovery path exists to transcribe an evaluator's *documented* verdict,
+/// so every refusal here is about the evidence: no citation, a malformed
+/// citation, or a citation that names anything but the closed evaluator seat.
+#[tokio::test]
+async fn gate_recovery_is_refused_without_matching_session_evidence() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "rec-noev").await;
+    let inspector = inspector_run(&world, &runs).await;
+    let mut builder = None;
+    for run in &runs {
+        let snapshot = Call::get(format!("/v1/runs/{run}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        assert_eq!(snapshot.status, 200, "{}", snapshot.body);
+        if snapshot.json()["value"]["role"] == "builder" {
+            builder = Some(run.clone());
+            break;
+        }
+    }
+    let builder = builder.expect("the seated team has a builder seat");
+    let (uri, revision, _) = gate_record_target(&world, &seed).await;
+
+    // The evaluator seat is closed, so this is exactly the incident's shape:
+    // a gate rendered in a session that can no longer record itself.
+    close_seat(&world, &seed, &inspector, "rec-noev-settle").await;
+
+    // A citation whose digest is missing is refused before anything is written.
+    let no_digest = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "inspector",
+            "evaluator_account": seed.account,
+            "recovery_agent_run_id": inspector,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("rec-noev-no-digest")
+    .send(&world)
+    .await;
+    assert_eq!(no_digest.status, 400, "{}", no_digest.body);
+    assert_eq!(no_digest.code(), "invalid_request");
+
+    // A citation naming a run that does not exist in this project is refused:
+    // the session record must be one this realm actually holds.
+    let foreign = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "inspector",
+            "evaluator_account": seed.account,
+            "recovery_agent_run_id": AgentRunId::generate().to_string(),
+            "recovery_session_digest": ContentHash::of(b"some verdict").as_str(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("rec-noev-foreign")
+    .send(&world)
+    .await;
+    assert_eq!(foreign.status, 404, "{}", foreign.body);
+    assert_eq!(foreign.code(), "not_found");
+
+    // A citation naming a seat that holds another role is refused: the verdict
+    // must come from the evaluator's own session, and a builder session has no
+    // inspector verdict in it.
+    let wrong_seat = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "inspector",
+            "evaluator_account": seed.account,
+            "recovery_agent_run_id": builder,
+            "recovery_session_digest": ContentHash::of(b"an inspector verdict").as_str(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("rec-noev-wrong-seat")
+    .send(&world)
+    .await;
+    assert_eq!(wrong_seat.status, 400, "{}", wrong_seat.body);
+    assert_eq!(wrong_seat.code(), "invalid_request");
+
+    // Nothing was appended by any of the refusals.
+    let workflow = active_workflow(&world, &seed);
+    let evaluations = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_gate_evaluations(
+                ProjectId::parse(&seed.project).expect("the seeded project id parses"),
+                workflow.id,
+            )
+        })
+        .expect("the evaluations read back");
+    assert!(
+        evaluations.is_empty(),
+        "refused recovery recordings append nothing: {evaluations:#?}"
+    );
+}
+
+/// The supported recovery: a closed evaluator seat's already-rendered verdict
+/// is transcribed with a citation to its own session record, and the verdict
+/// is attributed to that run and carries the citation as durable evidence.
+#[tokio::test]
+async fn gate_recovery_records_a_closed_evaluators_verdict_with_session_evidence() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "rec-closed").await;
+    let inspector = inspector_run(&world, &runs).await;
+    let (uri, revision, gate) = gate_record_target(&world, &seed).await;
+
+    close_seat(&world, &seed, &inspector, "rec-closed-settle").await;
+
+    // The inspector rendered REQUEST CHANGES in its session before the runtime
+    // closed; the digest pins exactly that verdict content.
+    let digest =
+        ContentHash::of(b"REQUEST CHANGES: inherited properties satisfy the existing-entity check")
+            .as_str()
+            .to_owned();
+    let recorded = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "inspector",
+            "evaluator_account": seed.account,
+            "recovery_agent_run_id": inspector,
+            "recovery_session_digest": digest,
+            "reviewer_principal": "tpm-lead",
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("rec-closed-record")
+    .send(&world)
+    .await;
+    assert_eq!(recorded.status, 200, "{}", recorded.body);
+    assert_eq!(recorded.json()["verdict"], "rejected");
+    assert_eq!(recorded.json()["state"], "rejected", "{}", recorded.body);
+    assert_eq!(
+        recorded.json()["session_evidence"]["agent_run_id"],
+        inspector,
+        "the citation names the evaluator's own session: {}",
+        recorded.body
+    );
+    assert_eq!(
+        recorded.json()["session_evidence"]["digest"],
+        digest,
+        "the digest is echoed: {}",
+        recorded.body
+    );
+
+    // The evaluation row is attributed to the cited run and carries the
+    // citation as durable, append-only evidence.
+    let workflow = active_workflow(&world, &seed);
+    let evaluations = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_gate_evaluations(
+                ProjectId::parse(&seed.project).expect("the seeded project id parses"),
+                workflow.id,
+            )
+        })
+        .expect("the evaluations read back");
+    assert_eq!(evaluations.len(), 1, "{evaluations:#?}");
+    let evaluation = &evaluations[0];
+    assert_eq!(evaluation.gate.as_str(), gate);
+    assert_eq!(
+        evaluation.agent_run_id,
+        AgentRunId::parse(&inspector).ok(),
+        "the verdict is attributed to the cited session, not to nobody: {evaluation:#?}"
+    );
+    let citation = evaluation
+        .session_evidence
+        .as_ref()
+        .unwrap_or_else(|| panic!("the evaluation carries the citation: {evaluation:#?}"));
+    assert_eq!(citation.agent_run_id.to_string(), inspector);
+    assert_eq!(citation.digest.as_str(), digest);
+
+    // Replaying the same key returns the same verdict and its citation, and
+    // appends nothing second.
+    let replayed = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "inspector",
+            "evaluator_account": seed.account,
+            "recovery_agent_run_id": inspector,
+            "recovery_session_digest": digest,
+            "reviewer_principal": "tpm-lead",
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("rec-closed-record")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["session_evidence"]["digest"],
+        digest,
+        "the replay answers from the stored record: {}",
+        replayed.body
+    );
+    let after = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_gate_evaluations(
+                ProjectId::parse(&seed.project).expect("the seeded project id parses"),
+                workflow.id,
+            )
+        })
+        .expect("the evaluations read back");
+    assert_eq!(
+        after.len(),
+        1,
+        "a replay appends nothing second: {after:#?}"
+    );
+}
+
+/// The recovery path cannot invent a pass: the pinned profile's evidence
+/// requirements still bind, and a citation does not relax them.
+#[tokio::test]
+async fn gate_recovery_cannot_fabricate_a_pass() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "rec-pass").await;
+    let inspector = inspector_run(&world, &runs).await;
+    let (uri, revision, _) = gate_record_target(&world, &seed).await;
+
+    close_seat(&world, &seed, &inspector, "rec-pass-settle").await;
+
+    // A pass with a session citation but none of the profile-declared evidence
+    // is refused exactly as an ordinary pass would be.
+    let fabricated = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "passed",
+            "evaluator_role": "inspector",
+            "evaluator_account": seed.account,
+            "recovery_agent_run_id": inspector,
+            "recovery_session_digest": ContentHash::of(b"LGTM").as_str(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("rec-pass-fabricated")
+    .send(&world)
+    .await;
+    assert_eq!(fabricated.status, 400, "{}", fabricated.body);
+    assert_eq!(fabricated.code(), "invalid_request");
+}
+
 #[tokio::test]
 async fn selection_corrections_are_pre_run_admin_decisions() {
     let world = World::open_empty().await;
