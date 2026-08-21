@@ -1661,6 +1661,33 @@ pub struct NewAbandonReceipt {
     pub recorded_at: Timestamp,
 }
 
+/// A synchronous control-plane command whose effect is applied by the
+/// application service rather than handed to an external dispatcher.
+///
+/// It deliberately has no payload, `not_before`, or desired-state write. Those
+/// fields belong to an outbox dispatch. A local command first records this
+/// durable identity, then moves to `confirmed` only after its application
+/// operation has returned successfully.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewLocalCommand {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The receipt id to use.
+    pub receipt_id: CommandReceiptId,
+    /// The caller's idempotency key.
+    pub idempotency_key: IdempotencyKey,
+    /// What is being applied locally.
+    pub kind: CommandKind,
+    /// Which aggregate it targets.
+    pub target: AggregateRef,
+    /// The revision the operation was computed against.
+    pub target_revision: AggregateRevision,
+    /// The canonical operation identity.
+    pub intent: CanonicalDocument,
+    /// When the operation was recorded.
+    pub created_at: Timestamp,
+}
+
 /// A new command intent, written atomically with desired state, the outbox entry
 /// and the intent event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3195,6 +3222,41 @@ pub trait CommandRepository {
     /// # Errors
     /// Refuses key reuse with a different target or intent.
     fn record_intent(&self, request: &NewCommandIntent) -> RepositoryResult<CommandReceipt>;
+
+    /// Record a synchronous control-plane command: a durable receipt identity
+    /// with no outbox entry.
+    ///
+    /// The receipt is born `intent_persisted` and only its application operation
+    /// may confirm it. Writing an outbox row here is what made every successful
+    /// local operation look like an undispatched command forever.
+    ///
+    /// # Errors
+    /// Refuses a reused idempotency key and an unknown project.
+    fn record_local_command(&self, request: &NewLocalCommand) -> RepositoryResult<CommandReceipt>;
+
+    /// The realm-scoped form, for a local command with no owning project.
+    ///
+    /// # Errors
+    /// Refuses a reused idempotency key.
+    fn record_local_command_in_realm(
+        &self,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<CommandReceipt>;
+
+    /// Confirm a local command after its application operation returned
+    /// successfully.
+    ///
+    /// `None` means no receipt carries that key, which is a successful no-op:
+    /// the caller cannot distinguish "already completed and pruned" from "never
+    /// recorded", and neither warrants an error.
+    ///
+    /// # Errors
+    /// Refuses a receipt whose current state cannot legally reach `confirmed`.
+    fn complete_local_command(
+        &self,
+        key: &IdempotencyKey,
+        completed_at: Timestamp,
+    ) -> RepositoryResult<Option<CommandReceipt>>;
 
     /// Find a receipt by idempotency key.
     ///

@@ -4221,6 +4221,13 @@ pub struct TicketClaimDto {
 /// different bytes is a conflict.
 #[async_trait]
 pub trait ApplicationOperations: Send + Sync {
+    /// Close the local command recorded under `key` after its application route
+    /// has produced a successful response.
+    ///
+    /// Routes backed by purpose-built receipts record no command receipt, so a
+    /// missing key is a successful no-op.
+    fn complete_local_command(&self, key: &IdempotencyKey) -> Result<(), ApiError>;
+
     /// Persist one exact post-message runtime observation through the shared
     /// AgentRun/TeamRun reducer.
     fn persist_session_observation(

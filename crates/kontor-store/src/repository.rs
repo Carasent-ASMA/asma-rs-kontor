@@ -50,20 +50,20 @@ use kontor_core::repository::{
     IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewGateEvaluation, NewIntakeDecision,
-    NewIntakeDecisionRecord, NewIntakeReevaluation, NewMiniProject, NewNativeContainerBinding,
-    NewObservation, NewProject, NewProviderQuotaState, NewRuntimeEvent, NewSeatBinding,
-    NewSessionTopologyNode, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow,
-    NewTeamRun, NewTicketLink, PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault,
-    ProviderQuotaState, RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome,
-    RepositoryError, RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding,
-    RuntimeEvent, SeatLivenessObservation, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
-    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
-    StoredRemediationProposal, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun,
-    TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, TopologyRepository,
-    WorkflowRepository, validate_dependency_graph,
+    NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand, NewMiniProject,
+    NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState, NewRuntimeEvent,
+    NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask, NewTaskPersonaSnapshot,
+    NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project, ProjectRepository,
+    ProjectTopologyDefault, ProviderQuotaState, RealmEventPage, RealmRepository, ReceiptAdvance,
+    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
+    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SourceDisposition,
+    SourceEventIngest, SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration,
+    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
+    StoredConsultationProfileRevision, StoredConsultationRun, StoredConsultationSeat,
+    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task, TaskInspection,
+    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
@@ -8869,6 +8869,26 @@ pub(crate) const RECEIPT_COLUMNS: &str = "id, project_id, idempotency_key, kind,
 impl CommandRepository for SqliteStore {
     fn record_intent(&self, request: &NewCommandIntent) -> RepositoryResult<CommandReceipt> {
         crate::commands::intent::record_intent(self, request)
+    }
+
+    fn record_local_command(&self, request: &NewLocalCommand) -> RepositoryResult<CommandReceipt> {
+        crate::commands::intent::record_local_command(self, request)
+    }
+
+    fn record_local_command_in_realm(
+        &self,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<CommandReceipt> {
+        let request = envelope.peek(self.realm_id())?;
+        self.record_local_command(request)
+    }
+
+    fn complete_local_command(
+        &self,
+        key: &IdempotencyKey,
+        completed_at: Timestamp,
+    ) -> RepositoryResult<Option<CommandReceipt>> {
+        crate::commands::intent::complete_local_command(self, key, completed_at)
     }
 
     fn get_receipt_by_key(&self, key: &IdempotencyKey) -> RepositoryResult<Option<CommandReceipt>> {

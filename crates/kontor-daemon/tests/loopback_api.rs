@@ -40,16 +40,17 @@ use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
     AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash,
-    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, MiniProjectId, ProjectId,
-    QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId, TeamRunId, TicketLinkId,
-    TopologyNodeId,
+    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey, MiniProjectId,
+    ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId, TeamRunId,
+    TicketLinkId, TopologyNodeId,
 };
+use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
-    CommandRepository, ConnectorSpecSelector, NewMiniProject, NewObservation, NewProject,
-    NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    ProjectRepository, RealmRepository, RunClosure, RunRepository, SourceDisposition,
-    SpecRepository, StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
-    TicketRepository, TopologyRepository, WorkflowRepository,
+    CommandRepository, ConnectorSpecSelector, NewLocalCommand, NewMiniProject, NewObservation,
+    NewProject, NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun,
+    NewTicketLink, ProjectRepository, RealmRepository, RunClosure, RunRepository,
+    SourceDisposition, SpecRepository, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
+    StoredQuickSession, TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{
@@ -5073,13 +5074,20 @@ async fn withdrawal_refuses_any_task_that_has_ever_had_a_team_run() {
 // ---------------------------------------------------------------------------
 
 /// How many command receipts this Realm holds.
-fn receipts(world: &World) -> i64 {
-    world.daemon.state().with_store(|store| {
-        store
-            .unsettled_receipts()
-            .expect("the receipts are readable")
-            .len() as i64
-    })
+/// The receipt recorded under one idempotency key, whatever its execution mode.
+///
+/// This replaced a count over `unsettled_receipts()`. That query is the recovery
+/// inventory and is deliberately `execution_mode = 'dispatch'`, so a successful
+/// application operation -- which is a local command, confirmed on the way out
+/// and queuing no dispatch -- is correctly absent from it. Counting it was
+/// measuring the wrong set; naming the key asserts identity, which is what
+/// idempotency actually means.
+fn receipt_for(world: &World, key: &str) -> Option<kontor_core::receipt::CommandReceipt> {
+    let key = IdempotencyKey::parse(key).expect("a valid idempotency key");
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.get_receipt_by_key(&key).expect("readable"))
 }
 
 #[tokio::test]
@@ -5090,21 +5098,28 @@ async fn the_two_bootstrap_ensures_honour_their_idempotency_key() {
     let first = ensure_project(&world, "idem-1", "Kontor", "/tmp/kontor-idem").await;
     assert_eq!(first.status, 200, "{}", first.body);
     let project = first.json()["project_id"].as_str().expect("id").to_owned();
-    let after_first = receipts(&world);
-    assert_eq!(after_first, 1, "the ensure recorded exactly one receipt");
+    let after_first = receipt_for(&world, "idem-1").expect("the ensure recorded a receipt");
 
     // Same key, same body: the original answer, and no second receipt.
     let replay = ensure_project(&world, "idem-1", "Kontor", "/tmp/kontor-idem").await;
     assert_eq!(replay.status, 200, "{}", replay.body);
     assert_eq!(replay.json()["project_id"], first.json()["project_id"]);
     assert_eq!(replay.json()["applied"], "unchanged");
-    assert_eq!(receipts(&world), after_first, "a replay records nothing");
+    assert_eq!(
+        receipt_for(&world, "idem-1").map(|receipt| receipt.id),
+        Some(after_first.id),
+        "a replay records nothing: the same receipt answers"
+    );
 
     // Same key, different body: a typed conflict, and still nothing written.
     let reused = ensure_project(&world, "idem-1", "Kontor", "/tmp/kontor-other").await;
     assert_eq!(reused.status, 409, "{}", reused.body);
     assert_eq!(reused.code(), "idempotency_conflict");
-    assert_eq!(receipts(&world), after_first);
+    assert_eq!(
+        receipt_for(&world, "idem-1").map(|receipt| receipt.id),
+        Some(after_first.id),
+        "a rejected reuse writes nothing"
+    );
     let projects = world.daemon.state().with_store(|store| {
         store
             .get_project(kontor_core::id::ProjectId::parse(&project).expect("a project id"))
@@ -5125,7 +5140,7 @@ async fn the_two_bootstrap_ensures_honour_their_idempotency_key() {
         .await;
     assert_eq!(created.status, 200, "{}", created.body);
     assert_eq!(created.json()["applied"], "created");
-    let with_account = receipts(&world);
+    let with_account = receipt_for(&world, "idem-account").expect("the ensure recorded a receipt");
 
     let replayed = Call::post(&uri, &account)
         .signed_as(&world, "admin")
@@ -5138,7 +5153,11 @@ async fn the_two_bootstrap_ensures_honour_their_idempotency_key() {
         replayed.json()["account_profile_id"],
         created.json()["account_profile_id"]
     );
-    assert_eq!(receipts(&world), with_account, "a replay records nothing");
+    assert_eq!(
+        receipt_for(&world, "idem-account").map(|receipt| receipt.id),
+        Some(with_account.id),
+        "a replay records nothing: the same receipt answers"
+    );
 
     let conflicting = Call::post(
         &uri,
@@ -5242,16 +5261,26 @@ async fn an_account_ensure_compares_every_supplied_field_and_never_echoes_the_al
         );
     }
     let stored = world.daemon.state().with_store(|store| {
-        let mut found = Vec::new();
-        for (project_id, receipt_id) in store.unsettled_receipts().expect("readable") {
-            let receipt = store
-                .get_receipt(project_id, receipt_id)
-                .expect("readable")
-                .expect("the receipt exists");
-            found.push(receipt.intent.json().to_owned());
-        }
-        found
+        // Every call in this test that *wrote* a receipt, named explicitly. The
+        // drift cases are all 409 and record nothing, so the writes are the two
+        // ensures and the identical re-ensure. Scanning `unsettled_receipts()`
+        // used to serve here and no longer can -- an application receipt is a
+        // confirmed local command, absent from the dispatch inventory -- and an
+        // empty scan would have made the `all(...)` assertion below pass
+        // vacuously while proving nothing.
+        ["drift-1", "drift-create", "drift-same"]
+            .into_iter()
+            .filter_map(|key| {
+                let key = IdempotencyKey::parse(key).expect("a valid key");
+                store.get_receipt_by_key(&key).expect("readable")
+            })
+            .map(|receipt| receipt.intent.json().to_owned())
+            .collect::<Vec<_>>()
     });
+    assert!(
+        !stored.is_empty(),
+        "the ensures recorded receipts to inspect; an empty set proves nothing"
+    );
     assert!(
         stored
             .iter()
@@ -5351,21 +5380,19 @@ async fn disarming_records_its_own_command_kind_and_checks_the_key_before_answer
     // The receipt is its own kind: a calendar-override revocation must not be
     // replayable as the authority that disarmed the work.
     let kinds = world.daemon.state().with_store(|store| {
-        let mut found = Vec::new();
-        for (project_id, receipt_id) in store.unsettled_receipts().expect("readable") {
-            let receipt = store
-                .get_receipt(project_id, receipt_id)
-                .expect("readable")
-                .expect("the receipt exists");
-            found.push(receipt.kind.as_str().to_owned());
-        }
-        found
+        let key = IdempotencyKey::parse("revoke-key").expect("a valid key");
+        store
+            .get_receipt_by_key(&key)
+            .expect("readable")
+            .map(|receipt| receipt.kind.as_str().to_owned())
     });
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| kind == "revoke_execution_authorization"),
-        "disarm records its own command kind, found {kinds:?}"
+    // Named by key rather than scanned out of `unsettled_receipts()`: a disarm
+    // is an application operation, so its receipt is a confirmed local command
+    // and never appears in the dispatch inventory.
+    assert_eq!(
+        kinds.as_deref(),
+        Some("revoke_execution_authorization"),
+        "disarm records its own command kind"
     );
     assert!(
         !kinds.iter().any(|kind| kind == "revoke_schedule_override"),
@@ -21388,4 +21415,87 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         4,
         "a replay launched another native Committee seat"
     );
+}
+
+#[tokio::test]
+async fn application_receipts_confirm_only_after_a_successful_response() {
+    let world = World::open().await;
+    let success_key = "receipt-lifecycle-success";
+    let answer = ensure_project(
+        &world,
+        success_key,
+        "Receipt lifecycle",
+        "/tmp/kontor-receipt-lifecycle",
+    )
+    .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    let success_key = IdempotencyKey::parse(success_key).expect("a valid key");
+    let receipt = world.daemon.state().with_store(|store| {
+        store
+            .get_receipt_by_key(&success_key)
+            .expect("the receipt is readable")
+            .expect("the application recorded a receipt")
+    });
+    assert_eq!(receipt.state, CommandReceiptState::Confirmed);
+    assert!(
+        receipt.result_ref.is_some(),
+        "confirmation cites its intent evidence"
+    );
+    let due = world.daemon.state().with_store(|store| {
+        store
+            .claim_outbox(receipt.project_id, at("2026-08-10T10:00:00Z"), 10)
+            .expect("the dispatch inventory is readable")
+    });
+    assert!(
+        due.is_empty(),
+        "a successful application command queues no dispatch"
+    );
+
+    let failed_key = IdempotencyKey::parse("receipt-lifecycle-failure").expect("a valid key");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_local_command(&NewLocalCommand {
+                project_id: world.project,
+                receipt_id: kontor_core::id::CommandReceiptId::generate(),
+                idempotency_key: failed_key.clone(),
+                kind: CommandKind::EnsureProject,
+                target: AggregateRef::Project {
+                    project_id: world.project,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent: CanonicalDocument::from_value(&serde_json::json!({
+                    "schema_version": 1,
+                    "operation": "not_projects_ensure"
+                }))
+                .expect("a canonical intent"),
+                created_at: at("2026-08-10T09:00:00Z"),
+            })
+            .expect("a pending local receipt is recorded");
+    });
+    let failed = ensure_project(
+        &world,
+        failed_key.as_str(),
+        "Different operation",
+        "/tmp/kontor-receipt-failure",
+    )
+    .await;
+    assert_eq!(failed.status, 409, "{}", failed.body);
+    let pending = world.daemon.state().with_store(|store| {
+        store
+            .get_receipt_by_key(&failed_key)
+            .expect("the receipt is readable")
+            .expect("the receipt still exists")
+    });
+    assert_eq!(pending.state, CommandReceiptState::IntentPersisted);
+}
+
+/// The first runnable work-profile category the bundled pack advertises.
+fn receipt(world: &World, key: &str) -> kontor_core::receipt::CommandReceipt {
+    let key = IdempotencyKey::parse(key).expect("a valid idempotency key");
+    world.daemon.state().with_store(|store| {
+        store
+            .get_receipt_by_key(&key)
+            .expect("the receipt is readable")
+            .expect("the command recorded a receipt")
+    })
 }

@@ -122,14 +122,15 @@ use kontor_core::repository::{
     CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository, MiniProject,
     MiniProjectTopologySnapshot, NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun,
     NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent, NewGateEvaluation,
-    NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding,
-    NewSessionTopologyNode, NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault,
-    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
-    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
-    StoredCompletionWake, StoredConsultationProfileRevision, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    TaskTransitionRequest, TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    NewLocalCommand, NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState,
+    NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamRun, ProjectRepository,
+    ProjectTopologyDefault, RealmRepository, RepositoryError, RunRepository, RuntimeBinding,
+    SeatLivenessObservation, SourceDisposition, SpecRepository, StoredCommitteeFinding,
+    StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
+    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
+    StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
+    StoredRemediationProposal, TaskTransitionRequest, TicketLink, TicketRepository,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -2491,7 +2492,7 @@ impl Services {
             }
             let envelope = ReceiptEnvelope::new(
                 realm_id,
-                NewCommandIntent {
+                NewLocalCommand {
                     project_id,
                     receipt_id: CommandReceiptId::generate(),
                     idempotency_key: key.clone(),
@@ -2499,14 +2500,11 @@ impl Services {
                     target,
                     target_revision,
                     intent: document.clone(),
-                    payload: document.clone(),
-                    desired: None,
-                    not_before: now,
                     created_at: now,
                 },
             );
             store
-                .record_intent_in_realm(&envelope)
+                .record_local_command_in_realm(&envelope)
                 .map(|receipt| receipt.id)
                 .map_err(|error| self.refuse(&error))
         })?;
@@ -8547,6 +8545,17 @@ fn needs_human_dto(payload: &NeedsHumanPayload) -> NeedsHumanDto {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    fn complete_local_command(&self, key: &IdempotencyKey) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let completed = state
+            .with_store(|store| store.complete_local_command(key, kontor_api::now()))
+            .map_err(|error| self.refuse(&error))?;
+        if completed.is_some() {
+            state.signals().appended();
+        }
+        Ok(())
+    }
+
     fn persist_session_observation(
         &self,
         project_id: ProjectId,

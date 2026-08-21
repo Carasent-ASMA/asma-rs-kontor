@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 48;
+pub const SCHEMA_VERSION: i64 = 49;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -210,6 +210,10 @@ const MIGRATIONS: &[&str] = &[
     // Schema v48. Per-account, per-provider quota state: durable, self-expiring
     // and finer-grained than the composition-time `unavailable_providers` set.
     include_str!("../migrations/0048_provider_quota_states.sql"),
+    // Schema v49. `command_execution_mode`: a synchronous control-plane
+    // operation is not an undispatched command, and before this column both
+    // were written with an outbox row.
+    include_str!("../migrations/0049_command_execution_mode.sql"),
 ];
 
 const _: () = assert!(
