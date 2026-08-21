@@ -82,6 +82,76 @@ pub struct ModelChainPolicy {
     pub rungs: Vec<ModelRung>,
 }
 
+crate::closed_enum! {
+    /// What one provider's quota is doing, for one account.
+    ///
+    /// Two exhaustion states rather than one, because they recover by different
+    /// means and a scheduler that conflates them retries forever. A plan
+    /// allowance comes back on a clock and carries the instant it does; a credit
+    /// balance comes back only when someone pays, and carries nothing. The
+    /// database enforces exactly that pairing.
+    ProviderQuotaKind, "ProviderQuotaKind" {
+        /// Nothing is standing in the way.
+        Available => "available",
+        /// A plan allowance ran out. Recovers at a known instant.
+        Exhausted => "exhausted",
+        /// A credit balance ran out. Recovers only on payment.
+        Drained => "drained",
+        /// Something refused and this state cannot say what.
+        Unknown => "unknown",
+    }
+}
+
+impl ProviderQuotaKind {
+    /// Whether a launch may be placed on this provider now.
+    ///
+    /// `Unknown` fails closed, the same way account availability does: a state
+    /// nobody could establish is not a permission.
+    #[must_use]
+    pub const fn is_usable(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
+crate::closed_enum! {
+    /// Who concluded a provider quota state.
+    ///
+    /// A parsed runtime message and an operator's assertion are different
+    /// authorities, and a projection that cannot tell them apart cannot show an
+    /// operator that their own override is what is holding work back.
+    ProviderQuotaSource, "ProviderQuotaSource" {
+        /// Derived from what a runtime reported.
+        RuntimeObservation => "runtime_observation",
+        /// Asserted by an operator.
+        Operator => "operator",
+    }
+}
+
+impl ModelChainPolicy {
+    /// The first rung whose provider is usable, with its zero-based index.
+    ///
+    /// `blocked` is asked about each provider in reach order and the first one
+    /// it clears wins. The index is returned rather than derived later because
+    /// two rungs may name the same provider — adjacency is refused, but rungs 1
+    /// and 3 are not — so "which rung is this seat on" is not recoverable from
+    /// the provider alone.
+    ///
+    /// `None` means every rung is held back, and it is emphatically **not** an
+    /// invitation to fall back to rung 1: launching onto a provider already
+    /// known to be exhausted is the behaviour this function exists to end. A
+    /// caller with no reachable rung has to refuse, and should carry the
+    /// earliest recovery instant so the work is requeued rather than dropped.
+    pub fn first_reachable(
+        &self,
+        blocked: impl Fn(&ProviderRef) -> bool,
+    ) -> Option<(usize, &ModelRung)> {
+        self.rungs
+            .iter()
+            .enumerate()
+            .find(|(_, rung)| !blocked(&rung.provider))
+    }
+}
+
 impl ModelChainPolicy {
     /// Structural validation independent of a live catalog.
     pub fn validate(&self) -> crate::DomainResult<()> {

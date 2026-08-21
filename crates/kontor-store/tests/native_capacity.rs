@@ -8,14 +8,15 @@
 //! black-box suite.
 
 use kontor_core::id::{
-    AccountProfileId, AggregateRevision, CanonicalDocument, CapacityObservationId, CredentialAlias,
-    ExternalName, ProjectId, RuntimeKindKey, Timestamp, parse_utc_timestamp,
+    AccountProfileId, AggregateRevision, CanonicalDocument, CapacityObservationId, ContentHash,
+    CredentialAlias, ExternalName, ProjectId, RuntimeKindKey, Timestamp, parse_utc_timestamp,
 };
 use kontor_core::repository::{
     CapacityRepository, CredentialReference, CredentialReferenceKind, NewAccountProfile,
-    NewAvailabilityOverride, NewCapacityObservation, NewProject, ProjectRepository,
-    RepositoryError,
+    NewAvailabilityOverride, NewCapacityObservation, NewProject, NewProviderQuotaState,
+    ProjectRepository, RepositoryError,
 };
+use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
 use kontor_store::SqliteStore;
 use tempfile::TempDir;
 
@@ -304,4 +305,167 @@ fn the_latest_reading_per_account_is_the_one_a_projection_reports() {
     assert_eq!(latest.len(), 1, "one row per account, not one per reading");
     assert!(latest[0].available);
     assert_eq!(latest[0].observed_at, at("2026-08-17T09:06:00Z"));
+}
+
+// ---------------------------------------------------------------------------
+// Per-provider quota state
+//
+// The mutants this section exists to kill:
+//
+// * letting a drained balance carry a reset instant, which is what turns a dead
+//   credit key into an endless requeue;
+// * letting an exhausted allowance omit one, which parks work forever;
+// * keying the state on the account alone, so "Codex is out, Claude is fine"
+//   cannot be said.
+// ---------------------------------------------------------------------------
+
+fn quota(
+    fixture: &Fixture,
+    provider: &str,
+    state: ProviderQuotaKind,
+    resets_at: Option<Timestamp>,
+) -> NewProviderQuotaState {
+    NewProviderQuotaState {
+        project_id: fixture.project_id,
+        account_profile_id: fixture.account_profile_id,
+        provider: provider.to_owned(),
+        state,
+        resets_at,
+        evidence_hash: ContentHash::of(b"the provider said so"),
+        source: ProviderQuotaSource::RuntimeObservation,
+        observed_at: at("2026-08-21T09:35:00Z"),
+        expected_revision: AggregateRevision::INITIAL,
+        updated_at: at("2026-08-21T09:35:00Z"),
+    }
+}
+
+#[test]
+fn one_account_holds_a_separate_quota_state_per_provider() {
+    let fixture = fixture();
+    // Exactly the 2026-08-21 shape: one account profile, Codex exhausted until a
+    // known instant, Claude untouched. Account-scoped availability cannot express
+    // this, which is the whole reason this table exists.
+    fixture
+        .store
+        .set_provider_quota_state(&quota(
+            &fixture,
+            "codex",
+            ProviderQuotaKind::Exhausted,
+            Some(at("2026-08-23T09:35:00Z")),
+        ))
+        .expect("the codex state is recorded");
+    fixture
+        .store
+        .set_provider_quota_state(&quota(
+            &fixture,
+            "claude",
+            ProviderQuotaKind::Available,
+            None,
+        ))
+        .expect("the claude state is recorded");
+
+    let states = fixture
+        .store
+        .list_provider_quota_states(fixture.project_id)
+        .expect("the read succeeds");
+    assert_eq!(states.len(), 2);
+    let codex = states
+        .iter()
+        .find(|entry| entry.provider == "codex")
+        .expect("the codex state is listed");
+    assert_eq!(codex.state, ProviderQuotaKind::Exhausted);
+    assert_eq!(codex.resets_at, Some(at("2026-08-23T09:35:00Z")));
+    assert!(codex.blocks_at(at("2026-08-22T00:00:00Z")));
+    assert!(!codex.blocks_at(at("2026-08-23T10:00:00Z")));
+    let claude = states
+        .iter()
+        .find(|entry| entry.provider == "claude")
+        .expect("the claude state is listed");
+    assert!(!claude.blocks_at(at("2026-08-22T00:00:00Z")));
+}
+
+#[test]
+fn a_reset_instant_belongs_to_an_exhausted_allowance_and_to_nothing_else() {
+    let fixture = fixture();
+    // A drained credit balance recovers when someone pays, not on a clock. A row
+    // that claimed otherwise would be requeued forever against a dead key.
+    let drained_with_clock = quota(
+        &fixture,
+        "openrouter",
+        ProviderQuotaKind::Drained,
+        Some(at("2026-08-23T09:35:00Z")),
+    );
+    assert!(matches!(
+        fixture
+            .store
+            .set_provider_quota_state(&drained_with_clock)
+            .expect_err("a drained balance may not carry a reset instant"),
+        RepositoryError::Domain(_)
+    ));
+
+    // And the converse: an allowance that ran out knows when it returns.
+    let exhausted_without_clock = quota(&fixture, "codex", ProviderQuotaKind::Exhausted, None);
+    assert!(matches!(
+        fixture
+            .store
+            .set_provider_quota_state(&exhausted_without_clock)
+            .expect_err("an exhausted allowance must carry a reset instant"),
+        RepositoryError::Domain(_)
+    ));
+
+    // Neither refusal wrote anything.
+    assert!(
+        fixture
+            .store
+            .list_provider_quota_states(fixture.project_id)
+            .expect("the read succeeds")
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_quota_state_written_against_a_revision_that_has_moved_is_refused() {
+    let fixture = fixture();
+    let first = quota(&fixture, "codex", ProviderQuotaKind::Available, None);
+    let stored = fixture
+        .store
+        .set_provider_quota_state(&first)
+        .expect("the first state is recorded");
+    assert_eq!(stored.revision, AggregateRevision::INITIAL);
+
+    // A caller that read revision one is current, and its write advances it.
+    let advanced = fixture
+        .store
+        .set_provider_quota_state(&NewProviderQuotaState {
+            state: ProviderQuotaKind::Exhausted,
+            resets_at: Some(at("2026-08-23T09:35:00Z")),
+            updated_at: at("2026-08-21T09:36:00Z"),
+            ..first.clone()
+        })
+        .expect("a write under the current revision is accepted");
+    assert!(advanced.revision > stored.revision);
+    assert_eq!(advanced.state, ProviderQuotaKind::Exhausted);
+
+    // A second caller still holding revision one is not. Two collectors racing
+    // on one provider is the ordinary case, not the exotic one.
+    let stale = fixture
+        .store
+        .set_provider_quota_state(&NewProviderQuotaState {
+            state: ProviderQuotaKind::Drained,
+            resets_at: None,
+            updated_at: at("2026-08-21T09:37:00Z"),
+            ..first
+        });
+    assert!(
+        matches!(stale, Err(RepositoryError::Domain(_))),
+        "a write under a revision that has moved is a conflict: {stale:?}"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .list_provider_quota_states(fixture.project_id)
+            .expect("the read succeeds"),
+        vec![advanced],
+        "the refused write left nothing behind"
+    );
 }

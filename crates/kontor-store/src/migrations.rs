@@ -31,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 35;
+pub const SCHEMA_VERSION: i64 = 37;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -166,6 +166,14 @@ const MIGRATIONS: &[&str] = &[
     // is declared at all. The kind list carries every kind master added after
     // this branch's original 0024.
     include_str!("../migrations/0035_publish_trigger_command.sql"),
+    // Schema v36. Separate synchronous application receipts from actual
+    // dispatch obligations, and conservatively quarantine legacy zero-attempt
+    // application outbox rows without asserting that their effects succeeded.
+    include_str!("../migrations/0036_command_execution_mode.sql"),
+    // Schema v37. Per-account, per-provider quota state: one account profile
+    // serves every provider under Paseo, so account-scoped availability cannot
+    // say "Codex is out, Claude is fine".
+    include_str!("../migrations/0037_provider_quota_states.sql"),
 ];
 
 const _: () = assert!(

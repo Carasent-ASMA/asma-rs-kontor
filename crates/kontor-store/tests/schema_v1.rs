@@ -87,6 +87,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "policy_evaluations",
     "projects",
     "project_topology_defaults",
+    "provider_quota_states",
     "quick_session_promotions",
     "quick_sessions",
     "realm_idempotency_bindings",
@@ -286,7 +287,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 35);
+    assert_eq!(SCHEMA_VERSION, 37);
 }
 
 /// The two Wave-3 branches independently occupied schema numbers 30 and 31.
@@ -3183,6 +3184,17 @@ fn migration_0010_rebuilds_command_receipts_without_losing_a_row_or_a_reference(
         )
         .expect("readable");
     assert_eq!(queued, 1, "the outbox lost the entry the receipt owns");
+    let execution_mode: String = connection
+        .query_row(
+            "SELECT execution_mode FROM command_receipts WHERE id = ?1",
+            [RECEIPT],
+            |row| row.get(0),
+        )
+        .expect("the migrated receipt has an execution mode");
+    assert_eq!(
+        execution_mode, "local",
+        "a zero-attempt application receipt is quarantined from dispatch"
+    );
 
     // And the three kinds the rebuild exists for are now storable.
     for kind in [

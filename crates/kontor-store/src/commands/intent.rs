@@ -13,7 +13,7 @@ use kontor_core::receipt::{
     AggregateRef, CommandReceipt, CommandReceiptState, RevisionRule, TargetRule,
 };
 use kontor_core::repository::{
-    CommandRepository, NewCommandIntent, RepositoryError, RepositoryResult,
+    CommandRepository, NewCommandIntent, NewLocalCommand, RepositoryError, RepositoryResult,
 };
 use rusqlite::{OptionalExtension, params};
 
@@ -132,6 +132,209 @@ pub(crate) fn record_intent(
         })
 }
 
+/// Record a synchronous application command without creating dispatch work.
+pub(crate) fn record_local_command(
+    store: &SqliteStore,
+    request: &NewLocalCommand,
+) -> RepositoryResult<CommandReceipt> {
+    let transaction = store.begin()?;
+    if let Some(existing) = insert_local_command(&transaction, request)? {
+        return Ok(existing);
+    }
+    transaction.commit().map_err(backend)?;
+
+    store
+        .get_receipt_by_key(&request.idempotency_key)?
+        .ok_or(RepositoryError::NotFound {
+            subject: "local command receipt",
+        })
+}
+
+/// Close one application command only after its synchronous operation succeeds.
+pub(crate) fn complete_local_command(
+    store: &SqliteStore,
+    key: &kontor_core::id::IdempotencyKey,
+    completed_at: Timestamp,
+) -> RepositoryResult<Option<CommandReceipt>> {
+    let Some(receipt) = store.get_receipt_by_key(key)? else {
+        return Ok(None);
+    };
+    let (mode, dispatch_started): (String, i64) = store
+        .connection
+        .query_row(
+            "SELECT receipt.execution_mode,
+                    EXISTS (
+                        SELECT 1 FROM command_outbox AS outbox
+                        WHERE outbox.project_id = receipt.project_id
+                          AND outbox.receipt_id = receipt.id
+                          AND (outbox.claim_token IS NOT NULL
+                               OR outbox.claimed_at IS NOT NULL
+                               OR outbox.dispatched_at IS NOT NULL
+                               OR outbox.attempts <> 0)
+                    )
+             FROM command_receipts AS receipt
+             WHERE receipt.project_id = ?1 AND receipt.id = ?2",
+            params![receipt.project_id.to_string(), receipt.id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(backend)?;
+    // Some application routes use their own purpose-built receipt protocol
+    // (operator abandonment is one example). The route-level success hook sees
+    // the same idempotency header, so a non-local receipt is simply outside this
+    // completion boundary rather than an error that replaces a successful HTTP
+    // response.
+    if mode != "local" {
+        return Ok(None);
+    }
+    if dispatch_started != 0 {
+        return Err(RepositoryError::Conflict {
+            subject: "local command receipt",
+            rule: "a local command receipt must never enter dispatch",
+        });
+    }
+    if receipt.state == CommandReceiptState::Confirmed {
+        return Ok(Some(receipt));
+    }
+    if receipt.state != CommandReceiptState::IntentPersisted {
+        return Err(RepositoryError::Conflict {
+            subject: "local command receipt",
+            rule: "a successful local operation may only complete its persisted intent",
+        });
+    }
+    let evidence = ExternalId::parse(receipt.intent.hash().as_str())?;
+    let completed = store
+        .apply_command_transition(&crate::commands::receipts::CommandTransition {
+            project_id: receipt.project_id,
+            receipt_id: receipt.id,
+            to: CommandReceiptState::Confirmed,
+            correlation: None,
+            native_identity: None,
+            evidence_ref: Some(evidence),
+            no_effect: None,
+            occurred_at: completed_at,
+        })?
+        .receipt;
+    Ok(Some(completed))
+}
+
+/// Write the non-dispatching half of the command protocol in one transaction.
+fn insert_local_command(
+    transaction: &rusqlite::Transaction<'_>,
+    request: &NewLocalCommand,
+) -> RepositoryResult<Option<CommandReceipt>> {
+    request.kind.ensure_compatible(&request.target, None)?;
+    if let Some(project) = target_project(&request.target)
+        && project != request.project_id
+    {
+        return Err(RepositoryError::CrossProject {
+            subject: "local command target",
+        });
+    }
+
+    let existing: Option<RepositoryResult<CommandReceipt>> = transaction
+        .query_row(
+            &format!("SELECT {RECEIPT_COLUMNS} FROM command_receipts WHERE idempotency_key = ?1"),
+            params![request.idempotency_key.as_str()],
+            |row| Ok(read_receipt_row(row)),
+        )
+        .optional()
+        .map_err(backend)?;
+    if let Some(existing) = existing {
+        let existing = existing?;
+        existing.ensure_replay(&request.target, &request.intent)?;
+        let mode: String = transaction
+            .query_row(
+                "SELECT execution_mode FROM command_receipts WHERE id = ?1",
+                params![existing.id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if mode != "local"
+            || existing.kind != request.kind
+            || existing.target_revision != request.target_revision
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "local command receipt",
+                rule: "the idempotency key already names a different execution mode or command",
+            });
+        }
+        return Ok(Some(existing));
+    }
+
+    let target = to_json(&request.target)?;
+    transaction
+        .execute(
+            "INSERT INTO command_receipts
+                 (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                  intent_hash, state, attempts, created_at, updated_at, execution_mode)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'intent_persisted', 0, ?9, ?9,
+                     'local')",
+            params![
+                request.receipt_id.to_string(),
+                request.project_id.to_string(),
+                request.idempotency_key.as_str(),
+                request.kind.as_str(),
+                target,
+                revision_column(request.target_revision)?,
+                request.intent.json(),
+                request.intent.hash().as_str(),
+                text(request.created_at)
+            ],
+        )
+        .map_err(backend)?;
+
+    let (kind, columns) = target_columns(&request.target);
+    transaction
+        .execute(
+            "INSERT INTO command_targets
+                 (project_id, receipt_id, target_kind, target_project_id,
+                  target_mini_project_id, target_task_id, target_team_run_id,
+                  target_agent_run_id, target_ticket_link_id, target_work_calendar_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                request.project_id.to_string(),
+                request.receipt_id.to_string(),
+                kind,
+                columns[0],
+                columns[1],
+                columns[2],
+                columns[3],
+                columns[4],
+                columns[5],
+                columns[6]
+            ],
+        )
+        .map_err(backend)?;
+    append_transition(
+        transaction,
+        request.project_id,
+        request.receipt_id,
+        1,
+        CommandReceiptState::IntentPersisted,
+        None,
+        None,
+        None,
+        request.created_at,
+    )?;
+    transaction
+        .execute(
+            "INSERT INTO runtime_events
+                 (project_id, event_kind, command_receipt_id, payload, payload_hash,
+                  observed_at, recorded_at)
+             VALUES (?1, 'command_intent', ?2, ?3, ?4, ?5, ?6)",
+            params![
+                request.project_id.to_string(),
+                request.receipt_id.to_string(),
+                request.intent.json(),
+                request.intent.hash().as_str(),
+                text(request.created_at),
+                text(Timestamp::now())
+            ],
+        )
+        .map_err(backend)?;
+    Ok(None)
+}
+
 /// Write an intent's six rows inside a transaction the caller already owns.
 ///
 /// Returns `Some(receipt)` when the idempotency key names a command that is
@@ -181,8 +384,9 @@ pub(crate) fn insert_intent(
         .execute(
             "INSERT INTO command_receipts
                  (id, project_id, idempotency_key, kind, target, target_revision, intent,
-                  intent_hash, state, attempts, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'intent_persisted', 0, ?9, ?9)",
+                  intent_hash, state, attempts, created_at, updated_at, execution_mode)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'intent_persisted', 0, ?9, ?9,
+                     'dispatch')",
             params![
                 request.receipt_id.to_string(),
                 request.project_id.to_string(),
@@ -312,9 +516,13 @@ pub(crate) fn read_outbox(
     let mut statement = store
         .connection
         .prepare(
-            "SELECT receipt_id, payload, payload_hash, not_before, dispatched_at, attempts
-             FROM command_outbox
-             WHERE project_id = ?1 AND dispatched_at IS NULL AND not_before <= ?2
+            "SELECT outbox.receipt_id, outbox.payload, outbox.payload_hash, outbox.not_before,
+                    outbox.dispatched_at, outbox.attempts
+             FROM command_outbox AS outbox
+             JOIN command_receipts AS receipt
+               ON receipt.project_id = outbox.project_id AND receipt.id = outbox.receipt_id
+             WHERE outbox.project_id = ?1 AND receipt.execution_mode = 'dispatch'
+               AND outbox.dispatched_at IS NULL AND outbox.not_before <= ?2
              ORDER BY not_before, receipt_id LIMIT ?3",
         )
         .map_err(backend)?;
@@ -339,6 +547,100 @@ pub(crate) fn read_outbox(
 }
 
 impl SqliteStore {
+    /// Claim one exact dispatch receipt with the correlation the native request
+    /// will carry.
+    ///
+    /// Unlike [`Self::claim_due`], this cannot accidentally reserve neighboring
+    /// work while a caller is preparing one specific launch.
+    pub fn claim_receipt_for_dispatch(
+        &self,
+        project_id: ProjectId,
+        receipt_id: CommandReceiptId,
+        correlation: &ExternalId,
+        now: Timestamp,
+    ) -> RepositoryResult<DispatchClaim> {
+        let transaction = self.begin()?;
+        let (payload, payload_hash, attempts): (String, String, i64) = transaction
+            .query_row(
+                "SELECT outbox.payload, outbox.payload_hash, outbox.attempts
+                 FROM command_outbox AS outbox
+                 JOIN command_receipts AS receipt
+                   ON receipt.project_id = outbox.project_id AND receipt.id = outbox.receipt_id
+                 WHERE outbox.project_id = ?1 AND outbox.receipt_id = ?2
+                   AND receipt.execution_mode = 'dispatch'
+                   AND receipt.state = 'intent_persisted'
+                   AND outbox.claim_token IS NULL AND outbox.claimed_at IS NULL
+                   AND outbox.dispatched_at IS NULL AND outbox.not_before <= ?3",
+                params![project_id.to_string(), receipt_id.to_string(), text(now)],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or(RepositoryError::Conflict {
+                subject: "command outbox",
+                rule: "the named dispatch is not an unclaimed persisted intent",
+            })?;
+        let claimed = transaction
+            .execute(
+                "UPDATE command_outbox
+                 SET claim_token = ?1, claimed_at = ?2, attempts = attempts + 1
+                 WHERE project_id = ?3 AND receipt_id = ?4
+                   AND claim_token IS NULL AND dispatched_at IS NULL",
+                params![
+                    correlation.as_str(),
+                    text(now),
+                    project_id.to_string(),
+                    receipt_id.to_string()
+                ],
+            )
+            .map_err(backend)?;
+        if claimed != 1 {
+            return Err(conflict(
+                "command outbox",
+                "the named dispatch moved while it was being claimed",
+            ));
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE command_receipts
+                 SET state = 'dispatch_pending', correlation = ?1, updated_at = ?2
+                 WHERE project_id = ?3 AND id = ?4 AND state = 'intent_persisted'
+                   AND execution_mode = 'dispatch'",
+                params![
+                    correlation.as_str(),
+                    text(now),
+                    project_id.to_string(),
+                    receipt_id.to_string()
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "command receipt",
+                "the named dispatch moved while it was being claimed",
+            ));
+        }
+        append_transition(
+            &transaction,
+            project_id,
+            receipt_id,
+            2,
+            CommandReceiptState::DispatchPending,
+            Some(correlation),
+            None,
+            None,
+            now,
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(DispatchClaim {
+            receipt_id,
+            correlation: correlation.clone(),
+            payload: stored_payload(&payload, &payload_hash)?,
+            attempts: u32::try_from(attempts.saturating_add(1)).unwrap_or(u32::MAX),
+            claimed_at: now,
+        })
+    }
+
     /// Claim due outbox entries for dispatch.
     ///
     /// Claiming is a **write**, not a read: it mints and persists the
@@ -373,6 +675,7 @@ impl SqliteStore {
                        ON receipt.id = outbox.receipt_id AND receipt.project_id = outbox.project_id
                      WHERE outbox.project_id = ?1 AND outbox.dispatched_at IS NULL
                        AND outbox.not_before <= ?2 AND receipt.state = 'intent_persisted'
+                       AND receipt.execution_mode = 'dispatch'
                      ORDER BY outbox.not_before, outbox.receipt_id LIMIT ?3",
                 )
                 .map_err(backend)?;

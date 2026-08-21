@@ -46,7 +46,7 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes and is willing to read.
-pub const EXPORT_SCHEMA_VERSION: u32 = 1;
+pub const EXPORT_SCHEMA_VERSION: u32 = 2;
 
 /// How deep an embedded document is followed by the canary scan.
 ///
@@ -1009,6 +1009,7 @@ exported_tables! {
         attempts: i64,
         created_at: String,
         updated_at: String,
+        execution_mode: String,
     }
     command_receipt_transitions: CommandReceiptTransitionsRow from "command_receipt_transitions" key(project_id, receipt_id, sequence) {
         project_id: String,
@@ -1357,7 +1358,10 @@ impl ExportedRecords {
             unsettled_command_receipts: self
                 .command_receipts
                 .iter()
-                .filter(|receipt| !settled.contains(&receipt.state.as_str()))
+                .filter(|receipt| {
+                    receipt.execution_mode == "dispatch"
+                        && !settled.contains(&receipt.state.as_str())
+                })
                 .count() as u64,
             incomplete_reconciliation_epochs: self
                 .runtime_reconciliation_epochs

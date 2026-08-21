@@ -39,12 +39,14 @@ use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
     AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ContentHash, ExternalName,
-    MiniProjectId, ProjectId, QuickSessionId, SeatBindingId, TaskId, TeamRunId, TopologyNodeId,
+    IdempotencyKey, MiniProjectId, ProjectId, QuickSessionId, SeatBindingId, TaskId, TeamRunId,
+    TopologyNodeId,
 };
+use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
-    NewObservation, NewProject, NewRuntimeEvent, ProjectRepository, RealmRepository, RunClosure,
-    RunRepository, SourceDisposition, StoredEpicRoster, StoredPromotion, StoredQuickSession,
-    TopologyRepository, WorkflowRepository,
+    CommandRepository, NewLocalCommand, NewObservation, NewProject, NewRuntimeEvent,
+    ProjectRepository, RealmRepository, RunClosure, RunRepository, SourceDisposition,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::state::{
     Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
@@ -2031,6 +2033,78 @@ async fn ensure_project(world: &World, key: &str, name: &str, root: &str) -> Ans
     .await
 }
 
+#[tokio::test]
+async fn application_receipts_confirm_only_after_a_successful_response() {
+    let world = World::open().await;
+    let success_key = "receipt-lifecycle-success";
+    let answer = ensure_project(
+        &world,
+        success_key,
+        "Receipt lifecycle",
+        "/tmp/kontor-receipt-lifecycle",
+    )
+    .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    let success_key = IdempotencyKey::parse(success_key).expect("a valid key");
+    let receipt = world.daemon.state().with_store(|store| {
+        store
+            .get_receipt_by_key(&success_key)
+            .expect("the receipt is readable")
+            .expect("the application recorded a receipt")
+    });
+    assert_eq!(receipt.state, CommandReceiptState::Confirmed);
+    assert!(
+        receipt.result_ref.is_some(),
+        "confirmation cites its intent evidence"
+    );
+    let due = world.daemon.state().with_store(|store| {
+        store
+            .claim_outbox(receipt.project_id, at("2026-08-10T10:00:00Z"), 10)
+            .expect("the dispatch inventory is readable")
+    });
+    assert!(
+        due.is_empty(),
+        "a successful application command queues no dispatch"
+    );
+
+    let failed_key = IdempotencyKey::parse("receipt-lifecycle-failure").expect("a valid key");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_local_command(&NewLocalCommand {
+                project_id: world.project,
+                receipt_id: kontor_core::id::CommandReceiptId::generate(),
+                idempotency_key: failed_key.clone(),
+                kind: CommandKind::EnsureProject,
+                target: AggregateRef::Project {
+                    project_id: world.project,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent: CanonicalDocument::from_value(&serde_json::json!({
+                    "schema_version": 1,
+                    "operation": "not_projects_ensure"
+                }))
+                .expect("a canonical intent"),
+                created_at: at("2026-08-10T09:00:00Z"),
+            })
+            .expect("a pending local receipt is recorded");
+    });
+    let failed = ensure_project(
+        &world,
+        failed_key.as_str(),
+        "Different operation",
+        "/tmp/kontor-receipt-failure",
+    )
+    .await;
+    assert_eq!(failed.status, 409, "{}", failed.body);
+    let pending = world.daemon.state().with_store(|store| {
+        store
+            .get_receipt_by_key(&failed_key)
+            .expect("the receipt is readable")
+            .expect("the receipt still exists")
+    });
+    assert_eq!(pending.state, CommandReceiptState::IntentPersisted);
+}
+
 /// The first runnable work-profile category the bundled pack advertises.
 async fn first_category(world: &World) -> String {
     let catalog = Call::get("/v1/catalog/work-profiles")
@@ -3242,6 +3316,21 @@ async fn starting_a_named_plan_creates_one_seat_through_admission_and_reuses_it_
             "this process holds the frozen snapshot for every seat it launched"
         );
     }
+    let launch_key = IdempotencyKey::parse(&format!(
+        "start-run-{}",
+        seats[0]["task_id"].as_str().expect("a task id")
+    ))
+    .expect("the derived launch key is valid");
+    let launch_receipt = world.daemon.state().with_store(|store| {
+        store
+            .get_receipt_by_key(&launch_key)
+            .expect("the launch receipt is readable")
+            .expect("admission recorded the launch")
+    });
+    assert_eq!(launch_receipt.state, CommandReceiptState::Confirmed);
+    assert_eq!(launch_receipt.attempts, 1);
+    assert!(launch_receipt.native_identity.is_some());
+    assert!(launch_receipt.result_ref.is_some());
 }
 
 #[tokio::test]
@@ -3371,13 +3460,14 @@ async fn lifecycle_transitions_are_legal_revisioned_and_gated() {
 // with a different body is a typed conflict, and neither produces a second row.
 // ---------------------------------------------------------------------------
 
-/// How many command receipts this Realm holds.
-fn receipts(world: &World) -> i64 {
+/// Read the durable command receipt for one public idempotency key.
+fn receipt(world: &World, key: &str) -> kontor_core::receipt::CommandReceipt {
+    let key = IdempotencyKey::parse(key).expect("a valid idempotency key");
     world.daemon.state().with_store(|store| {
         store
-            .unsettled_receipts()
-            .expect("the receipts are readable")
-            .len() as i64
+            .get_receipt_by_key(&key)
+            .expect("the receipt is readable")
+            .expect("the command recorded a receipt")
     })
 }
 
@@ -3389,21 +3479,25 @@ async fn the_two_bootstrap_ensures_honour_their_idempotency_key() {
     let first = ensure_project(&world, "idem-1", "Kontor", "/tmp/kontor-idem").await;
     assert_eq!(first.status, 200, "{}", first.body);
     let project = first.json()["project_id"].as_str().expect("id").to_owned();
-    let after_first = receipts(&world);
-    assert_eq!(after_first, 1, "the ensure recorded exactly one receipt");
+    let first_receipt = receipt(&world, "idem-1");
+    assert_eq!(first_receipt.state, CommandReceiptState::Confirmed);
 
     // Same key, same body: the original answer, and no second receipt.
     let replay = ensure_project(&world, "idem-1", "Kontor", "/tmp/kontor-idem").await;
     assert_eq!(replay.status, 200, "{}", replay.body);
     assert_eq!(replay.json()["project_id"], first.json()["project_id"]);
     assert_eq!(replay.json()["applied"], "unchanged");
-    assert_eq!(receipts(&world), after_first, "a replay records nothing");
+    assert_eq!(
+        receipt(&world, "idem-1").id,
+        first_receipt.id,
+        "a replay reuses the original receipt"
+    );
 
     // Same key, different body: a typed conflict, and still nothing written.
     let reused = ensure_project(&world, "idem-1", "Kontor", "/tmp/kontor-other").await;
     assert_eq!(reused.status, 409, "{}", reused.body);
     assert_eq!(reused.code(), "idempotency_conflict");
-    assert_eq!(receipts(&world), after_first);
+    assert_eq!(receipt(&world, "idem-1").id, first_receipt.id);
     let projects = world.daemon.state().with_store(|store| {
         store
             .get_project(kontor_core::id::ProjectId::parse(&project).expect("a project id"))
@@ -3424,7 +3518,8 @@ async fn the_two_bootstrap_ensures_honour_their_idempotency_key() {
         .await;
     assert_eq!(created.status, 200, "{}", created.body);
     assert_eq!(created.json()["applied"], "created");
-    let with_account = receipts(&world);
+    let account_receipt = receipt(&world, "idem-account");
+    assert_eq!(account_receipt.state, CommandReceiptState::Confirmed);
 
     let replayed = Call::post(&uri, &account)
         .signed_as(&world, "admin")
@@ -3437,7 +3532,11 @@ async fn the_two_bootstrap_ensures_honour_their_idempotency_key() {
         replayed.json()["account_profile_id"],
         created.json()["account_profile_id"]
     );
-    assert_eq!(receipts(&world), with_account, "a replay records nothing");
+    assert_eq!(
+        receipt(&world, "idem-account").id,
+        account_receipt.id,
+        "a replay reuses the original account receipt"
+    );
 
     let conflicting = Call::post(
         &uri,
@@ -3540,17 +3639,10 @@ async fn an_account_ensure_compares_every_supplied_field_and_never_echoes_the_al
             "an alias must not appear in a response: {body}"
         );
     }
-    let stored = world.daemon.state().with_store(|store| {
-        let mut found = Vec::new();
-        for (project_id, receipt_id) in store.unsettled_receipts().expect("readable") {
-            let receipt = store
-                .get_receipt(project_id, receipt_id)
-                .expect("readable")
-                .expect("the receipt exists");
-            found.push(receipt.intent.json().to_owned());
-        }
-        found
-    });
+    // Drift is rejected before an intent is accepted, so only the successful
+    // create and unchanged ensure have receipts to inspect.
+    let stored =
+        ["drift-create", "drift-same"].map(|key| receipt(&world, key).intent.json().to_owned());
     assert!(
         stored
             .iter()
@@ -3649,25 +3741,15 @@ async fn disarming_records_its_own_command_kind_and_checks_the_key_before_answer
 
     // The receipt is its own kind: a calendar-override revocation must not be
     // replayable as the authority that disarmed the work.
-    let kinds = world.daemon.state().with_store(|store| {
-        let mut found = Vec::new();
-        for (project_id, receipt_id) in store.unsettled_receipts().expect("readable") {
-            let receipt = store
-                .get_receipt(project_id, receipt_id)
-                .expect("readable")
-                .expect("the receipt exists");
-            found.push(receipt.kind.as_str().to_owned());
-        }
-        found
-    });
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| kind == "revoke_execution_authorization"),
-        "disarm records its own command kind, found {kinds:?}"
+    let kind = receipt(&world, "revoke-key").kind;
+    assert_eq!(
+        kind.as_str(),
+        "revoke_execution_authorization",
+        "disarm records its own command kind"
     );
-    assert!(
-        !kinds.iter().any(|kind| kind == "revoke_schedule_override"),
+    assert_ne!(
+        kind.as_str(),
+        "revoke_schedule_override",
         "disarming an authorization is not a calendar override revocation"
     );
 

@@ -24,7 +24,9 @@ use kontor_core::id::{
     IdempotencyKey, ProjectId, Timestamp, parse_utc_timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState, NoEffectEvidence};
-use kontor_core::repository::{CommandRepository, NewCommandIntent, RunRepository};
+use kontor_core::repository::{
+    CommandRepository, NewCommandIntent, NewLocalCommand, RunRepository,
+};
 use kontor_core::state::{DesiredRunState, NativeRuntimeIdentity};
 use kontor_store::{CommandRecovery, CommandTransition, SqliteStore};
 use rusqlite::Connection;
@@ -113,6 +115,26 @@ fn fixture() -> Fixture {
     }
 }
 
+fn unbound_fixture() -> Fixture {
+    let directory = TempDir::new().expect("a temporary directory");
+    let path = directory.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("the store opens");
+    let connection = Connection::open(&path).expect("a raw connection opens");
+    let without_binding = FIXTURE_SQL
+        .split_once("INSERT INTO runtime_bindings")
+        .expect("the fixture has a binding suffix")
+        .0;
+    connection
+        .execute_batch(without_binding)
+        .expect("the unbound fixture inserts");
+    Fixture {
+        _directory: directory,
+        path,
+        store,
+        project: ProjectId::parse(PROJECT).expect("a canonical id"),
+    }
+}
+
 fn at(text: &str) -> Timestamp {
     parse_utc_timestamp(text).expect("a canonical UTC timestamp")
 }
@@ -141,6 +163,195 @@ fn identity() -> NativeRuntimeIdentity {
         generation: 1,
         native_id: external("session-1"),
     }
+}
+
+#[test]
+fn a_local_command_is_never_dispatchable_and_completes_only_after_success() {
+    let fixture = fixture();
+    let key = IdempotencyKey::parse("local-command-1").expect("a valid key");
+    let receipt = fixture
+        .store
+        .record_local_command(&NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key.clone(),
+            kind: CommandKind::EnsureProject,
+            target: AggregateRef::Project {
+                project_id: fixture.project,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: document("local-command"),
+            created_at: now(),
+        })
+        .expect("the local intent is recorded");
+    assert_eq!(receipt.state, CommandReceiptState::IntentPersisted);
+    assert_eq!(census(&fixture)["command_outbox"], 0);
+    assert!(
+        fixture
+            .store
+            .unsettled_receipts()
+            .expect("recovery inventory is readable")
+            .is_empty(),
+        "a local operation is not work for the dispatcher"
+    );
+
+    let fixture = fixture.restart();
+    let completed = fixture
+        .store
+        .complete_local_command(&key, now())
+        .expect("successful application completes the receipt")
+        .expect("the key names a receipt");
+    assert_eq!(completed.state, CommandReceiptState::Confirmed);
+    assert_eq!(
+        completed.result_ref,
+        Some(external(completed.intent.hash().as_str()))
+    );
+    assert_eq!(
+        fixture
+            .store
+            .receipt_history(fixture.project, completed.id)
+            .expect("history is readable")
+            .iter()
+            .map(|step| step.state)
+            .collect::<Vec<_>>(),
+        vec![
+            CommandReceiptState::IntentPersisted,
+            CommandReceiptState::Confirmed
+        ]
+    );
+    assert_eq!(census(&fixture)["command_outbox"], 0);
+}
+
+#[test]
+fn the_local_completion_boundary_ignores_a_dispatch_receipt() {
+    let fixture = fixture();
+    let (_, intent) = launch_intent(&fixture, "dispatch-is-not-local", "launch");
+    fixture
+        .store
+        .record_intent(&intent)
+        .expect("the dispatch intent is recorded");
+
+    let completed = fixture
+        .store
+        .complete_local_command(&intent.idempotency_key, now())
+        .expect("a dispatch receipt is outside the local boundary");
+    assert!(completed.is_none());
+    assert_eq!(
+        fixture
+            .store
+            .get_receipt_by_key(&intent.idempotency_key)
+            .expect("the receipt remains readable")
+            .expect("the receipt exists")
+            .state,
+        CommandReceiptState::IntentPersisted
+    );
+}
+
+#[test]
+fn startup_confirms_a_legacy_launch_only_from_its_durable_binding() {
+    let fixture = fixture();
+    let (_, intent) = launch_intent(&fixture, "legacy-bound-launch", "launch");
+    let receipt = fixture
+        .store
+        .record_intent(&intent)
+        .expect("the old launch intent is recorded");
+    assert_eq!(receipt.state, CommandReceiptState::IntentPersisted);
+
+    let fixture = fixture.restart();
+    let report = fixture
+        .store
+        .reconcile_legacy_launch_receipts(now())
+        .expect("the binding is valid launch evidence");
+    assert_eq!(report.confirmed, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.pending, 0);
+    let confirmed = fixture
+        .store
+        .get_receipt_by_key(&intent.idempotency_key)
+        .expect("the receipt is readable")
+        .expect("the receipt exists");
+    assert_eq!(confirmed.state, CommandReceiptState::Confirmed);
+    assert_eq!(confirmed.native_identity, Some(identity()));
+    assert!(
+        confirmed.result_ref.is_some(),
+        "the binding id is cited as evidence"
+    );
+    assert!(
+        fixture
+            .store
+            .unsettled_receipts()
+            .expect("the inventory is readable")
+            .is_empty()
+    );
+}
+
+#[test]
+fn startup_fails_a_legacy_launch_only_from_terminal_run_evidence() {
+    let fixture = unbound_fixture();
+    let (_, intent) = launch_intent(&fixture, "legacy-terminal-launch", "launch");
+    fixture
+        .store
+        .record_intent(&intent)
+        .expect("the old launch intent is recorded");
+
+    // Model a historical launch whose runtime produced a terminal observation
+    // but never left a binding behind. The receipt may be failed because the
+    // immutable run evidence proves that this launch can no longer take effect.
+    let evidence = document("terminal-runtime-observation");
+    let connection = Connection::open(&fixture.path).expect("a raw connection opens");
+    connection
+        .execute(
+            "INSERT INTO runtime_events
+                 (project_id, event_kind, agent_run_id, runtime_kind, host, generation,
+                  native_id, native_event_id, native_sequence, observed_state, contact,
+                  freshness, audit_ref, payload, payload_hash, observed_at, recorded_at)
+             VALUES (?1, 'runtime_observation', ?2, 'generic.runtime', 'host-1', 1,
+                     'session-1', 'terminal-event', 2, 'failed', 'reachable', 'fresh',
+                     'runtime://terminal-event', ?3, ?4, ?5, ?5)",
+            rusqlite::params![
+                PROJECT,
+                RUN,
+                evidence.json(),
+                evidence.hash().as_str(),
+                now().to_string()
+            ],
+        )
+        .expect("terminal evidence is durable");
+    let cursor = connection.last_insert_rowid();
+    connection
+        .execute(
+            "UPDATE agent_runs
+             SET lifecycle = 'failed', observed_state = 'failed', derived_state = 'terminal',
+                 terminal_outcome = 'failed', terminal_source_kind = 'runtime_observation',
+                 terminal_event_cursor = ?1, terminal_evidence_hash = ?2, closed_at = ?3,
+                 revision = revision + 1
+             WHERE project_id = ?4 AND id = ?5",
+            rusqlite::params![
+                cursor,
+                evidence.hash().as_str(),
+                now().to_string(),
+                PROJECT,
+                RUN
+            ],
+        )
+        .expect("the run closes from that evidence");
+    drop(connection);
+
+    let fixture = fixture.restart();
+    let report = fixture
+        .store
+        .reconcile_legacy_launch_receipts(now())
+        .expect("terminal run evidence is valid failure evidence");
+    assert_eq!(report.confirmed, 0);
+    assert_eq!(report.failed, 1);
+    assert_eq!(report.pending, 0);
+    let failed = fixture
+        .store
+        .get_receipt_by_key(&intent.idempotency_key)
+        .expect("the receipt is readable")
+        .expect("the receipt exists");
+    assert_eq!(failed.state, CommandReceiptState::Failed);
+    assert_eq!(failed.result_ref, Some(external(evidence.hash().as_str())));
 }
 
 /// Count every row a command touches, through an independent connection.

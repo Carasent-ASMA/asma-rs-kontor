@@ -49,10 +49,10 @@ pub mod state;
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, extract::Request};
-use kontor_core::id::Timestamp;
+use kontor_core::id::{IdempotencyKey, Timestamp};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -165,6 +165,38 @@ async fn authenticate(
     Ok(next.run(Request::from_parts(parts, body)).await)
 }
 
+/// Confirm only application-service receipts, and only after the handler has
+/// produced a successful response.
+///
+/// This layer is installed on the application sub-router rather than globally:
+/// session messages and memory writes use the same header spelling for their
+/// own idempotency domains and must never settle a command receipt whose key
+/// merely happens to match.
+async fn complete_application_receipt(
+    State(state): State<ApiState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let key = request
+        .headers()
+        .get(control::IDEMPOTENCY_KEY)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| IdempotencyKey::parse(value).ok());
+    let response = next.run(request).await;
+    if !response.status().is_success() {
+        return response;
+    }
+    let Some(key) = key else {
+        return response;
+    };
+    match state.applications().complete_local_command(&key) {
+        Ok(()) => response,
+        Err(error) => error.into_response(),
+    }
+}
+
 /// The versioned HTTP and SSE surface of one Realm.
 ///
 /// Every route is `/v1/…`, every route is authenticated, and the CORS policy is
@@ -234,6 +266,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/events", get(control::events))
         // The declarative application operations. Every one of them answers with
         // the durable projection its service produced, not with an intent.
+        .merge(
+            Router::new()
         .route("/v1/projects:ensure", post(applications::ensure_project))
         .route(
             "/v1/catalog/work-profiles",
@@ -491,6 +525,14 @@ pub fn router(state: ApiState) -> Router {
             post(applications::ensure_account_profile),
         )
         .route(
+            "/v1/projects/{project_id}/provider-quota-states",
+            get(applications::provider_quota_states),
+        )
+        .route(
+            "/v1/projects/{project_id}/provider-quota-states:record",
+            post(applications::record_provider_quota),
+        )
+        .route(
             "/v1/projects/{project_id}/epics:apply",
             post(applications::apply_epic),
         )
@@ -642,6 +684,11 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/projects/{project_id}/tasks/{task_id}/ticket:claim",
             post(applications::claim_ticket),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            complete_application_receipt,
+        )),
         )
         .route(
             "/v1/sessions/{agent_run_id}/timeline",

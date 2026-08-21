@@ -1313,6 +1313,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/provider-quota-states": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every recorded provider quota state in one project. */
+        get: operations["provider_quota_states"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/provider-quota-states:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record or replace one account's quota state for one provider. */
+        post: operations["record_provider_quota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/quick-roles": {
         parameters: {
             query?: never;
@@ -4097,6 +4131,28 @@ export interface components {
             /** @description The source inside that layer. */
             source_id: string;
         };
+        /** @description One account's quota state for one provider, as a projection reports it. */
+        ProviderQuotaStateDto: {
+            /** @description The account the state is about. */
+            account_profile_id: string;
+            /** @description Whether it still holds a launch back, as of this read. */
+            blocking: boolean;
+            /** @description When it was concluded. */
+            observed_at: string;
+            /** @description The provider, spelled as the model catalog spells it. */
+            provider: string;
+            /** @description When an exhausted allowance returns. Absent for every other state. */
+            resets_at?: string | null;
+            /**
+             * Format: int64
+             * @description The revision a write must present.
+             */
+            revision: number;
+            /** @description `runtime_observation` or `operator`. */
+            source: string;
+            /** @description `available`, `exhausted`, `drained` or `unknown`. */
+            state: string;
+        };
         /**
          * @description What `topology-specs:publish` is asked for.
          *
@@ -4283,6 +4339,32 @@ export interface components {
             reviewer_principal?: string | null;
             /** @description The verdict. `waived` is an admin decision; the rest are operator work. */
             verdict: string;
+        };
+        /**
+         * @description What `provider-quota-states:record` is asked for.
+         *
+         *     There is no free-text note and no place for the provider's own message. The
+         *     message is vendor output carrying account hints and URLs; what a record needs
+         *     from it is the state and the instant, and those are typed fields.
+         */
+        RecordProviderQuotaRequest: {
+            /** @description The account the state is about. */
+            account_profile_id: string;
+            /**
+             * Format: int64
+             * @description The revision the caller believes is current; `1` for the first record.
+             */
+            expected_revision: number;
+            /** @description The provider. */
+            provider: string;
+            /**
+             * @description When an exhausted allowance returns. Required for `exhausted` and
+             *     refused for everything else — a drained balance recovers on payment, not
+             *     on a clock, and a reset instant here would put it on a retry timer.
+             */
+            resets_at?: string | null;
+            /** @description `available`, `exhausted`, `drained` or `unknown`. */
+            state: string;
         };
         /**
          * @description One member the resolver removed, and why.
@@ -9098,6 +9180,87 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AccountProfileDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    provider_quota_states: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderQuotaStateDto"][];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_provider_quota: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordProviderQuotaRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderQuotaStateDto"];
                 };
             };
             401: {

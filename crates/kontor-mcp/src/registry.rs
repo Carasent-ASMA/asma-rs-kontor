@@ -2673,6 +2673,74 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Repair one bound container's title, idempotently, and read it back.",
     },
+    // ---- Per-provider quota state ------------------------------------------
+    //
+    // Separate from native capacity above because that projection is keyed on
+    // the account and this one is keyed on the account *and* the provider. Under
+    // Paseo one account profile serves every provider, so "Codex is out, Claude
+    // is fine" cannot be said account-wide — and it is the fact a rung advance
+    // turns on.
+    ToolSpec {
+        name: "kontor_provider_quota_states_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/provider-quota-states",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Every recorded provider quota state, and whether each still holds a launch back.",
+    },
+    ToolSpec {
+        name: "kontor_provider_quota_record",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/provider-quota-states:record",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "account_profile_id",
+                Place::Body,
+                ArgType::AccountProfileId,
+                "The account the state is about.",
+            ),
+            req(
+                "provider",
+                Place::Body,
+                ArgType::OpenKey,
+                "The provider, spelled as the model catalog spells it.",
+            ),
+            req(
+                "state",
+                Place::Body,
+                ArgType::OpenKey,
+                "available, exhausted, drained or unknown.",
+            ),
+            opt(
+                "resets_at",
+                Place::Body,
+                ArgType::Timestamp,
+                "When an exhausted allowance returns. Required for exhausted, refused otherwise.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The state revision the caller read; 1 for the first record.",
+            ),
+        ],
+        about: "Record one account's quota state for one provider, so launches route around it.",
+    },
     // ---- Native capacity: evidence is collected, never asserted ------------
     ToolSpec {
         name: "kontor_capacity_config_get",

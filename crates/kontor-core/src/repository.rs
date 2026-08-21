@@ -1403,6 +1403,33 @@ pub struct NewCommandIntent {
     pub created_at: Timestamp,
 }
 
+/// A synchronous control-plane command whose effect is applied by the
+/// application service rather than handed to an external dispatcher.
+///
+/// It deliberately has no payload, `not_before`, or desired-state write. Those
+/// fields belong to an outbox dispatch. A local command first records this
+/// durable identity, then moves to `confirmed` only after its application
+/// operation has returned successfully.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewLocalCommand {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The receipt id to use.
+    pub receipt_id: CommandReceiptId,
+    /// The caller's idempotency key.
+    pub idempotency_key: IdempotencyKey,
+    /// What is being applied locally.
+    pub kind: CommandKind,
+    /// Which aggregate it targets.
+    pub target: AggregateRef,
+    /// The revision the operation was computed against.
+    pub target_revision: AggregateRevision,
+    /// The canonical operation identity.
+    pub intent: CanonicalDocument,
+    /// When the operation was recorded.
+    pub created_at: Timestamp,
+}
+
 /// A request to move a command receipt forward.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiptAdvance {
@@ -1830,6 +1857,84 @@ pub struct NewAvailabilityOverride {
     pub updated_at: Timestamp,
 }
 
+/// One account's quota state for one provider.
+///
+/// Distinct from [`AvailabilityOverride`] and from [`CapacityObservation`], both
+/// of which are keyed on the account alone. Under Paseo a single account profile
+/// serves every provider, so "Codex is exhausted and Claude is fine" is not a
+/// fact either of those can hold — and it is the fact a rung advance turns on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderQuotaState {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account the state is about.
+    pub account_profile_id: AccountProfileId,
+    /// The provider, spelled as the model catalog spells it.
+    pub provider: String,
+    /// What the quota is doing.
+    pub state: crate::spec::ProviderQuotaKind,
+    /// When an exhausted allowance returns. `None` for every other state, which
+    /// the database enforces rather than trusting call sites.
+    pub resets_at: Option<Timestamp>,
+    /// Digest of the evidence. Never the evidence: a provider's own message
+    /// carries account hints and URLs, and nothing here needs to keep them.
+    pub evidence_hash: ContentHash,
+    /// Who concluded it.
+    pub source: crate::spec::ProviderQuotaSource,
+    /// When it was concluded.
+    pub observed_at: Timestamp,
+    /// Optimistic-concurrency revision.
+    pub revision: AggregateRevision,
+    /// Last mutation instant.
+    pub updated_at: Timestamp,
+}
+
+impl ProviderQuotaState {
+    /// Whether this state still holds back a launch at `now`.
+    ///
+    /// An exhausted allowance whose reset instant has passed no longer blocks —
+    /// the row is stale rather than wrong, and waiting for a collector to
+    /// rewrite it would keep work parked past the moment it could have run.
+    /// `Drained` never expires on its own, which is the whole difference.
+    #[must_use]
+    pub fn blocks_at(&self, now: Timestamp) -> bool {
+        match self.state {
+            crate::spec::ProviderQuotaKind::Available => false,
+            crate::spec::ProviderQuotaKind::Exhausted => {
+                self.resets_at.is_some_and(|resets_at| now < resets_at)
+            }
+            crate::spec::ProviderQuotaKind::Drained | crate::spec::ProviderQuotaKind::Unknown => {
+                true
+            }
+        }
+    }
+}
+
+/// One provider quota state to record, under its expected revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewProviderQuotaState {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account the state is about.
+    pub account_profile_id: AccountProfileId,
+    /// The provider.
+    pub provider: String,
+    /// What the quota is doing.
+    pub state: crate::spec::ProviderQuotaKind,
+    /// When an exhausted allowance returns.
+    pub resets_at: Option<Timestamp>,
+    /// Digest of the evidence.
+    pub evidence_hash: ContentHash,
+    /// Who concluded it.
+    pub source: crate::spec::ProviderQuotaSource,
+    /// When it was concluded.
+    pub observed_at: Timestamp,
+    /// The revision the caller believes is current; `1` for the first.
+    pub expected_revision: AggregateRevision,
+    /// Mutation instant.
+    pub updated_at: Timestamp,
+}
+
 /// Account-owned capacity evidence and the judgement standing beside it.
 ///
 /// Raw first: [`CapacityRepository::record_capacity_observation`] is the only
@@ -1882,6 +1987,34 @@ pub trait CapacityRepository {
         &self,
         request: &NewAvailabilityOverride,
     ) -> RepositoryResult<AvailabilityOverride>;
+
+    /// Record or replace one account's quota state for one provider.
+    ///
+    /// Same first-write rule as [`Self::set_availability_override`]: the first
+    /// state for a `(account, provider)` pair is written at
+    /// [`AggregateRevision::INITIAL`] and must be presented as such.
+    ///
+    /// # Errors
+    /// Refuses an unknown account profile, a stale expected revision, and a
+    /// state whose reset instant contradicts it — an exhausted allowance without
+    /// one, or any other state with one.
+    fn set_provider_quota_state(
+        &self,
+        request: &NewProviderQuotaState,
+    ) -> RepositoryResult<ProviderQuotaState>;
+
+    /// Every provider quota state in one project.
+    ///
+    /// Returned whole rather than filtered by provider: a rung walk asks about
+    /// each provider in a chain in turn, and one read it can index is cheaper
+    /// and more consistent than one query per rung.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_provider_quota_states(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<ProviderQuotaState>>;
 
     /// A project's standing operator judgements, including lapsed ones.
     ///
@@ -2804,6 +2937,31 @@ pub trait CommandRepository {
     /// Refuses key reuse with a different target or intent.
     fn record_intent(&self, request: &NewCommandIntent) -> RepositoryResult<CommandReceipt>;
 
+    /// Record a synchronous application command without making it dispatchable.
+    ///
+    /// Replaying the same key and command returns the original receipt. The
+    /// receipt remains non-terminal until [`Self::complete_local_command`] is
+    /// called after the application operation succeeds.
+    ///
+    /// # Errors
+    /// Refuses key reuse with a different kind, target, revision, or intent.
+    fn record_local_command(&self, request: &NewLocalCommand) -> RepositoryResult<CommandReceipt>;
+
+    /// Confirm a successfully applied local command by idempotency key.
+    ///
+    /// Returns `None` when the key did not record a command. That makes the
+    /// application completion boundary safe for mutating routes which use
+    /// their own purpose-built receipt rather than `command_receipts`.
+    ///
+    /// # Errors
+    /// Refuses a dispatch-mode receipt, a receipt that has entered dispatch, or
+    /// an illegal transition.
+    fn complete_local_command(
+        &self,
+        key: &IdempotencyKey,
+        completed_at: Timestamp,
+    ) -> RepositoryResult<Option<CommandReceipt>>;
+
     /// Find a receipt by idempotency key.
     ///
     /// # Errors
@@ -3092,6 +3250,17 @@ pub trait RealmRepository {
     fn record_intent_in_realm(
         &self,
         envelope: &ReceiptEnvelope<NewCommandIntent>,
+    ) -> RepositoryResult<CommandReceipt>;
+
+    /// Record a non-dispatching application command carried in a Realm-qualified
+    /// envelope.
+    ///
+    /// # Errors
+    /// Refuses a foreign Realm before any write, then as
+    /// [`CommandRepository::record_local_command`].
+    fn record_local_command_in_realm(
+        &self,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
     ) -> RepositoryResult<CommandReceipt>;
 
     /// Reduce an observation carried in a Realm-qualified envelope.

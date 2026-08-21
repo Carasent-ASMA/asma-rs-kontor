@@ -34,19 +34,19 @@ use kontor_api::applications::{
     AppliedEpicDto, AppliedLinkDto, AppliedTaskDto, ApplyEpicRequest, ArmRequest,
     AuthorizationProjectionDto, BlockedTaskDto, DisarmRequest, EnsureAccountProfileRequest,
     EnsureProjectRequest, EpicProjectionDto, EpicTaskProjectionDto, LifecycleAction,
-    LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, ProjectDto, PublishedTeamRevisionDto,
-    ReadyTaskDto, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerStartDto,
-    SeatProjectionDto, StartRequest, StartedSeatDto, TeamDraftDto, TeamDraftRequest,
-    TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto, TeamsProjectionDto,
-    WorkProfileCatalogDto,
+    LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, ProjectDto, ProviderQuotaStateDto,
+    PublishedTeamRevisionDto, ReadyTaskDto, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
+    SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto, TeamDraftDto,
+    TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
+    TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
     AvailabilityOverrideRequest, CapacityCeilingsDto, CapacityConfigurationDto,
     CapacityConfigurationPreviewDto, CapacityConfigurationRequest, CapacityObservationDto,
     CapacityRefreshRequest, MutationReceiptDto, ObservedBindingDto, ProjectCapacityDto,
-    PublishTriggerRequest, ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest,
-    TopologySeatDto,
+    PublishTriggerRequest, RecordProviderQuotaRequest, ResolvedRoleRefDto, SeatBindingOutcomeDto,
+    SeatBindingRequest, TopologySeatDto,
 };
 use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CommitteeRunDto,
@@ -98,17 +98,18 @@ use kontor_core::id::{
     TopologySpecId, TriggerKey,
 };
 use kontor_core::realm::ReceiptEnvelope;
-use kontor_core::receipt::{AggregateRef, CommandKind};
+use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
     AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository, CommandRepository,
     CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository,
     MiniProjectTopologySnapshot, NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun,
     NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent, NewGateEvaluation,
-    NewMiniProject, NewNativeContainerBinding, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault, RealmRepository,
-    RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
-    SpecRepository, StoredCoreTeamRevision, StoredEpicRoster, StoredPromotion, StoredQuickSession,
-    TaskTransitionRequest, TicketRepository, TopologyRepository, WorkflowRepository,
+    NewLocalCommand, NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState,
+    NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamRun, ProjectRepository,
+    ProjectTopologyDefault, RealmRepository, RepositoryError, RunRepository, RuntimeBinding,
+    SeatLivenessObservation, SourceDisposition, SpecRepository, StoredCoreTeamRevision,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, TaskTransitionRequest, TicketRepository,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -144,9 +145,9 @@ use kontor_scheduler::model::{
     WorktreeVerification,
 };
 use kontor_store::{
-    AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication, EpicTask, EpicTicketLink,
-    IdempotencyBinding, NewRoleTurn, ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore,
-    StoredConflict, StoredTeamDraft, StoredTeamsProjection, TurnDispatch,
+    AdmissionCommit, Applied, AuthorizationRevocation, CommandTransition, EpicApplication,
+    EpicTask, EpicTicketLink, IdempotencyBinding, NewRoleTurn, ProjectEnsure, RegisteredPack,
+    SettledTurn, SqliteStore, StoredConflict, StoredTeamDraft, StoredTeamsProjection, TurnDispatch,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 use kontor_teams::{CoreTeamRevision, CoreTeamSeat, CoreTeamSeatSelection, MANDATORY_LEAD_ROLE};
@@ -1736,7 +1737,7 @@ impl Services {
             }
             let envelope = ReceiptEnvelope::new(
                 realm_id,
-                NewCommandIntent {
+                NewLocalCommand {
                     project_id,
                     receipt_id: CommandReceiptId::generate(),
                     idempotency_key: key.clone(),
@@ -1744,14 +1745,11 @@ impl Services {
                     target,
                     target_revision,
                     intent: document.clone(),
-                    payload: document.clone(),
-                    desired: None,
-                    not_before: now,
                     created_at: now,
                 },
             );
             store
-                .record_intent_in_realm(&envelope)
+                .record_local_command_in_realm(&envelope)
                 .map(|receipt| receipt.id)
                 .map_err(|error| self.refuse(&error))
         })?;
@@ -4145,19 +4143,60 @@ fn freeze_seat_autonomy(
     )
 }
 
-/// Select the primary model rung from the team run's immutable template.
-fn freeze_seat_model_rung(
+/// Select the seat's model rung: the first one whose provider is reachable.
+///
+/// This replaced a `freeze_seat_model_rung` that took `chain.rungs.first()` and
+/// nothing else, so rungs 2-4 validated, published, and were never launched. A
+/// seat whose primary provider ran out of quota simply stopped, with up to three
+/// declared fallbacks sitting unread beside it — which is what happened to every
+/// Codex-pinned seat in this realm on 2026-08-21.
+///
+/// A provider is held back when states are recorded for it and *all* of them
+/// still block at `now`. Two deliberate asymmetries:
+///
+/// * Absence permits. No row is not the same fact as
+///   [`ProviderQuotaKind::Unknown`], which is an explicit refusal; treating
+///   "nobody has looked" as a block would stop every launch in a realm that has
+///   never recorded a state, which is every realm before the first collector run.
+/// * `all`, not `any`. One exhausted account does not exhaust a provider that
+///   another account can still serve. Today the realm holds a single account
+///   profile so the two coincide, but writing `any` here would silently become
+///   wrong the moment a second one is registered.
+///
+/// The index travels with the rung because two rungs may name one provider —
+/// adjacency is refused, rungs 1 and 3 are not — so which rung a seat is on is
+/// not recoverable from its provider afterwards.
+fn select_seat_model_rung(
     snapshot: &TeamRunSnapshot,
     slot: &RoleSlotId,
-) -> kontor_core::DomainResult<ModelRung> {
-    kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
+    states: &[kontor_core::repository::ProviderQuotaState],
+    pinned_account: Option<AccountProfileId>,
+    now: Timestamp,
+) -> kontor_core::DomainResult<(ModelRung, usize)> {
+    let chain = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
         .slot(slot)
-        .and_then(|seat| seat.model_chain.as_ref())
-        .and_then(|chain| chain.rungs.first())
-        .cloned()
+        .and_then(|seat| seat.model_chain.clone())
         .ok_or_else(|| {
             kontor_core::DomainError::invalid("TeamRunSnapshot", "the role slot has no model route")
-        })
+        })?;
+    let blocked = |provider: &kontor_core::spec::ProviderRef| {
+        let mut relevant = states
+            .iter()
+            .filter(|entry| entry.provider == provider.0)
+            .filter(|entry| pinned_account.is_none_or(|id| entry.account_profile_id == id))
+            .peekable();
+        relevant.peek().is_some() && relevant.all(|entry| entry.blocks_at(now))
+    };
+    let (index, rung) = chain.first_reachable(blocked).ok_or_else(|| {
+        // Deliberately not a fall back to rung 1. Launching onto a provider
+        // already known to be out of quota is the behaviour this refusal exists
+        // to end; the caller's job is to requeue, not to try anyway.
+        kontor_core::DomainError::invalid(
+            "ModelChainPolicy",
+            "every declared rung is held back by its provider's quota",
+        )
+    })?;
+    Ok((rung.clone(), index))
 }
 
 /// The stable spelling of one context layer.
@@ -4690,6 +4729,28 @@ fn teams_projection_dto(
     })
 }
 
+/// One quota state as a projection reports it.
+///
+/// `blocking` is computed at read time rather than stored: an exhausted
+/// allowance stops holding work back the moment its instant passes, and a
+/// projection that reported a stale `true` would have an operator hunting for a
+/// block that had already lifted.
+fn provider_quota_state_dto(
+    entry: &kontor_core::repository::ProviderQuotaState,
+    now: Timestamp,
+) -> ProviderQuotaStateDto {
+    ProviderQuotaStateDto {
+        account_profile_id: entry.account_profile_id,
+        provider: entry.provider.clone(),
+        state: entry.state.as_str().to_owned(),
+        resets_at: entry.resets_at.map(|instant| instant.to_string()),
+        source: entry.source.as_str().to_owned(),
+        observed_at: entry.observed_at.to_string(),
+        blocking: entry.blocks_at(now),
+        revision: entry.revision,
+    }
+}
+
 fn resolved_policy(slots: &[TeamDraftSlotDto]) -> Vec<serde_json::Value> {
     slots
         .iter()
@@ -4742,6 +4803,17 @@ fn resolved_policy(slots: &[TeamDraftSlotDto]) -> Vec<serde_json::Value> {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    fn complete_local_command(&self, key: &IdempotencyKey) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let completed = state
+            .with_store(|store| store.complete_local_command(key, kontor_api::now()))
+            .map_err(|error| self.refuse(&error))?;
+        if completed.is_some() {
+            state.signals().appended();
+        }
+        Ok(())
+    }
+
     async fn ensure_project(
         &self,
         key: &IdempotencyKey,
@@ -4886,10 +4958,16 @@ impl ApplicationOperations for Services {
             "observedAt": null
         });
         let providers = vec![
+            // Pooled, on the evidence of the 2026-08-21 outage: every Codex
+            // route died together when the plan allowance ran out. `pooledUsage`
+            // is a statement about *one account* — one quota covers all of a
+            // provider's routes for the account that holds it — which is why a
+            // second Codex rung under a Codex rung is worth nothing while a
+            // second Codex *account* is a real fallback.
             serde_json::json!({
                 "id": "codex", "label": "Codex",
                 "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": false
+                "reachedVia": null, "pooledUsage": true
             }),
             serde_json::json!({
                 "id": "claude", "label": "Claude",
@@ -4937,6 +5015,98 @@ impl ApplicationOperations for Services {
             providers,
             models,
         })
+    }
+
+    fn provider_quota_states(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<ProviderQuotaStateDto>, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(states
+            .iter()
+            .map(|entry| provider_quota_state_dto(entry, now))
+            .collect())
+    }
+
+    async fn record_provider_quota(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &RecordProviderQuotaRequest,
+    ) -> Result<ProviderQuotaStateDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let project = self.project_row(project_id)?;
+        let account_profile_id = AccountProfileId::parse(&request.account_profile_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let quota_state = kontor_core::spec::ProviderQuotaKind::parse(&request.state)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let resets_at = request
+            .resets_at
+            .as_deref()
+            .map(kontor_core::id::parse_utc_timestamp)
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "record_provider_quota",
+            "project": project_id.to_string(),
+            "account": account_profile_id.to_string(),
+            "provider": request.provider.as_str(),
+            "state": quota_state.as_str(),
+            "resets_at": resets_at.map(|instant| instant.to_string()),
+        }))?;
+        let replayed = self
+            .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
+            .is_some();
+        if !replayed {
+            state
+                .with_store(|store| {
+                    store.set_provider_quota_state(&NewProviderQuotaState {
+                        project_id,
+                        account_profile_id,
+                        provider: request.provider.clone(),
+                        state: quota_state,
+                        resets_at,
+                        // The operator's own assertion is the evidence, so the
+                        // intent digest is what a record can honestly cite. A
+                        // parsed runtime message will cite the frame instead —
+                        // never the message text, which is vendor output.
+                        evidence_hash: intent.hash().clone(),
+                        source: kontor_core::spec::ProviderQuotaSource::Operator,
+                        observed_at: now,
+                        expected_revision: request.expected_revision,
+                        updated_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        self.record(
+            key,
+            project_id,
+            CommandKind::OverrideAvailability,
+            AggregateRef::Project { project_id },
+            project.revision,
+            &intent,
+        )?;
+        let stored = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|entry| {
+                entry.account_profile_id == account_profile_id && entry.provider == request.provider
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the provider quota state could not be read back after the record",
+                )
+            })?;
+        Ok(provider_quota_state_dto(&stored, now))
     }
 
     fn teams(&self) -> Result<TeamsProjectionDto, ApiError> {
@@ -9646,6 +9816,17 @@ impl ApplicationOperations for Services {
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let (model_rung, _rung_index) = select_seat_model_rung(
+            &team.snapshot,
+            &role_slot,
+            &quota_states,
+            predecessor.account_profile_id,
+            now,
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         let launch = SlotLaunch {
             task_id,
             binding_id,
@@ -9654,8 +9835,7 @@ impl ApplicationOperations for Services {
             account_profile_id: predecessor.account_profile_id,
             prompt: slot_prompt(&role_slot, &eligible_roots(slots.template()))
                 .map_err(|error| self.refuse_domain(&error))?,
-            model_rung: freeze_seat_model_rung(&team.snapshot, &role_slot)
-                .map_err(|error| self.refuse_domain(&error))?,
+            model_rung,
             context_policy: context_policy.clone(),
             autonomy: freeze_seat_autonomy(&team.snapshot, &role_slot)
                 .map_err(|error| self.refuse_domain(&error))?,
@@ -11168,6 +11348,70 @@ impl Services {
         Ok(())
     }
 
+    /// Close a launch receipt from the binding the successful launch persisted.
+    ///
+    /// The direct `intent_persisted -> confirmed` path is legacy recovery: old
+    /// builds launched the runtime without first advancing the outbox. New
+    /// launches arrive here as `dispatched`; a crash after binding but before
+    /// confirmation may arrive as `dispatch_pending`, and the binding is enough
+    /// to durably finish both remaining steps without sending anything again.
+    fn confirm_launch_receipt(
+        &self,
+        project_id: ProjectId,
+        receipt_id: CommandReceiptId,
+        binding: &RuntimeBinding,
+        occurred_at: Timestamp,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let mut receipt = state
+            .with_store(|store| store.get_receipt(project_id, receipt_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the launch receipt disappeared before it could be confirmed",
+                )
+            })?;
+        if receipt.state == CommandReceiptState::Confirmed {
+            return Ok(());
+        }
+        if receipt.state == CommandReceiptState::DispatchPending {
+            receipt = state
+                .with_store(|store| {
+                    store.apply_command_transition(&CommandTransition {
+                        project_id,
+                        receipt_id,
+                        to: CommandReceiptState::Dispatched,
+                        correlation: receipt.correlation.clone(),
+                        native_identity: Some(binding.identity.clone()),
+                        evidence_ref: None,
+                        no_effect: None,
+                        occurred_at,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?
+                .receipt;
+        }
+        let evidence = ExternalId::parse(&binding.id.to_string())
+            .map_err(|error| self.refuse_domain(&error))?;
+        state
+            .with_store(|store| {
+                store.apply_command_transition(&CommandTransition {
+                    project_id,
+                    receipt_id,
+                    to: CommandReceiptState::Confirmed,
+                    correlation: receipt.correlation.clone(),
+                    native_identity: Some(binding.identity.clone()),
+                    evidence_ref: Some(evidence),
+                    no_effect: None,
+                    occurred_at,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        Ok(())
+    }
+
     /// Create or reuse every seat one admitted task's team declares.
     ///
     /// The order is the whole point. `admit_candidate` commits the team run, the
@@ -11363,7 +11607,7 @@ impl Services {
                 launch: NewCommandIntent {
                     project_id,
                     receipt_id: CommandReceiptId::generate(),
-                    idempotency_key: launch_key,
+                    idempotency_key: launch_key.clone(),
                     kind: CommandKind::LaunchRun,
                     target: AggregateRef::AgentRun { agent_run_id },
                     target_revision: AggregateRevision::INITIAL,
@@ -11389,6 +11633,16 @@ impl Services {
             })
         });
         commit.map_err(|error| self.refuse(&error))?;
+        let launch_receipt_id = state
+            .with_store(|store| store.get_receipt_by_key(&launch_key))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the admitted launch has no durable command receipt",
+                )
+            })?
+            .id;
 
         // Where this seat belongs is settled before the runtime is touched at
         // all. A placement that cannot be resolved stops here, with nothing
@@ -11428,6 +11682,7 @@ impl Services {
             .map_err(|error| self.refuse(&error))?
             .and_then(|run| run.binding);
         let first = if let Some(binding) = existing_binding {
+            self.confirm_launch_receipt(project_id, launch_receipt_id, &binding, now)?;
             StartedSeatDto {
                 task_id: admitted.task_id,
                 team_run_id: team_run_id.to_string(),
@@ -11453,29 +11708,66 @@ impl Services {
             let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            let model_rung = freeze_seat_model_rung(&team_snapshot, &slot)
-                .map_err(|error| self.refuse_domain(&error))?;
+            let quota_states = state
+                .with_store(|store| store.list_provider_quota_states(project_id))
+                .map_err(|error| self.refuse(&error))?;
+            let (model_rung, _rung_index) = select_seat_model_rung(
+                &team_snapshot,
+                &slot,
+                &quota_states,
+                admitted.account_profile_id,
+                now,
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
             let autonomy = freeze_seat_autonomy(&team_snapshot, &slot)
                 .map_err(|error| self.refuse_domain(&error))?;
-            let outcome = adapter
-                .launch(&authority.into_request(LaunchParts {
-                    agent_run_id,
-                    team_run_id,
-                    role_slot_id: slot.clone(),
-                    task_id: admitted.task_id,
-                    binding_id,
-                    placement: Some(LaunchPlacement::Container(workspace.clone())),
-                    cwd: task_root.clone(),
-                    account_profile_id: admitted.account_profile_id,
-                    prompt:
-                        slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
-                    model_rung,
-                    context_policy: context_policy.clone(),
-                    autonomy,
-                    requested_at: now,
-                }))
-                .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let correlation = ExternalId::parse(&binding_id.to_string())
+                .map_err(|error| self.refuse_domain(&error))?;
+            let launch = authority.into_request(LaunchParts {
+                agent_run_id,
+                team_run_id,
+                role_slot_id: slot.clone(),
+                task_id: admitted.task_id,
+                binding_id,
+                placement: Some(LaunchPlacement::Container(workspace.clone())),
+                cwd: task_root.clone(),
+                account_profile_id: admitted.account_profile_id,
+                prompt: slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
+                model_rung,
+                context_policy: context_policy.clone(),
+                autonomy,
+                requested_at: now,
+            });
+            state
+                .with_store(|store| {
+                    store.claim_receipt_for_dispatch(
+                        project_id,
+                        launch_receipt_id,
+                        &correlation,
+                        now,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            let outcome = match adapter.launch(&launch).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    state
+                        .with_store(|store| {
+                            store.apply_command_transition(&CommandTransition {
+                                project_id,
+                                receipt_id: launch_receipt_id,
+                                to: CommandReceiptState::ConfirmationUnknown,
+                                correlation: Some(correlation),
+                                native_identity: None,
+                                evidence_ref: None,
+                                no_effect: None,
+                                occurred_at: kontor_api::now(),
+                            })
+                        })
+                        .map_err(|store_error| self.refuse(&store_error))?;
+                    return Err(ApiError::from_runtime(state.realm_id(), &error));
+                }
+            };
 
             let binding = RuntimeBinding {
                 id: outcome.snapshot.binding_id(),
@@ -11483,6 +11775,20 @@ impl Services {
                 identity: outcome.snapshot.identity().clone(),
                 bound_at: now,
             };
+            state
+                .with_store(|store| {
+                    store.apply_command_transition(&CommandTransition {
+                        project_id,
+                        receipt_id: launch_receipt_id,
+                        to: CommandReceiptState::Dispatched,
+                        correlation: Some(correlation),
+                        native_identity: Some(binding.identity.clone()),
+                        evidence_ref: None,
+                        no_effect: None,
+                        occurred_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
             state
                 .with_store(|store| store.bind_agent_run(project_id, agent_run_id, &binding))
                 .map_err(|error| self.refuse(&error))?;
@@ -11514,6 +11820,12 @@ impl Services {
                 now,
             )?;
             self.hold(&outcome.snapshot)?;
+            self.confirm_launch_receipt(
+                project_id,
+                launch_receipt_id,
+                &binding,
+                kontor_api::now(),
+            )?;
             StartedSeatDto {
                 task_id: admitted.task_id,
                 team_run_id: team_run_id.to_string(),
@@ -12472,8 +12784,17 @@ impl Services {
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
-        let model_rung = freeze_seat_model_rung(&team_snapshot, slot)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let (model_rung, _rung_index) = select_seat_model_rung(
+            &team_snapshot,
+            slot,
+            &quota_states,
+            admitted.account_profile_id,
+            now,
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         let autonomy = freeze_seat_autonomy(&team_snapshot, slot)
             .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter

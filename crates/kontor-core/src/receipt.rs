@@ -574,23 +574,26 @@ impl CommandReceiptState {
     pub const fn can_transition_to(self, next: Self) -> bool {
         matches!(
             (self, next),
-            (Self::IntentPersisted, Self::DispatchPending | Self::Failed)
-                | (
-                    Self::DispatchPending,
-                    Self::Dispatched | Self::ConfirmationUnknown | Self::Failed
-                )
-                | (
-                    Self::Dispatched,
-                    Self::Acknowledged | Self::ConfirmationUnknown | Self::Confirmed | Self::Failed
-                )
-                | (
-                    Self::Acknowledged,
-                    Self::Confirmed | Self::ConfirmationUnknown | Self::Failed
-                )
-                | (
-                    Self::ConfirmationUnknown,
-                    Self::Confirmed | Self::Failed | Self::DispatchPending
-                )
+            // A synchronous application command has no dispatch phase. Its
+            // successful application is evidence-bearing confirmation directly
+            // from the durable intent; dispatch-mode commands still reach this
+            // transition only through the store method that proves their mode.
+            (
+                Self::IntentPersisted,
+                Self::DispatchPending | Self::Confirmed | Self::Failed
+            ) | (
+                Self::DispatchPending,
+                Self::Dispatched | Self::ConfirmationUnknown | Self::Failed
+            ) | (
+                Self::Dispatched,
+                Self::Acknowledged | Self::ConfirmationUnknown | Self::Confirmed | Self::Failed
+            ) | (
+                Self::Acknowledged,
+                Self::Confirmed | Self::ConfirmationUnknown | Self::Failed
+            ) | (
+                Self::ConfirmationUnknown,
+                Self::Confirmed | Self::Failed | Self::DispatchPending
+            )
         )
     }
 }

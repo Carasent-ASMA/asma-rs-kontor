@@ -517,7 +517,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        118,
+        120,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     assert_eq!(
@@ -527,7 +527,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        119,
+        121,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -718,6 +718,12 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // capability to start work with no human in the loop. That is an
         // authority grant, so the daemon requires admin on the route.
         ("kontor_trigger_publish", CallerTier::Admin),
+        // Reading which providers are out of quota is observation. Recording it
+        // is admin: the state decides which rung a launch lands on, so a caller
+        // who can write it can route every seat in the realm onto a provider of
+        // their choosing by declaring the others exhausted.
+        ("kontor_provider_quota_states_list", CallerTier::Observer),
+        ("kontor_provider_quota_record", CallerTier::Admin),
     ]);
     for tool in REGISTRY {
         assert_eq!(
