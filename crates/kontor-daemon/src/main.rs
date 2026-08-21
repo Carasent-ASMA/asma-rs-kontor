@@ -188,6 +188,37 @@ fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryErro
     }
 }
 
+/// Keep the API live while the startup barrier is being settled.
+///
+/// Reconciliation is allowed to wait on a runtime, but that wait must not hide
+/// the health, identity, snapshots and event feed an operator needs to diagnose
+/// it. The router already refuses scheduling while the barrier is pending or
+/// failed; polling both futures here makes that existing contract reachable over
+/// the loopback socket from the moment it is bound.
+async fn serve_while_reconciling<Server, Reconciliation, OnSettled, Output>(
+    server: Server,
+    reconciliation: Reconciliation,
+    mut on_settled: OnSettled,
+) -> Output
+where
+    Server: std::future::Future<Output = Output>,
+    Reconciliation: std::future::Future<Output = BarrierState>,
+    OnSettled: FnMut(BarrierState),
+{
+    tokio::pin!(server);
+    tokio::pin!(reconciliation);
+    let mut reconciliation_pending = true;
+    loop {
+        tokio::select! {
+            output = &mut server => return output,
+            outcome = &mut reconciliation, if reconciliation_pending => {
+                reconciliation_pending = false;
+                on_settled(outcome);
+            }
+        }
+    }
+}
+
 /// Serve one Realm until the process is asked to stop.
 async fn serve(
     state_root: PathBuf,
@@ -228,16 +259,6 @@ async fn serve(
         );
     } else {
         info!(realm_id = %daemon.realm_id(), ?families, "runtime fleet composed");
-    }
-
-    if daemon.reconcile().await != BarrierState::Open {
-        // Serving with the barrier shut is deliberate: health, identity, snapshots
-        // and the event feed all still answer, and they are exactly what an
-        // operator needs to see *why* scheduling is shut.
-        error!(
-            realm_id = %daemon.realm_id(),
-            "startup reconciliation did not complete; scheduling stays shut"
-        );
     }
 
     let bind: SocketAddr = daemon.config().bind;
@@ -281,24 +302,38 @@ async fn serve(
             signals.stop();
         })
         .into_future();
-    tokio::pin!(served);
+    let realm_id = daemon.realm_id();
+    let outcome = {
+        let running = serve_while_reconciling(served, daemon.reconcile(), move |outcome| {
+            if outcome != BarrierState::Open {
+                // Serving with the barrier shut is deliberate: health, identity,
+                // snapshots and the event feed still answer, and they are exactly
+                // what an operator needs to see *why* scheduling is shut.
+                error!(
+                    realm_id = %realm_id,
+                    "startup reconciliation did not complete; scheduling stays shut"
+                );
+            }
+        });
+        tokio::pin!(running);
 
-    let outcome = loop {
-        tokio::select! {
-            result = &mut served => break result,
-            // A rotation while serving is the only way to invalidate every issued
-            // token without a restart, which is what makes it useful: a leaked
-            // token is refused from the next request onwards and the runs this
-            // Realm is supervising never notice.
-            () = rotation_requested() => match daemon.rotate_credentials() {
-                Ok(()) => {}
-                Err(error) => error!(
-                    realm_id = %daemon.realm_id(),
-                    category = "credentials",
-                    detail = %error,
-                    "credentials could not be rotated; the previous set stays in force"
-                ),
-            },
+        loop {
+            tokio::select! {
+                result = &mut running => break result,
+                // A rotation while serving is the only way to invalidate every issued
+                // token without a restart, which is what makes it useful: a leaked
+                // token is refused from the next request onwards and the runs this
+                // Realm is supervising never notice.
+                () = rotation_requested() => match daemon.rotate_credentials() {
+                    Ok(()) => {}
+                    Err(error) => error!(
+                        realm_id = %daemon.realm_id(),
+                        category = "credentials",
+                        detail = %error,
+                        "credentials could not be rotated; the previous set stays in force"
+                    ),
+                },
+            }
         }
     };
 
@@ -336,4 +371,70 @@ async fn rotation_requested() {
 #[cfg(not(unix))]
 async fn rotation_requested() {
     std::future::pending::<()>().await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn the_server_is_polled_while_startup_reconciliation_is_pending() {
+        let server_polled = Arc::new(AtomicBool::new(false));
+        let reconciliation_reported = Arc::new(AtomicBool::new(false));
+
+        let observed_server = Arc::clone(&server_polled);
+        let observed_reconciliation = Arc::clone(&reconciliation_reported);
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            serve_while_reconciling(
+                async move {
+                    observed_server.store(true, Ordering::SeqCst);
+                    "server stopped"
+                },
+                std::future::pending::<BarrierState>(),
+                move |_| observed_reconciliation.store(true, Ordering::SeqCst),
+            ),
+        )
+        .await
+        .expect("the server is available without waiting for reconciliation");
+
+        assert_eq!(outcome, "server stopped");
+        assert!(server_polled.load(Ordering::SeqCst));
+        assert!(!reconciliation_reported.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn failed_reconciliation_leaves_the_server_running() {
+        let stop = Arc::new(tokio::sync::Notify::new());
+        let observed = Arc::new(Mutex::new(None));
+
+        let server_stop = Arc::clone(&stop);
+        let callback_stop = Arc::clone(&stop);
+        let callback_observed = Arc::clone(&observed);
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            serve_while_reconciling(
+                async move {
+                    server_stop.notified().await;
+                    "server stopped"
+                },
+                std::future::ready(BarrierState::Failed),
+                move |state| {
+                    *callback_observed.lock().expect("the observation lock") = Some(state);
+                    callback_stop.notify_one();
+                },
+            ),
+        )
+        .await
+        .expect("failed reconciliation leaves the server available");
+
+        assert_eq!(outcome, "server stopped");
+        assert_eq!(
+            *observed.lock().expect("the observation lock"),
+            Some(BarrierState::Failed)
+        );
+    }
 }
