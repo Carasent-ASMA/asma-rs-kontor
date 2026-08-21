@@ -154,7 +154,7 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
 /// The built-in Paseo provider an id resolves to.
 ///
 /// A second account for the same provider is an ordinary `agents.providers`
-/// entry that `extends` a built-in one, so `codex-team` and `codex-prolite` are
+/// entry that `extends` a built-in one, so `codex-work` and `codex-personal` are
 /// two provider ids over one harness. The mode tables above are keyed by the
 /// built-in because the mode vocabulary belongs to the harness, not to the
 /// account; `--provider` still carries the full id, which is what selects the
@@ -1723,8 +1723,8 @@ mod tests {
     fn an_account_qualified_provider_resolves_its_harness_mode_and_keeps_its_own_id() {
         for (provider, built_in) in [
             ("codex", "codex"),
-            ("codex-team", "codex"),
-            ("codex-prolite", "codex"),
+            ("codex-work", "codex"),
+            ("codex-personal", "codex"),
             ("claude", "claude"),
             ("claude-work", "claude"),
             ("opencode-personal", "opencode"),
@@ -1739,7 +1739,7 @@ mod tests {
         }
 
         assert_eq!(
-            permission_mode("codex-team").expect("an account of a supported provider"),
+            permission_mode("codex-work").expect("an account of a supported provider"),
             Some("auto-review")
         );
         assert_eq!(
@@ -1747,7 +1747,7 @@ mod tests {
             Some("bypassPermissions")
         );
         assert_eq!(
-            consultation_permission_mode("codex-prolite").expect("an account of Codex"),
+            consultation_permission_mode("codex-personal").expect("an account of Codex"),
             Some("auto-review")
         );
 
@@ -1760,7 +1760,7 @@ mod tests {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/w/task-1",
-            &route("codex-team", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+            &route("codex-work", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
             SeatAutonomy::Supervised,
             "KON-OP-13 Implement",
             &labels(),
@@ -1771,7 +1771,7 @@ mod tests {
         let argv = command.argv();
         assert!(
             argv.windows(2)
-                .any(|pair| pair == ["--provider", "codex-team"]),
+                .any(|pair| pair == ["--provider", "codex-work"]),
             "the account id selects the credential home and must reach Paseo verbatim"
         );
         assert!(
