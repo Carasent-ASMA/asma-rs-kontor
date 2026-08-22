@@ -13,20 +13,50 @@
 //! working. Both are kept because they carry different authority and disagree
 //! usefully — see [`kontor_core::spec::ProviderQuotaSource`].
 //!
+//! # One reading type, one reader per vendor
+//!
+//! Two vendors describe the same fact incompatibly. Codex states a
+//! `limit_reached` boolean and window spans in seconds; Claude states neither,
+//! and a caller has to infer "blocked" from a utilisation percentage. So each
+//! gets its own reader — [`read_chatgpt_usage`], [`read_claude_usage`] — and
+//! both produce the same [`UsageReading`]. [`observe`] then judges that one
+//! shape, so the rule about what a spent window *means* is written once and
+//! cannot drift between providers.
+//!
 //! # What is deliberately not read out of the document
 //!
-//! The response names the account: an email address, a user id, a workspace id
+//! Both responses name the account: an email address, a user id, a workspace id
 //! and marketing copy written for a human. None of it reaches [`UsageReading`],
-//! which holds two booleans and a window. There is nowhere in this module's
-//! output for an identifier to travel — the same construction
+//! which holds two booleans and a set of windows. There is nowhere in this
+//! module's output for an identifier to travel — the same construction
 //! [`crate::CapacityReading`] uses, and the reason this crate can hash its own
 //! evidence without hashing a fact about a person.
+//!
+//! # Why model-scoped windows are read and dropped
+//!
+//! Both vendors report per-model allowances beside the account-level ones —
+//! Codex in `additional_rate_limits[]`, Claude as `seven_day_opus` and
+//! `seven_day_omelette`. None of them reaches a stored window, because
+//! `provider_quota_states` is keyed by *provider* and
+//! [`kontor_core::quota::QuotaWindow`] has no field naming a scope. A spent
+//! Opus week folded in as a plain weekly window would take every Sonnet seat on
+//! the account out of service too, which is worse than not knowing.
 
 use kontor_core::id::{ContentHash, Timestamp};
+use kontor_core::quota::{QuotaWindow, QuotaWindowKind};
 use kontor_core::spec::ProviderQuotaKind;
 use serde::Deserialize;
 
 use crate::quota::ObservedQuota;
+
+/// The utilisation at which a window has nothing left.
+const SPENT_PERCENT: u8 = 100;
+
+/// Minutes in Claude's short rolling window.
+const FIVE_HOUR_MINUTES: u32 = 300;
+
+/// Minutes in a seven-day window.
+const SEVEN_DAY_MINUTES: u32 = 10_080;
 
 /// Why a usage endpoint did not produce a reading.
 ///
@@ -50,39 +80,34 @@ pub enum UsageFailure {
     Unreadable,
 }
 
-/// One rate-limit window, reduced to the two facts an admission decision needs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UsageWindow {
-    /// How much of the window is spent, `0..=100`.
-    pub used_percent: u8,
-    /// When the window rolls over, when the provider states an instant.
-    pub resets_at: Option<Timestamp>,
-}
-
 /// What one usage endpoint answered about one account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageReading {
     /// The provider the reading is about, spelled as the catalog spells it.
     pub provider: String,
     /// Whether the provider is turning this account away right now.
+    ///
+    /// Stated outright by Codex. Derived for Claude, whose document carries no
+    /// such flag — see [`read_claude_usage`].
     pub limit_reached: bool,
-    /// The account's main allowance window, when the document carries one.
+    /// Every *account-level* window the document named, in a stable order.
     ///
-    /// Only the *primary* window. A document may also carry per-feature limits
-    /// for individual models, and one of those being spent does not make the
-    /// provider unusable — a row keyed by provider has nowhere to say "this
-    /// model only", so folding them in would block a whole route because one
-    /// niche model's window closed.
-    ///
-    /// ponytail: primary only. Per-feature windows need a grain
-    /// `provider_quota_states` does not have; when it has one, they belong
-    /// here as a second field rather than merged into this one.
-    pub primary: Option<UsageWindow>,
+    /// A window only appears here if the vendor gave it a reset instant, since
+    /// [`QuotaWindow`] requires one: an allowance that cannot say when it
+    /// returns is a [`ProviderQuotaKind::Unknown`] state, not a window.
+    pub windows: Vec<QuotaWindow>,
     /// Whether a prepaid balance, rather than a clock, is what is missing.
     pub credits_exhausted: bool,
 }
 
 impl UsageReading {
+    /// The windows the provider reports as spent.
+    fn spent(&self) -> impl Iterator<Item = &QuotaWindow> {
+        self.windows
+            .iter()
+            .filter(|window| window.used_percent >= SPENT_PERCENT)
+    }
+
     /// A digest over the numbers that were reported, and nothing that names the
     /// account.
     ///
@@ -92,7 +117,7 @@ impl UsageReading {
     /// column even in digested form. What it hashes instead is the reading —
     /// which is the evidence Kontor actually acted on, and which has the useful
     /// property that two identical readings digest identically, so an unchanged
-    /// row is visibly unchanged.
+    /// row is visibly unchanged and the poller can skip writing it.
     #[must_use]
     pub fn evidence(&self) -> ContentHash {
         let mut material = String::new();
@@ -102,13 +127,13 @@ impl UsageReading {
         material.push_str(if self.limit_reached { "1" } else { "0" });
         material.push_str("\ncredits_exhausted:");
         material.push_str(if self.credits_exhausted { "1" } else { "0" });
-        if let Some(window) = self.primary {
-            material.push_str("\nused_percent:");
+        for window in &self.windows {
+            material.push_str("\nwindow:");
+            material.push_str(window.kind.as_str());
+            material.push('=');
             material.push_str(&window.used_percent.to_string());
-            if let Some(instant) = window.resets_at {
-                material.push_str("\nresets_at:");
-                material.push_str(&instant.to_string());
-            }
+            material.push('@');
+            material.push_str(&window.resets_at.to_string());
         }
         material.push('\n');
         ContentHash::of(material.as_bytes())
@@ -121,14 +146,22 @@ impl UsageReading {
 ///
 /// * not turned away yet — [`ProviderQuotaKind::Available`]. This is the state
 ///   no other source can produce, because nothing refuses when quota is fine;
-/// * turned away with a stated reset instant — [`ProviderQuotaKind::Exhausted`],
-///   which lifts itself at that instant;
-/// * turned away with no instant, and a spent balance —
+/// * turned away with a reset instant to point at —
+///   [`ProviderQuotaKind::Exhausted`], which lifts itself at that instant;
+/// * turned away with no instant at all, and a spent balance —
 ///   [`ProviderQuotaKind::Drained`], which only payment lifts;
 /// * turned away with neither — [`ProviderQuotaKind::Unknown`], which blocks and
 ///   says so. Not `Drained`: asserting that money is the remedy when the
 ///   document did not say so sends an operator to a billing page for a limit
 ///   that would have cleared on its own.
+///
+/// **The instant is the latest among the *spent* windows.** An account holding a
+/// five-hour and a seven-day allowance is usable again only when the last thing
+/// standing in the way clears, so taking the earliest would send a launch back
+/// into the limit it just hit. When the provider says it is turning the account
+/// away but names no spent window, the latest instant it *did* name is used
+/// instead of refusing to answer — parking on `Unknown` because a vendor
+/// reported 99% and a refusal in the same breath discards a usable instant.
 ///
 /// **A stated reset instant wins over a spent balance.** A plan can report both
 /// at once — a workspace seat whose credits are gone still has a weekly window
@@ -146,7 +179,12 @@ pub fn observe(reading: &UsageReading) -> ObservedQuota {
             resets_at: None,
         };
     }
-    match reading.primary.and_then(|window| window.resets_at) {
+    let latest = reading
+        .spent()
+        .map(|window| window.resets_at)
+        .max()
+        .or_else(|| reading.windows.iter().map(|window| window.resets_at).max());
+    match latest {
         Some(instant) => ObservedQuota {
             provider: reading.provider.clone(),
             kind: ProviderQuotaKind::Exhausted,
@@ -163,6 +201,15 @@ pub fn observe(reading: &UsageReading) -> ObservedQuota {
             resets_at: None,
         },
     }
+}
+
+/// Build one window, dropping it when the vendor gave no usable instant.
+fn window(minutes: u32, used_percent: u8, resets_at: Option<Timestamp>) -> Option<QuotaWindow> {
+    Some(QuotaWindow {
+        kind: QuotaWindowKind::from_minutes(minutes),
+        resets_at: resets_at?,
+        used_percent: used_percent.min(SPENT_PERCENT),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -182,27 +229,26 @@ pub fn observe(reading: &UsageReading) -> ObservedQuota {
 /// A refusal signal is a handful of substrings, so it can be configuration and
 /// a vendor rewording costs nothing. A response schema is a tree, and making it
 /// data means shipping a path language and a validator for it — much more code
-/// than the six fields below, to describe one endpoint. When a second vendor
-/// needs one, it gets its own reader beside this one.
+/// than the fields below, to describe one endpoint.
 pub fn read_chatgpt_usage(provider: &str, body: &[u8]) -> Result<UsageReading, UsageFailure> {
-    let document: UsageDocument =
+    let document: ChatGptDocument =
         serde_json::from_slice(body).map_err(|_| UsageFailure::Unreadable)?;
     let rate_limit = document.rate_limit.unwrap_or_default();
+    let windows = [rate_limit.primary_window, rate_limit.secondary_window]
+        .into_iter()
+        .flatten()
+        .filter_map(|reported| {
+            window(
+                reported.window_minutes(),
+                reported.percent(),
+                reported.instant(),
+            )
+        })
+        .collect();
     Ok(UsageReading {
         provider: provider.to_owned(),
         limit_reached: rate_limit.limit_reached,
-        primary: rate_limit.primary_window.map(|window| UsageWindow {
-            // Clamped first, so the conversion cannot fail; a vendor
-            // reporting 143% or -1 is a reading, not a refusal.
-            used_percent: u8::try_from(window.used_percent.clamp(0, 100)).unwrap_or(100),
-            // An instant before the epoch is not a reset, it is a vendor
-            // sending a placeholder; a reset in the past is harmless, since a
-            // state whose instant has passed simply stops blocking.
-            resets_at: window
-                .reset_at
-                .filter(|seconds| *seconds > 0)
-                .and_then(|seconds| Timestamp::from_second(seconds).ok()),
-        }),
+        windows,
         credits_exhausted: document.credits.unwrap_or_default().is_exhausted(),
     })
 }
@@ -215,24 +261,52 @@ pub fn read_chatgpt_usage(provider: &str, body: &[u8]) -> Result<UsageReading, U
 /// would make the poller fail exactly when a vendor is changing something.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct UsageDocument {
-    rate_limit: Option<RateLimit>,
+struct ChatGptDocument {
+    rate_limit: Option<ChatGptRateLimit>,
     credits: Option<Credits>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct RateLimit {
+struct ChatGptRateLimit {
     limit_reached: bool,
-    primary_window: Option<Window>,
+    primary_window: Option<ChatGptWindow>,
+    secondary_window: Option<ChatGptWindow>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct Window {
+struct ChatGptWindow {
     used_percent: i32,
+    /// The window's span. Absent on some shapes, which reads as a session.
+    limit_window_seconds: Option<i64>,
     /// Seconds since the Unix epoch, unquoted.
     reset_at: Option<i64>,
+}
+
+impl ChatGptWindow {
+    /// Clamped first, so the conversion cannot fail; a vendor reporting 143% or
+    /// -1 is a reading, not a refusal.
+    fn percent(&self) -> u8 {
+        u8::try_from(self.used_percent.clamp(0, i32::from(SPENT_PERCENT))).unwrap_or(SPENT_PERCENT)
+    }
+
+    /// The span in minutes, defaulting to the shortest classification when the
+    /// vendor omits it — a window of unknown length is not a weekly allowance.
+    fn window_minutes(&self) -> u32 {
+        self.limit_window_seconds
+            .and_then(|seconds| u32::try_from(seconds / 60).ok())
+            .unwrap_or(1)
+    }
+
+    /// An instant at or before the epoch is not a reset, it is a vendor sending
+    /// a placeholder. A reset in the *past* is kept and harmless: a state whose
+    /// instant has passed simply stops blocking.
+    fn instant(&self) -> Option<Timestamp> {
+        self.reset_at
+            .filter(|seconds| *seconds > 0)
+            .and_then(|seconds| Timestamp::from_second(seconds).ok())
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -253,60 +327,229 @@ impl Credits {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The Claude usage document
+// ---------------------------------------------------------------------------
+
+/// Read a Claude OAuth usage response into a [`UsageReading`].
+///
+/// # Why `limit_reached` is derived here and stated there
+///
+/// The document carries **no** flag saying the account is being turned away.
+/// It reports a utilisation percentage per window and nothing else, so "blocked"
+/// is a conclusion this reader has to reach: an account is turned away when any
+/// account-level window it named is at or over 100%. That is the one real
+/// semantic difference between the two vendors, and putting it here rather than
+/// in [`observe`] keeps the judgement of a *spent window* identical for both.
+///
+/// `seven_day_opus` and `seven_day_omelette` are parsed and dropped; see the
+/// module note on why a model-scoped window must not become a plain one.
+///
+/// # Errors
+/// Returns [`UsageFailure::Unreadable`] when the body is not JSON at all.
+pub fn read_claude_usage(provider: &str, body: &[u8]) -> Result<UsageReading, UsageFailure> {
+    let document: ClaudeDocument =
+        serde_json::from_slice(body).map_err(|_| UsageFailure::Unreadable)?;
+    let windows: Vec<QuotaWindow> = [
+        (FIVE_HOUR_MINUTES, document.five_hour),
+        (SEVEN_DAY_MINUTES, document.seven_day),
+    ]
+    .into_iter()
+    .filter_map(|(minutes, reported)| {
+        let reported = reported?;
+        window(minutes, reported.percent(), reported.instant())
+    })
+    .collect();
+    Ok(UsageReading {
+        provider: provider.to_owned(),
+        limit_reached: windows
+            .iter()
+            .any(|entry| entry.used_percent >= SPENT_PERCENT),
+        windows,
+        // Claude states no prepaid balance on this endpoint. `extra_usage`
+        // reports only whether overflow billing is *enabled*, which is a plan
+        // setting and not a balance, so nothing here may claim one is spent.
+        credits_exhausted: false,
+    })
+}
+
+/// The fields Kontor reads out of a Claude usage response.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ClaudeDocument {
+    five_hour: Option<ClaudeWindow>,
+    seven_day: Option<ClaudeWindow>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ClaudeWindow {
+    utilization: Option<LooseNumber>,
+    /// An RFC 3339 instant, unlike Codex's epoch integer.
+    resets_at: Option<String>,
+}
+
+impl ClaudeWindow {
+    fn percent(&self) -> u8 {
+        self.utilization
+            .as_ref()
+            .and_then(LooseNumber::percent)
+            .unwrap_or(0)
+    }
+
+    fn instant(&self) -> Option<Timestamp> {
+        self.resets_at.as_deref()?.parse().ok()
+    }
+}
+
+/// A number that may arrive quoted.
+///
+/// Defended against deliberately rather than optimistically: the vendor's own
+/// client validates this field through a permissive number schema, which is
+/// evidence that both forms occur in practice.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+enum LooseNumber {
+    Number(f64),
+    Text(String),
+}
+
+impl LooseNumber {
+    fn percent(&self) -> Option<u8> {
+        let value = match self {
+            Self::Number(value) => *value,
+            Self::Text(text) => text.trim().parse().ok()?,
+        };
+        if value.is_nan() {
+            return None;
+        }
+        // Truncation is the safe direction for a *floor* comparison: 99.9% is
+        // not spent, and rounding it to 100 would park a usable account.
+        Some(value.clamp(0.0, f64::from(SPENT_PERCENT)) as u8)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn reading(limit_reached: bool, resets_at: Option<i64>, credits_exhausted: bool) -> UsageReading {
-        UsageReading {
-            provider: "codex".to_owned(),
-            limit_reached,
-            primary: Some(UsageWindow {
-                used_percent: if limit_reached { 100 } else { 12 },
-                resets_at: resets_at.map(|seconds| {
-                    Timestamp::from_second(seconds).expect("a representable instant")
-                }),
-            }),
-            credits_exhausted,
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::from_second(seconds).expect("a representable instant")
+    }
+
+    fn weekly(used_percent: u8, seconds: i64) -> QuotaWindow {
+        QuotaWindow {
+            kind: QuotaWindowKind::Weekly,
+            resets_at: at(seconds),
+            used_percent,
         }
     }
 
+    fn session(used_percent: u8, seconds: i64) -> QuotaWindow {
+        QuotaWindow {
+            kind: QuotaWindowKind::Session,
+            resets_at: at(seconds),
+            used_percent,
+        }
+    }
+
+    fn reading(limit_reached: bool, windows: Vec<QuotaWindow>, credits: bool) -> UsageReading {
+        UsageReading {
+            provider: "codex".to_owned(),
+            limit_reached,
+            windows,
+            credits_exhausted: credits,
+        }
+    }
+
+    // -- what a reading means ------------------------------------------------
+
     #[test]
     fn an_account_that_is_not_being_turned_away_is_available() {
-        let observed = observe(&reading(false, Some(1_787_421_242), false));
+        let observed = observe(&reading(false, vec![weekly(12, 1_787_421_242)], false));
         assert_eq!(observed.kind, ProviderQuotaKind::Available);
-        // Available carries no instant even though the window has one: the
-        // store forbids a reset on anything but `exhausted`.
+        // Available carries no instant even though a window has one: the store
+        // forbids a reset on anything but `exhausted`.
         assert_eq!(observed.resets_at, None);
+    }
+
+    #[test]
+    fn the_instant_is_the_latest_among_the_spent_windows_not_the_earliest() {
+        // A five-hour window clears long before the week does. Taking the
+        // earliest would send the next launch straight back into the weekly
+        // limit it just hit.
+        let observed = observe(&reading(
+            true,
+            vec![session(100, 1_787_400_000), weekly(100, 1_787_470_519)],
+            false,
+        ));
+        assert_eq!(observed.kind, ProviderQuotaKind::Exhausted);
+        assert_eq!(observed.resets_at, Some(at(1_787_470_519)));
+    }
+
+    #[test]
+    fn an_unspent_window_does_not_extend_the_wait() {
+        // Only the session window is gone, so the account is usable again when
+        // it clears — the weekly instant is irrelevant and must not be chosen.
+        let observed = observe(&reading(
+            true,
+            vec![session(100, 1_787_400_000), weekly(40, 1_787_470_519)],
+            false,
+        ));
+        assert_eq!(observed.resets_at, Some(at(1_787_400_000)));
+    }
+
+    #[test]
+    fn a_refusal_naming_no_spent_window_still_uses_an_instant_it_did_name() {
+        // Parking on `Unknown` because the vendor said 99% and "refused" in the
+        // same breath throws away a usable instant.
+        let observed = observe(&reading(true, vec![weekly(99, 1_787_470_519)], false));
+        assert_eq!(observed.kind, ProviderQuotaKind::Exhausted);
+        assert_eq!(observed.resets_at, Some(at(1_787_470_519)));
     }
 
     #[test]
     fn a_stated_reset_instant_outranks_a_spent_balance() {
         // The live shape of a workspace seat whose credits are gone and whose
         // weekly window still rolls over. `Drained` here would take the route
-        // out of service until somebody paid for something that was about to
-        // fix itself.
-        let observed = observe(&reading(true, Some(1_787_421_242), true));
+        // out of service until somebody paid for something about to fix itself.
+        let observed = observe(&reading(true, vec![weekly(100, 1_787_421_242)], true));
         assert_eq!(observed.kind, ProviderQuotaKind::Exhausted);
-        assert_eq!(
-            observed.resets_at,
-            Some(Timestamp::from_second(1_787_421_242).expect("a representable instant"))
-        );
+        assert_eq!(observed.resets_at, Some(at(1_787_421_242)));
     }
 
     #[test]
-    fn a_spent_balance_with_no_instant_is_drained() {
-        let observed = observe(&reading(true, None, true));
+    fn a_spent_balance_with_no_window_at_all_is_drained() {
+        let observed = observe(&reading(true, Vec::new(), true));
         assert_eq!(observed.kind, ProviderQuotaKind::Drained);
         assert_eq!(observed.resets_at, None);
     }
 
     #[test]
-    fn a_refusal_with_neither_an_instant_nor_a_balance_is_unknown() {
-        let observed = observe(&reading(true, None, false));
+    fn a_refusal_with_neither_a_window_nor_a_balance_is_unknown() {
+        let observed = observe(&reading(true, Vec::new(), false));
         assert_eq!(observed.kind, ProviderQuotaKind::Unknown);
         assert_eq!(observed.resets_at, None);
     }
+
+    #[test]
+    fn two_identical_readings_digest_identically_and_a_changed_one_does_not() {
+        let first = reading(true, vec![weekly(100, 1_787_421_242)], true);
+        let same = reading(true, vec![weekly(100, 1_787_421_242)], true);
+        let later = reading(true, vec![weekly(100, 1_787_470_519)], true);
+        let fuller = reading(
+            true,
+            vec![weekly(100, 1_787_421_242), session(3, 1_787_400_000)],
+            true,
+        );
+        assert_eq!(first.evidence(), same.evidence());
+        assert_ne!(first.evidence(), later.evidence());
+        // A window appearing must change the digest, or the poller would skip
+        // the write that records it.
+        assert_ne!(first.evidence(), fuller.evidence());
+    }
+
+    // -- the ChatGPT reader --------------------------------------------------
 
     #[test]
     fn the_live_work_account_document_reads_as_exhausted() {
@@ -335,11 +578,20 @@ mod tests {
         let read = read_chatgpt_usage("codex", body).expect("the document reads");
         assert!(read.limit_reached);
         assert!(read.credits_exhausted);
-        assert_eq!(
-            read.primary.and_then(|window| window.resets_at),
-            Some(Timestamp::from_second(1_787_421_242).expect("a representable instant"))
-        );
+        assert_eq!(read.windows, vec![weekly(100, 1_787_421_242)]);
         assert_eq!(observe(&read).kind, ProviderQuotaKind::Exhausted);
+    }
+
+    #[test]
+    fn a_span_the_vendor_omits_is_classified_as_the_shortest_not_the_longest() {
+        let body = br#"{"rate_limit": {"limit_reached": true,
+            "primary_window": {"used_percent": 100, "reset_at": 1787421242}}}"#;
+        let read = read_chatgpt_usage("codex", body).expect("the document reads");
+        assert_eq!(
+            read.windows.first().map(|window| window.kind),
+            Some(QuotaWindowKind::Session),
+            "an unknown span must not be promoted to a weekly allowance"
+        );
     }
 
     #[test]
@@ -360,13 +612,15 @@ mod tests {
         // A vendor adding a key, renaming a sibling and dropping `credits`
         // must not stop a Realm observing its own quota.
         let body = br#"{
-            "rate_limit": {"limit_reached": false, "primary_window": {"used_percent": 3},
+            "rate_limit": {"limit_reached": false,
+                           "primary_window": {"used_percent": 3, "limit_window_seconds": 604800,
+                                              "reset_at": 1787421242},
                            "brand_new_field": {"nested": true}},
             "something_added_last_tuesday": [1, 2, 3]
         }"#;
         let read = read_chatgpt_usage("codex", body).expect("the document reads");
         assert!(!read.limit_reached);
-        assert_eq!(read.primary.map(|window| window.used_percent), Some(3));
+        assert_eq!(read.windows, vec![weekly(3, 1_787_421_242)]);
         assert_eq!(observe(&read).kind, ProviderQuotaKind::Available);
     }
 
@@ -375,24 +629,115 @@ mod tests {
         let failure = read_chatgpt_usage("codex", b"<html>login</html>").expect_err("refused");
         assert_eq!(failure, UsageFailure::Unreadable);
         assert!(!failure.to_string().contains("html"));
+        let claude = read_claude_usage("claude", b"<html>login</html>").expect_err("refused");
+        assert_eq!(claude, UsageFailure::Unreadable);
     }
 
     #[test]
-    fn a_placeholder_reset_instant_is_not_treated_as_one() {
+    fn a_placeholder_reset_instant_yields_no_window_at_all() {
         let body = br#"{"rate_limit": {"limit_reached": true,
                         "primary_window": {"used_percent": 100, "reset_at": 0}},
                         "credits": {"has_credits": true}}"#;
         let read = read_chatgpt_usage("codex", body).expect("the document reads");
-        assert_eq!(read.primary.and_then(|window| window.resets_at), None);
+        assert!(read.windows.is_empty());
         assert_eq!(observe(&read).kind, ProviderQuotaKind::Unknown);
     }
 
+    // -- the Claude reader ---------------------------------------------------
+
     #[test]
-    fn two_identical_readings_digest_identically_and_a_changed_one_does_not() {
-        let first = reading(true, Some(1_787_421_242), true);
-        let same = reading(true, Some(1_787_421_242), true);
-        let later = reading(true, Some(1_787_470_519), true);
-        assert_eq!(first.evidence(), same.evidence());
-        assert_ne!(first.evidence(), later.evidence());
+    fn claude_being_turned_away_is_derived_because_the_document_never_says_so() {
+        // The whole semantic difference between the two vendors: there is no
+        // `limit_reached` here, so a spent window is the only evidence.
+        let body = br#"{
+            "five_hour": {"utilization": 12, "resets_at": "2026-08-22T18:00:00Z"},
+            "seven_day": {"utilization": 100, "resets_at": "2026-08-25T09:00:00Z"},
+            "extra_usage": {"is_enabled": false}
+        }"#;
+        let read = read_claude_usage("claude", body).expect("the document reads");
+        assert!(read.limit_reached, "a window at 100% is being turned away");
+        let observed = observe(&read);
+        assert_eq!(observed.kind, ProviderQuotaKind::Exhausted);
+        assert_eq!(
+            observed.resets_at,
+            Some("2026-08-25T09:00:00Z".parse().expect("an instant"))
+        );
+    }
+
+    #[test]
+    fn claude_below_the_line_is_available_with_both_windows_recorded() {
+        let body = br#"{
+            "five_hour": {"utilization": 40, "resets_at": "2026-08-22T18:00:00Z"},
+            "seven_day": {"utilization": 61, "resets_at": "2026-08-25T09:00:00Z"}
+        }"#;
+        let read = read_claude_usage("claude", body).expect("the document reads");
+        assert!(!read.limit_reached);
+        assert_eq!(
+            read.windows
+                .iter()
+                .map(|window| (window.kind, window.used_percent))
+                .collect::<Vec<_>>(),
+            vec![
+                (QuotaWindowKind::Session, 40),
+                (QuotaWindowKind::Weekly, 61)
+            ]
+        );
+        assert_eq!(observe(&read).kind, ProviderQuotaKind::Available);
+    }
+
+    #[test]
+    fn a_spent_model_scoped_week_does_not_take_the_whole_provider_out() {
+        // `seven_day_opus` at 100% must not become a plain weekly window, or
+        // every Sonnet seat on this account stops with it.
+        let body = br#"{
+            "five_hour": {"utilization": 5, "resets_at": "2026-08-22T18:00:00Z"},
+            "seven_day": {"utilization": 20, "resets_at": "2026-08-25T09:00:00Z"},
+            "seven_day_opus": {"utilization": 100, "resets_at": "2026-08-25T09:00:00Z"},
+            "seven_day_omelette": {"utilization": 100, "resets_at": "2026-08-25T09:00:00Z"},
+            "limits": [{"kind": "weekly_scoped", "utilization": 100}]
+        }"#;
+        let read = read_claude_usage("claude", body).expect("the document reads");
+        assert!(!read.limit_reached);
+        assert_eq!(read.windows.len(), 2, "only the account-level windows");
+        assert_eq!(observe(&read).kind, ProviderQuotaKind::Available);
+    }
+
+    #[test]
+    fn claude_never_claims_a_spent_balance_because_the_endpoint_reports_none() {
+        // `extra_usage.is_enabled` is a plan setting, not a balance. Reading it
+        // as one would produce a `Drained` row that no clock ever lifts.
+        let body = br#"{"seven_day": {"utilization": 100, "resets_at": "2026-08-25T09:00:00Z"},
+                        "extra_usage": {"is_enabled": true}}"#;
+        let read = read_claude_usage("claude", body).expect("the document reads");
+        assert!(!read.credits_exhausted);
+        assert_eq!(observe(&read).kind, ProviderQuotaKind::Exhausted);
+    }
+
+    #[test]
+    fn a_quoted_utilization_reads_and_a_fractional_one_floors() {
+        let body = br#"{"five_hour": {"utilization": "99.9", "resets_at": "2026-08-22T18:00:00Z"},
+                        "seven_day": {"utilization": 100.0, "resets_at": "2026-08-25T09:00:00Z"}}"#;
+        let read = read_claude_usage("claude", body).expect("the document reads");
+        assert_eq!(read.windows[0].used_percent, 99, "99.9% is not spent");
+        assert_eq!(read.windows[1].used_percent, 100);
+        assert!(read.limit_reached);
+    }
+
+    #[test]
+    fn a_claude_window_with_no_reset_instant_is_dropped() {
+        // `QuotaWindow` requires an instant; an allowance that cannot say when
+        // it returns is an `Unknown` state rather than a window.
+        let body = br#"{"seven_day": {"utilization": 100, "resets_at": null}}"#;
+        let read = read_claude_usage("claude", body).expect("the document reads");
+        assert!(read.windows.is_empty());
+        assert!(!read.limit_reached, "no window means nothing to be spent");
+        assert_eq!(observe(&read).kind, ProviderQuotaKind::Available);
+    }
+
+    #[test]
+    fn an_empty_claude_document_reads_as_available_rather_than_failing() {
+        let read = read_claude_usage("claude", b"{}").expect("the document reads");
+        assert!(read.windows.is_empty());
+        assert_eq!(observe(&read).kind, ProviderQuotaKind::Available);
     }
 }

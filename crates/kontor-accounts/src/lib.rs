@@ -74,7 +74,7 @@ pub use profile::{
 };
 pub use quota::{ObservedQuota, QuotaBasis, QuotaSignal, classify};
 pub use usage::{
-    UsageFailure, UsageReading, UsageWindow, observe, read_chatgpt_usage,
+    UsageFailure, UsageReading, observe, read_chatgpt_usage, read_claude_usage,
 };
 pub use resolver::{
     AccountResolver, KeychainBackend, KeychainFailure, KeychainTarget, PolicyError,

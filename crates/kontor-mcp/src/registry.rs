@@ -3214,13 +3214,27 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "state",
                 Place::Body,
                 ArgType::OpenKey,
-                "available, exhausted, drained or unknown.",
+                "available, exhausted, drained, unknown or cannot_report.",
             ),
             opt(
                 "resets_at",
                 Place::Body,
                 ArgType::Timestamp,
                 "When an exhausted allowance returns. Required for exhausted, refused otherwise.",
+            ),
+            opt(
+                "windows",
+                Place::Body,
+                ArgType::Json,
+                "Every concurrent window this pair holds, as \
+                 [{kind, resets_at, used_percent}]. Replaces the stored set wholesale.",
+            ),
+            opt(
+                "credit",
+                Place::Body,
+                ArgType::Json,
+                "The depleting balance and the floor new work may not eat into, as \
+                 {remaining, reserve}. Omitted leaves the stored balance alone.",
             ),
             req(
                 "expected_revision",
@@ -4543,11 +4557,6 @@ pub struct NonAgentRoute {
     pub reason: &'static str,
 }
 
-/// The only routes the parity oracle may find unmapped.
-///
-/// Every entry carries a reason, and the oracle fails on an entry that no longer
-/// matches a real route as loudly as it fails on a route with no entry: a stale
-/// allowlist is how an operation quietly stops being reviewed.
 /// Tools the MCP server declares but does not advertise.
 ///
 /// Every entry here is still a real tool: the CLI generates a subcommand for it,
@@ -4565,6 +4574,11 @@ pub struct NonAgentRoute {
 /// of any seat's task loop, and has a CLI invocation an operator can be handed.
 pub static CLI_ONLY: &[&str] = &["kontor_account_profile_amend"];
 
+/// The only routes the parity oracle may find unmapped.
+///
+/// Every entry carries a reason, and the oracle fails on an entry that no longer
+/// matches a real route as loudly as it fails on a route with no entry: a stale
+/// allowlist is how an operation quietly stops being reviewed.
 pub static NON_AGENT_ROUTES: &[NonAgentRoute] = &[
     NonAgentRoute {
         method: Method::Get,
