@@ -6129,7 +6129,10 @@ impl Services {
         profile: &AdvisorProfileSpec,
     ) -> Result<(), ApiError> {
         let state = self.state()?;
-        let project = self.project_row(run.project_id)?;
+        // The row itself is no longer read — placement is keyed by the topology
+        // node, not the project's checkout — but the call stays as the existence
+        // guard, so an unknown project still refuses here rather than deeper in.
+        self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -6146,8 +6149,7 @@ impl Services {
                 "the runtime selected for Advisor placement is not configured",
             )
         })?;
-        let cwd = WorkspaceRoot::parse(project.root_path.as_str())
-            .map_err(|error| self.refuse_domain(&error))?;
+        let cwd = self.consultation_root(run.project_id, node.mini_project_id, node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -6452,7 +6454,10 @@ impl Services {
         include_judge: bool,
     ) -> Result<(), ApiError> {
         let state = self.state()?;
-        let project = self.project_row(run.project_id)?;
+        // The row itself is no longer read — placement is keyed by the topology
+        // node, not the project's checkout — but the call stays as the existence
+        // guard, so an unknown project still refuses here rather than deeper in.
+        self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -6469,8 +6474,7 @@ impl Services {
                 "the runtime selected for Committee placement is not configured",
             )
         })?;
-        let cwd = WorkspaceRoot::parse(project.root_path.as_str())
-            .map_err(|error| self.refuse_domain(&error))?;
+        let cwd = self.consultation_root(run.project_id, node.mini_project_id, node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -19696,6 +19700,42 @@ impl Services {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
                 "the runtime registration directory is not valid UTF-8",
+            )
+        })?;
+        WorkspaceRoot::parse(root).map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// The directory one consultation's container works in.
+    ///
+    /// A consultation leaf takes the cwd its caller names, and naming the project
+    /// root put every Advisor and Committee of a project on one directory. The
+    /// runtime admits at most one workspace per canonical path, so the second
+    /// consultation an epic ever ran was refused `several Paseo workspaces claim
+    /// this canonical container path` — and an epic that had hosted two was
+    /// refused before it could spawn a single reviewer.
+    ///
+    /// Keyed by the topology node rather than the run: the node is the durable
+    /// identity a re-materialization of the same consultation resolves to, so a
+    /// retry adopts the directory it already made instead of stranding one per
+    /// attempt.
+    fn consultation_root(
+        &self,
+        project_id: ProjectId,
+        epic_id: Option<MiniProjectId>,
+        node_id: TopologyNodeId,
+    ) -> Result<WorkspaceRoot, ApiError> {
+        let mut root = PathBuf::from(self.runtime_root(project_id, epic_id)?.as_str());
+        root.push(node_id.to_string());
+        std::fs::create_dir_all(&root).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the consultation registration directory could not be created",
+            )
+        })?;
+        let root = root.to_str().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the consultation registration directory is not valid UTF-8",
             )
         })?;
         WorkspaceRoot::parse(root).map_err(|error| self.refuse_domain(&error))
