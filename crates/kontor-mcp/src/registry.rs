@@ -4425,6 +4425,22 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Revision,
                 "The revision the caller read.",
             ),
+            opt(
+                "evidence",
+                Place::Body,
+                ArgType::Json,
+                "The typed operator receipt, for a phase that waits on an external \
+                 effect no connector reports here. Omit it for the ticket gate and \
+                 the Committee verdict, which are derived from durable state and \
+                 refuse a supplied one. Integration takes \
+                 `{\"phase\":\"integration\",\"repositories\":[{\"repository\":…,\
+                 \"pull_request\":…,\"module_revision\":…,\"root_pointer_revision\":…}]}` \
+                 with at least one entry. Closeout takes \
+                 `{\"phase\":\"closeout\",\"merge\":…,\"release\":…,\
+                 \"delivered_versions\":{module:revision},\"summary\":…,\
+                 \"notification\":…,\"archive\":…}`; each statement is hashed into the \
+                 receipt that stands for it.",
+            ),
         ],
         about: "Advance one epic's completion.",
     },
