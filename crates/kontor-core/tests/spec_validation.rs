@@ -270,6 +270,11 @@ fn module_keys_refuse_every_non_canonical_path_spelling() {
         "ünicode/x",
         &"x".repeat(129),
         &format!("editor/{}", "x".repeat(129)),
+        // The limit is on the whole key, not on each segment: `tasks.module_key`
+        // is `CHECK (length(module_key) BETWEEN 1 AND 128)`, so a per-segment
+        // length check would let this through validation and fail the insert as
+        // a backend error instead of a typed refusal.
+        &format!("{}/{}", "a".repeat(64), "b".repeat(64)),
     ] {
         assert!(
             ModuleKey::parse(rejected).is_err(),
