@@ -1,7 +1,7 @@
 # ASMA-7882 / KON-OP-13 — architect handoff
 
 **Branch:** `feat/ASMA-7882-quota-headroom-routing` (from `origin/master` @ `7dc6212`)
-**PR:** _pending — filled in below once opened_
+**PR:** https://github.com/Carasent-ASMA/asma-rs-kontor/pull/84
 **Date:** 2026-08-22
 **Ticket:** ASMA-7882 / `KON-OP-13`; Kontor task `01a027d5-2835-7712-a96f-0a1003e4ac4b`, TeamRun `01a027d7-7ab1-7833-b5e8-37577b4479bb`, TSW `wks_b028bbccef6ad780`
 
@@ -149,3 +149,13 @@ round-consumption-down.
 reactive half of automatic detection — a `RuntimeError` variant carrying the
 parsed provider limit, retiring `COOLDOWN_SECONDS` — remains open and is
 described in `docs/QUOTA-FALLBACK-PLAN.md` under *Still open*.
+
+## Recovery commit
+
+Claude Opus seat `b5590e38` hit the individual spend / 5h limit after
+`cargo test --workspace` finished **1533 passing, 0 failing**. Recovery
+architect committed the already-staged tree (no design rewrite) and opened
+the PR. Superproject gitlink stays at `7dc6212`.
+
+- Work HEAD: `b8c43b98b277132d4965754098476aa03b781a32`
+- PR: https://github.com/Carasent-ASMA/asma-rs-kontor/pull/84
