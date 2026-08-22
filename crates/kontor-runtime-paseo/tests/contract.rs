@@ -2892,6 +2892,125 @@ async fn message_a_lost_ack_is_reconciled_rather_than_resent() {
 }
 
 #[tokio::test]
+async fn message_an_incomplete_confirmation_scan_never_authorizes_a_resend() {
+    let (plane, binding) = launched().await;
+    plane.daemon.lose_next_rpc("send_agent_message_request");
+
+    let epoch = "8f2b1c34-0000-4000-8000-000000000001";
+    let page = |direction: &str| {
+        serde_json::json!({
+            "requestId": "req-fixture",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": direction,
+            "projection": "canonical",
+            "epoch": epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 102, "maxSeq": 201, "nextSeq": 202 },
+            "startCursor": { "epoch": epoch, "seq": 102 },
+            "endCursor": { "epoch": epoch, "seq": 201 },
+            "hasOlder": true,
+            "hasNewer": false,
+            "entries": (102..=201).map(assistant_entry).collect::<Vec<_>>(),
+            "error": serde_json::Value::Null,
+        })
+    };
+    for _ in 0..2 {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agent_timeline_request", page("tail"));
+        for _ in 0..3 {
+            plane
+                .daemon
+                .queue_answer_rpc("fetch_agent_timeline_request", page("before"));
+        }
+    }
+
+    let request = message(&binding, "the next turn");
+    let first = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect_err("a partial scan cannot settle the lost acknowledgement");
+    assert!(
+        matches!(first, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "{first:?}"
+    );
+
+    let replay = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect_err("a retry stays confirmation-unknown when the scan is incomplete");
+    assert!(
+        matches!(replay, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "{replay:?}"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        1,
+        "stopping at a page budget is not proof that authorizes another send"
+    );
+}
+
+#[tokio::test]
+async fn message_a_history_read_promotes_confirmation_unknown_to_a_replayable_ack() {
+    let (plane, binding) = launched().await;
+    plane.daemon.lose_next_rpc("send_agent_message_request");
+    let mut absent = v(TIMELINE_MESSAGE_LANDED);
+    absent["entries"] = serde_json::json!([assistant_entry(1)]);
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_timeline_request", absent);
+
+    let request = message(&binding, "the next turn");
+    let refused = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect_err("the lost acknowledgement is initially unknown");
+    assert!(matches!(
+        refused,
+        RuntimeError::DeliveryConfirmationUnknown { .. }
+    ));
+
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_timeline_request", v(TIMELINE_MESSAGE_LANDED));
+    let page = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding: binding.clone(),
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("canonical history exposes the exact message id");
+    assert_eq!(page.items[0].position.sequence, 1);
+
+    let reads_before_replay = plane.daemon.count("rpc fetch_agent_timeline_request");
+    plane.daemon.refuse_next_rpc("fetch_agent_timeline_request");
+    let replay = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("the history read repaired the durable delivery ledger");
+    assert_eq!(replay.position.sequence, 1);
+    assert_eq!(
+        plane.daemon.count("rpc fetch_agent_timeline_request"),
+        reads_before_replay,
+        "the acknowledged retry is answered before touching the runtime"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        1,
+        "history reconciliation never becomes a second native message"
+    );
+}
+
+#[tokio::test]
 async fn message_a_lost_ack_older_than_the_tail_page_is_reconciled_backwards() {
     let (plane, binding) = launched().await;
     plane.daemon.lose_next_rpc("send_agent_message_request");

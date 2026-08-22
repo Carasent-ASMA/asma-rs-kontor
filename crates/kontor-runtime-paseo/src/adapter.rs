@@ -2755,6 +2755,7 @@ impl PaseoAdapter {
         let mut before: Option<PaseoTimelineCursor> = None;
         let mut found: Option<TimelinePosition> = None;
         let mut hits = 0usize;
+        let mut complete = false;
         for _ in 0..RECONCILE_PAGE_BUDGET {
             let page = self
                 .fetch_canonical(
@@ -2793,8 +2794,21 @@ impl PaseoAdapter {
             // an entry, so projection or paging changes cannot create overlap.
             match (page.has_older, page.start_cursor) {
                 (true, Some(start)) => before = Some(start),
-                _ => break,
+                (false, _) => {
+                    complete = true;
+                    break;
+                }
+                (true, None) => {
+                    return Err(RuntimeError::TimelineRefetchRequired {
+                        reason: TimelineBreak::SequenceGap,
+                    });
+                }
             }
+        }
+        if !complete {
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "canonical history reconciliation reached its safety limit before proving whether the message landed; do not resend",
+            });
         }
         // The whole scan came back under one epoch, so from here on there *is*
         // an epoch to be continuous with and every later reconciliation is held
@@ -4573,7 +4587,7 @@ impl RuntimeAdapter for PaseoAdapter {
                     });
                 }
             }
-            Err(error) => {
+            Err(_) => {
                 // The channel died after Paseo may have accepted it. Record the
                 // uncertainty, then settle it by looking rather than by sending
                 // again.
@@ -4584,7 +4598,9 @@ impl RuntimeAdapter for PaseoAdapter {
                 );
                 return match self.reconcile_message(&binding, request).await? {
                     Some(acknowledgement) => Ok(acknowledgement),
-                    None => Err(error),
+                    None => Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "the runtime channel failed after delivery began and canonical history does not yet confirm the message",
+                    }),
                 };
             }
         }
@@ -4600,7 +4616,7 @@ impl RuntimeAdapter for PaseoAdapter {
                     body_hash,
                     PaseoDelivery::ConfirmationUnknown,
                 );
-                Err(RuntimeError::Transport {
+                Err(RuntimeError::DeliveryConfirmationUnknown {
                     rule: "runtime accepted the message but its content has not appeared yet",
                 })
             }
@@ -5259,6 +5275,7 @@ impl RuntimeAdapter for PaseoAdapter {
             anchor.unwrap_or(TimelinePosition::start_of(epoch)),
             |event| event.position,
         );
+        self.reconcile_deliveries_from_history(binding.binding_id(), &items)?;
         self.lock().cursors.insert(binding.binding_id(), end);
         Ok(HistoryPage {
             epoch,
@@ -5538,6 +5555,68 @@ impl PaseoAdapter {
             .messages
             .record(message_id, body_hash.clone(), delivery.clone());
         state.deliveries.push((message_id, body_hash, delivery));
+    }
+
+    /// Promote confirmation-unknown deliveries when an ordinary history read
+    /// encounters their exact native message id.
+    ///
+    /// A history page is canonical runtime evidence. Keeping an already-seen
+    /// message unknown would force a later retry to search backwards from a
+    /// moving tail and could turn an incomplete read into a second send. The
+    /// page therefore repairs the adapter ledger at the exact epoch/sequence it
+    /// returns to the caller.
+    fn reconcile_deliveries_from_history(
+        &self,
+        binding_id: RuntimeBindingId,
+        events: &[SessionEvent],
+    ) -> RuntimeResult<()> {
+        let state = &mut *self.lock();
+        for event in events {
+            let EventSubject::Message(message_id) = &event.subject else {
+                continue;
+            };
+            let message_id = *message_id;
+            let mut acknowledged = false;
+            for (_, _, delivery) in state
+                .deliveries
+                .iter()
+                .filter(|(id, _, _)| *id == message_id)
+            {
+                if let PaseoDelivery::Acknowledged(receipt) = delivery {
+                    if receipt.position != event.position {
+                        return Err(RuntimeError::DuplicateMessage {
+                            rule: "appears more than once in this session's canonical content",
+                        });
+                    }
+                    acknowledged = true;
+                }
+            }
+            if acknowledged {
+                continue;
+            }
+            let Some(body_hash) = state.deliveries.iter().find_map(|(id, hash, delivery)| {
+                (*id == message_id && matches!(delivery, PaseoDelivery::ConfirmationUnknown))
+                    .then(|| hash.clone())
+            }) else {
+                continue;
+            };
+            let receipt = MessageAck {
+                message_id,
+                binding_id,
+                position: event.position,
+                accepted_at: event.emitted_at,
+            };
+            state.deliveries.retain(|(id, _, _)| *id != message_id);
+            state.deliveries.push((
+                message_id,
+                body_hash.clone(),
+                PaseoDelivery::Acknowledged(receipt.clone()),
+            ));
+            state
+                .messages
+                .record(message_id, body_hash, PaseoDelivery::Acknowledged(receipt));
+        }
+        Ok(())
     }
 
     /// Settle one message against canonical history, by exact native id.
