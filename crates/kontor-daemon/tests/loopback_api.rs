@@ -5216,12 +5216,23 @@ async fn an_account_ensure_compares_every_supplied_field_and_never_echoes_the_al
     {
         let drifted = Call::post(&uri, &body)
             .signed_as(&world, "admin")
-            .with_key(format!("drift-{index}"))
+            // Not `drift-{index}`: the project above was ensured under the key
+            // `drift-1`, so case 1 collided with it and was refused for reuse
+            // before it ever reached the drift comparison this loop is about.
+            .with_key(format!("drift-case-{index}"))
             .send(&world)
             .await;
         assert_eq!(
             drifted.status, 409,
             "case {index} must be refused as drift: {}",
+            drifted.body
+        );
+        // And it names what actually happened. `revision_conflict` used to be
+        // reported here and told the caller to retry with a fresher revision --
+        // advice an ensure takes no argument for, so following it loops.
+        assert_eq!(
+            drifted.json()["code"], "ensure_mismatch",
+            "case {index} must name the mismatch: {}",
             drifted.body
         );
         // The refusal says a field disagreed and never which, because naming the
@@ -21498,4 +21509,113 @@ fn receipt(world: &World, key: &str) -> kontor_core::receipt::CommandReceipt {
             .expect("the receipt is readable")
             .expect("the command recorded a receipt")
     })
+}
+
+/// Retiring a provider-account profile: the gap that made two orphans on
+/// 2026-08-21 and could only be cleared by opening the database.
+#[tokio::test]
+async fn a_provider_account_profile_can_be_relabelled_and_taken_out_of_service() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "amend-1", "Kontor", "/tmp/kontor-amend").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Codex · Pro personal", "harness": "fake.runtime",
+            "credential_alias": "codex-personal", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("amend-create")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = account.json()["revision"].as_u64().expect("a revision");
+
+    let uri = format!(
+        "/v1/projects/{project}/provider-account-profiles/{account_id}/settings:amend"
+    );
+
+    // A plan tier went stale in ten days, so the label is corrected to the
+    // identity it holds. The enabled flag is absent and must be left alone.
+    let renamed = Call::post(
+        &uri,
+        &serde_json::json!({"label": "Codex · Personal", "expected_revision": revision}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("amend-rename")
+    .send(&world)
+    .await;
+    assert_eq!(renamed.status, 200, "{}", renamed.body);
+    assert_eq!(renamed.json()["label"], "Codex · Personal");
+    assert_eq!(
+        renamed.json()["enabled"], true,
+        "an absent field leaves the current value"
+    );
+
+    // Retirement is `enabled: false`, not a delete: every receipt that names
+    // this profile stays readable.
+    let next = renamed.json()["revision"].as_u64().expect("a revision");
+    let retired = Call::post(
+        &uri,
+        &serde_json::json!({"enabled": false, "expected_revision": next}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("amend-retire")
+    .send(&world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    assert_eq!(retired.json()["enabled"], false);
+    assert_eq!(
+        retired.json()["label"], "Codex · Personal",
+        "the corrected label survives the retirement"
+    );
+
+    // A stale revision is refused, and nothing moves.
+    let stale = Call::post(
+        &uri,
+        &serde_json::json!({"enabled": true, "expected_revision": revision}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("amend-stale")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+
+    let listed = Call::get(format!("/v1/projects/{project}/provider-account-profiles"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let profiles = listed.json();
+    let profiles = profiles.as_array().expect("a list");
+    let found = profiles
+        .iter()
+        .find(|entry| entry["account_profile_id"] == account_id.as_str())
+        .expect("the profile is still listed");
+    assert_eq!(found["enabled"], false, "the retirement is what a reader sees");
+    assert!(
+        !listed.body.contains("codex-personal"),
+        "an alias must not appear in a response: {}",
+        listed.body
+    );
+
+    // Below admin, the command does not exist to the caller.
+    let refused = Call::post(
+        &uri,
+        &serde_json::json!({"enabled": true, "expected_revision": 3}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("amend-forbidden")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
 }

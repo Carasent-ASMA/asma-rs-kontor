@@ -4674,6 +4674,78 @@
         }
       }
     },
+    "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/settings:amend": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Correct a provider-account profile's label, or take it out of service.",
+        "operationId": "amend_account_profile",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_profile_id",
+            "in": "path",
+            "description": "The profile to amend",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendAccountProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountProfileDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/provider-account-profiles:ensure": {
       "post": {
         "tags": [
@@ -7955,6 +8027,36 @@
             "description": "Dedicated ASW node."
           }
         }
+      },
+      "AmendAccountProfileRequest": {
+        "type": "object",
+        "description": "What `provider-account-profiles/{id}:amend` is asked for.\n\nThe two mutable fields, both optional, under a compare-and-swap. Everything\ncredential-affecting stays immutable for the life of a profile — rotation is\na new profile, so that a queued or historical run's pin cannot start meaning\na different account.\n\nDisabling rather than deleting is the retirement path on purpose: it keeps\nthe audit trail and every receipt that names the profile, and a hard delete\nof a row an old receipt describes is a bad trade for a control plane whose\nvalue is its evidence. A profile nothing references at all can still be\ndeleted, by the store, under the same revision.",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether launches may select it. Absent leaves the current setting."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision the caller read.",
+            "minimum": 0
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A corrected label. Absent leaves the current one."
+          }
+        },
+        "additionalProperties": false
       },
       "ApiErrorBody": {
         "type": "object",
@@ -13140,7 +13242,7 @@
           },
           "source": {
             "type": "string",
-            "description": "`runtime_observation` or `operator`."
+            "description": "`runtime_observation`, `provider_report` or `operator`."
           },
           "state": {
             "type": "string",

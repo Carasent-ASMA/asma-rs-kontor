@@ -28,7 +28,9 @@ use serde::Serialize;
 
 use crate::capability::{Denied, Gate};
 use crate::client::{CallerTier, FrameBudget, Method, Reply, Request, Transport, TransportFailure};
-use crate::registry::{ArgSpec, ArgType, OpKind, Place, REGISTRY, ServeProfile, ToolSpec};
+use crate::registry::{
+    ArgSpec, ArgType, CLI_ONLY, OpKind, Place, REGISTRY, ServeProfile, ToolSpec,
+};
 
 /// One tool's whole answer.
 ///
@@ -148,13 +150,20 @@ impl Dispatcher {
         self.transport.base_url()
     }
 
-    /// The tools this server serves: every tool its tier reaches, intersected
-    /// with the active serve profile when one is set.
+    /// The tools this server *advertises*: every tool its tier reaches, less the
+    /// ones held off the listed surface, intersected with the active serve
+    /// profile when one is set.
+    ///
+    /// [`CLI_ONLY`] is subtracted here and nowhere else, which is the whole
+    /// design: a tool kept out of `tools/list` is still dispatchable by name, so
+    /// the CLI — which resolves against the registry directly — keeps working
+    /// while the listing every seat pays for on every turn stays shorter.
     pub fn tools(&self) -> impl Iterator<Item = &'static ToolSpec> {
         let configured = self.gate.configured();
         let profile = self.profile;
         REGISTRY.iter().filter(move |tool| {
             configured.at_least(tool.tier)
+                && !CLI_ONLY.contains(&tool.name)
                 && profile.is_none_or(|profile| profile.allows(tool.name))
         })
     }

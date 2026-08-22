@@ -914,6 +914,49 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Create a project, or return the existing one unchanged.",
     },
     ToolSpec {
+        name: "kontor_account_profile_amend",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/settings:amend",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "account_profile_id",
+                Place::Path,
+                ArgType::AccountProfileId,
+                "The profile to amend.",
+            ),
+            IDEMPOTENCY,
+            opt(
+                "label",
+                Place::Body,
+                ArgType::ExternalName,
+                "A corrected label. Absent leaves the current one.",
+            ),
+            opt(
+                "enabled",
+                Place::Body,
+                ArgType::Bool,
+                "Whether launches may select it. Absent leaves the current setting; \
+                 false is how a profile is retired, since one a run has pinned is \
+                 never deleted.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Correct a provider-account profile's label, or take it out of service.",
+    },
+    ToolSpec {
         name: "kontor_account_profile_ensure",
         tier: CallerTier::Admin,
         method: Method::Post,
@@ -4500,6 +4543,23 @@ pub struct NonAgentRoute {
 /// Every entry carries a reason, and the oracle fails on an entry that no longer
 /// matches a real route as loudly as it fails on a route with no entry: a stale
 /// allowlist is how an operation quietly stops being reviewed.
+/// Tools the MCP server declares but does not advertise.
+///
+/// Every entry here is still a real tool: the CLI generates a subcommand for it,
+/// and [`crate::Dispatcher::call`] runs it. What it does not do is appear in
+/// `tools/list`, which is the only part of the vocabulary that costs anything.
+///
+/// This is a context budget, not an access boundary. An MCP tool definition is
+/// charged against every seat's prompt on every turn, and the admin surface is
+/// already measured in five figures of tokens; a rare, deliberate, operator-only
+/// repair does not deserve a permanent seat in that budget. Nothing here is
+/// protected — the same caller can invoke it by name — so no tool whose *tier*
+/// is the thing keeping it away from a seat may be listed here.
+///
+/// The rule for adding one: the operation is initiated by a person, is not part
+/// of any seat's task loop, and has a CLI invocation an operator can be handed.
+pub static CLI_ONLY: &[&str] = &["kontor_account_profile_amend"];
+
 pub static NON_AGENT_ROUTES: &[NonAgentRoute] = &[
     NonAgentRoute {
         method: Method::Get,

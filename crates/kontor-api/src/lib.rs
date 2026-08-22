@@ -595,6 +595,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::ensure_account_profile),
             )
             .route(
+                "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/settings:amend",
+                post(applications::amend_account_profile),
+            )
+            .route(
                 "/v1/projects/{project_id}/provider-quota-states",
                 get(applications::provider_quota_states),
             )

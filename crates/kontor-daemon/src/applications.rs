@@ -31,6 +31,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use kontor_accounts::{AccountAvailability, AdaptivePosition, CapacityReading, ProbeOutcome};
 use kontor_api::applications::{
+    AmendAccountProfileRequest,
     AbandonRunRequest, AbandonedRunDto, AccountProfileDto, ApplicationOperations, AppliedDto,
     AppliedEpicDto, AppliedLinkDto, AppliedTaskDto, ApplyEpicRequest, ArmRequest,
     AuthorizationProjectionDto, BlockedTaskDto, DisarmRequest, EnsureAccountProfileRequest,
@@ -118,6 +119,7 @@ use kontor_core::naming::{NativeNameTemplate, NativeNameValues};
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
+    AccountProfileUpdate,
     AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository, CommandRepository,
     CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository, MiniProject,
     MiniProjectTopologySnapshot, NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun,
@@ -9037,7 +9039,7 @@ impl ApplicationOperations for Services {
                 // The refusal names the rule and not the field, because naming
                 // which field disagreed would confirm a guessed alias.
                 return Err(self.deny(
-                    ApiErrorCode::RevisionConflict,
+                    ApiErrorCode::EnsureMismatch,
                     "a profile with that label already exists and differs from the one described",
                 ));
             }
@@ -9085,6 +9087,70 @@ impl ApplicationOperations for Services {
             &intent,
         )?;
         Ok(account_profile_dto(&profile, AppliedDto::Created))
+    }
+
+    async fn amend_account_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        account_profile_id: AccountProfileId,
+        request: &AmendAccountProfileRequest,
+    ) -> Result<AccountProfileDto, ApiError> {
+        let state = self.state()?;
+        let profile = state
+            .with_store(|store| store.get_account_profile(project_id, account_profile_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such provider-account profile exists in this project",
+                )
+            })?;
+        let label = request.label.clone().unwrap_or_else(|| profile.label.clone());
+        let enabled = request.enabled.unwrap_or(profile.enabled);
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "provider_account_profile_amend",
+            "project": project_id.to_string(),
+            "account": account_profile_id.to_string(),
+            "label": label.as_str(),
+            "enabled": enabled,
+            "expected_revision": request.expected_revision.get(),
+        }))?;
+        let target = AggregateRef::Project { project_id };
+        if self.replayed(key, &intent, Some(&target))?.is_some() {
+            return Ok(account_profile_dto(&profile, AppliedDto::Unchanged));
+        }
+
+        // An amend that changes nothing is still recorded, deliberately. The
+        // caller asked for a state and got it, and a receipt that only exists
+        // when a value happened to move would make "did anyone try this" an
+        // unanswerable question.
+        let amended = if label == profile.label && enabled == profile.enabled {
+            profile.clone()
+        } else {
+            state
+                .with_store(|store| {
+                    store.update_account_profile(&AccountProfileUpdate {
+                        project_id,
+                        id: account_profile_id,
+                        expected_revision: request.expected_revision,
+                        label,
+                        enabled,
+                        updated_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?
+        };
+        self.record(
+            key,
+            project_id,
+            CommandKind::EnsureAccountProfile,
+            target,
+            AggregateRevision::INITIAL,
+            &intent,
+        )?;
+        Ok(account_profile_dto(&amended, AppliedDto::Updated))
     }
 
     async fn runtime_capabilities(&self) -> Result<Vec<RuntimeCapabilityDto>, ApiError> {

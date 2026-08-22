@@ -2432,7 +2432,7 @@ pub struct ProviderQuotaStateDto {
     pub state: String,
     /// When an exhausted allowance returns. Absent for every other state.
     pub resets_at: Option<String>,
-    /// `runtime_observation` or `operator`.
+    /// `runtime_observation`, `provider_report` or `operator`.
     pub source: String,
     /// When it was concluded.
     pub observed_at: String,
@@ -2485,6 +2485,31 @@ pub struct EnsureAccountProfileRequest {
     pub credential_alias: String,
     /// Whether launches may select it.
     pub enabled: bool,
+}
+
+/// What `provider-account-profiles/{id}:amend` is asked for.
+///
+/// The two mutable fields, both optional, under a compare-and-swap. Everything
+/// credential-affecting stays immutable for the life of a profile — rotation is
+/// a new profile, so that a queued or historical run's pin cannot start meaning
+/// a different account.
+///
+/// Disabling rather than deleting is the retirement path on purpose: it keeps
+/// the audit trail and every receipt that names the profile, and a hard delete
+/// of a row an old receipt describes is a bad trade for a control plane whose
+/// value is its evidence. A profile nothing references at all can still be
+/// deleted, by the store, under the same revision.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AmendAccountProfileRequest {
+    /// A corrected label. Absent leaves the current one.
+    #[schema(value_type = Option<String>)]
+    pub label: Option<ExternalName>,
+    /// Whether launches may select it. Absent leaves the current setting.
+    pub enabled: Option<bool>,
+    /// The revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
 }
 
 /// What one configured runtime family can currently prove.
@@ -4302,6 +4327,15 @@ pub trait ApplicationOperations: Send + Sync {
         request: &EnsureAccountProfileRequest,
     ) -> Result<AccountProfileDto, ApiError>;
 
+    /// Correct a profile's label, or take it out of service.
+    async fn amend_account_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        account_profile_id: AccountProfileId,
+        request: &AmendAccountProfileRequest,
+    ) -> Result<AccountProfileDto, ApiError>;
+
     /// What every configured runtime family can currently prove.
     async fn runtime_capabilities(&self) -> Result<Vec<RuntimeCapabilityDto>, ApiError>;
 
@@ -5253,6 +5287,41 @@ pub async fn ensure_account_profile(
         state
             .applications()
             .ensure_account_profile(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Correct a provider-account profile's label, or take it out of service.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/settings:amend",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("account_profile_id" = String, Path, description = "The profile to amend"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = AmendAccountProfileRequest,
+    responses(
+        (status = 200, body = AccountProfileDto),
+        (status = 401), (status = 403), (status = 404), (status = 409)
+    )
+)]
+pub async fn amend_account_profile(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, account_profile_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AmendAccountProfileRequest>,
+) -> Result<Json<AccountProfileDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let account_profile_id = parse_id(&state, AccountProfileId::parse(&account_profile_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .amend_account_profile(&key, project_id, account_profile_id, &request)
             .await?,
     ))
 }
