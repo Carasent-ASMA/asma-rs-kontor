@@ -3859,3 +3859,95 @@ fn tier_a_operational_tables_have_nowhere_to_store_a_classification() {
         assert_eq!(columns, 0, "{table} is tier A and refuses classification");
     }
 }
+
+/// Every canonical migration up to and including v48, so a test can seed the
+/// state a real realm was in before v49 ran.
+fn migrate_through_v48(connection: &Connection) {
+    migrate_through_v46(connection);
+    for migration in [
+        include_str!("../migrations/0047_configurable_native_names.sql"),
+        include_str!("../migrations/0048_provider_quota_states.sql"),
+    ] {
+        connection
+            .execute_batch(migration)
+            .expect("the canonical migrations through v48 run");
+    }
+}
+
+fn seed_v48_confirmed_abandonment(connection: &Connection) {
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000b1";
+    const PROJECT: &str = "0193f000-0000-7000-8000-0000000000b2";
+    const RECEIPT: &str = "0193f000-0000-7000-8000-0000000000b3";
+    connection
+        .execute(
+            "INSERT INTO realm_metadata
+                 (singleton, realm_id, schema_version, created_at, display_label)
+             VALUES (1, ?1, 1, '2026-08-21T18:00:00Z', NULL)",
+            [REALM],
+        )
+        .expect("the v48 Realm is seeded");
+    connection
+        .execute(
+            "INSERT INTO projects (id, name, root_path, revision, created_at)
+             VALUES (?1, 'P', '/tmp/v48-abandon', 1, '2026-08-21T18:00:00Z')",
+            [PROJECT],
+        )
+        .expect("the project is seeded");
+    connection
+        .execute(
+            "INSERT INTO command_receipts
+                 (id, project_id, idempotency_key, kind, target, target_revision,
+                  intent, intent_hash, state, attempts, created_at, updated_at)
+             VALUES (?1, ?2, 'abandon-1', 'abandon_run', '{}', 1, '{}',
+                     '0000000000000000000000000000000000000000000000000000000000000000',
+                     'confirmed', 0, '2026-08-21T18:00:00Z', '2026-08-21T18:00:00Z')",
+            [RECEIPT, PROJECT],
+        )
+        .expect("a confirmed operator abandonment is seeded");
+}
+
+/// v49 backfills `execution_mode` on receipts that are already `confirmed`, and
+/// `command_receipts_identity_immutable` (v47) aborts *any* update whose OLD row
+/// is confirmed -- not merely one that moves an identity column. So the
+/// migration is fine on a fresh database and cannot run on any realm that has
+/// ever abandoned a run, which is what took the live realm down on 2026-08-22.
+#[test]
+fn v49_backfills_a_confirmed_receipt_without_tripping_the_immutability_trigger() {
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    {
+        let connection = Connection::open(&path).expect("the v48 database opens");
+        migrate_through_v48(&connection);
+        seed_v48_confirmed_abandonment(&connection);
+    }
+
+    let store = SqliteStore::open(&path).expect("a realm with a confirmed abandonment migrates");
+    assert_eq!(
+        store.schema_version().expect("the version reads"),
+        SCHEMA_VERSION
+    );
+    drop(store);
+
+    let connection = raw(&directory);
+    let mode: String = connection
+        .query_row(
+            "SELECT execution_mode FROM command_receipts WHERE kind = 'abandon_run'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipt reads back");
+    assert_eq!(mode, "local", "the backfill must actually have run");
+
+    // And the trigger is back: suspending it is scoped to the migration's own
+    // transaction, not a permanent relaxation.
+    let error = connection
+        .execute(
+            "UPDATE command_receipts SET attempts = attempts + 1 WHERE kind = 'abandon_run'",
+            [],
+        )
+        .expect_err("a confirmed receipt is immutable again");
+    assert!(
+        error.to_string().contains("identity is immutable"),
+        "the v47 trigger must be reinstated: {error}"
+    );
+}
