@@ -303,7 +303,7 @@ mod tests {
     use super::*;
     use crate::capability::Denied;
     use crate::fake::RecordingTransport;
-    use crate::registry::{REGISTRY, ServeProfile};
+    use crate::registry::{CLI_ONLY, REGISTRY, ServeProfile, ToolSpec};
 
     fn server(tier: CallerTier) -> KontorMcp {
         KontorMcp::new(Dispatcher::new(Box::new(RecordingTransport::new(tier))))
@@ -408,9 +408,21 @@ mod tests {
         let admin = server(CallerTier::Admin);
         assert_eq!(
             admin.served().len(),
-            REGISTRY.len(),
-            "an admin server serves the whole vocabulary"
+            REGISTRY.len() - CLI_ONLY.len(),
+            "an admin server serves the whole vocabulary less what is held off the listing"
         );
+        // The lever is subtracted from the *listing* and nowhere else, so a
+        // held-back tool is still a real tool the CLI generates a command for.
+        for name in CLI_ONLY {
+            assert!(
+                ToolSpec::find(name).is_some(),
+                "{name} is held off the listing but is not in the registry at all"
+            );
+            assert!(
+                !admin.served().iter().any(|tool| tool.name == *name),
+                "{name} must not appear in an admin server's tool list"
+            );
+        }
     }
 
     #[test]

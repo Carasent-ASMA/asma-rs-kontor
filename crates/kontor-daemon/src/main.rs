@@ -21,7 +21,9 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use kontor_api::state::BarrierState;
 use kontor_core::id::{ProjectId, Timestamp};
-use kontor_daemon::{DEFAULT_PORT, Daemon, DaemonConfig, endpoint, logging, recovery, runtimes};
+use kontor_daemon::{
+    DEFAULT_PORT, Daemon, DaemonConfig, endpoint, logging, recovery, runtimes, usage,
+};
 use tracing::{error, info, warn};
 
 /// Serve one Kontor realm on loopback, or act on its state root.
@@ -260,6 +262,15 @@ async fn serve(
     } else {
         info!(realm_id = %daemon.realm_id(), ?families, "runtime fleet composed");
     }
+
+    // Quota observation starts before the socket does. A daemon that has just
+    // come up is exactly when its quota rows are most likely to be stale —
+    // anything that happened while it was down happened unobserved — and the
+    // poller stops itself when the same shutdown signal the streams watch fires.
+    tokio::spawn(usage::poll_until_stopped(
+        usage::UsagePoller::discover(&daemon.config().state_root),
+        daemon.state(),
+    ));
 
     let bind: SocketAddr = daemon.config().bind;
     let listener = match tokio::net::TcpListener::bind(bind).await {

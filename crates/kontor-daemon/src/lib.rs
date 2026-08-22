@@ -49,6 +49,7 @@ pub mod logging;
 pub mod recovery;
 pub mod runtimes;
 pub mod supervision;
+pub mod usage;
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};

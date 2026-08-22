@@ -124,6 +124,18 @@ crate::closed_enum! {
     ProviderQuotaSource, "ProviderQuotaSource" {
         /// Derived from what a runtime reported.
         RuntimeObservation => "runtime_observation",
+        /// Read from the provider's own usage endpoint for that account.
+        ///
+        /// A third authority rather than a flavour of the first, because the
+        /// two disagree in the direction that matters. A runtime observation
+        /// only exists *after* something was refused, and it carries whatever
+        /// the vendor happened to say; a provider report is a structured answer
+        /// about a window that has not necessarily refused anything yet, and it
+        /// is the only source that can move a state back to `available`
+        /// without a human. An operator reading a blocked route has to be able
+        /// to tell "we were turned away" from "we asked, and this is the
+        /// number".
+        ProviderReport => "provider_report",
         /// Asserted by an operator.
         Operator => "operator",
     }

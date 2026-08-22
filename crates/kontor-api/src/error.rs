@@ -38,6 +38,16 @@ closed_enum! {
         RevisionConflict => "revision_conflict",
         /// An idempotency key was reused for a different command.
         IdempotencyConflict => "idempotency_conflict",
+        /// An `:ensure` named a label that is taken by something it does not
+        /// describe.
+        ///
+        /// Distinct from `revision_conflict`, which it used to be reported as,
+        /// and the difference is not cosmetic: `revision_conflict` tells a
+        /// caller to re-read and retry with a fresher revision, and an ensure
+        /// takes no revision argument, so there is no retry that satisfies it.
+        /// A caller that follows the advice loops. What actually clears this is
+        /// amending the entity that holds the name, or choosing another name.
+        EnsureMismatch => "ensure_mismatch",
         /// The binding's frozen capability set does not cover this operation.
         UnsupportedCapability => "unsupported_capability",
         /// An identity-preserving native-root rename is required but the
@@ -106,6 +116,7 @@ impl ApiErrorCode {
             Self::RealmMismatch
             | Self::RevisionConflict
             | Self::IdempotencyConflict
+            | Self::EnsureMismatch
             | Self::StaleBinding
             | Self::TimelineRefetchRequired => StatusCode::CONFLICT,
             // The request is well formed and understood; this runtime simply
@@ -149,6 +160,9 @@ impl ApiErrorCode {
             }
             Self::IdempotencyConflict => {
                 "use a fresh idempotency key, or retry the original request unchanged"
+            }
+            Self::EnsureMismatch => {
+                "amend the entity that already holds the name, or ensure under a name nothing holds"
             }
             Self::UnsupportedCapability => {
                 "read the runtime's capabilities and use an operation it declares"

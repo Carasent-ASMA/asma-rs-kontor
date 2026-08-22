@@ -23,7 +23,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use kontor_mcp::{ArgType, NON_AGENT_ROUTES, Place, REGISTRY, ToolSpec};
+use kontor_mcp::{ArgType, CLI_ONLY, NON_AGENT_ROUTES, Place, REGISTRY, ToolSpec};
 
 /// One documented operation, read out of the generated contract.
 #[derive(Debug)]
@@ -531,8 +531,16 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        133,
+        134,
         "the mapped-operation count changed; map the new operation or record a deferral"
+    );
+    // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
+    // from `tools/list` and nowhere else, so this second number is what a seat's
+    // context is actually charged for — and it has to move deliberately too.
+    assert_eq!(
+        REGISTRY.len() - CLI_ONLY.len(),
+        133,
+        "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
         NON_AGENT_ROUTES.len(),
@@ -541,7 +549,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        134,
+        135,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -586,6 +594,9 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_project_get", CallerTier::Observer),
         ("kontor_project_ensure", CallerTier::Admin),
         ("kontor_account_profile_ensure", CallerTier::Admin),
+        // Retiring an account is admin for the same reason recording quota is:
+        // disabling every profile but one routes the whole realm onto it.
+        ("kontor_account_profile_amend", CallerTier::Admin),
         ("kontor_epic_apply", CallerTier::Admin),
         ("kontor_epic_preview", CallerTier::Admin),
         ("kontor_execution_arm", CallerTier::Admin),
