@@ -21380,6 +21380,464 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     );
 }
 
+/// Integration advances on a typed operator receipt, and only the right one.
+///
+/// The phase waits on an effect no connector reports here, so the caller states
+/// it. The plan admits exactly this — "a native connector **or a typed operator
+/// receipt**" — and models the outcome as recorded per-repository PR/module/
+/// root-pointer results rather than one assumed branch.
+#[tokio::test]
+async fn integration_advances_only_on_a_well_formed_operator_receipt() {
+    let composed = compose_realm("/tmp/kontor-op06-integration").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let (session, hash) =
+        quick_session_ready_to_promote(world, project, "Drive integration", "op06-int-quick").await;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
+        &promotion_apply_body(&hash),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-int-promote")
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic")
+        .to_owned();
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("op06-int-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let tpm = SeatBindingId::parse(
+        materialized.json()["core_team"]["seats"]
+            .as_array()
+            .expect("seats")
+            .iter()
+            .find(|entry| entry["role"]["role_code"] == "TPM")
+            .expect("a TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a bound TPM seat"),
+    )
+    .expect("a seat binding id");
+
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("it compiles");
+
+    // Stand the run at the *ticket* gate, which is vacuously satisfied here. The
+    // first thing under test is the phase that derives its own answer.
+    let ticket_phase = kontor_scheduler::start(&compiled, tpm, Vec::new()).expect("a run starts");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.create_epic_completion(&StoredEpicCompletion {
+                project_id,
+                mini_project_id: epic_id,
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&ticket_phase).expect("the state serializes"),
+                revision: ticket_phase.revision,
+                updated_at: at("2026-08-22T09:00:00Z"),
+            })
+        })
+        .expect("the run seeds");
+
+    // A receipt offered to the ticket gate is refused, not dropped. This phase
+    // reads its own evidence and would otherwise advance normally while silently
+    // discarding what the caller believed it had recorded — the one case the
+    // per-phase checks below cannot catch, because they never run here.
+    let at_ticket_gate = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": ticket_phase.revision.get(),
+            "evidence": {"phase": "integration", "repositories": [
+                {"repository": "asma-rs-kontor", "pull_request": "PR-91",
+                 "module_revision": "ed654bf", "root_pointer_revision": null}
+            ]}
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-int-at-ticket-gate")
+    .send(world)
+    .await;
+    assert_eq!(at_ticket_gate.status, 400, "{}", at_ticket_gate.body);
+    assert!(
+        at_ticket_gate.json()["rule"]
+            .as_str()
+            .expect("a rule")
+            .contains("does not take an operator receipt"),
+        "the ticket gate must say it derives its own answer: {}",
+        at_ticket_gate.body
+    );
+    let still_at_tickets = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(
+        still_at_tickets.json()["phase"]["phase"], "ticket_gate",
+        "a refused advance moved nothing: {}",
+        still_at_tickets.body
+    );
+
+    // Without a receipt the ticket gate opens on its own evidence.
+    let opened = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": ticket_phase.revision.get()}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-int-open-gate")
+    .send(world)
+    .await;
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    assert_eq!(opened.json()["state"]["phase"]["phase"], "integration");
+    let standing = opened.json()["state"]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    // No receipt at all: the phase says what it wants rather than stalling.
+    let bare = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": standing}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-int-bare")
+    .send(world)
+    .await;
+    assert_eq!(bare.status, 400, "{}", bare.body);
+    assert!(
+        bare.json()["rule"]
+            .as_str()
+            .expect("a rule")
+            .contains("integration outcome"),
+        "the refusal must name what to supply: {}",
+        bare.body
+    );
+
+    // The closeout receipt is well formed, but not for this phase. Offering it is
+    // refused rather than ignored: a dropped receipt would let the caller believe
+    // it recorded something nothing ever stored.
+    let wrong_phase = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": standing,
+            "evidence": {
+                "phase": "closeout",
+                "merge": "m", "release": "r", "delivered_versions": {"a": "1"},
+                "summary": "s", "notification": "n", "archive": "a"
+            }
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-int-wrong-phase")
+    .send(world)
+    .await;
+    assert_eq!(wrong_phase.status, 400, "{}", wrong_phase.body);
+
+    // An integration that names no repository is not an integration.
+    let empty = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": standing,
+            "evidence": {"phase": "integration", "repositories": []}
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-int-empty")
+    .send(world)
+    .await;
+    assert_eq!(empty.status, 400, "{}", empty.body);
+    assert!(
+        empty.json()["rule"]
+            .as_str()
+            .expect("a rule")
+            .contains("at least one repository"),
+        "{}",
+        empty.body
+    );
+
+    // Nothing above moved the run: a refused advance is not a transition.
+    let unmoved = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(unmoved.json()["phase"]["phase"], "integration");
+    assert_eq!(unmoved.json()["revision"], standing);
+
+    // The real thing, polyrepo: two repositories, one of which has no root
+    // pointer of its own.
+    let recorded = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": standing,
+            "evidence": {"phase": "integration", "repositories": [
+                {
+                    "repository": "asma-rs-kontor",
+                    "pull_request": "PR-91",
+                    "module_revision": "ed654bf",
+                    "root_pointer_revision": "a1b2c3d"
+                },
+                {
+                    "repository": "asma-cli",
+                    "pull_request": "PR-12",
+                    "module_revision": "9f8e7d6",
+                    "root_pointer_revision": null
+                }
+            ]}
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-int-record")
+    .send(world)
+    .await;
+    assert_eq!(recorded.status, 200, "{}", recorded.body);
+    assert_eq!(
+        recorded.json()["state"]["phase"]["phase"], "verdict",
+        "a recorded integration opens the verdict round: {}",
+        recorded.body
+    );
+    let integrations = recorded.json()["state"]["integrations"]
+        .as_array()
+        .expect("integrations")
+        .clone();
+    assert_eq!(integrations.len(), 1, "{}", recorded.body);
+    let repositories = integrations[0]["repositories"]
+        .as_array()
+        .expect("repositories")
+        .clone();
+    assert_eq!(repositories.len(), 2, "polyrepo, not one assumed branch");
+    assert_eq!(repositories[0]["repository"], "asma-rs-kontor");
+    assert_eq!(repositories[0]["root_pointer_revision"], "a1b2c3d");
+    assert!(
+        repositories[1]["root_pointer_revision"].is_null(),
+        "a module with no root pointer records none: {}",
+        recorded.body
+    );
+}
+
+/// The closeout receipts carry an epic to `done`, and each one is digested.
+///
+/// This is the end of the machine: with it, a profile can reach `Done` for the
+/// first time. Every prerequisite the policy demands — merge, release, version
+/// inventory, summary, notification, archive — has to be present, and the open
+/// questions are read as part of the same observation so an epic cannot finish
+/// over an unresolved ambiguity.
+#[tokio::test]
+async fn the_closeout_receipts_carry_an_epic_to_done() {
+    let composed = compose_realm("/tmp/kontor-op06-closeout").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let (session, hash) =
+        quick_session_ready_to_promote(world, project, "Drive closeout", "op06-close-quick").await;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{session}/promotion:apply"),
+        &promotion_apply_body(&hash),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-close-promote")
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic")
+        .to_owned();
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("op06-close-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let tpm = SeatBindingId::parse(
+        materialized.json()["core_team"]["seats"]
+            .as_array()
+            .expect("seats")
+            .iter()
+            .find(|entry| entry["role"]["role_code"] == "TPM")
+            .expect("a TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a bound TPM seat"),
+    )
+    .expect("a seat binding id");
+
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("it compiles");
+    let step = |state: &kontor_scheduler::CompletionState,
+                id: &str,
+                observation: kontor_scheduler::CompletionObservation| {
+        kontor_scheduler::advance(
+            &compiled,
+            state,
+            &kontor_scheduler::CompletionSignal {
+                id: ContentHash::of(id.as_bytes()),
+                expected_revision: state.revision,
+                delivery: kontor_scheduler::SignalDelivery::Callback,
+                observation,
+            },
+        )
+        .expect("the phase advances")
+        .state
+    };
+
+    // Walk the pure machine to the closeout gate: tickets, integration, a passing
+    // verdict. Only the last step is what this test is about.
+    let started = kontor_scheduler::start(&compiled, tpm, Vec::new()).expect("a run starts");
+    let after_tickets = step(
+        &started,
+        "tickets",
+        kontor_scheduler::CompletionObservation::TicketsClosed(Vec::new()),
+    );
+    let after_integration = step(
+        &after_tickets,
+        "integration",
+        kontor_scheduler::CompletionObservation::IntegrationCompleted(
+            kontor_scheduler::IntegrationRecord {
+                receipt: ContentHash::of(b"integration"),
+                repositories: vec![kontor_scheduler::RepositoryOutcome {
+                    repository: name("asma-rs-kontor"),
+                    pull_request: name("PR-91"),
+                    module_revision: name("ed654bf"),
+                    root_pointer_revision: None,
+                }],
+            },
+        ),
+    );
+    let at_closeout = step(
+        &after_integration,
+        "verdict-1",
+        kontor_scheduler::CompletionObservation::VerdictRecorded {
+            round: 1,
+            verdict: kontor_scheduler::CommitteeVerdict::Pass,
+            evidence: ContentHash::of(b"round-1-findings"),
+            deliberation: vec![kontor_policy::DeliberationStep {
+                role: name("Committee"),
+                consultation: name("independent_review"),
+                round: 1,
+                outcome: name("pass"),
+            }],
+        },
+    );
+    let standing = at_closeout.revision.get();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.create_epic_completion(&StoredEpicCompletion {
+                project_id,
+                mini_project_id: epic_id,
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&at_closeout).expect("the state serializes"),
+                revision: at_closeout.revision,
+                updated_at: at("2026-08-22T10:00:00Z"),
+            })
+        })
+        .expect("the run seeds");
+
+    // The integration receipt is not what this phase wants.
+    let wrong_phase = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": standing,
+            "evidence": {"phase": "integration", "repositories": [
+                {"repository": "asma-rs-kontor", "pull_request": "PR-91",
+                 "module_revision": "ed654bf", "root_pointer_revision": null}
+            ]}
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-close-wrong-phase")
+    .send(world)
+    .await;
+    assert_eq!(wrong_phase.status, 400, "{}", wrong_phase.body);
+
+    let closed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": standing,
+            "evidence": {
+                "phase": "closeout",
+                "merge": "PR 91 squash-merged as ed654bf",
+                "release": "kontor-daemon reinstalled and restarted",
+                "delivered_versions": {"asma-rs-kontor": "ed654bf"},
+                "summary": "18 tickets delivered",
+                "notification": "reported to the epic operator",
+                "archive": "worktrees pruned"
+            }
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-close-record")
+    .send(world)
+    .await;
+    assert_eq!(closed.status, 200, "{}", closed.body);
+    assert_eq!(
+        closed.json()["state"]["phase"]["phase"], "done",
+        "the recorded receipts finish the epic: {}",
+        closed.body
+    );
+    let closeout = &closed.json()["state"]["closeout"];
+    for receipt in [
+        "merge_receipt",
+        "release_receipt",
+        "summary_receipt",
+        "notification_receipt",
+        "archive_receipt",
+    ] {
+        let digest = closeout[receipt].as_str().unwrap_or_else(|| {
+            panic!("{receipt} was not recorded: {}", closed.body);
+        });
+        assert_eq!(digest.len(), 64, "{receipt} is a content digest");
+    }
+    assert_ne!(
+        closeout["merge_receipt"], closeout["release_receipt"],
+        "each statement is digested as itself, not one receipt reused: {}",
+        closed.body
+    );
+    assert_eq!(closeout["delivered_versions"]["asma-rs-kontor"], "ed654bf");
+    assert!(
+        closed.json()["state"]["blockers"]
+            .as_array()
+            .expect("blockers")
+            .is_empty(),
+        "a finished epic carries no blocker: {}",
+        closed.body
+    );
+}
+
 /// `:remediate` on an epic that never started completion is an absence.
 #[tokio::test]
 async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {

@@ -2556,6 +2556,7 @@ export interface components {
         };
         /** @description Advance one epic's completion. */
         AdvanceCompletionRequest: {
+            evidence?: null | components["schemas"]["CompletionEvidenceDto"];
             /**
              * Format: int64
              * @description The completion revision the caller believes is current.
@@ -3425,6 +3426,33 @@ export interface components {
             question_id: string;
             /** @description What it is about. */
             subject: string;
+        };
+        /** @description One operator-asserted completion fact, tagged by the phase it answers. */
+        CompletionEvidenceDto: {
+            /** @enum {string} */
+            phase: "integration";
+            /**
+             * @description One entry per repository the epic delivered into. Must be non-empty:
+             *     an integration that touched nothing is not an integration.
+             */
+            repositories: components["schemas"]["RepositoryOutcomeInputDto"][];
+        } | {
+            /** @description The archive disposition. */
+            archive: string;
+            /** @description Delivered module/service revisions, keyed by module or service name. */
+            delivered_versions: {
+                [key: string]: string;
+            };
+            /** @description What was merged, as a statement this receipt is the hash of. */
+            merge: string;
+            /** @description Who was notified, and how. */
+            notification: string;
+            /** @enum {string} */
+            phase: "closeout";
+            /** @description What was released. */
+            release: string;
+            /** @description The final summary. */
+            summary: string;
         };
         /** @description What a completion write produced. */
         CompletionOutcomeDto: {
@@ -5564,6 +5592,23 @@ export interface components {
             repository: string;
             /** @description Root-pointer revision when this module has one. */
             root_pointer_revision: string;
+        };
+        /**
+         * @description One repository's integration outcome, as a caller states it.
+         *
+         *     Distinct from the `Serialize` [`RepositoryOutcomeDto`] the read model
+         *     projects: this one is the wire input, so its fields arrive as plain strings
+         *     and are parsed into validated names by the daemon rather than by serde.
+         */
+        RepositoryOutcomeInputDto: {
+            /** @description The delivered module revision. */
+            module_revision: string;
+            /** @description The pull request, or the equivalent integration reference. */
+            pull_request: string;
+            /** @description Repository or module name. */
+            repository: string;
+            /** @description The root-pointer revision, for a module that has one. */
+            root_pointer_revision?: string | null;
         };
         /** @description What `ticket:resolve-conflict` is asked for. */
         ResolveConflictRequest: {

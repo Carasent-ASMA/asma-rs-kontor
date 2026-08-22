@@ -55,7 +55,8 @@ use kontor_api::applications::{
 use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CloseoutEvidenceDto,
     CloseoutRequirementDto, CommitteeFindingDto, CommitteeRunDto, CommitteeVerdictDto,
-    CompletionBlockerDto, CompletionOutcomeDto, CompletionPhaseDto, CompletionRoundDto,
+    CompletionBlockerDto, CompletionEvidenceDto, CompletionOutcomeDto, CompletionPhaseDto,
+    CompletionRoundDto,
     CompletionStateDto, CompletionWakeDto, ConsultationSeatDto, ConsultationVerdictDto,
     CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
     CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
@@ -66,6 +67,7 @@ use kontor_api::applications::{
     ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
     PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
     RecordFindingsRequest, RemediateCompletionRequest, RemediationActionDto, RepositoryOutcomeDto,
+    RepositoryOutcomeInputDto,
     RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
@@ -125,7 +127,8 @@ use kontor_core::repository::{
     NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride, NewCapacityObservation,
     NewCommandIntent, NewGateEvaluation, NewLocalCommand, NewMiniProject,
     NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault, RealmRepository,
+    NewSourceEvent, NewTeamRun, OpenQuestionRepository, ProjectRepository, ProjectTopologyDefault,
+    RealmRepository,
     RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
     SpecRepository, StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
     StoredConsultationProfileRevision, StoredConsultationRun, StoredConsultationSeat,
@@ -191,7 +194,8 @@ use kontor_scheduler::model::{
 use kontor_scheduler::{
     CommitteeVerdict, CompiledCompletion, CompletionBlocker, CompletionCommand,
     CompletionObservation, CompletionPhase, CompletionProfile, CompletionSignal, CompletionState,
-    CompletionTransition, RemediationApproval, RemediationAuthorization, SignalDelivery,
+    CompletionTransition, IntegrationRecord, RemediationApproval, RemediationAuthorization,
+    RepositoryOutcome, SignalDelivery,
 };
 use kontor_store::{
     AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication,
@@ -8441,26 +8445,123 @@ impl Services {
         Ok((stored, compiled))
     }
 
+    /// Parse a caller's stated per-repository outcomes into a durable record.
+    ///
+    /// The receipt digests the canonical outcome list rather than a caller-chosen
+    /// value, so two callers stating the same integration produce the same
+    /// receipt and a changed statement cannot reuse an earlier one.
+    fn integration_record(
+        &self,
+        repositories: &[RepositoryOutcomeInputDto],
+    ) -> Result<IntegrationRecord, ApiError> {
+        if repositories.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "an integration outcome names at least one repository",
+            ));
+        }
+        let mut outcomes = Vec::with_capacity(repositories.len());
+        for stated in repositories {
+            outcomes.push(RepositoryOutcome {
+                repository: ExternalName::parse(&stated.repository)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                pull_request: ExternalName::parse(&stated.pull_request)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                module_revision: ExternalName::parse(&stated.module_revision)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                root_pointer_revision: stated
+                    .root_pointer_revision
+                    .as_deref()
+                    .map(ExternalName::parse)
+                    .transpose()
+                    .map_err(|error| self.refuse_domain(&error))?,
+            });
+        }
+        let canonical = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "completion_integration_outcome",
+            "repositories": outcomes
+                .iter()
+                .map(|outcome| {
+                    serde_json::json!({
+                        "repository": outcome.repository.as_str(),
+                        "pull_request": outcome.pull_request.as_str(),
+                        "module_revision": outcome.module_revision.as_str(),
+                        "root_pointer_revision": outcome
+                            .root_pointer_revision
+                            .as_ref()
+                            .map(ExternalName::as_str),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+        .map_err(|error| self.refuse_domain(&error))?;
+        Ok(IntegrationRecord {
+            receipt: canonical.hash().clone(),
+            repositories: outcomes,
+        })
+    }
+
     /// Derive the one observation this run's phase is waiting for.
     ///
-    /// Only observations whose authoritative source is composed in this build are
-    /// derived. Committee outcomes come exclusively from settled durable runs;
-    /// a native session finishing or a caller claiming a verdict is never enough.
+    /// Two kinds of phase, and the difference is deliberate. A phase whose
+    /// authoritative source is composed here is derived from durable state and
+    /// ignores anything the caller says: the ticket gate reads its own evidence,
+    /// and a Committee verdict comes exclusively from a settled durable run — a
+    /// native session finishing, or a caller claiming a verdict, is never enough.
+    ///
+    /// A phase that waits on an external effect no connector reports here takes
+    /// the caller's typed receipt instead, which the Operational plan admits as
+    /// "a native connector **or a typed operator receipt**". Those receipts are
+    /// attributed: the advance that carries one is itself a durable command
+    /// receipt naming the caller, so an assertion is never anonymous.
     fn observe_completion(
         &self,
         stored: &StoredEpicCompletion,
         state: &CompletionState,
+        evidence: Option<&CompletionEvidenceDto>,
     ) -> Result<CompletionObservation, ApiError> {
+        // A receipt offered to a phase that derives its own answer is refused
+        // rather than dropped: silently ignoring it would let a caller believe it
+        // had recorded an integration outcome that nothing ever stored.
+        if let Some(offered) = evidence
+            && !matches!(
+                (state.phase, offered),
+                (
+                    CompletionPhase::Integration | CompletionPhase::Remediating(_),
+                    CompletionEvidenceDto::Integration { .. }
+                ) | (
+                    CompletionPhase::Closeout,
+                    CompletionEvidenceDto::Closeout { .. }
+                )
+            )
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "this phase does not take an operator receipt, or takes a different one",
+            ));
+        }
         match state.phase {
             CompletionPhase::Tickets => {
                 let evidence =
                     self.epic_ticket_evidence(stored.project_id, &state.ticket_requirements)?;
                 Ok(CompletionObservation::TicketsClosed(evidence))
             }
-            CompletionPhase::Integration | CompletionPhase::Remediating(_) => Err(self.deny(
-                ApiErrorCode::Unavailable,
-                "integration TeamRun outcomes are not yet observable in this build",
-            )),
+            CompletionPhase::Integration | CompletionPhase::Remediating(_) => {
+                let Some(CompletionEvidenceDto::Integration { repositories }) = evidence else {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "this phase waits for an integration outcome; supply it as evidence",
+                    ));
+                };
+                let record = self.integration_record(repositories)?;
+                Ok(match state.phase {
+                    CompletionPhase::Remediating(_) => {
+                        CompletionObservation::RemediationCompleted(record)
+                    }
+                    _ => CompletionObservation::IntegrationCompleted(record),
+                })
+            }
             CompletionPhase::Verdict(round) => {
                 let runs = self
                     .state()?
@@ -8564,11 +8665,59 @@ impl Services {
                 ApiErrorCode::InvalidRequest,
                 "this round is waiting for its LSA proposal and TPM route, not for an advance",
             )),
-            CompletionPhase::Closeout => Err(self.deny(
-                ApiErrorCode::Unavailable,
-                "closeout receipts are recorded by their connectors, which are not composed \
-                 in this build",
-            )),
+            CompletionPhase::Closeout => {
+                let Some(CompletionEvidenceDto::Closeout {
+                    merge,
+                    release,
+                    delivered_versions,
+                    summary,
+                    notification,
+                    archive,
+                }) = evidence
+                else {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "this phase waits for the closeout receipts; supply them as evidence",
+                    ));
+                };
+                let mut versions = BTreeMap::new();
+                for (module, revision) in delivered_versions {
+                    versions.insert(
+                        ExternalName::parse(module).map_err(|error| self.refuse_domain(&error))?,
+                        ExternalName::parse(revision)
+                            .map_err(|error| self.refuse_domain(&error))?,
+                    );
+                }
+                // Each statement is hashed into the receipt that stands for it, so
+                // the ledger keeps a stable digest of exactly what was asserted
+                // rather than the prose itself.
+                let closeout = CloseoutEvidence {
+                    merge_receipt: Some(ContentHash::of(merge.as_bytes())),
+                    release_receipt: Some(ContentHash::of(release.as_bytes())),
+                    delivered_versions: versions,
+                    summary_receipt: Some(ContentHash::of(summary.as_bytes())),
+                    notification_receipt: Some(ContentHash::of(notification.as_bytes())),
+                    archive_receipt: Some(ContentHash::of(archive.as_bytes())),
+                };
+                // Read the open questions now, immediately before the signal. The
+                // state machine takes them as part of the observation precisely so
+                // that closeout cannot be recorded without having looked: an
+                // omitted set would read as "none open" and would let the epic
+                // finish over an unresolved ambiguity.
+                let open_questions = self
+                    .state()?
+                    .with_store(|store| {
+                        store.summarize_questions_for_epic(
+                            stored.project_id,
+                            stored.mini_project_id,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                Ok(CompletionObservation::CloseoutRecorded {
+                    evidence: closeout,
+                    open_questions,
+                })
+            }
             CompletionPhase::Done | CompletionPhase::NeedsHuman => Err(self.deny(
                 ApiErrorCode::InvalidRequest,
                 "this completion has reached a terminal state",
@@ -13614,7 +13763,7 @@ impl ApplicationOperations for Services {
             None => self.start_completion(project_id, epic_id, now)?,
         };
         let current = self.completion_state(&stored)?;
-        let observation = self.observe_completion(&stored, &current)?;
+        let observation = self.observe_completion(&stored, &current, request.evidence.as_ref())?;
         // The signal id is the canonical intent's digest, so the same observation
         // presented twice is the same signal and the pure machine answers
         // `replayed` rather than transitioning again.

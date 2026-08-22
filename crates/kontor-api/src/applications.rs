@@ -1538,6 +1538,65 @@ pub struct AdvanceCompletionRequest {
     /// The completion revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
+    /// The typed operator receipt for a phase this build cannot observe.
+    ///
+    /// Absent for every phase the runtime derives for itself — the ticket gate
+    /// and the Committee verdict. Present only where the pinned profile waits on
+    /// an external effect that no connector reports here, which the Operational
+    /// plan admits as "a native connector **or a typed operator receipt**".
+    /// Supplying one for a phase that does not want it is refused rather than
+    /// ignored, so a caller cannot believe it recorded something it did not.
+    #[serde(default)]
+    pub evidence: Option<CompletionEvidenceDto>,
+}
+
+/// One operator-asserted completion fact, tagged by the phase it answers.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CompletionEvidenceDto {
+    /// What integration actually produced, per repository.
+    ///
+    /// Polyrepo by construction: the plan models integration as recorded
+    /// PR/module/root-pointer outcomes rather than one assumed branch.
+    Integration {
+        /// One entry per repository the epic delivered into. Must be non-empty:
+        /// an integration that touched nothing is not an integration.
+        repositories: Vec<RepositoryOutcomeInputDto>,
+    },
+    /// The closeout prerequisites, each asserted by the operator recording them.
+    Closeout {
+        /// What was merged, as a statement this receipt is the hash of.
+        merge: String,
+        /// What was released.
+        release: String,
+        /// Delivered module/service revisions, keyed by module or service name.
+        delivered_versions: BTreeMap<String, String>,
+        /// The final summary.
+        summary: String,
+        /// Who was notified, and how.
+        notification: String,
+        /// The archive disposition.
+        archive: String,
+    },
+}
+
+/// One repository's integration outcome, as a caller states it.
+///
+/// Distinct from the `Serialize` [`RepositoryOutcomeDto`] the read model
+/// projects: this one is the wire input, so its fields arrive as plain strings
+/// and are parsed into validated names by the daemon rather than by serde.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryOutcomeInputDto {
+    /// Repository or module name.
+    pub repository: String,
+    /// The pull request, or the equivalent integration reference.
+    pub pull_request: String,
+    /// The delivered module revision.
+    pub module_revision: String,
+    /// The root-pointer revision, for a module that has one.
+    #[serde(default)]
+    pub root_pointer_revision: Option<String>,
 }
 
 /// One of the two remediation authorities, as a closed tagged action.

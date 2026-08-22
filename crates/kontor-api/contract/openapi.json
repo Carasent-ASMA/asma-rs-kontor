@@ -7946,6 +7946,17 @@
           "expected_revision"
         ],
         "properties": {
+          "evidence": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CompletionEvidenceDto",
+                "description": "The typed operator receipt for a phase this build cannot observe.\n\nAbsent for every phase the runtime derives for itself — the ticket gate\nand the Committee verdict. Present only where the pinned profile waits on\nan external effect that no connector reports here, which the Operational\nplan admits as \"a native connector **or a typed operator receipt**\".\nSupplying one for a phase that does not want it is refused rather than\nignored, so a caller cannot believe it recorded something it did not."
+              }
+            ]
+          },
           "expected_revision": {
             "type": "integer",
             "format": "int64",
@@ -9762,6 +9773,85 @@
           }
         ],
         "description": "One typed reason completion cannot leave the phase it stands in."
+      },
+      "CompletionEvidenceDto": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "What integration actually produced, per repository.\n\nPolyrepo by construction: the plan models integration as recorded\nPR/module/root-pointer outcomes rather than one assumed branch.",
+            "required": [
+              "repositories",
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "integration"
+                ]
+              },
+              "repositories": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RepositoryOutcomeInputDto"
+                },
+                "description": "One entry per repository the epic delivered into. Must be non-empty:\nan integration that touched nothing is not an integration."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The closeout prerequisites, each asserted by the operator recording them.",
+            "required": [
+              "merge",
+              "release",
+              "delivered_versions",
+              "summary",
+              "notification",
+              "archive",
+              "phase"
+            ],
+            "properties": {
+              "archive": {
+                "type": "string",
+                "description": "The archive disposition."
+              },
+              "delivered_versions": {
+                "type": "object",
+                "description": "Delivered module/service revisions, keyed by module or service name.",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "merge": {
+                "type": "string",
+                "description": "What was merged, as a statement this receipt is the hash of."
+              },
+              "notification": {
+                "type": "string",
+                "description": "Who was notified, and how."
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "closeout"
+                ]
+              },
+              "release": {
+                "type": "string",
+                "description": "What was released."
+              },
+              "summary": {
+                "type": "string",
+                "description": "The final summary."
+              }
+            }
+          }
+        ],
+        "description": "One operator-asserted completion fact, tagged by the phase it answers."
       },
       "CompletionOutcomeDto": {
         "type": "object",
@@ -14177,6 +14267,37 @@
             "description": "Root-pointer revision when this module has one."
           }
         }
+      },
+      "RepositoryOutcomeInputDto": {
+        "type": "object",
+        "description": "One repository's integration outcome, as a caller states it.\n\nDistinct from the `Serialize` [`RepositoryOutcomeDto`] the read model\nprojects: this one is the wire input, so its fields arrive as plain strings\nand are parsed into validated names by the daemon rather than by serde.",
+        "required": [
+          "repository",
+          "pull_request",
+          "module_revision"
+        ],
+        "properties": {
+          "module_revision": {
+            "type": "string",
+            "description": "The delivered module revision."
+          },
+          "pull_request": {
+            "type": "string",
+            "description": "The pull request, or the equivalent integration reference."
+          },
+          "repository": {
+            "type": "string",
+            "description": "Repository or module name."
+          },
+          "root_pointer_revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The root-pointer revision, for a module that has one."
+          }
+        },
+        "additionalProperties": false
       },
       "ResolveConflictRequest": {
         "type": "object",
