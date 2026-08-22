@@ -309,7 +309,7 @@ impl Harness {
             module: module_key,
             changed_modules: BTreeSet::new(),
             worktree,
-            authorization_id: scope.authorization,
+            authorization_id: Some(scope.authorization),
             calendar: CalendarAdmission::unrestricted(),
             account_profile_id: Some(scope.account),
             runtime_kind: runtime_kind(),

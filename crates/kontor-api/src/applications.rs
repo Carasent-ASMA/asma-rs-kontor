@@ -3115,14 +3115,17 @@ pub struct ArmRequest {
     #[serde(default)]
     #[schema(value_type = Vec<String>)]
     pub tasks: Vec<TaskId>,
-    /// The first instant work may start.
-    #[schema(value_type = String, format = DateTime)]
-    pub allowed_start: Timestamp,
-    /// The last instant work may start.
-    #[schema(value_type = String, format = DateTime)]
-    pub allowed_end: Timestamp,
-    /// Maximum concurrent runs.
-    pub max_concurrency: u32,
+    /// The first instant work may start. Omitted, with `allowed_end`, is unrestricted.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub allowed_start: Option<Timestamp>,
+    /// The last instant work may start. Omitted, with `allowed_start`, is unrestricted.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub allowed_end: Option<Timestamp>,
+    /// Maximum concurrent runs. Omitted takes the realm's mission ceiling.
+    #[serde(default)]
+    pub max_concurrency: Option<u32>,
     /// The budget ceiling, when the caller narrows it.
     ///
     /// Absent takes the pinned work profile's `budget_defaults`. A budget bounds
@@ -3169,8 +3172,11 @@ pub struct ReadyTaskDto {
     /// The task.
     #[schema(value_type = String)]
     pub task_id: TaskId,
-    /// The authorization that arms it.
-    pub authorization_id: String,
+    /// The authorization that narrowed it, when a grant was attached.
+    ///
+    /// `None` is default-allow: the task was admitted because nothing blocked it.
+    #[schema(value_type = Option<String>)]
+    pub authorization_id: Option<String>,
     /// The runtime family it would run on.
     #[schema(value_type = String)]
     pub runtime_kind: RuntimeKindKey,
@@ -3187,6 +3193,8 @@ pub struct BlockedTaskDto {
     pub task_id: TaskId,
     /// The stable machine-readable reason.
     pub code: String,
+    /// The next CLI/MCP move a caller holding only this code can try.
+    pub action: String,
     /// The structural evidence behind it. Positions and ids, never values.
     #[schema(value_type = Vec<Object>)]
     pub evidence: Vec<serde_json::Value>,

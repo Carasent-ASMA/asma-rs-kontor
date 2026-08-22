@@ -8560,22 +8560,25 @@
         "description": "What `execution:arm` is asked for.",
         "required": [
           "expected_revision",
-          "allowed_start",
-          "allowed_end",
-          "max_concurrency",
           "granted_by",
           "reason"
         ],
         "properties": {
           "allowed_end": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "date-time",
-            "description": "The last instant work may start."
+            "description": "The last instant work may start. Omitted, with `allowed_start`, is unrestricted."
           },
           "allowed_start": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "date-time",
-            "description": "The first instant work may start."
+            "description": "The first instant work may start. Omitted, with `allowed_end`, is unrestricted."
           },
           "budget": {
             "oneOf": [
@@ -8599,9 +8602,12 @@
             "description": "The account profile acting as the granting authority."
           },
           "max_concurrency": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int32",
-            "description": "Maximum concurrent runs.",
+            "description": "Maximum concurrent runs. Omitted takes the realm's mission ceiling.",
             "minimum": 0
           },
           "reason": {
@@ -8828,9 +8834,14 @@
         "required": [
           "task_id",
           "code",
+          "action",
           "evidence"
         ],
         "properties": {
+          "action": {
+            "type": "string",
+            "description": "The next CLI/MCP move a caller holding only this code can try."
+          },
           "code": {
             "type": "string",
             "description": "The stable machine-readable reason."
@@ -13641,7 +13652,6 @@
         "description": "One task the planner would admit, and what it would run under.",
         "required": [
           "task_id",
-          "authorization_id",
           "runtime_kind"
         ],
         "properties": {
@@ -13653,8 +13663,11 @@
             "description": "The account profile it is pinned to, if any."
           },
           "authorization_id": {
-            "type": "string",
-            "description": "The authorization that arms it."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The authorization that narrowed it, when a grant was attached.\n\n`None` is default-allow: the task was admitted because nothing blocked it."
           },
           "runtime_kind": {
             "type": "string",

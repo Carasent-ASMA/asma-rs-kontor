@@ -181,6 +181,7 @@ fn refused(tool: &str, failure: &Failure) -> CallToolResult {
         "tool": tool,
         "code": failure.code(),
         "rule": failure.to_string(),
+        "action": failure.action(),
         "dispatched": false,
     });
     CallToolResult::error(vec![ContentBlock::text(
@@ -197,14 +198,17 @@ fn refused(tool: &str, failure: &Failure) -> CallToolResult {
 fn instructions(tier: CallerTier) -> String {
     format!(
         "This server acts on one Kontor realm at {tier} authority; tools above that authority are \
-         not served here. Three rules govern every call. First, a write names the revision a read \
+         not served here. Four rules govern every call. First, a write names the revision a read \
          returned: read the aggregate, then write with its revision, and a `revision_conflict` \
          means read it again. Second, recording a command is not the command having happened — the \
          answer is a durable receipt, and the run or task must be read again to see what the \
          runtime reported. Third, every write takes an `idempotency_key` you choose; repeating one \
          returns the original receipt rather than recording a second command, so a retry is safe \
-         and is never performed for you. Streamed reads return a bounded batch from one response: \
-         to continue, call again with the cursor the last frame carried."
+         and is never performed for you. Fourth, ready work already runs: do not call \
+         `kontor_execution_arm` unless you are narrowing a window, concurrency or runaway budget, \
+         or lifting a disarm; a blocked task's `action` names the next tool. Streamed reads return \
+         a bounded batch from one response: to continue, call again with the cursor the last frame \
+         carried."
     )
 }
 
@@ -468,6 +472,10 @@ mod tests {
             text.contains("idempotency_key"),
             "the caller chooses the key, and this server never invents one"
         );
+        assert!(
+            text.contains("kontor_execution_arm"),
+            "ready work runs without arm; the instructions must say so"
+        );
     }
 
     #[tokio::test]
@@ -481,6 +489,10 @@ mod tests {
         let rendered = refused("kontor_epic_apply", &failure);
         let text = format!("{rendered:?}");
         assert!(text.contains("forbidden"), "the code is the daemon's own");
+        assert!(
+            text.contains("action"),
+            "a refusal names the next move, not only the code"
+        );
         assert!(
             text.contains("\\\"dispatched\\\": false") || text.contains("dispatched"),
             "a caller is told the write was never attempted"

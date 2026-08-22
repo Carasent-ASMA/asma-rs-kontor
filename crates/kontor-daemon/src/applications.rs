@@ -186,7 +186,7 @@ use kontor_scheduler::model::{
     AuthorizationEvidence, CalendarAdmission, Candidate, CandidateDecision, CapacityConfig,
     CapacityUsage, ExternalWorkEvidence, ReconciliationEvidence, ReconciliationScope,
     RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin, WorktreeClaim,
-    WorktreeVerification,
+    WorktreeVerification, covering_authority,
 };
 use kontor_scheduler::{
     CommitteeVerdict, CompiledCompletion, CompletionBlocker, CompletionCommand,
@@ -2442,12 +2442,39 @@ impl Services {
         };
         let requested = self.budget_of(requested)?;
         if !requested.within(&defaults) {
-            return Err(self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the stated budget is wider than the pinned work profile allows, or is in another                  currency; explicit bounds may only narrow the profile's defaults",
-            ));
+            return Err(self
+                .deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the stated budget is wider than the pinned work profile allows, or is in another                  currency; explicit bounds may only narrow the profile's defaults",
+                )
+                .advising(
+                    "omit budget on kontor_execution_arm to take the pinned work profile defaults; explicit bounds may only narrow",
+                ));
         }
         Ok(requested)
+    }
+
+    /// The window an arming decision actually takes.
+    ///
+    /// Both instants or neither: a half-open grant is not a window, and filling
+    /// the missing side would invent a bound the caller never stated.
+    fn armed_window(&self, request: &ArmRequest) -> Result<TimeRange, ApiError> {
+        match (request.allowed_start, request.allowed_end) {
+            (None, None) => Ok(TimeRange::unrestricted()),
+            (Some(start), Some(end)) => {
+                let range = TimeRange { start, end };
+                range
+                    .validate()
+                    .map_err(|error| self.refuse_domain(&error))?;
+                Ok(range)
+            }
+            _ => Err(self
+                .deny(
+                    ApiErrorCode::InvalidRequest,
+                    "allowed_start and allowed_end must both be set or both omitted",
+                )
+                .advising("omit both for an unrestricted window, or set both")),
+        }
     }
 
     /// One wire budget as the domain type, validated.
@@ -2844,6 +2871,16 @@ impl Services {
             .collect();
 
         let runtime = self.runtime_evidence(project_id, now).await?;
+        let mut active = Vec::new();
+        let mut revoked = Vec::new();
+        for stored in &authorizations {
+            let evidence = evidence_of(&stored.authorization);
+            if stored.revocation.is_none() {
+                active.push(evidence);
+            } else {
+                revoked.push(evidence);
+            }
+        }
         let mut candidates = Vec::new();
         for task in &tasks {
             let Some(workflow) = state
@@ -2855,10 +2892,8 @@ impl Services {
                 // candidate; it is not a blocked one.
                 continue;
             };
-            let armed = authorizations
-                .iter()
-                .find(|stored| stored.arms(now, Some(epic_id), Some(task.id)))
-                .map(|stored| evidence_of(&stored.authorization));
+            let (authorization, blocked_by) =
+                covering_authority(&active, &revoked, Some(epic_id), task.id);
             let worktree = state
                 .with_store(|store| store.task_worktree(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?
@@ -2884,7 +2919,8 @@ impl Services {
                 depends_on: edges.get(&task.id).cloned().unwrap_or_default(),
                 serializes_with: BTreeSet::new(),
                 origin: TaskOrigin::Manual,
-                authorization: armed,
+                authorization,
+                blocked_by,
                 // A Realm with no calendar assignment is unrestricted, which is
                 // what an unconfigured deployment is — not "closed".
                 calendar: CalendarAdmission::unrestricted(),
@@ -6892,6 +6928,37 @@ fn plan_digest(
         "schema_version": 1,
         "decisions": plan.decisions,
     }))
+}
+
+/// One planner refusal, with the next CLI/MCP move attached.
+fn blocked_task(
+    task_id: TaskId,
+    code: &str,
+    action: &'static str,
+    evidence: &[kontor_scheduler::model::RejectionEvidence],
+) -> BlockedTaskDto {
+    BlockedTaskDto {
+        task_id,
+        code: code.to_owned(),
+        action: action.to_owned(),
+        evidence: evidence
+            .iter()
+            .map(|item| serde_json::to_value(item).unwrap_or(serde_json::Value::Null))
+            .collect(),
+    }
+}
+
+/// A seat that could not be created, carrying the API refusal's own action.
+fn seat_block(task_id: TaskId, refusal: &ApiError) -> BlockedTaskDto {
+    BlockedTaskDto {
+        task_id,
+        code: refusal.code.as_str().to_owned(),
+        action: refusal.action.to_owned(),
+        evidence: vec![serde_json::json!({
+            "kind": "seat",
+            "rule": refusal.rule,
+        })],
+    }
 }
 
 /// Flatten a stored authorization into the shape the planner reads.
@@ -14399,6 +14466,10 @@ impl ApplicationOperations for Services {
             })?;
 
         let budget = self.armed_budget(project_id, epic_id, request.budget.as_ref())?;
+        let window = self.armed_window(request)?;
+        let max_concurrency = request
+            .max_concurrency
+            .unwrap_or(self.capacity.mission_max_in_flight);
         // The *resolved* grant is in the intent, not the request's optional
         // shape. A replay must converge on what was actually authorized, so a
         // second call that omits the budget and one that restates the same
@@ -14408,9 +14479,9 @@ impl ApplicationOperations for Services {
             "schema_version": 1,
             "operation": "execution_arm",
             "tasks": request.tasks.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            "allowed_start": request.allowed_start.to_string(),
-            "allowed_end": request.allowed_end.to_string(),
-            "max_concurrency": request.max_concurrency,
+            "allowed_start": window.start.to_string(),
+            "allowed_end": window.end.to_string(),
+            "max_concurrency": max_concurrency,
             "max_tokens": budget.max_tokens,
             "max_commands": budget.max_commands,
             "max_duration_seconds": budget.max_duration_seconds,
@@ -14455,11 +14526,8 @@ impl ApplicationOperations for Services {
                 mini_project_id: epic_id,
             },
             selected_tasks: request.tasks.clone(),
-            allowed_start: TimeRange {
-                start: request.allowed_start,
-                end: request.allowed_end,
-            },
-            max_concurrency: request.max_concurrency,
+            allowed_start: window,
+            max_concurrency,
             // The bounds the grant was taken under, kept verbatim. A receipt
             // records what was authorized and is not rewritten by a later change
             // of the profile it defaulted from.
@@ -14575,10 +14643,12 @@ impl ApplicationOperations for Services {
         for decision in &plan.decisions {
             match decision {
                 CandidateDecision::Admit(admitted) => {
-                    authorizations.insert(admitted.authorization_id.to_string());
+                    if let Some(id) = admitted.authorization_id {
+                        authorizations.insert(id.to_string());
+                    }
                     ready.push(ReadyTaskDto {
                         task_id: admitted.task_id,
-                        authorization_id: admitted.authorization_id.to_string(),
+                        authorization_id: admitted.authorization_id.map(|id| id.to_string()),
                         runtime_kind: admitted.runtime_kind.clone(),
                         account_profile_id: admitted.account_profile_id,
                     });
@@ -14588,14 +14658,12 @@ impl ApplicationOperations for Services {
                     code,
                     evidence,
                     ..
-                } => blocked.push(BlockedTaskDto {
-                    task_id: *task_id,
-                    code: code.as_str().to_owned(),
-                    evidence: evidence
-                        .iter()
-                        .map(|item| serde_json::to_value(item).unwrap_or(serde_json::Value::Null))
-                        .collect(),
-                }),
+                } => blocked.push(blocked_task(
+                    *task_id,
+                    code.as_str(),
+                    code.next_action(),
+                    evidence,
+                )),
             }
         }
         Ok(SchedulerPlanDto {
@@ -14663,14 +14731,7 @@ impl ApplicationOperations for Services {
                 for candidate in &admitted {
                     match self.seat(key, project_id, candidate).await {
                         Ok(seats) => started.extend(seats),
-                        Err(refusal) => blocked.push(BlockedTaskDto {
-                            task_id: candidate.task_id,
-                            code: refusal.code.as_str().to_owned(),
-                            evidence: vec![serde_json::json!({
-                                "kind": "seat",
-                                "rule": refusal.rule,
-                            })],
-                        }),
+                        Err(refusal) => blocked.push(seat_block(candidate.task_id, &refusal)),
                     }
                 }
                 self.mark_started_tasks_in_progress(project_id, &started)?;
@@ -14732,14 +14793,7 @@ impl ApplicationOperations for Services {
                         // The rule travels with the refusal: a seat that could not
                         // be created is the one thing a Lead most needs named, and
                         // a bare code would make every such failure look alike.
-                        Err(refusal) => blocked.push(BlockedTaskDto {
-                            task_id: admitted.task_id,
-                            code: refusal.code.as_str().to_owned(),
-                            evidence: vec![serde_json::json!({
-                                "kind": "seat",
-                                "rule": refusal.rule,
-                            })],
-                        }),
+                        Err(refusal) => blocked.push(seat_block(admitted.task_id, &refusal)),
                     }
                 }
                 CandidateDecision::Reject {
@@ -14747,14 +14801,12 @@ impl ApplicationOperations for Services {
                     code,
                     evidence,
                     ..
-                } => blocked.push(BlockedTaskDto {
-                    task_id: *task_id,
-                    code: code.as_str().to_owned(),
-                    evidence: evidence
-                        .iter()
-                        .map(|item| serde_json::to_value(item).unwrap_or(serde_json::Value::Null))
-                        .collect(),
-                }),
+                } => blocked.push(blocked_task(
+                    *task_id,
+                    code.as_str(),
+                    code.next_action(),
+                    evidence,
+                )),
             }
         }
         // A task with a live seat is being worked on, and the task's own state has
@@ -14928,14 +14980,7 @@ impl ApplicationOperations for Services {
                 .await
             {
                 Ok(seats) => started.extend(seats),
-                Err(refusal) => blocked.push(BlockedTaskDto {
-                    task_id: recovered.admitted.task_id,
-                    code: refusal.code.as_str().to_owned(),
-                    evidence: vec![serde_json::json!({
-                        "kind": "seat",
-                        "rule": refusal.rule,
-                    })],
-                }),
+                Err(refusal) => blocked.push(seat_block(recovered.admitted.task_id, &refusal)),
             }
         }
         self.mark_started_tasks_in_progress(project_id, &started)?;

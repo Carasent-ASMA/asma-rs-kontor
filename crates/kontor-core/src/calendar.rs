@@ -23,7 +23,7 @@ use crate::id::{
     AccountProfileId, CalendarExceptionId, CalendarProfileId, CanonicalDocument, CommandReceiptId,
     ContentHash, ExecutionAuthorizationId, ExternalName, HolidaySourceId, IdempotencyKey,
     MiniProjectId, ProjectId, ScheduleOverrideId, SchemaVersion, SpecVersion, TaskId, Timestamp,
-    WorkCalendarId,
+    WorkCalendarId, parse_utc_timestamp,
 };
 use crate::receipt::AggregateRef;
 use crate::spec::BudgetBounds;
@@ -767,6 +767,21 @@ pub struct TimeRange {
 }
 
 impl TimeRange {
+    /// The window used when a caller does not narrow one.
+    ///
+    /// Same instants the existing tests already treat as "effectively open":
+    /// 2020-01-01Z through 2099-01-01Z. There is no infinite range type, and
+    /// inventing one would be a second way to say the same thing.
+    #[must_use]
+    pub fn unrestricted() -> Self {
+        Self {
+            start: parse_utc_timestamp("2020-01-01T00:00:00Z")
+                .expect("the default-allow window opens"),
+            end: parse_utc_timestamp("2099-01-01T00:00:00Z")
+                .expect("the default-allow window closes far enough"),
+        }
+    }
+
     /// Validate the range.
     ///
     /// # Errors
@@ -785,10 +800,11 @@ impl TimeRange {
     }
 }
 
-/// An explicit authorization that arms ready work.
+/// An explicit authorization that *narrows* ready work.
 ///
-/// Work that is merely `ready` is never eligible: something must arm it, and
-/// that something is always a receipt-backed authorization with bounds.
+/// Unarmed ready work is eligible (default-allow). A grant is optional
+/// narrowing: a window, a concurrency ceiling, a task whitelist. Disarming is
+/// an explicit stop, not a return to unarmed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionAuthorization {
     /// This authorization's id.

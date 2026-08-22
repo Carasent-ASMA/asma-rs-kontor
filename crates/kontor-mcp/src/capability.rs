@@ -155,6 +155,29 @@ impl Denied {
             _ => "invalid_request",
         }
     }
+
+    /// The next move a caller holding only this refusal can try.
+    #[must_use]
+    pub const fn action(&self) -> &'static str {
+        match self {
+            Self::Authority { .. } => "present a credential carrying the tier this tool requires",
+            Self::NoSuchTool { .. } => "call a tool this server lists; names are exact",
+            Self::ProfileExcluded { .. } => {
+                "switch serve profile, or add the tool to the current one"
+            }
+            Self::NotAnObject { .. } => "send arguments as a JSON object",
+            Self::ForbiddenProperty { .. } => {
+                "drop the unknown property and send only declared arguments"
+            }
+            Self::MissingProperty { .. } => {
+                "supply the required property; on kontor_execution_arm, budget, allowed_start, allowed_end and max_concurrency are optional"
+            }
+            Self::WrongType { .. } => "send the property as the declared type",
+            Self::InvalidValue { .. } => {
+                "correct the value to a canonical identifier the domain accepts"
+            }
+        }
+    }
 }
 
 /// The one authority a server was configured with.
@@ -240,6 +263,10 @@ mod tests {
             "the refusal names both authorities, so an operator can see what to reconfigure"
         );
         assert_eq!(denied.code(), "forbidden");
+        assert_eq!(
+            denied.action(),
+            "present a credential carrying the tier this tool requires"
+        );
     }
 
     #[test]

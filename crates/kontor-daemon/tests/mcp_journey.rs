@@ -436,8 +436,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     //
     // The window is deliberately wide. A window pinned to the day this test was
     // written would make the journey pass or fail on the wall clock, and an
-    // authorization that has silently expired refuses with `authorization_missing`
-    // — which looks exactly like a scheduler that cannot admit.
+    // authorization that has silently expired refuses with `authorization_expired`
+    // — which looks like a grant that needs re-arming, not like missing a grant.
     ok(
         &lead,
         "kontor_execution_arm",

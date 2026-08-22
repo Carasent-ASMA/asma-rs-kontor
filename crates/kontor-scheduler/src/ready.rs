@@ -317,11 +317,16 @@ fn dependencies(snapshot: &SchedulingSnapshot, candidate: &Candidate) -> Refusal
     }
 }
 
-/// Ready is not armed. Something has to authorize the work, and it has to be
-/// this work.
+/// Ready work is default-allow. A grant only narrows; a disarm stops it.
 fn authorization(snapshot: &SchedulingSnapshot, candidate: &Candidate) -> Refusal {
+    if let Some(id) = candidate.blocked_by {
+        return with(
+            RejectionCode::AuthorizationBlocked,
+            vec![RejectionEvidence::Authorization { id }],
+        );
+    }
     let Some(authorization) = candidate.authorization.as_ref() else {
-        return bare(RejectionCode::AuthorizationMissing);
+        return None;
     };
     let evidence = vec![RejectionEvidence::Authorization {
         id: authorization.id,
@@ -345,9 +350,8 @@ fn authorization(snapshot: &SchedulingSnapshot, candidate: &Candidate) -> Refusa
 
 /// A closed or draining calendar admits no new top-level run.
 ///
-/// An *unrestricted* answer still needs an authorization — that check is a
-/// separate blocker and runs before this one, so "no calendar" never means "no
-/// arming".
+/// An *unrestricted* answer does not invent an authorization requirement —
+/// default-allow is the same idea as an unconfigured calendar.
 fn calendar(candidate: &Candidate) -> Refusal {
     if candidate.calendar.admits_new_work() {
         return None;
@@ -680,13 +684,11 @@ impl Selection {
             ));
         }
 
-        // Authorization presence was proved by the `authorization` blocker; this
-        // is the same value, read again for the record.
+        // A grant is optional: default-allow admits with no authorization_id.
         let authorization_id = candidate
             .authorization
             .as_ref()
-            .map(|authorization| authorization.id)
-            .ok_or((RejectionCode::AuthorizationMissing, Vec::new()))?;
+            .map(|authorization| authorization.id);
 
         self.spend(candidate);
         for claim in candidate.module_claims() {

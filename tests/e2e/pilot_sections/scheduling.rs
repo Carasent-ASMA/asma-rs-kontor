@@ -46,7 +46,7 @@ const DECIDED_AT: &str = "2026-08-12T09:00:00Z";
 pub(crate) fn run(bundle: &mut Bundle) {
     let fixture = PilotProject::parse(PROJECT_FIXTURE);
     worktrees_and_collision(bundle, &fixture);
-    calendar_unrestricted_still_needs_arming(bundle);
+    calendar_unrestricted_admits_unarmed(bundle);
     calendar_configured(bundle);
     calendar_ignores_client_clocks(bundle);
 }
@@ -228,8 +228,8 @@ fn worktrees_and_collision(bundle: &mut Bundle, fixture: &PilotProject) {
 // Calendar
 // ---------------------------------------------------------------------------
 
-/// An unconfigured project is unrestricted — and still cannot dispatch unarmed.
-fn calendar_unrestricted_still_needs_arming(bundle: &mut Bundle) {
+/// An unconfigured project is unrestricted — and default-allow admits unarmed work.
+fn calendar_unrestricted_admits_unarmed(bundle: &mut Bundle) {
     let project = ProjectId::generate();
     let taken_at = at(DECIDED_AT);
 
@@ -244,9 +244,9 @@ fn calendar_unrestricted_still_needs_arming(bundle: &mut Bundle) {
     };
     let state = resolve_effective_state(&unconfigured).expect("an absent calendar resolves");
 
-    // Same candidate twice: armed, and with its authorization removed. The
-    // second must refuse for a *non-calendar* reason, which is the whole point
-    // — absence of a calendar is not permission.
+    // Same candidate twice: armed, and with its authorization removed. Both
+    // must admit: absence of a calendar is not a close, and absence of a grant
+    // is not a stop.
     let armed = candidate(project, "pilot.code", None, taken_at);
     let mut unarmed = armed.clone();
     unarmed.authorization = None;
@@ -284,13 +284,13 @@ fn calendar_unrestricted_still_needs_arming(bundle: &mut Bundle) {
         .expect("the unrestricted evidence is written");
 
     let unrestricted = state == EffectiveCalendarState::Unrestricted;
-    let needs_arming = unarmed_code == Some(RejectionCode::AuthorizationMissing);
-    if unrestricted && armed_plan.admitted_count() == 1 && needs_arming {
+    let unarmed_admitted = unarmed_plan.admitted_count() == 1 && unarmed_code.is_none();
+    if unrestricted && armed_plan.admitted_count() == 1 && unarmed_admitted {
         bundle.pass(
             "domain.calendar-unrestricted",
             "a project with no assignment resolves `unrestricted`, needs no timezone and admits \
-             armed work at this instant — while the same task with its authorization removed \
-             refuses `authorization_missing`, not `calendar_closed`",
+             both armed and unarmed work at this instant — never `calendar_closed` and never \
+             `authorization_missing`",
             &[artifact],
         );
     } else {
@@ -674,6 +674,7 @@ fn candidate(
             required_capabilities: BTreeSet::new(),
         },
         external: ExternalWorkEvidence::default(),
+        blocked_by: None,
     }
 }
 

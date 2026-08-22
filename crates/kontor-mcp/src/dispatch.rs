@@ -88,6 +88,15 @@ impl Failure {
             Self::Transport(_) => "unavailable",
         }
     }
+
+    /// The next move a caller holding only this failure can try.
+    #[must_use]
+    pub const fn action(&self) -> &'static str {
+        match self {
+            Self::Denied(denied) => denied.action(),
+            Self::Transport(_) => "retry once the daemon answers; nothing was changed",
+        }
+    }
 }
 
 /// One realm, one credential tier, one closed tool vocabulary.
@@ -715,6 +724,25 @@ mod tests {
             arguments.get("budget"),
             "the budget reaches the daemon unchanged"
         );
+    }
+
+    #[test]
+    fn arming_without_a_window_or_concurrency_still_becomes_a_request() {
+        let arguments = serde_json::json!({
+            "project_id": UUID,
+            "epic_id": UUID,
+            "idempotency_key": "arm-4",
+            "expected_revision": 1,
+            "granted_by": UUID,
+            "reason": "Narrow nothing"
+        });
+        let request = build(spec("kontor_execution_arm"), &arguments)
+            .expect("window, concurrency and budget are optional");
+        let body = request.body.expect("a body");
+        assert!(body.get("allowed_start").is_none());
+        assert!(body.get("allowed_end").is_none());
+        assert!(body.get("max_concurrency").is_none());
+        assert!(body.get("budget").is_none());
     }
 
     #[test]

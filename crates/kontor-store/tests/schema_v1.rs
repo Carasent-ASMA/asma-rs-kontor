@@ -453,10 +453,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v51 added concurrent quota windows, the credit balance and
-    // its reserve, and the `cannot_report` observation state. v52 adds
-    // `task_modules` and slash/dotted module identity matching.
-    assert_eq!(SCHEMA_VERSION, 52);
+    // side effect. v52 adds `task_modules` and slash/dotted module identity
+    // matching. v53 dropped the CHECK that required every admission to name an
+    // authorization, so default-allow can persist a NULL grant id.
+    assert_eq!(SCHEMA_VERSION, 53);
 }
 
 #[test]
