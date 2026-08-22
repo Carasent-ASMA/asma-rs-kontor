@@ -1500,6 +1500,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/settings:amend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Correct a provider-account profile's label, or take it out of service. */
+        post: operations["amend_account_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/provider-account-profiles:ensure": {
         parameters: {
             query?: never;
@@ -2571,6 +2588,31 @@ export interface components {
             state: string;
             /** @description Dedicated ASW node. */
             topology_node_id: string;
+        };
+        /**
+         * @description What `provider-account-profiles/{id}:amend` is asked for.
+         *
+         *     The two mutable fields, both optional, under a compare-and-swap. Everything
+         *     credential-affecting stays immutable for the life of a profile — rotation is
+         *     a new profile, so that a queued or historical run's pin cannot start meaning
+         *     a different account.
+         *
+         *     Disabling rather than deleting is the retirement path on purpose: it keeps
+         *     the audit trail and every receipt that names the profile, and a hard delete
+         *     of a row an old receipt describes is a bad trade for a control plane whose
+         *     value is its evidence. A profile nothing references at all can still be
+         *     deleted, by the store, under the same revision.
+         */
+        AmendAccountProfileRequest: {
+            /** @description Whether launches may select it. Absent leaves the current setting. */
+            enabled?: boolean | null;
+            /**
+             * Format: int64
+             * @description The revision the caller read.
+             */
+            expected_revision: number;
+            /** @description A corrected label. Absent leaves the current one. */
+            label?: string | null;
         };
         /** @description The JSON body every refusal is reported with. */
         ApiErrorBody: {
@@ -4083,6 +4125,8 @@ export interface components {
             links: components["schemas"]["AppliedLinkDto"][];
             /** @description The module it contends for, if any. */
             module?: string | null;
+            /** @description Additional modules it changes, besides [`Self::module`]. */
+            modules?: string[];
             /**
              * @description Every artifact the pinned profile requires, across all its phases and
              *     gates. What `complete_task` must be able to cite.
@@ -4147,6 +4191,13 @@ export interface components {
             import_state?: components["schemas"]["EpicImportStateDto"];
             /** @description The module the task contends for, if any. */
             module?: string | null;
+            /**
+             * @description Additional modules this task changes, besides [`Self::module`].
+             *
+             *     Omission leaves any existing extras alone. An empty list is a declaration
+             *     that there are none, and cannot later grow.
+             */
+            modules?: string[] | null;
             /**
              * @description Compact durable display identity for this task's native container and
              *     seats. Omission preserves an existing declaration but leaves a legacy
@@ -5131,7 +5182,7 @@ export interface components {
              * @description The revision a write must present.
              */
             revision: number;
-            /** @description `runtime_observation` or `operator`. */
+            /** @description `runtime_observation`, `provider_report` or `operator`. */
             source: string;
             /** @description `available`, `exhausted`, `drained`, `unknown` or `cannot_report`. */
             state: string;
@@ -10961,6 +11012,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AvailabilityOverrideDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    amend_account_profile: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The profile to amend */
+                account_profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendAccountProfileRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountProfileDto"];
                 };
             };
             401: {

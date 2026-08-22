@@ -11268,6 +11268,13 @@
             ],
             "description": "The module it contends for, if any."
           },
+          "modules": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional modules it changes, besides [`Self::module`]."
+          },
           "required_artifacts": {
             "type": "array",
             "items": {
@@ -11356,6 +11363,16 @@
               "null"
             ],
             "description": "The module the task contends for, if any."
+          },
+          "modules": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional modules this task changes, besides [`Self::module`].\n\nOmission leaves any existing extras alone. An empty list is a declaration\nthat there are none, and cannot later grow."
           },
           "short_code": {
             "type": [

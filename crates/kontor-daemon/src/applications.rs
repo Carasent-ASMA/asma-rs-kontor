@@ -120,20 +120,19 @@ use kontor_core::naming::{NativeNameTemplate, NativeNameValues};
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
-    AccountProfileUpdate,
-    AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository, CommandRepository,
-    CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository, MiniProject,
-    MiniProjectTopologySnapshot, NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun,
-    NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent, NewGateEvaluation,
-    NewLocalCommand, NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState,
-    NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamRun, ProjectRepository,
-    ProjectTopologyDefault, RealmRepository, RepositoryError, RunRepository, RuntimeBinding,
-    SeatLivenessObservation, SourceDisposition, SpecRepository, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
-    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
-    StoredRemediationProposal, TaskTransitionRequest, TicketLink, TicketRepository,
-    TopologyRepository, WorkflowRepository,
+    AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
+    CommandRepository, CredentialReference, CredentialReferenceKind, IntakeOutcome,
+    IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAccountProfile,
+    NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride, NewCapacityObservation,
+    NewCommandIntent, NewGateEvaluation, NewLocalCommand, NewMiniProject,
+    NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTeamRun, ProjectRepository, ProjectTopologyDefault, RealmRepository,
+    RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
+    SpecRepository, StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
+    StoredConsultationProfileRevision, StoredConsultationRun, StoredConsultationSeat,
+    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal, TaskTransitionRequest,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -259,6 +258,30 @@ struct PreparedEpic {
     bundle: ResolvedProfileBundle,
     execution_scope: Option<EpicExecutionScopeDeclaration>,
     tasks: Vec<EpicTask>,
+}
+
+fn split_declared_modules(
+    primary: Option<ModuleKey>,
+    listed: Option<Vec<ModuleKey>>,
+) -> (Option<ModuleKey>, Option<BTreeSet<ModuleKey>>) {
+    let Some(listed) = listed else {
+        return (primary, None);
+    };
+    let primary = primary.or_else(|| listed.first().cloned());
+    let mut extras = BTreeSet::<ModuleKey>::new();
+    for key in listed {
+        if primary
+            .as_ref()
+            .is_some_and(|primary| primary.contends_with(&key))
+        {
+            continue;
+        }
+        if extras.iter().any(|existing| existing.contends_with(&key)) {
+            continue;
+        }
+        extras.insert(key);
+    }
+    (primary, Some(extras))
 }
 
 enum NativeNameAction {
@@ -776,6 +799,19 @@ impl Services {
                 .map(ModuleKey::parse)
                 .transpose()
                 .map_err(|error| self.refuse_domain(&error))?;
+            let changed_modules = match &task.modules {
+                None => None,
+                Some(modules) => {
+                    let mut extras = Vec::with_capacity(modules.len());
+                    for key in modules {
+                        extras.push(
+                            ModuleKey::parse(key).map_err(|error| self.refuse_domain(&error))?,
+                        );
+                    }
+                    Some(extras)
+                }
+            };
+            let (module, changed_modules) = split_declared_modules(module, changed_modules);
             let mut links = Vec::with_capacity(task.ticket_links.len());
             for link in &task.ticket_links {
                 links.push(EpicTicketLink {
@@ -812,6 +848,7 @@ impl Services {
                     .transpose()?,
                 ai_short_name: task.ai_short_name.clone(),
                 module,
+                changed_modules,
                 imported_state,
                 depends_on: task.depends_on.clone(),
                 ticket_links: links,
@@ -2830,6 +2867,9 @@ impl Services {
                     worktree,
                     verification: WorktreeVerification::Verified,
                 });
+            let changed_modules = state
+                .with_store(|store| store.task_changed_modules(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?;
             candidates.push(Candidate {
                 project_id,
                 task_id: task.id,
@@ -2840,6 +2880,7 @@ impl Services {
                 created_at: task.created_at,
                 priority: 0,
                 module: task.module.clone(),
+                changed_modules,
                 worktree,
                 depends_on: edges.get(&task.id).cloned().unwrap_or_default(),
                 serializes_with: BTreeSet::new(),
@@ -9359,7 +9400,10 @@ impl ApplicationOperations for Services {
                     "no such provider-account profile exists in this project",
                 )
             })?;
-        let label = request.label.clone().unwrap_or_else(|| profile.label.clone());
+        let label = request
+            .label
+            .clone()
+            .unwrap_or_else(|| profile.label.clone());
         let enabled = request.enabled.unwrap_or(profile.enabled);
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
@@ -14233,6 +14277,9 @@ impl ApplicationOperations for Services {
             let worktree = state
                 .with_store(|store| store.task_worktree(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?;
+            let extras = state
+                .with_store(|store| store.task_changed_modules(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?;
             projected.push(EpicTaskProjectionDto {
                 task_id: task.id,
                 title: task.title.clone(),
@@ -14246,6 +14293,7 @@ impl ApplicationOperations for Services {
                 state: task.state.as_str().to_owned(),
                 revision: task.revision,
                 module: task.module.as_ref().map(|key| key.as_str().to_owned()),
+                modules: extras.iter().map(|key| key.as_str().to_owned()).collect(),
                 depends_on: edges
                     .get(&task.id)
                     .map(|set| set.iter().copied().collect())

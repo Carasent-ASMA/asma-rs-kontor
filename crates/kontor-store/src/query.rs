@@ -788,6 +788,7 @@ impl SqliteStore {
                 created_at: task.created_at,
                 priority: ASSEMBLED_PRIORITY,
                 module: task.module.clone(),
+                changed_modules: self.task_changed_modules(project_id, task.id)?,
                 worktree: None,
                 depends_on: dependencies.get(&task.id).cloned().unwrap_or_default(),
                 serializes_with: BTreeSet::new(),

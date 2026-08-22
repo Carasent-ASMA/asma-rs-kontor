@@ -482,6 +482,28 @@ open_keys! {
     CredentialAlias,
 }
 
+impl ModuleKey {
+    /// The spelling two keys share when they name one module.
+    ///
+    /// Canonical keys use `/` between path segments. Rows written before OP-15
+    /// still use `.` for the same two-segment place (`shared.asma-core-helpers`
+    /// for `shared/asma-core-helpers`). Replacing `/` with `.` on both sides is
+    /// the identity: it is not a parse, it is not persisted, and it does not
+    /// rewrite a stored key. Replacing every `.` with `/` would turn
+    /// `shared.asma-core-helpers` into `shared/asma/core/helpers`, which is a
+    /// different place.
+    #[must_use]
+    pub fn contention_identity(&self) -> String {
+        self.as_str().replace('/', ".")
+    }
+
+    /// Whether `other` names the same module, regardless of `/` vs `.`.
+    #[must_use]
+    pub fn contends_with(&self, other: &Self) -> bool {
+        self.contention_identity() == other.contention_identity()
+    }
+}
+
 /// The stable address of one concrete seat in one team run.
 ///
 /// A *logical role* ([`RoleKey`]) is a reusable definition — `researcher` — that

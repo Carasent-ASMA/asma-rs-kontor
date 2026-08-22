@@ -307,6 +307,7 @@ impl Harness {
                 binding: CapacityLimitKind::Global,
             },
             module: module_key,
+            changed_modules: BTreeSet::new(),
             worktree,
             authorization_id: scope.authorization,
             calendar: CalendarAdmission::unrestricted(),
@@ -780,6 +781,286 @@ fn a_canonical_repository_path_is_one_module_through_the_store_and_back() {
         1,
         "the refused contender left no second lease"
     );
+}
+
+#[test]
+fn a_live_dotted_holdout_refuses_a_slash_admission_and_keeps_its_row() {
+    let harness = Harness::new();
+    let scope = harness.scope("holdout");
+    let peers = BTreeSet::new();
+    let dotted = module("shared.asma-core-helpers");
+    let slash = module("shared/asma-core-helpers");
+
+    let holder = harness.task(&scope, "Dotted holdout", TaskState::Ready);
+    let admitted_holdout = harness.admitted(
+        &scope,
+        holder,
+        Some(dotted.clone()),
+        Some(name("/trees/qnr-a")),
+    );
+    let parts_holdout = Parts::new("dotted-holdout");
+    harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &admitted_holdout,
+            &peers,
+            &parts_holdout,
+            &scope.template,
+            now(),
+        ))
+        .expect("the live dotted holdout admits");
+
+    let contender = harness.task(&scope, "Slash admission", TaskState::Ready);
+    let admitted_slash = harness.admitted(
+        &scope,
+        contender,
+        Some(slash.clone()),
+        Some(name("/trees/qnr-a")),
+    );
+    let parts_slash = Parts::new("slash-contender");
+    let error = harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &admitted_slash,
+            &peers,
+            &parts_slash,
+            &scope.template,
+            now(),
+        ))
+        .expect_err("a slash key must not steal a live dotted lease of the same module");
+    assert!(
+        matches!(
+            error,
+            RepositoryError::Conflict {
+                subject: "resource lease",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+
+    let connection = harness.raw();
+    let keys: Vec<String> = {
+        let mut statement = connection
+            .prepare(
+                "SELECT resource_key FROM resource_leases
+                 WHERE lease_kind = 'module' AND released_at IS NULL AND expired_at IS NULL
+                 ORDER BY resource_key",
+            )
+            .expect("the lease query prepares");
+        statement
+            .query_map([], |row| row.get(0))
+            .expect("the lease query runs")
+            .map(|row| row.expect("a resource_key"))
+            .collect()
+    };
+    assert_eq!(keys, vec!["shared.asma-core-helpers".to_owned()]);
+
+    // The identity trigger is the rule for a caller that never came through
+    // `admit_candidate`. A slash insert against the live dotted row must abort
+    // without rewriting it.
+    let forged = connection.execute(
+        "INSERT INTO resource_leases
+             (id, project_id, resource_key, worktree_key, agent_run_id, acquired_at,
+              lease_kind, expires_at, fencing_token, holder_instance)
+         VALUES (?1, ?2, 'shared/asma-core-helpers', '/trees/qnr-a', ?3,
+                 '2026-08-12T09:00:00Z', 'module', '2026-08-12T09:05:00Z', 1, 'forged')",
+        rusqlite::params![
+            ResourceLeaseId::generate().to_string(),
+            scope.project.to_string(),
+            parts_holdout.agent_run.to_string()
+        ],
+    );
+    assert!(
+        forged.is_err(),
+        "direct SQL must not steal a live dotted module holdout"
+    );
+    let still: String = connection
+        .query_row(
+            "SELECT resource_key FROM resource_leases
+             WHERE id = ?1 AND released_at IS NULL AND expired_at IS NULL",
+            [parts_holdout.module_lease.to_string()],
+            |row| row.get(0),
+        )
+        .expect("the holdout row is still there");
+    assert_eq!(still, "shared.asma-core-helpers");
+
+    // Distinct verified trees of the same identity remain allowed.
+    let other_tree = harness.scope("holdout-b");
+    let other_task = harness.task(&other_tree, "Other tree", TaskState::Ready);
+    let admitted_other = harness.admitted(
+        &other_tree,
+        other_task,
+        Some(slash),
+        Some(name("/trees/qnr-b")),
+    );
+    let parts_other = Parts::new("slash-other-tree");
+    harness
+        .store
+        .admit_candidate(&commit(
+            &other_tree,
+            &admitted_other,
+            &peers,
+            &parts_other,
+            &other_tree.template,
+            now(),
+        ))
+        .expect("a distinct verified tree of the same module still admits");
+}
+
+#[test]
+fn every_changed_module_takes_a_lease_and_the_secondary_contends() {
+    let harness = Harness::new();
+    let scope = harness.scope("multi-module");
+    let peers = BTreeSet::new();
+    let primary = module("shared/asma-core-helpers");
+    let extra = module("editor/asma-app-editor");
+
+    let first = harness.task(&scope, "Touches two modules", TaskState::Ready);
+    let mut admitted_first = harness.admitted(&scope, first, Some(primary.clone()), None);
+    admitted_first.changed_modules.insert(extra.clone());
+    let parts_first = Parts::new("two-modules");
+    harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &admitted_first,
+            &peers,
+            &parts_first,
+            &scope.template,
+            now(),
+        ))
+        .expect("a task that changes two modules admits");
+
+    let connection = harness.raw();
+    let keys: Vec<String> = {
+        let mut statement = connection
+            .prepare(
+                "SELECT resource_key FROM resource_leases
+                 WHERE lease_kind = 'module' AND released_at IS NULL AND expired_at IS NULL
+                 ORDER BY resource_key",
+            )
+            .expect("the lease query prepares");
+        statement
+            .query_map([], |row| row.get(0))
+            .expect("the lease query runs")
+            .map(|row| row.expect("a resource_key"))
+            .collect()
+    };
+    assert_eq!(
+        keys,
+        vec![
+            "editor/asma-app-editor".to_owned(),
+            "shared/asma-core-helpers".to_owned()
+        ]
+    );
+
+    let second = harness.task(&scope, "Collides on the extra", TaskState::Ready);
+    let admitted_second = harness.admitted(&scope, second, Some(extra), None);
+    let parts_second = Parts::new("extra-contender");
+    let error = harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &admitted_second,
+            &peers,
+            &parts_second,
+            &scope.template,
+            now(),
+        ))
+        .expect_err("the secondary module is locked");
+    assert!(
+        matches!(
+            error,
+            RepositoryError::Conflict {
+                subject: "resource lease",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT count(*) FROM resource_leases WHERE lease_kind = 'module'
+             AND released_at IS NULL AND expired_at IS NULL"
+        ),
+        2,
+        "the refused contender left no third module lease"
+    );
+}
+
+#[test]
+fn a_lapsed_dotted_holdout_is_reclaimable_by_the_canonical_slash_key() {
+    let harness = Harness::new();
+    let first_scope = harness.scope("lapsed-holdout");
+    let peers = BTreeSet::new();
+    let dotted = module("shared.asma-core-helpers");
+    let slash = module("shared/asma-core-helpers");
+
+    let holder = harness.task(&first_scope, "Lapsed holdout", TaskState::Ready);
+    let admitted_holdout = harness.admitted(&first_scope, holder, Some(dotted), None);
+    let parts_holdout = Parts::new("lapsed-dotted");
+    harness
+        .store
+        .admit_candidate(&commit(
+            &first_scope,
+            &admitted_holdout,
+            &peers,
+            &parts_holdout,
+            &first_scope.template,
+            now(),
+        ))
+        .expect("the dotted holdout admits");
+
+    let reclaim_at = later(600);
+    let second_scope = harness.scope("slash-reclaim");
+    let reclaimer = harness.task(&second_scope, "Slash reclaimer", TaskState::Ready);
+    let admitted_slash = harness.admitted(&second_scope, reclaimer, Some(slash), None);
+    let parts_slash = Parts::new("slash-reclaim");
+    let outcome = harness
+        .store
+        .admit_candidate(&commit(
+            &second_scope,
+            &admitted_slash,
+            &peers,
+            &parts_slash,
+            &second_scope.template,
+            reclaim_at,
+        ))
+        .expect("a lapsed dotted holdout is reclaimable by the slash key");
+    assert_eq!(outcome.reclaimed, vec![parts_holdout.module_lease]);
+
+    let connection = harness.raw();
+    let dotted_key: String = connection
+        .query_row(
+            "SELECT resource_key FROM resource_leases WHERE id = ?1",
+            [parts_holdout.module_lease.to_string()],
+            |row| row.get(0),
+        )
+        .expect("the holdout row is readable");
+    assert_eq!(dotted_key, "shared.asma-core-helpers");
+    let expired: Option<String> = connection
+        .query_row(
+            "SELECT expired_at FROM resource_leases WHERE id = ?1",
+            [parts_holdout.module_lease.to_string()],
+            |row| row.get(0),
+        )
+        .expect("the holdout expiry is readable");
+    assert!(
+        expired.is_some(),
+        "the dotted row was expired, not rewritten"
+    );
+    let slash_key: String = connection
+        .query_row(
+            "SELECT resource_key FROM resource_leases WHERE id = ?1",
+            [parts_slash.module_lease.to_string()],
+            |row| row.get(0),
+        )
+        .expect("the slash lease is readable");
+    assert_eq!(slash_key, "shared/asma-core-helpers");
 }
 
 #[test]

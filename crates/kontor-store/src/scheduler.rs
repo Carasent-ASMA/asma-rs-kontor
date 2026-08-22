@@ -81,8 +81,8 @@ use std::collections::BTreeSet;
 use kontor_core::DomainError;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, CommandReceiptId,
-    ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId, ResourceLeaseId, TaskId,
-    TeamRunId, Timestamp,
+    ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ModuleKey, ProjectId, ResourceLeaseId,
+    TaskId, TeamRunId, Timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceipt};
 use kontor_core::repository::{
@@ -808,28 +808,24 @@ impl SqliteStore {
         // Reclaim first, then check: a place whose lease lapsed is free, and the
         // expiry is what makes it free *to the indexes* as well as to the reader.
         //
-        // The two lineages are kept apart. A pooled list would let the worktree
-        // lease cite the lease the *module* was reclaimed from, which is a link to
-        // a claim on a different place — the one thing reclaim lineage must not
-        // say.
-        let module_key = admitted
-            .module
-            .as_ref()
-            .map(|module| ExternalName::parse(module.as_str()))
-            .transpose()?;
-        let module_reclaimed = match module_key.as_ref() {
-            Some(module) => expire_lapsed(&transaction, module, request.decided_at)?,
-            None => Vec::new(),
-        };
-        let worktree_reclaimed = match admitted.worktree.as_ref() {
-            Some(worktree) => expire_lapsed(&transaction, worktree, request.decided_at)?,
-            None => Vec::new(),
-        };
-        if let Some(module) = module_key.as_ref() {
-            ensure_place_free(&transaction, module, admitted.worktree.as_ref())?;
+        // Module places use identity matching so a lapsed dotted holdout can be
+        // reclaimed by a slash key of the same module, and a live dotted holdout
+        // still refuses the slash. Worktree places stay exact: a filesystem path
+        // that contains `.` is not a module spelling.
+        let module_places = claimed_module_places(admitted, request.module_lease_id)?;
+        let mut module_reclaimed = Vec::new();
+        let mut reclaimed_by_place: Vec<Vec<ResourceLeaseId>> = Vec::new();
+        for (place, _) in &module_places {
+            let reclaimed = expire_lapsed(&transaction, place, request.decided_at, true)?;
+            ensure_place_free(&transaction, place, admitted.worktree.as_ref(), true)?;
+            reclaimed_by_place.push(reclaimed);
         }
+        let worktree_reclaimed = match admitted.worktree.as_ref() {
+            Some(worktree) => expire_lapsed(&transaction, worktree, request.decided_at, false)?,
+            None => Vec::new(),
+        };
         if let Some(worktree) = admitted.worktree.as_ref() {
-            ensure_place_free(&transaction, worktree, None)?;
+            ensure_place_free(&transaction, worktree, None, false)?;
         }
 
         insert_team_run(&transaction, &request.team_run)?;
@@ -848,15 +844,16 @@ impl SqliteStore {
 
         insert_admission_event(&transaction, request)?;
 
-        if let (Some(lease_id), Some(module)) = (request.module_lease_id, module_key.as_ref()) {
+        for ((place, lease_id), reclaimed) in module_places.iter().zip(reclaimed_by_place.iter()) {
             insert_lease(
                 &transaction,
                 request,
-                lease_id,
+                *lease_id,
                 LeaseKind::Module,
-                module,
-                &module_reclaimed,
+                place,
+                reclaimed,
             )?;
+            module_reclaimed.extend(reclaimed.iter().copied());
         }
         if let (Some(lease_id), Some(worktree)) =
             (request.worktree_lease_id, admitted.worktree.as_ref())
@@ -1155,8 +1152,12 @@ fn replayed_admission(
     receipt.ensure_replay(&request.launch.target, &request.launch.intent)?;
 
     let admission_event_id = AdmissionEventId::parse(&admission_id)?;
-    let (module_lease_id, worktree_lease_id) =
-        leases_of(transaction, request.admitted.project_id, admission_event_id)?;
+    let (module_lease_id, worktree_lease_id) = leases_of(
+        transaction,
+        request.admitted.project_id,
+        admission_event_id,
+        request.admitted.module.as_ref(),
+    )?;
     Ok(Some(AdmissionOutcome {
         admission_event_id,
         receipt,
@@ -1424,16 +1425,28 @@ fn expire_lapsed(
     transaction: &Transaction<'_>,
     place: &ExternalName,
     now: Timestamp,
+    module_identity: bool,
 ) -> RepositoryResult<Vec<ResourceLeaseId>> {
     let lapsed: Vec<(String, String, i64)> = {
-        let mut statement = transaction
-            .prepare(
-                "SELECT project_id, id, fencing_token FROM resource_leases
-                 WHERE resource_key = ?1 AND released_at IS NULL AND expired_at IS NULL
-                   AND expires_at <= ?2
-                 ORDER BY id",
-            )
-            .map_err(backend)?;
+        let sql = if module_identity {
+            "SELECT project_id, id, fencing_token FROM resource_leases
+             WHERE released_at IS NULL AND expired_at IS NULL
+               AND expires_at <= ?2
+               AND (
+                    resource_key = ?1
+                    OR (
+                        (lease_kind = 'module' OR lease_kind IS NULL)
+                        AND replace(resource_key, '/', '.') = replace(?1, '/', '.')
+                    )
+               )
+             ORDER BY id"
+        } else {
+            "SELECT project_id, id, fencing_token FROM resource_leases
+             WHERE resource_key = ?1 AND released_at IS NULL AND expired_at IS NULL
+               AND expires_at <= ?2
+             ORDER BY id"
+        };
+        let mut statement = transaction.prepare(sql).map_err(backend)?;
         let mut rows = statement
             .query(params![place.as_str(), text(now)])
             .map_err(backend)?;
@@ -1500,12 +1513,27 @@ fn ensure_place_free(
     transaction: &Transaction<'_>,
     place: &ExternalName,
     worktree: Option<&ExternalName>,
+    module_identity: bool,
 ) -> RepositoryResult<()> {
+    let sql = if module_identity {
+        "SELECT count(*) FROM resource_leases
+         WHERE released_at IS NULL AND expired_at IS NULL
+           AND (
+                resource_key = ?1
+                OR (
+                    (lease_kind = 'module' OR lease_kind IS NULL)
+                    AND replace(resource_key, '/', '.') = replace(?1, '/', '.')
+                )
+           )
+           AND (worktree_key IS NULL OR ?2 IS NULL OR worktree_key = ?2)"
+    } else {
+        "SELECT count(*) FROM resource_leases
+         WHERE resource_key = ?1 AND released_at IS NULL AND expired_at IS NULL
+           AND (worktree_key IS NULL OR ?2 IS NULL OR worktree_key = ?2)"
+    };
     let held: i64 = transaction
         .query_row(
-            "SELECT count(*) FROM resource_leases
-             WHERE resource_key = ?1 AND released_at IS NULL AND expired_at IS NULL
-               AND (worktree_key IS NULL OR ?2 IS NULL OR worktree_key = ?2)",
+            sql,
             params![place.as_str(), worktree.map(ExternalName::as_str)],
             |row| row.get(0),
         )
@@ -1612,27 +1640,59 @@ fn leases_of(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
     admission: AdmissionEventId,
+    primary_module: Option<&ModuleKey>,
 ) -> RepositoryResult<(Option<ResourceLeaseId>, Option<ResourceLeaseId>)> {
     let mut statement = transaction
         .prepare(
-            "SELECT lease_kind, id FROM resource_leases
-             WHERE project_id = ?1 AND admission_event_id = ?2 ORDER BY lease_kind",
+            "SELECT lease_kind, id, resource_key FROM resource_leases
+             WHERE project_id = ?1 AND admission_event_id = ?2 ORDER BY id",
         )
         .map_err(backend)?;
     let mut rows = statement
         .query(params![project_id.to_string(), admission.to_string()])
         .map_err(backend)?;
-    let mut module = None;
+    let mut primary = None;
+    let mut first_module = None;
     let mut worktree = None;
     while let Some(row) = rows.next().map_err(backend)? {
         let kind: String = row.get(0).map_err(backend)?;
         let id = ResourceLeaseId::parse(&row.get::<_, String>(1).map_err(backend)?)?;
+        let resource_key: String = row.get(2).map_err(backend)?;
         match LeaseKind::parse(&kind)? {
-            LeaseKind::Module => module = Some(id),
+            LeaseKind::Module => {
+                if first_module.is_none() {
+                    first_module = Some(id);
+                }
+                if primary_module.is_some_and(|module| module.as_str() == resource_key) {
+                    primary = Some(id);
+                }
+            }
             LeaseKind::Worktree => worktree = Some(id),
         }
     }
-    Ok((module, worktree))
+    Ok((primary.or(first_module), worktree))
+}
+
+fn claimed_module_places(
+    admitted: &AdmittedCandidate,
+    primary_lease_id: Option<ResourceLeaseId>,
+) -> RepositoryResult<Vec<(ExternalName, ResourceLeaseId)>> {
+    let mut places = Vec::new();
+    for module in admitted.integration_modules() {
+        let place = ExternalName::parse(module.as_str())?;
+        let lease_id = if admitted.module.as_ref() == Some(&module) {
+            primary_lease_id.ok_or_else(|| {
+                DomainError::invalid(
+                    "AdmissionCommit",
+                    "a module lease is acquired exactly when the task holds a module",
+                )
+            })?
+        } else {
+            ResourceLeaseId::generate()
+        };
+        places.push((place, lease_id));
+    }
+    Ok(places)
 }
 
 /// The token every lease starts at.

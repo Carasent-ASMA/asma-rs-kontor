@@ -43,7 +43,7 @@ use kontor_core::repository::{
 use kontor_core::spec::{ResolvedWorkProfileSnapshot, TeamTemplateRevision, WorkProfileSpec};
 use kontor_core::state::{ImportedTaskState, TaskState};
 use kontor_core::ticket::StatusConflictKind;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
 use crate::query::column_text;
@@ -91,6 +91,12 @@ pub struct EpicTask {
     pub ai_short_name: Option<AiShortName>,
     /// The module the task contends for, if any. Immutable.
     pub module: Option<ModuleKey>,
+    /// Additional modules this task changes, besides [`Self::module`].
+    ///
+    /// `None` on apply leaves any existing extras alone. `Some` writes the set
+    /// once and then treats it as immutable, the same promise `module` already
+    /// makes. The primary is never stored here.
+    pub changed_modules: Option<BTreeSet<ModuleKey>>,
     /// The historical source lifecycle state this import declares.
     pub imported_state: ImportedTaskState,
     /// The titles of the sibling tasks this one depends on.
@@ -1873,6 +1879,15 @@ fn ensure_task(
         applied = Applied::Updated;
     }
 
+    ensure_changed_modules(
+        transaction,
+        request.project_id,
+        task.id,
+        plan.module.as_ref(),
+        plan.changed_modules.as_ref(),
+        request.applied_at,
+    )?;
+
     // Declared inside the epic's own transaction, so a graph never half-applies
     // into a state where a task exists and its placement does not.
     if let Some(worktree) = &plan.worktree {
@@ -2139,6 +2154,86 @@ fn write_dependencies(
                     task_id.to_string(),
                     dependency.to_string(),
                     text(Timestamp::now())
+                ],
+            )
+            .map_err(backend)?;
+    }
+    Ok(())
+}
+
+fn extras_without_primary(
+    declared: &BTreeSet<ModuleKey>,
+    primary: Option<&ModuleKey>,
+) -> BTreeSet<ModuleKey> {
+    let mut extras = BTreeSet::<ModuleKey>::new();
+    for key in declared {
+        if primary.is_some_and(|primary| primary.contends_with(key)) {
+            continue;
+        }
+        if extras.iter().any(|existing| existing.contends_with(key)) {
+            continue;
+        }
+        extras.insert(key.clone());
+    }
+    extras
+}
+
+fn read_changed_modules(
+    connection: &Connection,
+    project_id: ProjectId,
+    task_id: TaskId,
+) -> RepositoryResult<BTreeSet<ModuleKey>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT module_key FROM task_modules
+             WHERE project_id = ?1 AND task_id = ?2
+             ORDER BY module_key",
+        )
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![project_id.to_string(), task_id.to_string()])
+        .map_err(backend)?;
+    let mut extras = BTreeSet::<ModuleKey>::new();
+    while let Some(row) = rows.next().map_err(backend)? {
+        extras.insert(ModuleKey::parse(
+            &row.get::<_, String>(0).map_err(backend)?,
+        )?);
+    }
+    Ok(extras)
+}
+
+fn ensure_changed_modules(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    task_id: TaskId,
+    primary: Option<&ModuleKey>,
+    declared: Option<&BTreeSet<ModuleKey>>,
+    declared_at: Timestamp,
+) -> RepositoryResult<()> {
+    let Some(declared) = declared else {
+        return Ok(());
+    };
+    let declared = extras_without_primary(declared, primary);
+    let existing = read_changed_modules(transaction, project_id, task_id)?;
+    if existing == declared {
+        return Ok(());
+    }
+    if !existing.is_empty() {
+        return Err(conflict(
+            "epic task",
+            "already exists in this epic changing a different extra-module set",
+        ));
+    }
+    for module in &declared {
+        transaction
+            .execute(
+                "INSERT INTO task_modules (project_id, task_id, module_key, declared_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    project_id.to_string(),
+                    task_id.to_string(),
+                    module.as_str(),
+                    text(declared_at)
                 ],
             )
             .map_err(backend)?;
@@ -2534,6 +2629,21 @@ impl SqliteStore {
         }
         transaction.commit().map_err(backend)?;
         Ok(Applied::Created)
+    }
+
+    /// Additional modules this task changes, besides `tasks.module_key`.
+    ///
+    /// Empty when the task contends for at most its primary module. The primary
+    /// is never returned here even if a caller stored it by mistake.
+    ///
+    /// # Errors
+    /// Backend failures, and a stored key this build cannot parse.
+    pub fn task_changed_modules(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<BTreeSet<ModuleKey>> {
+        read_changed_modules(&self.connection, project_id, task_id)
     }
 
     /// Where a task's work happens, if it has been declared.

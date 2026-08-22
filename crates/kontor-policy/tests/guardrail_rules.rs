@@ -536,6 +536,24 @@ fn a_task_does_not_collide_with_its_own_module_claim() {
     );
 }
 
+#[test]
+fn a_slash_run_blocks_on_a_dotted_holdout_of_the_same_module() {
+    let mut case = Case::new("qq", GuardrailRuleKey::ModuleCollision);
+    case.request.run.module =
+        Some(ModuleKey::parse("shared/asma-core-helpers").expect("canonical path"));
+    let other_task = TaskId::generate();
+    case.request.workspace.module_claims = vec![ModuleClaim {
+        module: ModuleKey::parse("shared.asma-core-helpers").expect("holdout spelling"),
+        task_id: other_task,
+        worktree: None,
+        in_flight: true,
+    }];
+    assert_eq!(
+        case.verdict(),
+        (PolicyVerdict::Block, ReasonCode::ModuleInFlight)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 3. second_rejection_parks
 // ---------------------------------------------------------------------------
