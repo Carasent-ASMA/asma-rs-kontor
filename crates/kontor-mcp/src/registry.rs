@@ -1175,8 +1175,8 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "budget",
                 Place::Body,
                 ArgType::Object(BUDGET_BOUNDS),
-                "The token, command, duration and cost bounds. Omitted takes the pinned work \
-                 profile's defaults; supplied bounds may only narrow them.",
+                "Optional token, command, duration and cost bounds. Omit for no per-run \
+                 ceiling; quota headroom and capacity govern instead.",
             ),
             req(
                 "granted_by",

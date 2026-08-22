@@ -2912,14 +2912,7 @@ export interface components {
             allowed_start: string;
             /** @description The authorization. */
             authorization_id: string;
-            /**
-             * @description The bounds this grant was actually taken under.
-             *
-             *     Reported because a receipt records what was authorized. When the grant
-             *     defaulted from the pinned work profile, this is what it defaulted to —
-             *     and a later change to that profile does not rewrite it.
-             */
-            budget: components["schemas"]["BudgetBoundsDto"];
+            budget?: null | components["schemas"]["BudgetBoundsDto"];
             /**
              * Format: int32
              * @description Maximum concurrent runs it authorizes.

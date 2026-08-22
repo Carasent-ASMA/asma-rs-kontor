@@ -184,12 +184,12 @@ impl ModelChainPolicy {
 use crate::calendar::ExecutionAuthorization;
 use crate::id::{
     AccountProfileId, ArtifactKey, CalendarProfileId, CanonicalDocument, ConnectorKey, ContentHash,
-    EventSchemaKey, ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName,
-    ExternalProjectKey, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId, Money, PersonaKey,
-    PersonaScenarioId, PhaseKey, ProjectId, RoleCatalogId, RoleCode, RoleKey, RuntimeKindKey,
-    SchemaVersion, SkillKey, SourceConnectionKey, SourceEventId, SourceKindKey, SpecVersion,
-    TaskId, TeamTemplateId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
-    WorkProfileKey,
+    CurrencyCode, EventSchemaKey, ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey,
+    ExternalName, ExternalProjectKey, GateKey, IdempotencyKey, IntakeReceiptId, MiniProjectId,
+    Money, PersonaKey, PersonaScenarioId, PhaseKey, ProjectId, RoleCatalogId, RoleCode, RoleKey,
+    RuntimeKindKey, SchemaVersion, SkillKey, SourceConnectionKey, SourceEventId, SourceKindKey,
+    SpecVersion, TaskId, TeamTemplateId, Timestamp, TopologyKindKey, TopologyNodeId,
+    TopologySpecId, TriggerKey, WorkProfileKey,
 };
 use crate::state::{GateState, TaskClosureCertificate};
 use crate::{DomainError, DomainResult};
@@ -1096,8 +1096,10 @@ pub struct ContextTemplateRef {
 
 /// Explicit, non-negative resource bounds.
 ///
-/// Every field is mandatory: there is no "unlimited" spelling anywhere in
-/// Kontor, so an unbounded budget cannot be expressed by omission.
+/// Every field is mandatory on this struct: SQLite stores them as `NOT NULL`
+/// integers, so "no ceiling" cannot be a SQL NULL. Omitted arming uses
+/// [`BudgetBounds::unconstrained`] instead — all-max plus currency `XXX` —
+/// and the wire projection reports that as JSON `null`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetBounds {
     /// Maximum tokens across the bounded work.
@@ -1111,11 +1113,37 @@ pub struct BudgetBounds {
 }
 
 impl BudgetBounds {
+    /// The largest integer the authorization table can store.
+    ///
+    /// ponytail: SQLite INTEGER is signed; `u64::MAX` would clamp on write.
+    const STORABLE_MAX: u64 = i64::MAX as u64;
+
+    /// No per-run ceiling. Quota headroom and capacity, not this row, govern.
+    #[must_use]
+    pub fn unconstrained() -> Self {
+        Self {
+            max_tokens: Self::STORABLE_MAX,
+            max_commands: Self::STORABLE_MAX,
+            max_duration_seconds: Self::STORABLE_MAX,
+            max_cost: Money {
+                minor_units: Self::STORABLE_MAX,
+                currency: CurrencyCode::parse("XXX").expect("XXX is three uppercase letters"),
+            },
+        }
+    }
+
+    /// Whether this is the omitted-arm sentinel, not a caller-stated ceiling.
+    #[must_use]
+    pub fn is_unconstrained(self) -> bool {
+        self == Self::unconstrained()
+    }
+
     /// Validate that every bound is a real, positive limit.
     ///
     /// # Errors
     /// Rejects a zero bound, which would otherwise read as "no work allowed" in
-    /// one place and "no limit" in another.
+    /// one place and "no limit" in another. The unconstrained sentinel is
+    /// positive, so it passes.
     pub fn validate(&self) -> DomainResult<()> {
         if self.max_tokens == 0
             || self.max_commands == 0
@@ -3666,8 +3694,9 @@ impl TriggerSpec {
         if u32::try_from(request.task_ids.len()).unwrap_or(u32::MAX) > ceiling {
             return Err(AutoArmRefusal::ConcurrencyExceeded);
         }
-        if !budget.within(&authorization.budget)
-            || !self.limits.budget.within(&authorization.budget)
+        if !authorization.budget.is_unconstrained()
+            && (!budget.within(&authorization.budget)
+                || !self.limits.budget.within(&authorization.budget))
         {
             return Err(AutoArmRefusal::BudgetExceeded);
         }

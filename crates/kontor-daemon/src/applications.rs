@@ -2392,66 +2392,17 @@ impl Services {
 
     /// The bounds an arming grant is taken under.
     ///
-    /// Absent bounds default from the epic's **pinned** work profile, which is
-    /// read from a task's frozen workflow snapshot rather than from the profile
-    /// catalog: the snapshot is what every gate and closure check in that epic
-    /// is already judged against, and a later profile revision must not silently
-    /// re-grade a grant.
-    ///
-    /// Supplied bounds may only narrow. `BudgetBounds::within` is the same
-    /// comparison the rest of the system uses, so a caller cannot arm wider than
-    /// the profile allows by routing around a different check — and it refuses a
-    /// cross-currency cost outright rather than comparing two currencies.
+    /// Omitted means no per-run ceiling. Quota headroom and capacity govern.
+    /// Stated bounds are stored as stated after positive-value validation; they
+    /// do not have to sit inside the pinned profile's `budget_defaults`.
     fn armed_budget(
         &self,
-        project_id: ProjectId,
-        epic_id: MiniProjectId,
         requested: Option<&BudgetBoundsRequest>,
     ) -> Result<kontor_core::spec::BudgetBounds, ApiError> {
-        let state = self.state()?;
-        // Every task in an epic pins the same profile revision — `ensure_workflow`
-        // refuses an epic that re-applies with a different one — so the first
-        // task carrying an active workflow answers for the epic.
-        let tasks = state
-            .with_store(|store| store.list_epic_tasks(project_id, epic_id))
-            .map_err(|error| self.refuse(&error))?;
-        let mut defaults = None;
-        for task in &tasks {
-            if let Some(workflow) = state
-                .with_store(|store| store.get_active_task_workflow(project_id, task.id))
-                .map_err(|error| self.refuse(&error))?
-            {
-                defaults = Some(workflow.snapshot.definition.budget_defaults);
-                break;
-            }
+        match requested {
+            None => Ok(kontor_core::spec::BudgetBounds::unconstrained()),
+            Some(requested) => self.budget_of(requested),
         }
-        let Some(defaults) = defaults else {
-            // Nothing to default from. A caller that stated its own bounds is
-            // still served; one that did not is told what is missing rather than
-            // handed a number this endpoint invented.
-            return match requested {
-                Some(requested) => self.budget_of(requested),
-                None => Err(self.deny(
-                    ApiErrorCode::NotFound,
-                    "this epic pins no work profile to default the budget from; state the bounds                      explicitly or apply the epic graph first",
-                )),
-            };
-        };
-        let Some(requested) = requested else {
-            return Ok(defaults);
-        };
-        let requested = self.budget_of(requested)?;
-        if !requested.within(&defaults) {
-            return Err(self
-                .deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "the stated budget is wider than the pinned work profile allows, or is in another                  currency; explicit bounds may only narrow the profile's defaults",
-                )
-                .advising(
-                    "omit budget on kontor_execution_arm to take the pinned work profile defaults; explicit bounds may only narrow",
-                ));
-        }
-        Ok(requested)
     }
 
     /// The window an arming decision actually takes.
@@ -6987,18 +6938,22 @@ fn authorization_dto(stored: &kontor_store::StoredAuthorization) -> Authorizatio
         allowed_start: stored.authorization.allowed_start.start,
         allowed_end: stored.authorization.allowed_start.end,
         max_concurrency: stored.authorization.max_concurrency,
-        budget: BudgetBoundsDto {
-            max_tokens: stored.authorization.budget.max_tokens,
-            max_commands: stored.authorization.budget.max_commands,
-            max_duration_seconds: stored.authorization.budget.max_duration_seconds,
-            max_cost_minor_units: stored.authorization.budget.max_cost.minor_units,
-            cost_currency: stored
-                .authorization
-                .budget
-                .max_cost
-                .currency
-                .as_str()
-                .to_owned(),
+        budget: if stored.authorization.budget.is_unconstrained() {
+            None
+        } else {
+            Some(BudgetBoundsDto {
+                max_tokens: stored.authorization.budget.max_tokens,
+                max_commands: stored.authorization.budget.max_commands,
+                max_duration_seconds: stored.authorization.budget.max_duration_seconds,
+                max_cost_minor_units: stored.authorization.budget.max_cost.minor_units,
+                cost_currency: stored
+                    .authorization
+                    .budget
+                    .max_cost
+                    .currency
+                    .as_str()
+                    .to_owned(),
+            })
         },
         revoked_at: stored
             .revocation
@@ -14465,31 +14420,33 @@ impl ApplicationOperations for Services {
                 )
             })?;
 
-        let budget = self.armed_budget(project_id, epic_id, request.budget.as_ref())?;
+        let budget = self.armed_budget(request.budget.as_ref())?;
         let window = self.armed_window(request)?;
         let max_concurrency = request
             .max_concurrency
             .unwrap_or(self.capacity.mission_max_in_flight);
-        // The *resolved* grant is in the intent, not the request's optional
-        // shape. A replay must converge on what was actually authorized, so a
-        // second call that omits the budget and one that restates the same
-        // numbers are the same command — while one that narrows them differently
-        // is a conflict rather than a replay of the first.
-        let intent = self.intent(&serde_json::json!({
+        // Omitted budget hashes as `null`, not as the unconstrained sentinel
+        // numbers. Restating explicit bounds is a different command.
+        let mut intent_body = serde_json::json!({
             "schema_version": 1,
             "operation": "execution_arm",
             "tasks": request.tasks.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "allowed_start": window.start.to_string(),
             "allowed_end": window.end.to_string(),
             "max_concurrency": max_concurrency,
-            "max_tokens": budget.max_tokens,
-            "max_commands": budget.max_commands,
-            "max_duration_seconds": budget.max_duration_seconds,
-            "max_cost_minor_units": budget.max_cost.minor_units,
-            "cost_currency": budget.max_cost.currency.as_str(),
             "granted_by": request.granted_by.to_string(),
             "reason": request.reason.as_str(),
-        }))?;
+        });
+        if budget.is_unconstrained() {
+            intent_body["budget"] = serde_json::Value::Null;
+        } else {
+            intent_body["max_tokens"] = budget.max_tokens.into();
+            intent_body["max_commands"] = budget.max_commands.into();
+            intent_body["max_duration_seconds"] = budget.max_duration_seconds.into();
+            intent_body["max_cost_minor_units"] = budget.max_cost.minor_units.into();
+            intent_body["cost_currency"] = budget.max_cost.currency.as_str().into();
+        }
+        let intent = self.intent(&intent_body)?;
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
         };
