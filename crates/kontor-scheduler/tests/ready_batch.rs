@@ -38,7 +38,7 @@ use kontor_scheduler::{
     CalendarPolicyEvidence, Candidate, CandidateDecision, CapacityConfig, CapacityLimitKind,
     CapacityObservation, CapacityUsage, ExternalOwnership, ExternalWorkEvidence, FleetPreflight,
     IntakeLineage, MAX_PRIORITY, Plan, PreflightOutcome, ReconciliationEvidence,
-    ReconciliationScope, RejectionCode, RuntimeAdmissionEvidence, RuntimeHealth,
+    ReconciliationScope, RejectionCode, RejectionEvidence, RuntimeAdmissionEvidence, RuntimeHealth,
     SchedulingSnapshot, TaskOrigin, WorktreeClaim, WorktreeVerification, explain,
     minimum_launch_capabilities, plan,
 };
@@ -1427,6 +1427,124 @@ fn narrowing_the_window_below_the_work_in_flight_cancels_nothing() {
             .iter()
             .all(|decision| decision.rejection_code() == Some(RejectionCode::CapacityExhausted))
     );
+}
+
+// ---------------------------------------------------------------------------
+// The Operational seven-run ceiling (OP-REQ-032 / EVD-OP-012)
+// ---------------------------------------------------------------------------
+
+/// One pass of the Operational MiniProject Concurrency Ceiling, on the
+/// deployment's own numbers: a fresh adaptive window of four, a mission ceiling
+/// of seven, and a growth step of one.
+///
+/// The window width is an *input* here, not a derivation. The daemon persists it
+/// and advances it through `kontor_accounts::fold`, which widens the window by
+/// exactly one step only on the second of two distinct clean observations — that
+/// two-reading gate is `fold`'s, proven in its own crate. This test proves the
+/// admission arithmetic that rests on top: what a pass admits at each width, and
+/// where the eighth run stops.
+#[test]
+fn the_operational_seven_run_ceiling_admits_four_through_seven_and_refuses_the_eighth() {
+    let project = ProjectId::generate();
+    let mission = MiniProjectId::generate();
+    let config = AdaptiveWindowConfig {
+        initial: 4,
+        floor: 1,
+        ceiling: 7,
+        growth_step: 1,
+    };
+
+    // Eight ready candidates in one mission, ordered by descending priority so
+    // the admitted set is the first N and not wherever the ids happened to fall.
+    let mut pool: Vec<Candidate> = (0..8)
+        .map(|index| {
+            let mut candidate = candidate(project, TaskId::generate());
+            candidate.priority = u32::try_from(900 - index).expect("in range");
+            candidate.mini_project_id = Some(mission);
+            candidate
+        })
+        .collect();
+
+    // One pass against the operational ceilings: mission seven, adaptive window
+    // at `window`, the already-admitted tasks held out of the candidate set as
+    // in-flight work, and `mission_used` of the mission ceiling already spent.
+    let pass = |window: AdaptiveWindow,
+                candidates: Vec<Candidate>,
+                in_flight: &BTreeSet<TaskId>,
+                mission_used: u32|
+     -> SchedulingSnapshot {
+        let mut snapshot = snapshot(candidates);
+        snapshot.capacity.mission_max_in_flight = 7;
+        snapshot.capacity.adaptive = config;
+        snapshot.adaptive_window = window;
+        snapshot.in_flight_tasks = in_flight.clone();
+        snapshot
+            .usage
+            .mission_in_flight
+            .insert(mission, mission_used);
+        snapshot
+    };
+
+    let mut in_flight = BTreeSet::new();
+    let mut window = AdaptiveWindow::start(config);
+
+    // The four-way start: a fresh window admits exactly four.
+    let first_batch: Vec<Candidate> = pool.drain(..4).collect();
+    let decided = plan(&pass(window, first_batch, &in_flight, 0)).expect("the pass runs");
+    assert_eq!(decided.admitted_count(), 4, "the seeded window admits four");
+    for admitted in decided.batch() {
+        in_flight.insert(admitted.task_id);
+    }
+
+    // Five, six, seven: one newly eligible candidate per growth pass, admitted
+    // only once the persisted window has widened by one more step.
+    let mut mission_used = 4_u32;
+    for expected in [5_u32, 6, 7] {
+        window = window.observe(config, CapacityObservation::Clean);
+        assert_eq!(
+            window.current(),
+            expected,
+            "one fold widens the window by exactly one step"
+        );
+        let next = pool.remove(0);
+        let next_task = next.task_id;
+        let decided =
+            plan(&pass(window, vec![next], &in_flight, mission_used)).expect("the pass runs");
+        assert_eq!(
+            decided.admitted_count(),
+            1,
+            "pass {expected} admits exactly the newly eligible candidate"
+        );
+        assert_admitted(&decided, next_task);
+        in_flight.insert(next_task);
+        mission_used = expected;
+    }
+
+    // The eighth is refused at the mission ceiling, and the record names the
+    // ceiling that bound it with zero headroom left.
+    let eighth = pool.remove(0);
+    let eighth_task = eighth.task_id;
+    let decided =
+        plan(&pass(window, vec![eighth], &in_flight, mission_used)).expect("the pass runs");
+    assert_eq!(
+        decided.admitted_count(),
+        0,
+        "seven is the ceiling, not eight"
+    );
+    assert_refused(&decided, eighth_task, RejectionCode::CapacityExhausted);
+    match decision_for(&decided, eighth_task) {
+        CandidateDecision::Reject { evidence, .. } => assert!(
+            evidence.iter().any(|item| matches!(
+                item,
+                RejectionEvidence::Capacity {
+                    limit: CapacityLimitKind::Mission,
+                    remaining: 0,
+                }
+            )),
+            "the eighth refusal must name the mission ceiling at zero, got {evidence:?}"
+        ),
+        CandidateDecision::Admit(_) => panic!("the eighth candidate must be refused"),
+    }
 }
 
 // ---------------------------------------------------------------------------
