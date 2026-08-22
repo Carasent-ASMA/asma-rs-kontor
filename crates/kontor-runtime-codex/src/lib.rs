@@ -34,10 +34,14 @@
 //!   about the process table is a count rather than an inference.
 //! * [`adapter`] — account isolation, admission, workspace verification, process
 //!   evidence and session content.
+//! * [`usage`] — the pre-flight quota probe. The one module here that reads a
+//!   credential, and fenced accordingly; see its own documentation for why the
+//!   adapter's "never opens `auth.json`" rule is a rule about the launch path.
 
 pub mod adapter;
 pub mod client;
 pub mod fixture;
+pub mod usage;
 pub mod wire;
 
 pub use adapter::{
@@ -50,6 +54,10 @@ pub use client::{
     EXEC_ROUTE, PreparedCommand,
 };
 pub use fixture::{CodexDispatch, CodexScript, RecordedCodex};
+pub use usage::{
+    AUTH_FILE_NAME, CodexLiveUsageProbe, CodexRateLimits, CodexUsage, CodexUsageProbe,
+    CodexUsageToken, CodexWindow, ObservedHeadroom, USAGE_ENDPOINT, classify_usage,
+};
 pub use wire::{
     CODEX_EXEC_SCHEMA, CODEX_HOME, CodexEnding, CodexFrame, CodexHomeMarker, MARKER_FILE_NAME,
     MARKER_SCHEMA_VERSION,

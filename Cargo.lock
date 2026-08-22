@@ -3301,11 +3301,14 @@ dependencies = [
  "kontor-core",
  "kontor-runtime",
  "kontor-tests-contract",
+ "reqwest",
  "secrecy",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]

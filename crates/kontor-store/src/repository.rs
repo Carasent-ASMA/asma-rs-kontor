@@ -37,6 +37,7 @@ use kontor_core::open_question::{
     AmbiguityRound, Disposition, DispositionKind, DispositionOutcome, OpenQuestion,
     OpenQuestionAttachment, OpenQuestionSummary, QuestionScope, TriggerFiring,
 };
+use kontor_core::quota::{CreditBalance, QuotaWindow, QuotaWindowKind};
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
     AggregateRef, CommandKind, CommandOutboxEntry, CommandReceipt, ReceiptAuthority,
@@ -87,7 +88,7 @@ use kontor_core::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
     StatusTransitionReceipt, TicketFieldSpec, TicketSyncProjection,
 };
-use rusqlite::{OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -5273,8 +5274,15 @@ const AVAILABILITY_OVERRIDE_COLUMNS: &str = "project_id, account_profile_id, ava
     expires_at, revision, updated_at";
 
 const PROVIDER_QUOTA_STATE_COLUMNS: &str = "project_id, account_profile_id, provider, state, \
-    resets_at, evidence_hash, source, observed_at, revision, updated_at";
+    resets_at, evidence_hash, source, observed_at, revision, updated_at, credit_minor_units, \
+    credit_reserve_minor_units, credit_currency";
 
+/// The window set for one pair, ordered by kind so a stored row and a re-read of
+/// it are byte-identical.
+const PROVIDER_QUOTA_WINDOW_COLUMNS: &str = "kind, resets_at, used_percent";
+
+/// Read one header row. `windows` is filled by the caller, which holds the
+/// connection the set has to be read through.
 fn read_provider_quota_state(row: &Row<'_>) -> RepositoryResult<ProviderQuotaState> {
     let resets_at: Option<String> = row.get(4).map_err(backend)?;
     Ok(ProviderQuotaState {
@@ -5283,12 +5291,88 @@ fn read_provider_quota_state(row: &Row<'_>) -> RepositoryResult<ProviderQuotaSta
         provider: row.get::<_, String>(2).map_err(backend)?,
         state: ProviderQuotaKind::parse(&row.get::<_, String>(3).map_err(backend)?)?,
         resets_at: resets_at.as_deref().map(read_timestamp).transpose()?,
+        windows: Vec::new(),
+        credit: read_credit_balance(row)?,
         evidence_hash: ContentHash::parse(&row.get::<_, String>(5).map_err(backend)?)?,
         source: ProviderQuotaSource::parse(&row.get::<_, String>(6).map_err(backend)?)?,
         observed_at: read_timestamp(&row.get::<_, String>(7).map_err(backend)?)?,
         revision: revision_of(row.get::<_, i64>(8).map_err(backend)?)?,
         updated_at: read_timestamp(&row.get::<_, String>(9).map_err(backend)?)?,
     })
+}
+
+/// The balance and its floor, which the schema keeps in one currency.
+///
+/// All three columns are null together or present together — a CHECK, not a
+/// convention — so a half-written balance is unreadable rather than silently
+/// defaulted to zero, which would refuse every launch on the provider.
+fn read_credit_balance(row: &Row<'_>) -> RepositoryResult<Option<CreditBalance>> {
+    let remaining: Option<i64> = row.get(10).map_err(backend)?;
+    let reserve: Option<i64> = row.get(11).map_err(backend)?;
+    let currency: Option<String> = row.get(12).map_err(backend)?;
+    let (Some(remaining), Some(reserve), Some(currency)) = (remaining, reserve, currency) else {
+        return Ok(None);
+    };
+    let currency = CurrencyCode::parse(&currency)?;
+    Ok(Some(CreditBalance {
+        remaining: Money {
+            minor_units: minor_units_of(remaining)?,
+            currency,
+        },
+        reserve: Money {
+            minor_units: minor_units_of(reserve)?,
+            currency,
+        },
+    }))
+}
+
+/// A non-negative minor-unit amount as the schema stores it.
+fn minor_units_of(stored: i64) -> RepositoryResult<u64> {
+    u64::try_from(stored).map_err(|_| {
+        RepositoryError::Domain(DomainError::invalid(
+            "CreditBalance",
+            "a stored minor-unit amount is negative",
+        ))
+    })
+}
+
+fn read_provider_quota_window(row: &Row<'_>) -> RepositoryResult<QuotaWindow> {
+    let used_percent: i64 = row.get(2).map_err(backend)?;
+    Ok(QuotaWindow {
+        kind: QuotaWindowKind::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        resets_at: read_timestamp(&row.get::<_, String>(1).map_err(backend)?)?,
+        used_percent: u8::try_from(used_percent).map_err(|_| {
+            RepositoryError::Domain(DomainError::invalid(
+                "QuotaWindow",
+                "a stored consumption share is not a percentage",
+            ))
+        })?,
+    })
+}
+
+/// Attach every window belonging to one already-read header row.
+fn attach_provider_quota_windows(
+    connection: &Connection,
+    state: &mut ProviderQuotaState,
+) -> RepositoryResult<()> {
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {PROVIDER_QUOTA_WINDOW_COLUMNS} FROM provider_quota_windows
+             WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3
+             ORDER BY kind"
+        ))
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![
+            state.project_id.to_string(),
+            state.account_profile_id.to_string(),
+            state.provider.as_str(),
+        ])
+        .map_err(backend)?;
+    while let Some(row) = rows.next().map_err(backend)? {
+        state.windows.push(read_provider_quota_window(row)?);
+    }
+    Ok(())
 }
 
 fn read_capacity_observation(row: &Row<'_>) -> RepositoryResult<CapacityObservation> {
@@ -5534,6 +5618,37 @@ impl CapacityRepository for SqliteStore {
                 "only an exhausted allowance carries a reset instant, and it must carry one",
             )));
         }
+        // One currency, two amounts — the schema's own rule, checked here so a
+        // caller gets a typed refusal naming it instead of a CHECK violation
+        // arriving as an opaque backend error. Rescaling is never the answer: a
+        // rate is a fact about a market at an instant, and a scheduling decision
+        // taken through one would move with the market rather than the account.
+        if let Some(credit) = request.credit
+            && credit.remaining.currency != credit.reserve.currency
+        {
+            return Err(RepositoryError::Domain(DomainError::invalid(
+                "CreditBalance",
+                "a balance and its reserve must be in one currency; they are never converted",
+            )));
+        }
+        // Two windows of one kind is not a richer reading, it is two readings
+        // one of which is stale. The primary key refuses the second write; this
+        // refuses the ambiguous request before it becomes one.
+        let mut kinds: Vec<QuotaWindowKind> = request.windows.iter().map(|w| w.kind).collect();
+        kinds.sort_unstable();
+        let duplicated = kinds.windows(2).any(|pair| pair[0] == pair[1]);
+        if duplicated {
+            return Err(RepositoryError::Domain(DomainError::invalid(
+                "ProviderQuotaState",
+                "one window kind may be observed only once per account and provider",
+            )));
+        }
+        if request.windows.iter().any(|w| w.used_percent > 100) {
+            return Err(RepositoryError::Domain(DomainError::invalid(
+                "QuotaWindow",
+                "a consumption share must be a percentage",
+            )));
+        }
         let transaction = self.begin()?;
         if read_account_profile_in(&transaction, request.project_id, request.account_profile_id)?
             .is_none()
@@ -5574,12 +5689,26 @@ impl CapacityRepository for SqliteStore {
                 AggregateRevision::INITIAL
             }
         };
+        // Reuses `money_columns`, so a balance is stored exactly the way every
+        // other monetary amount in this schema is.
+        let credit = request
+            .credit
+            .map(|credit| -> RepositoryResult<(i64, i64, String)> {
+                let (remaining, currency) = money_columns(credit.remaining)?;
+                let (reserve, _) = money_columns(credit.reserve)?;
+                Ok((remaining, reserve, currency))
+            })
+            .transpose()?;
+        let credit_remaining = credit.as_ref().map(|(remaining, _, _)| *remaining);
+        let credit_reserve = credit.as_ref().map(|(_, reserve, _)| *reserve);
+        let credit_currency = credit.map(|(_, _, currency)| currency);
         transaction
             .execute(
                 "INSERT INTO provider_quota_states
                      (project_id, account_profile_id, provider, state, resets_at, evidence_hash,
-                      source, observed_at, revision, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                      source, observed_at, revision, updated_at, credit_minor_units,
+                      credit_reserve_minor_units, credit_currency)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT (project_id, account_profile_id, provider) DO UPDATE SET
                      state = excluded.state,
                      resets_at = excluded.resets_at,
@@ -5587,7 +5716,10 @@ impl CapacityRepository for SqliteStore {
                      source = excluded.source,
                      observed_at = excluded.observed_at,
                      revision = excluded.revision,
-                     updated_at = excluded.updated_at",
+                     updated_at = excluded.updated_at,
+                     credit_minor_units = excluded.credit_minor_units,
+                     credit_reserve_minor_units = excluded.credit_reserve_minor_units,
+                     credit_currency = excluded.credit_currency",
                 params![
                     request.project_id.to_string(),
                     request.account_profile_id.to_string(),
@@ -5599,10 +5731,44 @@ impl CapacityRepository for SqliteStore {
                     text(request.observed_at),
                     revision_column(next)?,
                     text(request.updated_at),
+                    credit_remaining,
+                    credit_reserve,
+                    credit_currency,
                 ],
             )
             .map_err(backend)?;
-        let stored = transaction
+        // The window set is replaced wholesale, never merged. A collector reports
+        // what a provider holds *now*; a merge would keep a window the provider
+        // has stopped offering and let a scheduler route on it forever.
+        transaction
+            .execute(
+                "DELETE FROM provider_quota_windows
+                 WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3",
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    request.provider.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        for window in &request.windows {
+            transaction
+                .execute(
+                    "INSERT INTO provider_quota_windows
+                         (project_id, account_profile_id, provider, kind, resets_at, used_percent)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        request.project_id.to_string(),
+                        request.account_profile_id.to_string(),
+                        request.provider.as_str(),
+                        window.kind.as_str(),
+                        text(window.resets_at),
+                        i64::from(window.used_percent),
+                    ],
+                )
+                .map_err(backend)?;
+        }
+        let mut stored = transaction
             .query_row(
                 &format!(
                     "SELECT {PROVIDER_QUOTA_STATE_COLUMNS} FROM provider_quota_states
@@ -5616,6 +5782,7 @@ impl CapacityRepository for SqliteStore {
                 |row| Ok(read_provider_quota_state(row)),
             )
             .map_err(backend)??;
+        attach_provider_quota_windows(&transaction, &mut stored)?;
         transaction.commit().map_err(backend)?;
         Ok(stored)
     }
@@ -5637,6 +5804,12 @@ impl CapacityRepository for SqliteStore {
         let mut states = Vec::new();
         while let Some(row) = rows.next().map_err(backend)? {
             states.push(read_provider_quota_state(row)?);
+        }
+        // Attached after the header scan rather than inside it: the window read
+        // needs the same connection, and SQLite will not run a second statement
+        // while these rows are still being walked.
+        for state in &mut states {
+            attach_provider_quota_windows(&self.connection, state)?;
         }
         Ok(states)
     }

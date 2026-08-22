@@ -106,6 +106,10 @@ pub const DEFAULT_CAPACITY: CapacityConfig = CapacityConfig {
         ceiling: 7,
         growth_step: 1,
     },
+    // No headroom policy by default: this constant exists to preserve what
+    // existing callers already admitted, and inventing a window threshold here
+    // would change every one of them.
+    headroom: None,
 };
 
 /// Why a daemon could not start.

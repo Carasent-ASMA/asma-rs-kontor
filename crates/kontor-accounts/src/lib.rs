@@ -52,6 +52,7 @@
 mod admission;
 mod capacity;
 mod launch;
+mod pin;
 mod profile;
 mod quota;
 mod resolver;
@@ -67,6 +68,7 @@ pub use launch::{
     FailoverOutcome, FailoverReason, FailoverRefusal, FailoverRequest, LaunchAdmissionRequest,
     LaunchRefusal, MAX_OBSERVATION_AGE_SECONDS, admit_pinned_launch, fail_over_to_new_run,
 };
+pub use pin::{SELECTABLE_PROVIDERS_KEY, eligible_accounts, selectable_providers};
 pub use profile::{
     AccountEnvironmentMap, AccountError, AccountProfileDraft, AccountService, ENVIRONMENT_SCHEMA,
 };

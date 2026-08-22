@@ -709,6 +709,9 @@ fn snapshot(
             provider_max_in_flight: 16,
             runtime_max_in_flight: 16,
             adaptive: adaptive(),
+
+            // No headroom policy: these fixtures judge the in-flight ceilings.
+            headroom: None,
         },
         adaptive_window: AdaptiveWindow::start(adaptive()),
         freshness: jiff::SignedDuration::from_secs(120),

@@ -107,6 +107,10 @@ fn wide_capacity() -> CapacityConfig {
             ceiling: 50,
             growth_step: 1,
         },
+        // These fixtures exercise the in-flight ceilings. `None` is what a realm
+        // that declared no headroom policy holds, so they judge what they did
+        // before.
+        headroom: None,
     }
 }
 

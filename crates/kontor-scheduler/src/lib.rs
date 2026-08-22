@@ -54,6 +54,7 @@
 //!   this crate.
 
 pub mod completion;
+pub mod headroom;
 pub mod model;
 pub mod ready;
 
@@ -66,6 +67,7 @@ pub use completion::{
     RepositoryOutcome, SignalDelivery, advance, blockers, compile, operational_default,
     outstanding, start,
 };
+pub use headroom::{EligibleAccount, HeadroomConfig, Placement, SeatClass, WaitReason, resolve};
 pub use model::{
     AccountAdmissionEvidence, AccountCapabilityKey, AccountPin, AdaptiveWindow,
     AdaptiveWindowConfig, AdmissionEventId, AdmittedCandidate, AuthorizationEvidence,

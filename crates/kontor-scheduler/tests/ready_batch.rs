@@ -110,6 +110,10 @@ fn wide_capacity() -> CapacityConfig {
             ceiling: 100,
             growth_step: 1,
         },
+        // These fixtures exercise the in-flight ceilings, not provider headroom.
+        // `None` is what a realm that declared no headroom policy actually holds,
+        // so the batch tests keep judging exactly what they judged before.
+        headroom: None,
     }
 }
 

@@ -1171,11 +1171,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::U32,
                 "How many runs may be in flight.",
             ),
-            req(
+            opt(
                 "budget",
                 Place::Body,
                 ArgType::Object(BUDGET_BOUNDS),
-                "The token, command, duration and cost bounds.",
+                "The token, command, duration and cost bounds. Omitted takes the pinned work \
+                 profile's defaults; supplied bounds may only narrow them.",
             ),
             req(
                 "granted_by",

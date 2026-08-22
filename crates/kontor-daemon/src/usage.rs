@@ -353,12 +353,18 @@ fn record(state: &ApiState, profile: &AccountProfile, reading: &UsageReading) ->
         None => kontor_core::id::AggregateRevision::INITIAL,
     };
 
+    // ponytail: empty windows/credit. This is #82's poller; it still owns the
+    // scheduled collection. Headroom routing reads the header row until a later
+    // increment maps UsageReading's primary window through this same writer —
+    // a second HTTP collector would duplicate it.
     let request = NewProviderQuotaState {
         project_id: profile.project_id,
         account_profile_id: profile.id,
         provider: observed.provider.clone(),
         state: observed.kind,
         resets_at: observed.resets_at,
+        windows: Vec::new(),
+        credit: None,
         evidence_hash: evidence,
         source: ProviderQuotaSource::ProviderReport,
         observed_at: now,

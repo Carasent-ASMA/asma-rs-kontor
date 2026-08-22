@@ -1074,6 +1074,9 @@ fn auto_armed_work_still_faces_every_ordinary_blocker() {
                     ceiling: 10,
                     growth_step: 1,
                 },
+
+                // No headroom policy: these fixtures judge the in-flight ceilings.
+                headroom: None,
             },
             adaptive_window: kontor_scheduler::model::AdaptiveWindow::start(
                 kontor_scheduler::model::AdaptiveWindowConfig {

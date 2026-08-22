@@ -1891,6 +1891,8 @@ fn only_an_exhausted_allowance_recovers_on_a_clock() {
         provider: "codex".to_owned(),
         state: kind,
         resets_at,
+        windows: Vec::new(),
+        credit: None,
         evidence_hash: ContentHash::of(b"evidence"),
         source: ProviderQuotaSource::RuntimeObservation,
         observed_at: at(1_000),
@@ -1913,6 +1915,20 @@ fn only_an_exhausted_allowance_recovers_on_a_clock() {
 
     // Unknown fails closed, the way account availability does.
     assert!(state(ProviderQuotaKind::Unknown, None).blocks_at(at(9_999_999)));
+
+    // `cannot_report` is the opposite instruction to `unknown`, not a synonym
+    // for it. Both describe an absence of numbers: `unknown` means *this reading
+    // failed*, and `cannot_report` means *this provider has no such number to
+    // give* — OpenRouter's `:free` routes under FND-005/DEC-001. Failing closed
+    // on the second retires a provider permanently on the strength of a figure
+    // it was never going to produce, so it is used reactively instead: run until
+    // it refuses, then record the reset it states.
+    assert!(
+        !state(ProviderQuotaKind::CannotReport, None).blocks_at(at(9_999_999)),
+        "a provider that cannot report headroom is used, not retired"
+    );
+    assert!(ProviderQuotaKind::CannotReport.is_usable());
+    assert!(!ProviderQuotaKind::Unknown.is_usable());
 }
 
 // ---------------------------------------------------------------------------

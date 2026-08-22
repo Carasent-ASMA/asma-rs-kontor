@@ -688,6 +688,17 @@ pub struct CapacityConfig {
     pub runtime_max_in_flight: u32,
     /// How the adaptive window moves.
     pub adaptive: AdaptiveWindowConfig,
+    /// The provider-headroom policy, when this deployment has declared one.
+    ///
+    /// `None` is not a permissive default dressed up as absence — it is the
+    /// honest state of a realm configured before OP-REQ-042 existed, and a
+    /// stored ceilings document written then must keep parsing rather than
+    /// bricking the realm on upgrade. Selection then falls back to
+    /// [`crate::headroom::HeadroomConfig::state_only`], which gates on the
+    /// recorded provider state exactly as it did before and adds no window
+    /// threshold nobody chose.
+    #[serde(default)]
+    pub headroom: Option<crate::headroom::HeadroomConfig>,
 }
 
 impl CapacityConfig {
@@ -711,6 +722,9 @@ impl CapacityConfig {
                 "CapacityConfig",
                 "every ceiling must be positive",
             ));
+        }
+        if let Some(headroom) = self.headroom {
+            headroom.validate()?;
         }
         self.adaptive.validate()
     }

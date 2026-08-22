@@ -34,12 +34,13 @@ use kontor_api::applications::{
     AmendAccountProfileRequest,
     AbandonRunRequest, AbandonedRunDto, AccountProfileDto, ApplicationOperations, AppliedDto,
     AppliedEpicDto, AppliedLinkDto, AppliedTaskDto, ApplyEpicRequest, ArmRequest,
-    AuthorizationProjectionDto, BlockedTaskDto, DisarmRequest, EnsureAccountProfileRequest,
-    EnsureProjectRequest, EpicExecutionScopeDto, EpicImportStateDto, EpicProjectionDto,
-    EpicTaskProjectionDto, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto,
+    AuthorizationProjectionDto, BlockedTaskDto, BudgetBoundsDto, BudgetBoundsRequest,
+    CreditBalanceDto, DisarmRequest, EnsureAccountProfileRequest, EnsureProjectRequest,
+    EpicExecutionScopeDto, EpicImportStateDto, EpicProjectionDto, EpicTaskProjectionDto,
+    HeadroomCeilingsDto, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto,
     PreviewEpicDto, PreviewEpicTaskDto, ProjectDto, ProviderQuotaStateDto,
-    PublishedTeamRevisionDto, ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto,
-    RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
+    PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest,
+    RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
     SeatProjectionDto, StartRequest, StartedSeatDto, TeamDraftDto, TeamDraftRequest,
     TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto, TeamsProjectionDto,
     WorkProfileCatalogDto,
@@ -181,6 +182,7 @@ use kontor_runtime::request::{
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::WorkspaceRoot;
+use kontor_scheduler::headroom::HeadroomConfig;
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
     AuthorizationEvidence, CalendarAdmission, Candidate, CandidateDecision, CapacityConfig,
@@ -2350,6 +2352,117 @@ impl Services {
                     "no such epic exists in this project",
                 )
             })
+    }
+
+    /// The bounds an arming grant is taken under.
+    ///
+    /// Absent bounds default from the epic's **pinned** work profile, which is
+    /// read from a task's frozen workflow snapshot rather than from the profile
+    /// catalog: the snapshot is what every gate and closure check in that epic
+    /// is already judged against, and a later profile revision must not silently
+    /// re-grade a grant.
+    ///
+    /// Supplied bounds may only narrow. `BudgetBounds::within` is the same
+    /// comparison the rest of the system uses, so a caller cannot arm wider than
+    /// the profile allows by routing around a different check — and it refuses a
+    /// cross-currency cost outright rather than comparing two currencies.
+    fn armed_budget(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        requested: Option<&BudgetBoundsRequest>,
+    ) -> Result<kontor_core::spec::BudgetBounds, ApiError> {
+        let state = self.state()?;
+        // Every task in an epic pins the same profile revision — `ensure_workflow`
+        // refuses an epic that re-applies with a different one — so the first
+        // task carrying an active workflow answers for the epic.
+        let tasks = state
+            .with_store(|store| store.list_epic_tasks(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?;
+        let mut defaults = None;
+        for task in &tasks {
+            if let Some(workflow) = state
+                .with_store(|store| store.get_active_task_workflow(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?
+            {
+                defaults = Some(workflow.snapshot.definition.budget_defaults);
+                break;
+            }
+        }
+        let Some(defaults) = defaults else {
+            // Nothing to default from. A caller that stated its own bounds is
+            // still served; one that did not is told what is missing rather than
+            // handed a number this endpoint invented.
+            return match requested {
+                Some(requested) => self.budget_of(requested),
+                None => Err(self.deny(
+                    ApiErrorCode::NotFound,
+                    "this epic pins no work profile to default the budget from; state the bounds                      explicitly or apply the epic graph first",
+                )),
+            };
+        };
+        let Some(requested) = requested else {
+            return Ok(defaults);
+        };
+        let requested = self.budget_of(requested)?;
+        if !requested.within(&defaults) {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the stated budget is wider than the pinned work profile allows, or is in another                  currency; explicit bounds may only narrow the profile's defaults",
+            ));
+        }
+        Ok(requested)
+    }
+
+    /// One wire budget as the domain type, validated.
+    fn budget_of(
+        &self,
+        requested: &BudgetBoundsRequest,
+    ) -> Result<kontor_core::spec::BudgetBounds, ApiError> {
+        let budget = kontor_core::spec::BudgetBounds {
+            max_tokens: requested.max_tokens,
+            max_commands: requested.max_commands,
+            max_duration_seconds: requested.max_duration_seconds,
+            max_cost: Money {
+                minor_units: requested.max_cost_minor_units,
+                currency: CurrencyCode::parse(&requested.cost_currency)
+                    .map_err(|error| self.refuse_domain(&error))?,
+            },
+        };
+        budget
+            .validate()
+            .map_err(|error| self.refuse_domain(&error))?;
+        Ok(budget)
+    }
+
+    /// Every account a launch may still be resolved across, in the shape the
+    /// rung walk takes.
+    ///
+    /// The governed pin lives in each profile's immutable `routing` document, so
+    /// an account is addressable per provider only where a deployment said so.
+    /// A malformed pin is a refusal rather than an empty set: the two differ by
+    /// whether the account is routable at all, and quietly choosing the safer
+    /// reading hides a typo an operator needs to see.
+    fn eligible_accounts(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<kontor_scheduler::headroom::EligibleAccount>, ApiError> {
+        let profiles = self
+            .state()?
+            .with_store(|store| store.list_account_profiles(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        kontor_accounts::eligible_accounts(&profiles).map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// The headroom policy in force, or the state-only fallback.
+    ///
+    /// A realm configured before OP-REQ-042 has no policy, and that is not a
+    /// reason to invent a window threshold for it — `state_only` gates on the
+    /// recorded provider state exactly as this realm already did.
+    fn headroom_policy(&self) -> HeadroomConfig {
+        self.capacity
+            .headroom
+            .unwrap_or_else(HeadroomConfig::state_only)
     }
 
     /// Whether this key has already recorded *this exact* request.
@@ -6767,6 +6880,19 @@ fn authorization_dto(stored: &kontor_store::StoredAuthorization) -> Authorizatio
         allowed_start: stored.authorization.allowed_start.start,
         allowed_end: stored.authorization.allowed_start.end,
         max_concurrency: stored.authorization.max_concurrency,
+        budget: BudgetBoundsDto {
+            max_tokens: stored.authorization.budget.max_tokens,
+            max_commands: stored.authorization.budget.max_commands,
+            max_duration_seconds: stored.authorization.budget.max_duration_seconds,
+            max_cost_minor_units: stored.authorization.budget.max_cost.minor_units,
+            cost_currency: stored
+                .authorization
+                .budget
+                .max_cost
+                .currency
+                .as_str()
+                .to_owned(),
+        },
         revoked_at: stored
             .revocation
             .as_ref()
@@ -6959,30 +7085,36 @@ fn freeze_seat_autonomy(
 struct QuotaOutlook<'a> {
     states: &'a [kontor_core::repository::ProviderQuotaState],
     /// The account the run is pinned to, when it is pinned to one.
+    ///
+    /// A pin is the run's, not the resolver's. When it is present the walk
+    /// considers that account alone, because `admit_pinned_launch` refuses a
+    /// launch naming any other one — resolving to a second account here would
+    /// only produce a placement dispatch then throws away.
     account: Option<AccountProfileId>,
+    /// Every account a launch may still be resolved across, with the provider
+    /// aliases each one is addressable under. Empty for a pinned run.
+    accounts: &'a [kontor_scheduler::headroom::EligibleAccount],
+    /// The declared headroom policy, or the state-only fallback when a realm has
+    /// declared none.
+    headroom: HeadroomConfig,
     now: Timestamp,
 }
 
 impl QuotaOutlook<'_> {
-    /// Whether a recorded state holds this provider back right now.
+    /// The accounts this launch may be placed on.
     ///
-    /// Absence permits: no row is not the same fact as
-    /// [`kontor_core::spec::ProviderQuotaKind::Unknown`], which is an explicit
-    /// refusal, and blocking on absence would stop every launch in a realm that
-    /// has never recorded a state.
-    ///
-    /// `all`, not `any`: one exhausted account does not exhaust a provider that
-    /// another account can still serve. The realm holds a single account profile
-    /// today so the two coincide, but `any` would silently become wrong the
-    /// moment a second one is registered.
-    fn blocks(&self, provider: &str) -> bool {
-        let mut relevant = self
-            .states
-            .iter()
-            .filter(|entry| entry.provider == provider)
-            .filter(|entry| self.account.is_none_or(|id| entry.account_profile_id == id))
-            .peekable();
-        relevant.peek().is_some() && relevant.all(|entry| entry.blocks_at(self.now))
+    /// A pinned run yields exactly its pin. The pin carries no provider aliases
+    /// of its own here, so every rung's provider is considered for it: the
+    /// governed alias set narrows *which account* a launch may move to, and a
+    /// run that is already pinned is not moving.
+    fn candidates(&self, rungs: &[ModelRung]) -> Vec<kontor_scheduler::headroom::EligibleAccount> {
+        match self.account {
+            Some(account_profile_id) => vec![kontor_scheduler::headroom::EligibleAccount {
+                account_profile_id,
+                selectable_providers: rungs.iter().map(|rung| rung.provider.0.clone()).collect(),
+            }],
+            None => self.accounts.to_vec(),
+        }
     }
 }
 
@@ -6999,26 +7131,48 @@ fn freeze_seat_model_rung(
         .ok_or_else(|| {
             kontor_core::DomainError::invalid("TeamRunSnapshot", "the role slot has no model route")
         })?;
-    Ok(chain
-        .rungs
-        .iter()
-        .find(|rung| {
-            adapter.provider_available(rung.provider.0.as_str())
-                && !quota.blocks(rung.provider.0.as_str())
-        })
-        .cloned()
-        .or_else(|| {
-            chain
-                .rungs
-                .iter()
-                .find_map(|rung| adapter.fallback_model_rung(rung))
-                .filter(|fallback| !quota.blocks(fallback.provider.0.as_str()))
-        })
-        // Preserve the frozen primary when every route is temporarily
-        // unavailable. The adapter then returns the typed provider-outage
-        // refusal; inventing a different model here would weaken the template.
-        .or_else(|| chain.rungs.first().cloned())
-        .expect("a validated model chain is non-empty"))
+    // Account before rung. The walk exhausts every account eligible for the
+    // current rung before taking the next one, because a second account on the
+    // same rung costs nothing while descending costs quality on every turn that
+    // follows. This is also what makes rungs three and four reachable: the
+    // previous selection took the first clear rung and otherwise fell back to
+    // the frozen primary, so a four-rung chain had two useful entries.
+    let candidates = quota.candidates(&chain.rungs);
+    let placement = kontor_scheduler::headroom::resolve(
+        &chain.rungs,
+        &candidates,
+        quota.states,
+        &quota.headroom,
+        // These are delivery seats by construction: each of this function's
+        // callers launches task work under a TeamRun. An epic's control seats
+        // live on its ECP and are created without a task or a TeamRun, so they
+        // do not pass through here. The reserve is what holds headroom open for
+        // them, and subtracting it from delivery is how that is done.
+        kontor_scheduler::headroom::SeatClass::Delivery,
+        quota.now,
+        |provider| adapter.provider_available(provider),
+    )?;
+    Ok(match placement {
+        kontor_scheduler::headroom::Placement::Admit { rung, .. } => rung,
+        // Nothing is admissible. Preserve master's refusal shape rather than
+        // inventing a route: an adapter-declared fallback if one is clear, and
+        // otherwise the frozen primary, so the adapter emits its own typed
+        // provider-outage refusal. Deciding here to descend anyway is exactly
+        // what a near reset must not cause, and substituting a model the
+        // template never declared would weaken the template.
+        //
+        // ponytail: the wait instant and the escalation payload are computed and
+        // then dropped on this path, because this function's contract is to
+        // return a rung. Parking the work on them needs a launch path that can
+        // hold a seat instead of routing it — see the handoff's open risks.
+        kontor_scheduler::headroom::Placement::Wait { .. }
+        | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => chain
+            .rungs
+            .iter()
+            .find_map(|rung| adapter.fallback_model_rung(rung))
+            .or_else(|| chain.rungs.first().cloned())
+            .expect("a validated model chain is non-empty"),
+    })
 }
 
 fn parse_runtime_model_route(
@@ -7264,6 +7418,15 @@ fn ceilings_dto(config: CapacityConfig) -> CapacityCeilingsDto {
             ceiling: config.adaptive.ceiling,
             growth_step: config.adaptive.growth_step,
         },
+        headroom: config.headroom.map(|headroom| HeadroomCeilingsDto {
+            session_percent: headroom.thresholds.session_percent,
+            daily_percent: headroom.thresholds.daily_percent,
+            weekly_percent: headroom.thresholds.weekly_percent,
+            monthly_percent: headroom.thresholds.monthly_percent,
+            control_plane_reserve_percent: headroom.control_plane_reserve_percent,
+            short_horizon_seconds: headroom.short_horizon_seconds,
+            escalation_horizon_seconds: headroom.escalation_horizon_seconds,
+        }),
     }
 }
 
@@ -7286,6 +7449,17 @@ fn capacity_config(ceilings: &CapacityCeilingsDto) -> CapacityConfig {
             ceiling: ceilings.adaptive.ceiling,
             growth_step: ceilings.adaptive.growth_step,
         },
+        headroom: ceilings.headroom.map(|headroom| HeadroomConfig {
+            thresholds: kontor_core::quota::HeadroomThresholds {
+                session_percent: headroom.session_percent,
+                daily_percent: headroom.daily_percent,
+                weekly_percent: headroom.weekly_percent,
+                monthly_percent: headroom.monthly_percent,
+            },
+            control_plane_reserve_percent: headroom.control_plane_reserve_percent,
+            short_horizon_seconds: headroom.short_horizon_seconds,
+            escalation_horizon_seconds: headroom.escalation_horizon_seconds,
+        }),
     }
 }
 
@@ -7731,8 +7905,57 @@ fn provider_quota_state_dto(
         source: entry.source.as_str().to_owned(),
         observed_at: entry.observed_at.to_string(),
         blocking: entry.blocks_at(now),
+        windows: entry.windows().iter().map(quota_window_dto).collect(),
+        credit: entry.credit.map(credit_balance_dto),
         revision: entry.revision,
     }
+}
+
+fn quota_window_dto(window: &kontor_core::quota::QuotaWindow) -> QuotaWindowDto {
+    QuotaWindowDto {
+        kind: window.kind.as_str().to_owned(),
+        resets_at: window.resets_at.to_string(),
+        used_percent: window.used_percent,
+    }
+}
+
+/// One currency on the wire, because the balance and its floor share one in the
+/// schema. A projection that offered two would be inviting the comparison the
+/// headroom predicate refuses.
+fn credit_balance_dto(credit: kontor_core::quota::CreditBalance) -> CreditBalanceDto {
+    CreditBalanceDto {
+        remaining_minor_units: credit.remaining.minor_units,
+        reserve_minor_units: credit.reserve.minor_units,
+        currency: credit.remaining.currency.as_str().to_owned(),
+    }
+}
+
+/// Read one window off the wire.
+fn quota_window_of(
+    dto: &QuotaWindowDto,
+) -> kontor_core::DomainResult<kontor_core::quota::QuotaWindow> {
+    Ok(kontor_core::quota::QuotaWindow {
+        kind: kontor_core::quota::QuotaWindowKind::parse(&dto.kind)?,
+        resets_at: kontor_core::id::parse_utc_timestamp(&dto.resets_at)?,
+        used_percent: dto.used_percent,
+    })
+}
+
+/// Read a balance off the wire, giving both amounts the one stated currency.
+fn credit_balance_of(
+    dto: &CreditBalanceDto,
+) -> kontor_core::DomainResult<kontor_core::quota::CreditBalance> {
+    let currency = kontor_core::id::CurrencyCode::parse(&dto.currency)?;
+    Ok(kontor_core::quota::CreditBalance {
+        remaining: Money {
+            minor_units: dto.remaining_minor_units,
+            currency,
+        },
+        reserve: Money {
+            minor_units: dto.reserve_minor_units,
+            currency,
+        },
+    })
 }
 
 fn resolved_policy(slots: &[TeamDraftSlotDto]) -> Vec<serde_json::Value> {
@@ -8841,6 +9064,21 @@ impl ApplicationOperations for Services {
             .map(kontor_core::id::parse_utc_timestamp)
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
+        let windows = request
+            .windows
+            .iter()
+            .map(quota_window_of)
+            .collect::<kontor_core::DomainResult<Vec<_>>>()
+            .map_err(|error| self.refuse_domain(&error))?;
+        let credit = request
+            .credit
+            .as_ref()
+            .map(credit_balance_of)
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+        // The windows and the balance are in the intent, so a second call under
+        // the same key reporting different headroom conflicts rather than
+        // replaying the first reading.
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "record_provider_quota",
@@ -8849,6 +9087,19 @@ impl ApplicationOperations for Services {
             "provider": request.provider.as_str(),
             "state": quota_state.as_str(),
             "resets_at": resets_at.map(|instant| instant.to_string()),
+            "windows": windows
+                .iter()
+                .map(|window: &kontor_core::quota::QuotaWindow| serde_json::json!({
+                    "kind": window.kind.as_str(),
+                    "resets_at": window.resets_at.to_string(),
+                    "used_percent": window.used_percent,
+                }))
+                .collect::<Vec<_>>(),
+            "credit": credit.map(|credit: kontor_core::quota::CreditBalance| serde_json::json!({
+                "remaining_minor_units": credit.remaining.minor_units,
+                "reserve_minor_units": credit.reserve.minor_units,
+                "currency": credit.remaining.currency.as_str(),
+            })),
         }))?;
         let replayed = self
             .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
@@ -8862,6 +9113,8 @@ impl ApplicationOperations for Services {
                         provider: request.provider.clone(),
                         state: quota_state,
                         resets_at,
+                        windows: windows.clone(),
+                        credit,
                         // The operator's own assertion is the evidence, so the
                         // intent digest is what a record can honestly cite. A
                         // parsed runtime message will cite the frame instead —
@@ -14098,9 +14351,12 @@ impl ApplicationOperations for Services {
                 )
             })?;
 
-        // The whole bounded grant is in the intent, so a second call under the
-        // same key with a wider window, a bigger budget or a different scope is a
-        // conflict rather than a replay of the narrow one.
+        let budget = self.armed_budget(project_id, epic_id, request.budget.as_ref())?;
+        // The *resolved* grant is in the intent, not the request's optional
+        // shape. A replay must converge on what was actually authorized, so a
+        // second call that omits the budget and one that restates the same
+        // numbers are the same command — while one that narrows them differently
+        // is a conflict rather than a replay of the first.
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "execution_arm",
@@ -14108,11 +14364,11 @@ impl ApplicationOperations for Services {
             "allowed_start": request.allowed_start.to_string(),
             "allowed_end": request.allowed_end.to_string(),
             "max_concurrency": request.max_concurrency,
-            "max_tokens": request.budget.max_tokens,
-            "max_commands": request.budget.max_commands,
-            "max_duration_seconds": request.budget.max_duration_seconds,
-            "max_cost_minor_units": request.budget.max_cost_minor_units,
-            "cost_currency": request.budget.cost_currency,
+            "max_tokens": budget.max_tokens,
+            "max_commands": budget.max_commands,
+            "max_duration_seconds": budget.max_duration_seconds,
+            "max_cost_minor_units": budget.max_cost.minor_units,
+            "cost_currency": budget.max_cost.currency.as_str(),
             "granted_by": request.granted_by.to_string(),
             "reason": request.reason.as_str(),
         }))?;
@@ -14157,16 +14413,10 @@ impl ApplicationOperations for Services {
                 end: request.allowed_end,
             },
             max_concurrency: request.max_concurrency,
-            budget: kontor_core::spec::BudgetBounds {
-                max_tokens: request.budget.max_tokens,
-                max_commands: request.budget.max_commands,
-                max_duration_seconds: request.budget.max_duration_seconds,
-                max_cost: Money {
-                    minor_units: request.budget.max_cost_minor_units,
-                    currency: CurrencyCode::parse(&request.budget.cost_currency)
-                        .map_err(|error| self.refuse_domain(&error))?,
-                },
-            },
+            // The bounds the grant was taken under, kept verbatim. A receipt
+            // records what was authorized and is not rewritten by a later change
+            // of the profile it defaulted from.
+            budget,
             created_by: request.granted_by,
             capability_receipt: receipt,
             created_at: kontor_api::now(),
@@ -16137,9 +16387,12 @@ impl ApplicationOperations for Services {
         let quota_states = state
             .with_store(|store| store.list_provider_quota_states(project_id))
             .map_err(|error| self.refuse(&error))?;
+        let eligible = self.eligible_accounts(project_id)?;
         let outlook = QuotaOutlook {
             states: &quota_states,
             account: predecessor.account_profile_id,
+            accounts: &eligible,
+            headroom: self.headroom_policy(),
             now,
         };
         let model_rung = request
@@ -18164,6 +18417,8 @@ impl Services {
                 &QuotaOutlook {
                     states: &quota_states,
                     account: admitted.account_profile_id,
+                    accounts: &self.eligible_accounts(project_id)?,
+                    headroom: self.headroom_policy(),
                     now,
                 },
             )
@@ -19571,6 +19826,8 @@ impl Services {
             &QuotaOutlook {
                 states: &quota_states,
                 account: admitted.account_profile_id,
+                accounts: &self.eligible_accounts(project_id)?,
+                headroom: self.headroom_policy(),
                 now,
             },
         )

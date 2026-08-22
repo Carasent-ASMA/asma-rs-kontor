@@ -283,6 +283,23 @@ pub struct PaseoConfig {
     /// children of it remain outside Kontor unless a topology binding names
     /// their exact native ids.
     pub adopted_containers: BTreeMap<TopologyNodeId, ExternalId>,
+    /// Whether this deployment has registered one Paseo provider alias per
+    /// coding account, so `--provider` selects the account.
+    ///
+    /// This is the governed account pin, and it is declared rather than
+    /// inferred. Paseo takes `--provider` and no account parameter, so two
+    /// aliases may be two logins or two spellings of one, and Kontor cannot tell
+    /// which by looking. Guessing permissively is the expensive error: it would
+    /// report a per-run account guarantee this runtime does not make, and every
+    /// launch receipt written under it would attest to something unverified.
+    ///
+    /// When it is `true`, [`Self::capabilities`] reports `account_env` and the
+    /// pin is enforced by the readback this adapter already performs —
+    /// `verify_agent_route` compares the provider Paseo reports against the
+    /// provider that was requested and fails correlation if they differ. When it
+    /// is `false`, `kontor_runtime::capability::preflight` refuses every
+    /// account-pinned launch on this plane, which is the v1.0 behaviour.
+    pub provider_selects_account: bool,
     /// Worktree-local MCP composition for Claude seats, when the daemon
     /// enabled it.
     ///
@@ -313,10 +330,13 @@ impl PaseoConfig {
         RuntimeCapabilities {
             trust_grade,
             supported: supported.iter().copied().collect(),
-            // Paseo runs one ambient environment per host. A per-run coding
-            // account cannot be proven, and an ambient one must never be
-            // promoted into account routing just because it happens to work.
-            account_env: false,
+            // Paseo runs one ambient environment per host, so a per-run coding
+            // account is not provable *by default* and an ambient one must never
+            // be promoted into account routing just because it happens to work.
+            // A deployment that has registered one provider alias per account
+            // declares it, and then the alias readback in `verify_agent_route`
+            // is what proves the pin.
+            account_env: self.provider_selects_account,
             limits: RuntimeLimits {
                 max_message_bytes: MAX_MESSAGE_BYTES,
                 max_history_page: MAX_HISTORY_PAGE,
@@ -5857,6 +5877,7 @@ mod task_scope_tests {
                 scope: scope(),
                 max_concurrent_sessions: 8,
                 unavailable_providers: BTreeSet::new(),
+                provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
                 seat_mcp: None,
@@ -5986,6 +6007,7 @@ mod task_scope_tests {
                 scope: scope(),
                 max_concurrent_sessions: 8,
                 unavailable_providers: BTreeSet::new(),
+                provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
                 seat_mcp: None,
@@ -6059,6 +6081,7 @@ mod task_scope_tests {
                 scope,
                 max_concurrent_sessions: 8,
                 unavailable_providers: BTreeSet::new(),
+                provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
                 seat_mcp: None,
@@ -6153,6 +6176,110 @@ mod task_scope_tests {
                 .as_str(),
             "ASMA-7952",
             "a task absent from the static overrides uses its durable issue key"
+        );
+    }
+}
+
+#[cfg(test)]
+mod governed_pin_tests {
+    //! The governed account pin, at the only two places it is decided:
+    //! whether the plane declares `account_env`, and whether the provider
+    //! readback catches a launch that landed on another alias.
+
+    use kontor_core::spec::{ModelRef, ProviderRef};
+
+    use super::*;
+
+    fn config(provider_selects_account: bool) -> PaseoConfig {
+        PaseoConfig {
+            runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("runtime kind"),
+            host_key: ExternalName::parse("fixture-host").expect("host"),
+            mini_project_id: ExternalId::parse("01890000-0000-7000-8000-0000000000c1")
+                .expect("epic selector"),
+            scope: PaseoExecutionScope {
+                jira_epic_key: ExternalId::parse("ASMA-7882").expect("epic"),
+                mini_project_short_title: ExternalName::parse("Quota headroom").expect("title"),
+                plan_item_key: ExternalId::parse("KON-OP-13").expect("plan item"),
+                jira_issue_key: ExternalId::parse("ASMA-7882").expect("issue"),
+                ticket_short_code: ExternalId::parse("OP13").expect("short code"),
+                seat_display_roles: BTreeMap::new(),
+                project_root_cwd: WorkspaceRoot::parse("/w/epic").expect("root"),
+                canonical_worktree_cwd: WorkspaceRoot::parse("/w/task").expect("worktree"),
+                task_scopes: BTreeMap::new(),
+                orchestrator_agent_id: ExternalId::parse("agent-1").expect("orchestrator"),
+            },
+            max_concurrent_sessions: 8,
+            unavailable_providers: BTreeSet::new(),
+            provider_selects_account,
+            provider_fallbacks: BTreeMap::new(),
+            adopted_containers: BTreeMap::new(),
+            seat_mcp: None,
+        }
+    }
+
+    /// An agent Paseo reports back on one route. The provider field is the
+    /// account evidence: it is what the readback compares.
+    fn agent_on_route(provider: &str, model: &str) -> PaseoAgent {
+        // Built through the wire shape rather than a struct literal, so the
+        // fixture is an answer Paseo could actually have sent.
+        serde_json::from_value(serde_json::json!({
+            "id": "native-1",
+            "provider": provider,
+            "model": model,
+            "currentModeId": paseo_mode(provider, SeatAutonomy::standard())
+                .expect("the fixture provider has a permission mode"),
+            "status": "running",
+        }))
+        .expect("a deserializable agent readback")
+    }
+
+    /// A plane that has not declared the pin must refuse an account-pinned
+    /// launch, because a claim it cannot prove is worse than a refusal.
+    #[test]
+    fn a_plane_that_has_not_declared_the_pin_reports_no_account_environment() {
+        let config = config(false);
+        assert!(
+            !config.capabilities().account_env,
+            "absent a declaration, Kontor must not claim a per-run account guarantee"
+        );
+        assert!(!config.degraded_capabilities().account_env);
+    }
+
+    /// One provider alias per coding account is what makes `--provider` an
+    /// account selector, and it is the whole mechanism behind account-before-rung
+    /// resolution reaching a second Codex login.
+    #[test]
+    fn a_plane_declaring_one_alias_per_account_reports_an_account_environment() {
+        let config = config(true);
+        assert!(config.capabilities().account_env);
+    }
+
+    /// The pin is enforced by readback, not by hope: a launch that came back on
+    /// a different provider alias landed on a different account, and that is a
+    /// correlation failure rather than a successful launch.
+    #[test]
+    fn a_launch_that_returns_a_different_provider_alias_fails_correlation() {
+        let requested = ModelRung {
+            provider: ProviderRef("codex-work".to_owned()),
+            model: ModelRef("gpt-5.6-sol".to_owned()),
+            effort: None,
+        };
+        let mut agent = agent_on_route("codex-work", "gpt-5.6-sol");
+        assert!(
+            PaseoAdapter::verify_agent_route(&agent, &requested, SeatAutonomy::standard()).is_ok(),
+            "the alias that was asked for is the alias that must be reported"
+        );
+        // The other Codex login. Same provider family — `built_in_provider`
+        // normalizes both aliases to `codex`, so the permission mode and every
+        // family-level rule still agree — and yet a different account. The
+        // readback is the only thing that can tell them apart.
+        agent.provider = "codex-personal".to_owned();
+        assert!(
+            matches!(
+                PaseoAdapter::verify_agent_route(&agent, &requested, SeatAutonomy::standard()),
+                Err(RuntimeError::CorrelationFailed)
+            ),
+            "a launch on another account's alias is not this account's launch"
         );
     }
 }

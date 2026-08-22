@@ -1,8 +1,10 @@
 # Provider quota routing: durable state behind the rung walk
 
-Status: landed on master's rung walk. Automatic detection and live-seat rescue
-open.
-Date: 2026-08-21
+Status: v48's rung walk landed 2026-08-21. **Schema v51 extends it to concurrent
+windows, a credit balance and account-before-rung resolution (2026-08-22, this
+branch), after master's v49 command-execution-mode and v50 live quota poller;**
+the remaining open items are listed under *Still open*.
+Date: 2026-08-21, extended 2026-08-22
 
 Ticket: **KON-OP-13 / ASMA-7882** owns this. The fleet-mechanics plan
 (`_docs/ai-orchestration/plans/2026-08-05-02-37-plan-agent-fleet-mechanics-layer.md`)
@@ -129,7 +131,15 @@ composed by this build.
 So per-login rotation ("try the work Codex account, then the personal one") is
 **blocked upstream**, not merely unbuilt here. It needs either an account
 selector on Paseo's agent-run surface or the Codex family lifted out of
-`DEFERRED_FAMILIES`. Until then, availability must be scoped
+`DEFERRED_FAMILIES`.
+
+> **Superseded 2026-08-22 (v51).** The account selector was already in that flag
+> list. `--provider` *is* one, once a deployment registers one provider alias per
+> coding account and declares it — see *The upstream blocker is lifted, by
+> declaration* below. The paragraph above is kept because its reasoning is what
+> the declaration answers.
+
+Until the declaration is made, availability is scoped
 `(account_profile_id, provider)` rather than per account: with one profile
 serving every provider, `AvailabilityOverride` — which is per account — cannot
 express "Codex is out, Claude is fine", which is precisely the state the incident
@@ -143,7 +153,7 @@ controls, and it alone would have kept work moving on 2026-08-21.
 
 | Event | Mechanism | Reachable today |
 | --- | --- | --- |
-| `rung1 x work` -> `rung1 x personal` | `FailoverRequest` / `FailoverReason::AccountExhausted` | no -- blocked upstream |
+| `rung1 x work` -> `rung1 x personal` | `FailoverRequest` / `FailoverReason::AccountExhausted` | **yes as of v51**, where the deployment declares `provider_selects_account` and one alias per login |
 | `rung1` -> `rung2` | the chain walk, now reading stored state | yes |
 
 `FailoverReason::AccountExhausted` (`crates/kontor-accounts/src/launch.rs`) was
@@ -191,6 +201,112 @@ defect, different chain source: consultations carry their own `models` rather
 than a template slot's `model_chain`, so there is no shared root to fix once.
 They were left out to keep this change to the path the outage actually took.
 
+## What schema v51 added (2026-08-22)
+
+This is the OP-REQ-042/043 half. The four items the previous pass listed under
+*Also worth knowing* as "settled but not honoured" are now honoured.
+
+### Windows are a set, and blocking takes the latest reset
+
+`provider_quota_states` gained a companion `provider_quota_windows` table keyed
+`(project, account, provider, kind)`. One `resets_at` could not describe an
+account holding two allowances at once — the Claude plan was verified on
+2026-08-14 exposing a five-hour `session` window *and* a weekly one — and the
+instant such an account becomes usable is the **latest** reset among the spent
+windows, not the earliest. The earliest unblocks it while a window it also needs
+is still empty, which walks straight back into the limit just recorded.
+
+`kind` is classified from `window_minutes` and never from the slot the reading
+arrived in. The vendor publishes `primary`/`secondary`; those are its layout, not
+its meaning, and a reader that trusted them recorded a weekly allowance as
+whatever `primary` meant that quarter.
+
+### Credit is the other dimension, and they never touch
+
+The header row gained a balance, its reserve, and **one** shared currency column.
+Windows and credit are never converted into each other — verified 2026-08-14, the
+Claude org's `used_credits` did not move while a session window climbed 11% ->
+28%, so included windows are free and are meant to be spent to the limit while
+the credit is the guarded number. Currencies are never converted either, and one
+currency column makes an EUR-balance-against-a-USD-floor row unwritable rather
+than merely discouraged.
+
+### `cannot_report` is the fifth state, and it is not `unknown`
+
+Both describe an absence of numbers and they are opposite instructions.
+`unknown` means *this reading failed* and fails closed. `cannot_report` means
+*this provider has no such number to give* — OpenRouter's `:free` routes under
+FND-005/DEC-001 — and is used reactively: run until refused, then record the
+stated reset. Failing closed on the second retires a provider permanently on the
+strength of a figure it was never going to produce.
+
+### Account before rung
+
+`kontor_scheduler::headroom::resolve` walks the accounts eligible for the current
+rung before taking the next rung. A second account on the same rung costs
+nothing; descending costs quality on every turn that follows. This is also what
+makes a four-rung chain reach its fourth rung — the previous selection took the
+first clear rung and otherwise fell back to the frozen primary, so rungs three
+and four were decoration.
+
+Thresholds are declared per window kind, and a rung whose accounts are all
+blocked is *waited for* rather than descended around when the blocking window
+returns inside the declared short horizon. Total exhaustion parks until the
+earliest reset; a human is reached only past the escalation horizon, carrying an
+`OP-REQ-036` recommendation and the walk itself as the deliberation path.
+
+Every threshold gates the admission of a **new** seat. `Placement` has no variant
+that can name a running seat, so "pre-empt the seat using the quota" is not a
+decision the type can express.
+
+### The upstream blocker is lifted, by declaration
+
+The previous pass recorded per-login rotation as *blocked upstream*: Paseo takes
+`--provider` and exposes no account parameter. The lever was already in that flag
+list. A deployment that registers **one provider alias per coding account** makes
+`--provider` the account selector, so:
+
+* `PaseoConfig.provider_selects_account` declares it, and `account_env` reports
+  it rather than being hardcoded `false`;
+* the pin is attested by the readback the adapter already performs —
+  `verify_agent_route` fails correlation when the provider Paseo reports is not
+  the provider that was requested;
+* each account profile's immutable `routing` document lists the aliases it is
+  addressable under, so an account naming none is simply not walked.
+
+It is **declared, never inferred.** Kontor cannot tell by looking whether two
+aliases are two logins or two spellings of one, and guessing permissively would
+report a per-run account guarantee the runtime does not make.
+
+### The pre-flight probe
+
+`kontor_runtime_codex::usage` reads `GET https://chatgpt.com/backend-api/wham/usage`
+with the token from **that account's own** `CODEX_HOME/auth.json`, and classifies
+windows from the structured reset instant — never from refusal prose. Verified
+2026-08-05: the same refusal reading *"try again at Aug 30th, 2026 11:28 PM"*
+carried `resets_at: 1788121720`, which is `2026-08-30T20:28:40Z`, one timezone
+offset apart.
+
+This is the one module in that crate that opens a credential, and it is fenced
+the way `kontor-accounts` fences a resolved one: `SecretString`, no `Serialize`,
+redacted `Debug`, one exit that builds one header, and every failure mapped to a
+closed reason so no path, host or token reaches an error. The adapter's "never
+opens `auth.json`" rule is unchanged — it is a rule about the *launch* path,
+where nothing needs the token.
+
+**It is also the instrument for the open provider question.** Whether
+the personal Codex login reports its own rate limits or shares the work
+account's is answered by pointing this probe at each home in turn. The mechanism now keeps them apart;
+the reading itself has not been taken.
+
+### Budgets stop being a per-task money ceiling
+
+`execution:arm`'s `budget` is optional and defaults from the epic's **pinned**
+work profile, read from a task's frozen workflow snapshot rather than the profile
+catalog — the snapshot is what that epic's gates are already judged against, and
+a later revision must not re-grade a grant. Explicit bounds may only narrow, and
+a stored `ExecutionAuthorization` now reports the bounds it was granted under.
+
 ## Still open
 
 ### Vendor and model tables
@@ -221,6 +337,11 @@ identity remains a literal in `applications.rs`; a seeded row per vendor Kontor
 actually reaches.
 
 ### Automatic detection
+
+**The pre-flight half landed in v51** — `kontor_runtime_codex::usage` asks a
+Codex account how much is left before a seat stops on it. What remains open is
+the *reactive* half below: turning a refusal a running seat hit into a recorded
+state without a human pasting it.
 
 A **new** `RuntimeError` variant carrying the provider and the parsed
 `LimitState`. Deliberately separate from `LimitExceeded` — conflating a provider
@@ -295,8 +416,9 @@ builder chain had simply not been checked against it.
 
 ## Also worth knowing
 
-The policy's own KON-OP-13 amendment (2026-08-16) settles two things this
-implementation does not yet honour:
+The policy's own KON-OP-13 amendment (2026-08-16) settled two things the v48
+implementation did not honour. **Both are honoured as of v51** — see *What schema
+v51 added* above; the description below is kept for the reasoning:
 
 * **Account before rung.** "A second account on the same rung costs nothing while
   descending costs quality, so `codex:team` is tried before dropping off

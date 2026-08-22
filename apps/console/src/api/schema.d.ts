@@ -2819,8 +2819,7 @@ export interface components {
              * @description The first instant work may start.
              */
             allowed_start: string;
-            /** @description The budget ceiling. */
-            budget: components["schemas"]["BudgetBoundsRequest"];
+            budget?: null | components["schemas"]["BudgetBoundsRequest"];
             /**
              * Format: int64
              * @description The revision the caller read the epic at.
@@ -2871,6 +2870,14 @@ export interface components {
             allowed_start: string;
             /** @description The authorization. */
             authorization_id: string;
+            /**
+             * @description The bounds this grant was actually taken under.
+             *
+             *     Reported because a receipt records what was authorized. When the grant
+             *     defaulted from the pinned work profile, this is what it defaulted to —
+             *     and a later change to that profile does not rewrite it.
+             */
+            budget: components["schemas"]["BudgetBoundsDto"];
             /**
              * Format: int32
              * @description Maximum concurrent runs it authorizes.
@@ -2956,6 +2963,37 @@ export interface components {
             /** @description The task. */
             task_id: string;
         };
+        /** @description The resource bounds one grant was taken under, on the wire. */
+        BudgetBoundsDto: {
+            /** @description The currency those minor units are in. */
+            cost_currency: string;
+            /**
+             * Format: int64
+             * @description Maximum runtime commands. A genuine stop on a looping seat.
+             */
+            max_commands: number;
+            /**
+             * Format: int64
+             * @description The recorded cost ceiling, in integer minor units.
+             *
+             *     Kept because a receipt records what was authorized, not because money is
+             *     the control that prevents exhaustion — under OP-REQ-043 it is not. The
+             *     control money still has is the depleting credit balance and its reserve
+             *     on a provider account, which is a property of the account and not of a
+             *     task.
+             */
+            max_cost_minor_units: number;
+            /**
+             * Format: int64
+             * @description Maximum wall-clock seconds. A genuine stop on a wedged seat.
+             */
+            max_duration_seconds: number;
+            /**
+             * Format: int64
+             * @description Maximum tokens across the bounded work. A recorded quantity.
+             */
+            max_tokens: number;
+        };
         /**
          * @description The budget bounds an arming decision authorizes.
          *
@@ -3001,6 +3039,7 @@ export interface components {
              * @description Across the whole realm.
              */
             global_max_in_flight: number;
+            headroom?: null | components["schemas"]["HeadroomCeilingsDto"];
             /**
              * Format: int32
              * @description Active admitted non-terminal TeamRun envelopes, counted once each.
@@ -3857,6 +3896,27 @@ export interface components {
             /** @description The role this seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
         };
+        /**
+         * @description A depleting prepaid balance and the floor under it, on the wire.
+         *
+         *     Both amounts share one currency: they are never converted into each other and
+         *     never compared across currencies, so there is deliberately no second currency
+         *     field for a reserve to disagree in.
+         */
+        CreditBalanceDto: {
+            /** @description The currency both amounts are denominated in. */
+            currency: string;
+            /**
+             * Format: int64
+             * @description What is left, in integer minor units.
+             */
+            remaining_minor_units: number;
+            /**
+             * Format: int64
+             * @description The floor new work may not eat into, in the same minor units.
+             */
+            reserve_minor_units: number;
+        };
         /** @description One durable step in the deliberation path already tried. */
         DeliberationStepDto: {
             /** @description The consultation or recovery mechanism used. */
@@ -4229,6 +4289,46 @@ export interface components {
             task_id: string;
             /** @description The verdict that was recorded. */
             verdict: string;
+        };
+        /** @description The provider-headroom policy on the wire. */
+        HeadroomCeilingsDto: {
+            /**
+             * Format: int32
+             * @description Percentage points held back from delivery seats for the epic's own
+             *     control seats.
+             */
+            control_plane_reserve_percent: number;
+            /**
+             * Format: int32
+             * @description Share of a daily window.
+             */
+            daily_percent: number;
+            /**
+             * Format: int64
+             * @description Beyond this span, total exhaustion becomes a question for a human.
+             */
+            escalation_horizon_seconds: number;
+            /**
+             * Format: int32
+             * @description Share of a monthly window or billing cycle.
+             */
+            monthly_percent: number;
+            /**
+             * Format: int32
+             * @description Share of a session window a seat may take it to.
+             */
+            session_percent: number;
+            /**
+             * Format: int64
+             * @description A window returning within this span is waited for rather than descended
+             *     around.
+             */
+            short_horizon_seconds: number;
+            /**
+             * Format: int32
+             * @description Share of a weekly window.
+             */
+            weekly_percent: number;
         };
         /** @description Liveness, identity and how far startup has got. */
         HealthDto: {
@@ -5019,6 +5119,7 @@ export interface components {
             account_profile_id: string;
             /** @description Whether it still holds a launch back, as of this read. */
             blocking: boolean;
+            credit?: null | components["schemas"]["CreditBalanceDto"];
             /** @description When it was concluded. */
             observed_at: string;
             /** @description The provider, spelled as the model catalog spells it. */
@@ -5032,8 +5133,10 @@ export interface components {
             revision: number;
             /** @description `runtime_observation` or `operator`. */
             source: string;
-            /** @description `available`, `exhausted`, `drained` or `unknown`. */
+            /** @description `available`, `exhausted`, `drained`, `unknown` or `cannot_report`. */
             state: string;
+            /** @description Every concurrent window observed on this pair, ordered by kind. */
+            windows: components["schemas"]["QuotaWindowDto"][];
         };
         /**
          * @description What `topology-specs:publish` is asked for.
@@ -5122,6 +5225,23 @@ export interface components {
             role: components["schemas"]["ResolvedRoleRefDto"];
             /** @description The topology node hosting it. */
             topology_node_id: string;
+        };
+        /** @description One concurrent quota window, on the wire. */
+        QuotaWindowDto: {
+            /**
+             * @description `session`, `daily`, `weekly` or `monthly`.
+             *
+             *     Classified from the provider's window *length* and never from the name of
+             *     the field it arrived in — see [`kontor_core::quota::QuotaWindowKind`].
+             */
+            kind: string;
+            /** @description When it refills. */
+            resets_at: string;
+            /**
+             * Format: int32
+             * @description How much of it the provider reports consumed, as a percentage.
+             */
+            used_percent: number;
         };
         /** @description One task the planner would admit, and what it would run under. */
         ReadyTaskDto: {
@@ -5243,6 +5363,7 @@ export interface components {
         RecordProviderQuotaRequest: {
             /** @description The account the state is about. */
             account_profile_id: string;
+            credit?: null | components["schemas"]["CreditBalanceDto"];
             /**
              * Format: int64
              * @description The revision the caller believes is current; `1` for the first record.
@@ -5256,8 +5377,14 @@ export interface components {
              *     on a clock, and a reset instant here would put it on a retry timer.
              */
             resets_at?: string | null;
-            /** @description `available`, `exhausted`, `drained` or `unknown`. */
+            /** @description `available`, `exhausted`, `drained`, `unknown` or `cannot_report`. */
             state: string;
+            /**
+             * @description Every concurrent window this pair holds. Replaces the stored set
+             *     wholesale rather than merging into it: a collector reports what the
+             *     provider offers *now*, and a merge would keep a window it has withdrawn.
+             */
+            windows?: components["schemas"]["QuotaWindowDto"][];
         };
         /**
          * @description One member the resolver removed, and why.

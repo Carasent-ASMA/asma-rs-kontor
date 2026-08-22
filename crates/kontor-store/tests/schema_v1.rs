@@ -112,6 +112,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "projects",
     "project_topology_defaults",
     "provider_quota_states",
+    "provider_quota_windows",
     "quick_session_promotions",
     "quick_sessions",
     "realm_idempotency_bindings",
@@ -450,7 +451,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         store.schema_version().expect("the version is readable"),
         SCHEMA_VERSION
     );
-    assert_eq!(SCHEMA_VERSION, 50);
+    // Pinned deliberately: appending a migration must be a decision, not a
+    // side effect. v51 added concurrent quota windows, the credit balance and
+    // its reserve, and the `cannot_report` observation state, after master's
+    // v49 (`command_execution_mode`) and v50 (`provider_report`).
+    assert_eq!(SCHEMA_VERSION, 51);
 }
 
 #[test]

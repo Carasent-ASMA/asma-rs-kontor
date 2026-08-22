@@ -2162,6 +2162,17 @@ pub struct ProviderQuotaState {
     /// When an exhausted allowance returns. `None` for every other state, which
     /// the database enforces rather than trusting call sites.
     pub resets_at: Option<Timestamp>,
+    /// Every concurrent window observed on this pair.
+    ///
+    /// A set and not a field, because a provider holds several allowances at
+    /// once and one `resets_at` above cannot describe two of them. Ordered by
+    /// kind so a stored row and a re-read of it are byte-identical.
+    pub windows: Vec<crate::quota::QuotaWindow>,
+    /// The depleting balance and its floor, where this provider has one.
+    ///
+    /// `None` is the ordinary case: a subscription provider has windows and no
+    /// balance, and inventing a zero balance for it would refuse every launch.
+    pub credit: Option<crate::quota::CreditBalance>,
     /// Digest of the evidence. Never the evidence: a provider's own message
     /// carries account hints and URLs, and nothing here needs to keep them.
     pub evidence_hash: ContentHash,
@@ -2192,8 +2203,74 @@ impl ProviderQuotaState {
             crate::spec::ProviderQuotaKind::Drained | crate::spec::ProviderQuotaKind::Unknown => {
                 true
             }
+            // A provider that cannot report headroom is used until it refuses.
+            // Blocking here would be failing closed on a number this provider
+            // was never going to produce, which retires it permanently.
+            crate::spec::ProviderQuotaKind::CannotReport => false,
         }
     }
+
+    /// Every concurrent window this account holds on this provider, and the
+    /// credit balance beside them.
+    ///
+    /// Both are read from the same row because they are two dimensions of one
+    /// account's standing on one provider — never two candidate answers to the
+    /// same question. [`Self::headroom`] is where they are judged, and it judges
+    /// each on its own dimension.
+    #[must_use]
+    pub fn windows(&self) -> &[crate::quota::QuotaWindow] {
+        &self.windows
+    }
+
+    /// Whether this `(account, provider)` pair admits a **new** seat at `now`.
+    ///
+    /// Three independent gates, in order, none of which can excuse another:
+    /// the recorded state, then every window against its own threshold, then any
+    /// credit against its own reserve. Window headroom never satisfies a credit
+    /// floor and a credit floor never excuses a spent window.
+    #[must_use]
+    pub fn headroom(
+        &self,
+        thresholds: &crate::quota::HeadroomThresholds,
+        now: Timestamp,
+    ) -> ProviderHeadroom {
+        if self.blocks_at(now) {
+            // A `drained` or `unknown` row has no reset to name; an `exhausted`
+            // one does, and it is the state's own instant rather than a window's.
+            return match self.resets_at {
+                Some(blocked_until) => ProviderHeadroom::Blocked { blocked_until },
+                None => ProviderHeadroom::Unavailable,
+            };
+        }
+        if let crate::quota::WindowOutlook::Blocked { blocked_until } =
+            crate::quota::window_outlook(&self.windows, thresholds)
+        {
+            return ProviderHeadroom::Blocked { blocked_until };
+        }
+        // Credit is judged after the windows and never in place of them: on a
+        // subscription the windows are the capacity that actually runs out,
+        // while the credit is the money guarded behind them.
+        match self.credit.map(|credit| credit.clears_reserve()) {
+            Some(Err(_)) => ProviderHeadroom::Unavailable,
+            Some(Ok(())) | None => ProviderHeadroom::Admissible,
+        }
+    }
+}
+
+/// What one `(account, provider)` pair will accept right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderHeadroom {
+    /// New seats may be admitted.
+    Admissible,
+    /// Nothing may be admitted until this instant, which is known.
+    Blocked {
+        /// When it clears.
+        blocked_until: Timestamp,
+    },
+    /// Nothing may be admitted and no clock will change that — a drained
+    /// balance, a currency that cannot be compared, or a refusal nobody parsed.
+    /// Only money or an operator lifts it.
+    Unavailable,
 }
 
 /// One provider quota state to record, under its expected revision.
@@ -2209,6 +2286,10 @@ pub struct NewProviderQuotaState {
     pub state: crate::spec::ProviderQuotaKind,
     /// When an exhausted allowance returns.
     pub resets_at: Option<Timestamp>,
+    /// Every concurrent window observed on this pair.
+    pub windows: Vec<crate::quota::QuotaWindow>,
+    /// The depleting balance and its floor, where this provider has one.
+    pub credit: Option<crate::quota::CreditBalance>,
     /// Digest of the evidence.
     pub evidence_hash: ContentHash,
     /// Who concluded it.

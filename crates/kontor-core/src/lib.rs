@@ -96,6 +96,7 @@ pub mod consultation;
 pub mod id;
 pub mod naming;
 pub mod open_question;
+pub mod quota;
 pub mod realm;
 pub mod receipt;
 pub mod repository;

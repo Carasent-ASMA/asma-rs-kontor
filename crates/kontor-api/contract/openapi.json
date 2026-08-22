@@ -8563,7 +8563,6 @@
           "allowed_start",
           "allowed_end",
           "max_concurrency",
-          "budget",
           "granted_by",
           "reason"
         ],
@@ -8579,8 +8578,15 @@
             "description": "The first instant work may start."
           },
           "budget": {
-            "$ref": "#/components/schemas/BudgetBoundsRequest",
-            "description": "The budget ceiling."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BudgetBoundsRequest",
+                "description": "The budget ceiling, when the caller narrows it.\n\nAbsent takes the pinned work profile's `budget_defaults`. A budget bounds\na **runaway**, not a subscription: `max_commands` and\n`max_duration_seconds` are genuine stops on a looping seat and\n`max_tokens` is a recorded quantity, none of which depends on how the\naccount is billed. `max_cost` is no longer a per-task ceiling — on a\nsubscription the money spent is an output worth reporting, and capping it\nper task cannot prevent the quota exhaustion that actually halts work\nwhile it *can* refuse work that would have cost nothing.\n\nSupplied bounds may only narrow the profile's. Arming wider than the\npinned profile allows is not a grant this endpoint can make."
+              }
+            ]
           },
           "expected_revision": {
             "type": "integer",
@@ -8660,7 +8666,8 @@
           "selected_tasks",
           "allowed_start",
           "allowed_end",
-          "max_concurrency"
+          "max_concurrency",
+          "budget"
         ],
         "properties": {
           "allowed_end": {
@@ -8676,6 +8683,10 @@
           "authorization_id": {
             "type": "string",
             "description": "The authorization."
+          },
+          "budget": {
+            "$ref": "#/components/schemas/BudgetBoundsDto",
+            "description": "The bounds this grant was actually taken under.\n\nReported because a receipt records what was authorized. When the grant\ndefaulted from the pinned work profile, this is what it defaulted to —\nand a later change to that profile does not rewrite it."
           },
           "max_concurrency": {
             "type": "integer",
@@ -8837,6 +8848,47 @@
           }
         }
       },
+      "BudgetBoundsDto": {
+        "type": "object",
+        "description": "The resource bounds one grant was taken under, on the wire.",
+        "required": [
+          "max_tokens",
+          "max_commands",
+          "max_duration_seconds",
+          "max_cost_minor_units",
+          "cost_currency"
+        ],
+        "properties": {
+          "cost_currency": {
+            "type": "string",
+            "description": "The currency those minor units are in."
+          },
+          "max_commands": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Maximum runtime commands. A genuine stop on a looping seat.",
+            "minimum": 0
+          },
+          "max_cost_minor_units": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The recorded cost ceiling, in integer minor units.\n\nKept because a receipt records what was authorized, not because money is\nthe control that prevents exhaustion — under OP-REQ-043 it is not. The\ncontrol money still has is the depleting credit balance and its reserve\non a provider account, which is a property of the account and not of a\ntask.",
+            "minimum": 0
+          },
+          "max_duration_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Maximum wall-clock seconds. A genuine stop on a wedged seat.",
+            "minimum": 0
+          },
+          "max_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Maximum tokens across the bounded work. A recorded quantity.",
+            "minimum": 0
+          }
+        }
+      },
       "BudgetBoundsRequest": {
         "type": "object",
         "description": "The budget bounds an arming decision authorizes.\n\nEvery bound is mandatory and positive. There is no \"unlimited\": a bound that\ncould be omitted would read as \"no work allowed\" in one place and \"no ceiling\"\nin another, and arming is exactly where that ambiguity is unaffordable.",
@@ -8906,6 +8958,17 @@
             "format": "int32",
             "description": "Across the whole realm.",
             "minimum": 0
+          },
+          "headroom": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HeadroomCeilingsDto",
+                "description": "The provider-headroom policy, when this deployment declares one.\n\nAbsent by default so a ceilings document written before OP-REQ-042 keeps\nparsing. Absence means no window threshold was chosen, not that a\npermissive one was."
+              }
+            ]
           },
           "mission_max_in_flight": {
             "type": "integer",
@@ -10801,6 +10864,34 @@
         },
         "additionalProperties": false
       },
+      "CreditBalanceDto": {
+        "type": "object",
+        "description": "A depleting prepaid balance and the floor under it, on the wire.\n\nBoth amounts share one currency: they are never converted into each other and\nnever compared across currencies, so there is deliberately no second currency\nfield for a reserve to disagree in.",
+        "required": [
+          "remaining_minor_units",
+          "reserve_minor_units",
+          "currency"
+        ],
+        "properties": {
+          "currency": {
+            "type": "string",
+            "description": "The currency both amounts are denominated in."
+          },
+          "remaining_minor_units": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What is left, in integer minor units.",
+            "minimum": 0
+          },
+          "reserve_minor_units": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The floor new work may not eat into, in the same minor units.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "DeliberationStepDto": {
         "type": "object",
         "description": "One durable step in the deliberation path already tried.",
@@ -11514,6 +11605,62 @@
             "description": "The verdict that was recorded."
           }
         }
+      },
+      "HeadroomCeilingsDto": {
+        "type": "object",
+        "description": "The provider-headroom policy on the wire.",
+        "required": [
+          "session_percent",
+          "daily_percent",
+          "weekly_percent",
+          "monthly_percent",
+          "control_plane_reserve_percent",
+          "short_horizon_seconds",
+          "escalation_horizon_seconds"
+        ],
+        "properties": {
+          "control_plane_reserve_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Percentage points held back from delivery seats for the epic's own\ncontrol seats.",
+            "minimum": 0
+          },
+          "daily_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Share of a daily window.",
+            "minimum": 0
+          },
+          "escalation_horizon_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Beyond this span, total exhaustion becomes a question for a human."
+          },
+          "monthly_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Share of a monthly window or billing cycle.",
+            "minimum": 0
+          },
+          "session_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Share of a session window a seat may take it to.",
+            "minimum": 0
+          },
+          "short_horizon_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A window returning within this span is waited for rather than descended\naround."
+          },
+          "weekly_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Share of a weekly window.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "HealthDto": {
         "type": "object",
@@ -13208,6 +13355,7 @@
           "source",
           "observed_at",
           "blocking",
+          "windows",
           "revision"
         ],
         "properties": {
@@ -13218,6 +13366,17 @@
           "blocking": {
             "type": "boolean",
             "description": "Whether it still holds a launch back, as of this read."
+          },
+          "credit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CreditBalanceDto",
+                "description": "The depleting balance and its floor, where this provider has one."
+              }
+            ]
           },
           "observed_at": {
             "type": "string",
@@ -13246,7 +13405,14 @@
           },
           "state": {
             "type": "string",
-            "description": "`available`, `exhausted`, `drained` or `unknown`."
+            "description": "`available`, `exhausted`, `drained`, `unknown` or `cannot_report`."
+          },
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuotaWindowDto"
+            },
+            "description": "Every concurrent window observed on this pair, ordered by kind."
           }
         }
       },
@@ -13426,6 +13592,32 @@
             "description": "The topology node hosting it."
           }
         }
+      },
+      "QuotaWindowDto": {
+        "type": "object",
+        "description": "One concurrent quota window, on the wire.",
+        "required": [
+          "kind",
+          "resets_at",
+          "used_percent"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`session`, `daily`, `weekly` or `monthly`.\n\nClassified from the provider's window *length* and never from the name of\nthe field it arrived in — see [`kontor_core::quota::QuotaWindowKind`]."
+          },
+          "resets_at": {
+            "type": "string",
+            "description": "When it refills."
+          },
+          "used_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How much of it the provider reports consumed, as a percentage.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "ReadyTaskDto": {
         "type": "object",
@@ -13657,6 +13849,17 @@
             "type": "string",
             "description": "The account the state is about."
           },
+          "credit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CreditBalanceDto",
+                "description": "The depleting balance and its floor, where this provider has one."
+              }
+            ]
+          },
           "expected_revision": {
             "type": "integer",
             "format": "int64",
@@ -13676,7 +13879,14 @@
           },
           "state": {
             "type": "string",
-            "description": "`available`, `exhausted`, `drained` or `unknown`."
+            "description": "`available`, `exhausted`, `drained`, `unknown` or `cannot_report`."
+          },
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuotaWindowDto"
+            },
+            "description": "Every concurrent window this pair holds. Replaces the stored set\nwholesale rather than merging into it: a collector reports what the\nprovider offers *now*, and a merge would keep a window it has withdrawn."
           }
         },
         "additionalProperties": false
