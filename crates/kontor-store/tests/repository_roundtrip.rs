@@ -123,6 +123,7 @@ const CENSUS_TABLES: &[&str] = &[
     "status_transition_receipts",
     "task_dependencies",
     "task_gate_evaluations",
+    "task_modules",
     "task_persona_snapshots",
     "task_workflows",
     "tasks",

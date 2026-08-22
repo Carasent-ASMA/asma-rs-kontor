@@ -632,6 +632,7 @@ fn candidate(
         created_at: taken_at,
         priority: 500,
         module: Some(module(module_key)),
+        changed_modules: BTreeSet::new(),
         worktree,
         depends_on: BTreeSet::new(),
         serializes_with: BTreeSet::new(),

@@ -132,6 +132,7 @@ fn candidate(project: ProjectId, task: TaskId) -> Candidate {
         created_at: at("2026-08-12T08:00:00Z"),
         priority: 500,
         module: None,
+        changed_modules: BTreeSet::new(),
         worktree: None,
         depends_on: BTreeSet::new(),
         serializes_with: BTreeSet::new(),
@@ -541,6 +542,45 @@ fn one_module_is_held_once_unless_distinct_verified_trees_keep_the_work_apart() 
     assert_refused(
         &plan(&same_tree).expect("the pass runs"),
         task,
+        RejectionCode::ModuleInFlight,
+    );
+}
+
+#[test]
+fn a_slash_candidate_contends_with_a_dotted_holdout_of_the_same_module() {
+    let project = ProjectId::generate();
+    let mut slash = candidate(project, TaskId::generate());
+    slash.module = Some(module("shared/asma-core-helpers"));
+    let task = slash.task_id;
+    let mut held = snapshot(vec![slash]);
+    held.module_leases.push(ModuleClaim {
+        module: module("shared.asma-core-helpers"),
+        task_id: TaskId::generate(),
+        worktree: None,
+        in_flight: true,
+    });
+    assert_refused(
+        &plan(&held).expect("the pass runs"),
+        task,
+        RejectionCode::ModuleInFlight,
+    );
+
+    let mut extra = candidate(project, TaskId::generate());
+    extra.module = Some(module("shared/asma-core-helpers"));
+    extra
+        .changed_modules
+        .insert(module("editor/asma-app-editor"));
+    let extra_task = extra.task_id;
+    let mut extra_held = snapshot(vec![extra]);
+    extra_held.module_leases.push(ModuleClaim {
+        module: module("editor/asma-app-editor"),
+        task_id: TaskId::generate(),
+        worktree: None,
+        in_flight: true,
+    });
+    assert_refused(
+        &plan(&extra_held).expect("the pass runs"),
+        extra_task,
         RejectionCode::ModuleInFlight,
     );
 }

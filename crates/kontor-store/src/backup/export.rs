@@ -695,6 +695,12 @@ exported_tables! {
         depends_on_task_id: String,
         created_at: String,
     }
+    task_modules: TaskModulesRow from "task_modules" key(project_id, task_id, module_key) {
+        project_id: String,
+        task_id: String,
+        module_key: String,
+        declared_at: String,
+    }
     work_profiles: WorkProfilesRow from "work_profiles" key(project_id, profile_key, version) {
         project_id: String,
         profile_key: String,

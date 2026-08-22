@@ -248,7 +248,9 @@ fn module_collision(request: &EvaluationRequest) -> Decision {
         .module_claims
         .iter()
         .filter(|claim| {
-            claim.in_flight && &claim.module == module && claim.task_id != request.run.task_id
+            claim.in_flight
+                && claim.module.contends_with(module)
+                && claim.task_id != request.run.task_id
         })
         .collect();
     if contenders.is_empty() {

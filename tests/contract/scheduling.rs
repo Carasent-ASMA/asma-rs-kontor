@@ -321,6 +321,7 @@ impl World {
             created_at: now(),
             priority: 500,
             module: Some(ModuleKey::parse("directory.app").expect("a valid module key")),
+            changed_modules: BTreeSet::new(),
             worktree: None,
             depends_on: BTreeSet::new(),
             serializes_with: BTreeSet::new(),

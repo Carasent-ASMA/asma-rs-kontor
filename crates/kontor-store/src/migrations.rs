@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 51;
+pub const SCHEMA_VERSION: i64 = 52;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -221,6 +221,9 @@ const MIGRATIONS: &[&str] = &[
     // on top of that poller. It does not replace v50's source or invent a
     // second collector.
     include_str!("../migrations/0051_provider_quota_headroom.sql"),
+    // Schema v52. Additional modules a task changes, and identity matching so a
+    // slash admission cannot steal a live dotted module holdout.
+    include_str!("../migrations/0052_task_modules_and_module_identity.sql"),
 ];
 
 const _: () = assert!(

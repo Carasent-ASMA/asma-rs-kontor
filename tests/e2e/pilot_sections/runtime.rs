@@ -1626,6 +1626,7 @@ fn dispatch_decision(open_replay_gap: bool) -> (usize, Option<String>) {
         created_at: taken_at,
         priority: 500,
         module: Some(ModuleKey::parse("pilot.code").expect("a legal module key")),
+        changed_modules: BTreeSet::new(),
         worktree: None,
         depends_on: BTreeSet::new(),
         serializes_with: BTreeSet::new(),

@@ -145,6 +145,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "task_ai_short_names",
     "task_dependencies",
     "task_gate_evaluations",
+    "task_modules",
     "task_persona_snapshots",
     "task_workflows",
     "task_short_codes",
@@ -453,9 +454,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     );
     // Pinned deliberately: appending a migration must be a decision, not a
     // side effect. v51 added concurrent quota windows, the credit balance and
-    // its reserve, and the `cannot_report` observation state, after master's
-    // v49 (`command_execution_mode`) and v50 (`provider_report`).
-    assert_eq!(SCHEMA_VERSION, 51);
+    // its reserve, and the `cannot_report` observation state. v52 adds
+    // `task_modules` and slash/dotted module identity matching.
+    assert_eq!(SCHEMA_VERSION, 52);
 }
 
 #[test]
@@ -2975,6 +2976,12 @@ fn all_logical_relationships_are_project_scoped_and_fk_backed() {
         ),
         (
             "task_dependencies",
+            &["project_id", "task_id"],
+            "tasks",
+            &["project_id", "id"],
+        ),
+        (
+            "task_modules",
             &["project_id", "task_id"],
             "tasks",
             &["project_id", "id"],

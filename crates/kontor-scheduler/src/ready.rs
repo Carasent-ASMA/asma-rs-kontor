@@ -563,33 +563,39 @@ fn contention(snapshot: &SchedulingSnapshot, candidate: &Candidate) -> Refusal {
 /// every module lease in the Realm.
 fn module_conflict(candidate: &Candidate, held: &[ModuleClaim]) -> Refusal {
     // Work that contends for no module cannot collide over one.
-    let module = candidate.module.as_ref()?;
-    let contenders: Vec<&ModuleClaim> = held
-        .iter()
-        .filter(|claim| {
-            claim.in_flight && &claim.module == module && claim.task_id != candidate.task_id
-        })
-        .collect();
-    if contenders.is_empty() {
-        return None;
-    }
+    let mut evidence = Vec::new();
     let mine = candidate
         .worktree
         .as_ref()
         .and_then(WorktreeClaim::verified);
-    if module_isolated_by_worktree(mine, contenders.iter().copied()) {
+    for module in candidate.integration_modules() {
+        let contenders: Vec<&ModuleClaim> = held
+            .iter()
+            .filter(|claim| {
+                claim.in_flight
+                    && claim.module.contends_with(&module)
+                    && claim.task_id != candidate.task_id
+            })
+            .collect();
+        if contenders.is_empty() {
+            continue;
+        }
+        if module_isolated_by_worktree(mine, contenders.iter().copied()) {
+            continue;
+        }
+        evidence.extend(
+            contenders
+                .iter()
+                .map(|claim| RejectionEvidence::ModuleHeld {
+                    module: claim.module.clone(),
+                    task_id: claim.task_id,
+                }),
+        );
+    }
+    if evidence.is_empty() {
         return None;
     }
-    with(
-        RejectionCode::ModuleInFlight,
-        contenders
-            .iter()
-            .map(|claim| RejectionEvidence::ModuleHeld {
-                module: claim.module.clone(),
-                task_id: claim.task_id,
-            })
-            .collect(),
-    )
+    with(RejectionCode::ModuleInFlight, evidence)
 }
 
 // ---------------------------------------------------------------------------
@@ -683,7 +689,7 @@ impl Selection {
             .ok_or((RejectionCode::AuthorizationMissing, Vec::new()))?;
 
         self.spend(candidate);
-        if let Some(claim) = candidate.module_claim() {
+        for claim in candidate.module_claims() {
             self.module_claims.push(claim);
         }
         if let Some(worktree) = verified.clone() {
@@ -699,6 +705,7 @@ impl Selection {
             ordering: candidate.ordering(),
             capacity,
             module: candidate.module.clone(),
+            changed_modules: candidate.changed_modules.clone(),
             worktree: verified,
             authorization_id,
             calendar: candidate.calendar.clone(),

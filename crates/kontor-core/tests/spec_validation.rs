@@ -248,6 +248,24 @@ fn module_keys_round_trip_canonical_repository_paths() {
 }
 
 #[test]
+fn module_keys_contend_across_slash_and_dotted_holdout_spellings() {
+    let slash = ModuleKey::parse("shared/asma-core-helpers").expect("canonical path");
+    let dotted = ModuleKey::parse("shared.asma-core-helpers").expect("holdout spelling");
+    assert_eq!(slash.contention_identity(), "shared.asma-core-helpers");
+    assert_eq!(dotted.contention_identity(), "shared.asma-core-helpers");
+    assert!(slash.contends_with(&dotted));
+    assert!(dotted.contends_with(&slash));
+    // Replacing every `.` with `/` would invent `shared/asma/core/helpers`.
+    assert!(!slash.contends_with(&ModuleKey::parse("editor/asma-app-editor").expect("other")));
+    assert_eq!(
+        ModuleKey::parse("a/b/c")
+            .expect("three segments")
+            .contention_identity(),
+        "a.b.c"
+    );
+}
+
+#[test]
 fn module_keys_refuse_every_non_canonical_path_spelling() {
     for rejected in [
         // A place named two ways is two locks on one place.

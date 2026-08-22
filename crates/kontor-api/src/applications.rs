@@ -2661,6 +2661,12 @@ pub struct EpicTaskRequest {
     pub ai_short_name: Option<AiShortName>,
     /// The module the task contends for, if any.
     pub module: Option<String>,
+    /// Additional modules this task changes, besides [`Self::module`].
+    ///
+    /// Omission leaves any existing extras alone. An empty list is a declaration
+    /// that there are none, and cannot later grow.
+    #[serde(default)]
+    pub modules: Option<Vec<String>>,
     /// The source lifecycle to preserve during this import.
     ///
     /// Omission remains backward-compatible with the original apply contract
@@ -2931,6 +2937,9 @@ pub struct EpicTaskProjectionDto {
     pub revision: AggregateRevision,
     /// The module it contends for, if any.
     pub module: Option<String>,
+    /// Additional modules it changes, besides [`Self::module`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<String>,
     /// The tasks it depends on.
     #[schema(value_type = Vec<String>)]
     pub depends_on: Vec<TaskId>,

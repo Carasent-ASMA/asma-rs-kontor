@@ -900,6 +900,12 @@ pub struct Candidate {
     pub priority: u32,
     /// The module the task contends for, if any.
     pub module: Option<ModuleKey>,
+    /// Additional modules this task changes, besides [`Self::module`].
+    ///
+    /// Empty on older persisted admission evidence. Admission takes a lease for
+    /// every key in the union of this set and [`Self::module`].
+    #[serde(default)]
+    pub changed_modules: BTreeSet<ModuleKey>,
     /// The worktree it claims, if any.
     pub worktree: Option<WorktreeClaim>,
     /// Tasks that must be `done` first.
@@ -918,6 +924,23 @@ pub struct Candidate {
     pub account: AccountAdmissionEvidence,
     /// External-workflow gates.
     pub external: ExternalWorkEvidence,
+}
+
+fn integration_modules(
+    primary: Option<&ModuleKey>,
+    extras: &BTreeSet<ModuleKey>,
+) -> BTreeSet<ModuleKey> {
+    let mut modules = BTreeSet::<ModuleKey>::new();
+    if let Some(primary) = primary {
+        modules.insert(primary.clone());
+    }
+    for extra in extras {
+        if modules.iter().any(|existing| existing.contends_with(extra)) {
+            continue;
+        }
+        modules.insert(extra.clone());
+    }
+    modules
 }
 
 impl Candidate {
@@ -991,6 +1014,32 @@ impl Candidate {
             ));
         }
         self.calendar.validate()
+    }
+
+    /// Every module this candidate must take a lease on.
+    #[must_use]
+    pub fn integration_modules(&self) -> BTreeSet<ModuleKey> {
+        integration_modules(self.module.as_ref(), &self.changed_modules)
+    }
+
+    /// The module claims this candidate would hold, as the guardrail rule reads
+    /// them.
+    #[must_use]
+    pub fn module_claims(&self) -> Vec<ModuleClaim> {
+        let worktree = self
+            .worktree
+            .as_ref()
+            .and_then(WorktreeClaim::verified)
+            .cloned();
+        self.integration_modules()
+            .into_iter()
+            .map(|module| ModuleClaim {
+                module,
+                task_id: self.task_id,
+                worktree: worktree.clone(),
+                in_flight: true,
+            })
+            .collect()
     }
 }
 
@@ -1242,6 +1291,12 @@ pub struct AdmittedCandidate {
     pub capacity: CapacitySnapshot,
     /// The module lease the admission must acquire, if any.
     pub module: Option<ModuleKey>,
+    /// Additional module leases the admission must acquire.
+    ///
+    /// Empty on older persisted evidence. Never contains a key that contends
+    /// with [`Self::module`].
+    #[serde(default)]
+    pub changed_modules: BTreeSet<ModuleKey>,
     /// The verified worktree lease the admission must acquire, if any.
     pub worktree: Option<ExternalName>,
     /// The authorization that armed it.
@@ -1262,6 +1317,14 @@ pub struct AdmittedCandidate {
     pub runtime_generation: u64,
     /// The intake receipt that armed it, for event-origin work.
     pub intake_receipt_id: Option<IntakeReceiptId>,
+}
+
+impl AdmittedCandidate {
+    /// Every module this admission must take a lease on.
+    #[must_use]
+    pub fn integration_modules(&self) -> BTreeSet<ModuleKey> {
+        integration_modules(self.module.as_ref(), &self.changed_modules)
+    }
 }
 
 /// The ordered outcome of one pass.
