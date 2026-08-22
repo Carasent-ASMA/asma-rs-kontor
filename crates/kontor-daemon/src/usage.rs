@@ -43,7 +43,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use kontor_accounts::{UsageFailure, UsageReading, observe, read_chatgpt_usage};
+use kontor_accounts::{
+    UsageFailure, UsageReading, observe, read_chatgpt_usage, read_claude_usage,
+};
 use kontor_api::state::ApiState;
 use kontor_core::id::{ContentHash, CredentialAlias};
 use kontor_core::repository::{
@@ -60,18 +62,67 @@ pub const PROVIDER_HOMES_DIR: &str = "provider-homes";
 /// The credential file a ChatGPT-authenticated home keeps its tokens in.
 const CHATGPT_AUTH_FILE: &str = "auth.json";
 
-/// The provider a ChatGPT credential home authenticates, spelled as the model
-/// catalog spells it.
-const CHATGPT_PROVIDER: &str = "codex";
-
-/// Where an account's live quota is published.
+/// The credential file a Claude-authenticated home keeps its tokens in.
 ///
-/// A constant rather than configuration, and deliberately so: an operator who
-/// could point this at another host could point it at one that logs the bearer
-/// token it is handed. The endpoint belongs to the same closed decision as
-/// [`CHATGPT_AUTH_FILE`] — this build knows how to talk to one usage API, and a
-/// second vendor gets a second constant beside this one.
-const CHATGPT_USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
+/// Present in a home the operator created; **absent** in the default `~/.claude`,
+/// where the token lives in the OS keychain instead. That asymmetry is the whole
+/// reason a per-account home is the supported way to register a Claude account
+/// here: it puts the credential in a file inside a directory the operator
+/// approved, so nothing in this daemon needs to read a secret store.
+const CLAUDE_AUTH_FILE: &str = ".credentials.json";
+
+/// The beta the Claude OAuth usage endpoint requires. Omitting it is a 4xx.
+const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
+
+/// One vendor's usage API, and how to authenticate against it.
+///
+/// A closed enum rather than configuration, deliberately: an operator who could
+/// point an endpoint somewhere else could point it at a host that logs the
+/// bearer token it is handed. Adding a vendor is a code change that gets read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderApi {
+    /// Codex, authenticated by a ChatGPT account.
+    Codex,
+    /// Claude Code, authenticated by a claude.ai account.
+    Claude,
+}
+
+impl ProviderApi {
+    /// Every vendor this build can poll, in the order a home is probed.
+    const ALL: [Self; 2] = [Self::Codex, Self::Claude];
+
+    /// The provider name, spelled as the model catalog spells it.
+    const fn provider(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
+
+    /// The credential file inside a home, and the path to the token within it.
+    const fn credential(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            Self::Codex => (CHATGPT_AUTH_FILE, &["tokens", "access_token"]),
+            Self::Claude => (CLAUDE_AUTH_FILE, &["claudeAiOauth", "accessToken"]),
+        }
+    }
+
+    /// Where this account's live quota is published.
+    const fn endpoint(self) -> &'static str {
+        match self {
+            Self::Codex => "https://chatgpt.com/backend-api/wham/usage",
+            Self::Claude => "https://api.anthropic.com/api/oauth/usage",
+        }
+    }
+
+    /// Read a successful body into a reading.
+    fn read(self, body: &[u8]) -> Result<UsageReading, UsageFailure> {
+        match self {
+            Self::Codex => read_chatgpt_usage(self.provider(), body),
+            Self::Claude => read_claude_usage(self.provider(), body),
+        }
+    }
+}
 
 /// How long a single poll may take before it is abandoned.
 const POLL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -164,7 +215,7 @@ impl ProviderHomes {
     }
 }
 
-/// The bearer token a ChatGPT credential home currently holds.
+/// The bearer token one vendor's credential file in `home` currently holds.
 ///
 /// Read at the moment of use and dropped straight afterwards — never cached,
 /// never returned through a projection, never logged. A home that has been
@@ -173,20 +224,33 @@ impl ProviderHomes {
 /// that stopped being valid an hour ago.
 ///
 /// # Errors
-/// [`UsageFailure::NoCredential`] for a home with no readable ChatGPT token. The
-/// underlying I/O and parse errors are dropped rather than wrapped: their
-/// `Display` carries the path, and the path is a credential home.
-fn access_token(home: &Path) -> Result<SecretString, UsageFailure> {
-    let bytes = std::fs::read(home.join(CHATGPT_AUTH_FILE)).map_err(|_| UsageFailure::NoCredential)?;
+/// [`UsageFailure::NoCredential`] for a home with no readable token of this
+/// vendor's shape. The underlying I/O and parse errors are dropped rather than
+/// wrapped: their `Display` carries the path, and the path is a credential home.
+fn access_token(home: &Path, api: ProviderApi) -> Result<SecretString, UsageFailure> {
+    let (file, path) = api.credential();
+    let bytes = std::fs::read(home.join(file)).map_err(|_| UsageFailure::NoCredential)?;
     let document: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|_| UsageFailure::NoCredential)?;
-    document
-        .get("tokens")
-        .and_then(|tokens| tokens.get("access_token"))
+    path.iter()
+        .try_fold(&document, |node, key| node.get(key))
         .and_then(serde_json::Value::as_str)
         .filter(|token| !token.is_empty())
         .map(SecretString::from)
         .ok_or(UsageFailure::NoCredential)
+}
+
+/// Which vendor a credential home belongs to, and its token.
+///
+/// Duck-typed on the credential file rather than on a naming convention: the
+/// poller can only poll what it can authenticate, so "does this home hold a
+/// token of shape X" *is* the question "is this an X account". A home called
+/// `codex-anything` with no token is correctly skipped, and one called something
+/// else entirely is correctly polled. Nothing here trusts the alias.
+fn detect(home: &Path) -> Option<(ProviderApi, SecretString)> {
+    ProviderApi::ALL
+        .into_iter()
+        .find_map(|api| access_token(home, api).ok().map(|token| (api, token)))
 }
 
 /// Asks each account's provider what its quota is doing.
@@ -240,20 +304,18 @@ impl UsagePoller {
         let Some(home) = self.homes.get(&profile.credential_ref.alias) else {
             return Ok(None);
         };
-        // Duck-typed on the credential home rather than on a naming convention:
-        // the poller can only poll what it can authenticate, so "does this home
-        // hold a ChatGPT token" is the same question as "is this a Codex
-        // account". An alias called `codex-anything` with no token is correctly
-        // skipped, and one called something else with a token is correctly
-        // polled.
-        let token = match access_token(home) {
-            Ok(token) => token,
-            Err(_) => return Ok(None),
+        let Some((api, token)) = detect(home) else {
+            return Ok(None);
         };
-        let response = self
+        let mut request = self
             .client
-            .get(CHATGPT_USAGE_ENDPOINT)
+            .get(api.endpoint())
             .bearer_auth(token.expose_secret())
+            .header(reqwest::header::ACCEPT, "application/json");
+        if api == ProviderApi::Claude {
+            request = request.header("anthropic-beta", CLAUDE_OAUTH_BETA);
+        }
+        let response = request
             .send()
             .await
             .map_err(|_| UsageFailure::Unreachable)?;
@@ -269,7 +331,7 @@ impl UsagePoller {
             .bytes()
             .await
             .map_err(|_| UsageFailure::Unreachable)?;
-        read_chatgpt_usage(CHATGPT_PROVIDER, &body).map(Some)
+        api.read(&body).map(Some)
     }
 }
 
@@ -353,21 +415,32 @@ fn record(state: &ApiState, profile: &AccountProfile, reading: &UsageReading) ->
         None => kontor_core::id::AggregateRevision::INITIAL,
     };
 
-    // ponytail: copy the stored windows/credit. This poller still does not
-    // observe them (#82's UsageReading is header-only). set_provider_quota_state
-    // replaces the set wholesale, so writing empty here deletes operator-recorded
-    // windows on every ProviderHomes tick. Mapping UsageReading.primary is a
-    // later increment.
+    // Observed windows replace the stored set, because a live reading is better
+    // evidence than whatever was there. An **empty** reading does not: a
+    // document whose only window carried no reset instant, or a vendor that
+    // named none at all, must not delete windows an operator recorded by hand.
+    // `set_provider_quota_state` replaces the set wholesale, so "observed
+    // nothing" and "observed that there is nothing" are indistinguishable at
+    // the store — and between those two the non-destructive reading wins.
+    //
+    // `credit` is never written here at all: a `CreditBalance` carries a
+    // *reserve*, and a reserve is an operator's floor rather than anything a
+    // vendor reports. Synthesising one would invent policy.
+    let windows = if reading.windows.is_empty() {
+        existing
+            .as_ref()
+            .map(|row| row.windows.clone())
+            .unwrap_or_default()
+    } else {
+        reading.windows.clone()
+    };
     let request = NewProviderQuotaState {
         project_id: profile.project_id,
         account_profile_id: profile.id,
         provider: observed.provider.clone(),
         state: observed.kind,
         resets_at: observed.resets_at,
-        windows: existing
-            .as_ref()
-            .map(|row| row.windows.clone())
-            .unwrap_or_default(),
+        windows,
         credit: existing.as_ref().and_then(|row| row.credit),
         evidence_hash: evidence,
         source: ProviderQuotaSource::ProviderReport,
@@ -504,19 +577,22 @@ mod tests {
     }
 
     #[test]
-    fn a_home_with_no_chatgpt_credential_yields_no_token() {
+    fn a_home_with_no_credential_yields_no_token_for_any_vendor() {
         let directory = tempfile::tempdir().expect("a temporary directory");
-        assert_eq!(
-            access_token(directory.path()).expect_err("no credential"),
-            UsageFailure::NoCredential
-        );
+        for api in ProviderApi::ALL {
+            assert_eq!(
+                access_token(directory.path(), api).expect_err("no credential"),
+                UsageFailure::NoCredential
+            );
+        }
+        assert!(detect(directory.path()).is_none());
 
+        // A credential file that exists but carries no token is still no token.
         std::fs::write(directory.path().join(CHATGPT_AUTH_FILE), b"{\"tokens\":{}}")
             .expect("an empty credential");
-        assert_eq!(
-            access_token(directory.path()).expect_err("no credential"),
-            UsageFailure::NoCredential
-        );
+        std::fs::write(directory.path().join(CLAUDE_AUTH_FILE), b"{\"claudeAiOauth\":{}}")
+            .expect("an empty credential");
+        assert!(detect(directory.path()).is_none());
     }
 
     #[test]
@@ -528,9 +604,47 @@ mod tests {
         )
         .expect("a credential");
 
-        let token = access_token(directory.path()).expect("the token reads");
+        let token =
+            access_token(directory.path(), ProviderApi::Codex).expect("the token reads");
         assert_eq!(token.expose_secret(), "sk-not-a-real-token");
         assert!(!format!("{token:?}").contains("sk-not-a-real-token"));
+    }
+
+    #[test]
+    fn a_claude_home_is_recognised_by_its_own_credential_shape() {
+        // The nesting differs from Codex's — `claudeAiOauth.accessToken`, not
+        // `tokens.access_token` — so a vendor is identified by the shape of the
+        // file it wrote rather than by what the directory is called.
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        std::fs::write(
+            directory.path().join(CLAUDE_AUTH_FILE),
+            br#"{"claudeAiOauth": {"accessToken": "sk-ant-not-real",
+                 "refreshToken": "rt", "subscriptionType": "team"}}"#,
+        )
+        .expect("a credential");
+
+        let (api, token) = detect(directory.path()).expect("a claude home is detected");
+        assert_eq!(api, ProviderApi::Claude);
+        assert_eq!(api.provider(), "claude");
+        assert_eq!(token.expose_secret(), "sk-ant-not-real");
+        assert!(!format!("{token:?}").contains("sk-ant-not-real"));
+    }
+
+    #[test]
+    fn every_vendor_endpoint_is_https_and_distinct() {
+        // A downgraded scheme would put a bearer token on the wire in clear.
+        for api in ProviderApi::ALL {
+            assert!(
+                api.endpoint().starts_with("https://"),
+                "{} must be reached over TLS",
+                api.provider()
+            );
+        }
+        assert_ne!(
+            ProviderApi::Codex.endpoint(),
+            ProviderApi::Claude.endpoint(),
+            "two vendors sharing one endpoint would send each token to the other"
+        );
     }
 
     #[test]
@@ -623,7 +737,8 @@ mod tests {
             &UsageReading {
                 provider: "codex".into(),
                 limit_reached: false,
-                primary: None,
+                // The reading names no window — the case that must not delete.
+                windows: Vec::new(),
                 credits_exhausted: false,
             },
         );
@@ -645,6 +760,118 @@ mod tests {
             "a poller tick must not null the operator-recorded credit"
         );
         assert_eq!(restored.source, ProviderQuotaSource::ProviderReport);
+    }
+
+    #[test]
+    fn an_observed_window_set_replaces_the_stored_one() {
+        // The other half of the same contract. An empty reading preserves; a
+        // reading that actually names windows is better evidence than whatever
+        // was there, so it wins — otherwise a stale hand-typed 62% would
+        // outrank a live 100% for the rest of the realm's life.
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let daemon = Daemon::start(
+            DaemonConfig::at(directory.path()).with_port(0),
+            RuntimeRegistry::new(),
+        )
+        .expect("the realm starts");
+        let state = daemon.state();
+
+        let project_id = ProjectId::generate();
+        let account_profile_id = AccountProfileId::generate();
+        let created_at = parse_utc_timestamp("2026-08-22T09:00:00Z").expect("an instant");
+        let stale = vec![QuotaWindow {
+            kind: QuotaWindowKind::Weekly,
+            resets_at: parse_utc_timestamp("2026-08-23T09:35:00Z").expect("an instant"),
+            used_percent: 62,
+        }];
+        let empty = CanonicalDocument::from_value(&serde_json::json!({ "schema_version": 1 }))
+            .expect("a document");
+        let profile = state.with_store(|store| {
+            store
+                .create_project(&NewProject {
+                    id: project_id,
+                    name: ExternalName::parse("quota").expect("a name"),
+                    root_path: ExternalName::parse("/tmp/quota").expect("a path"),
+                    created_at,
+                })
+                .expect("the project is created");
+            let profile = store
+                .create_account_profile(&NewAccountProfile {
+                    id: account_profile_id,
+                    project_id,
+                    label: ExternalName::parse("personal").expect("a name"),
+                    external_account_id: None,
+                    harness: RuntimeKindKey::parse("paseo").expect("a runtime"),
+                    credential_ref: CredentialReference {
+                        kind: CredentialReferenceKind::ConfigHome,
+                        alias: CredentialAlias::parse("claude-work").expect("an alias"),
+                    },
+                    environment: empty.clone(),
+                    routing: empty.clone(),
+                    capability: empty,
+                    provider_identity: None,
+                    enabled: true,
+                    created_at,
+                })
+                .expect("the profile is created");
+            store
+                .set_provider_quota_state(&NewProviderQuotaState {
+                    project_id,
+                    account_profile_id,
+                    provider: "claude".into(),
+                    state: ProviderQuotaKind::Available,
+                    resets_at: None,
+                    windows: stale.clone(),
+                    credit: None,
+                    evidence_hash: ContentHash::of(b"the operator said so"),
+                    source: ProviderQuotaSource::Operator,
+                    observed_at: created_at,
+                    expected_revision: kontor_core::id::AggregateRevision::INITIAL,
+                    updated_at: created_at,
+                })
+                .expect("the operator row is recorded");
+            profile
+        });
+
+        let observed = vec![
+            QuotaWindow {
+                kind: QuotaWindowKind::Session,
+                resets_at: parse_utc_timestamp("2026-08-22T18:00:00Z").expect("an instant"),
+                used_percent: 7,
+            },
+            QuotaWindow {
+                kind: QuotaWindowKind::Weekly,
+                resets_at: parse_utc_timestamp("2026-08-25T09:00:00Z").expect("an instant"),
+                used_percent: 100,
+            },
+        ];
+        let written = record(
+            &state,
+            &profile,
+            &UsageReading {
+                provider: "claude".into(),
+                limit_reached: true,
+                windows: observed.clone(),
+                credits_exhausted: false,
+            },
+        );
+        assert!(written, "a changed reading is recorded");
+
+        let restored = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .expect("the read succeeds")
+            .into_iter()
+            .find(|row| row.account_profile_id == account_profile_id && row.provider == "claude")
+            .expect("the row is still there");
+        assert_eq!(restored.windows, observed, "the live reading wins");
+        assert_eq!(restored.source, ProviderQuotaSource::ProviderReport);
+        assert_eq!(restored.state, ProviderQuotaKind::Exhausted);
+        // The weekly window is the later of the two spent-or-not instants, and
+        // it is the one a scheduler must wait for.
+        assert_eq!(
+            restored.resets_at,
+            Some(parse_utc_timestamp("2026-08-25T09:00:00Z").expect("an instant"))
+        );
     }
 
     fn alias(name: &str) -> CredentialAlias {
