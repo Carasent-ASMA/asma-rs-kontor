@@ -22508,6 +22508,63 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         4,
         "a replay launched another native Committee seat"
     );
+
+    // Every consultation this epic ran must work in its own directory. The
+    // runtime admits at most one workspace per canonical path, so two
+    // consultations sharing one — which is what naming the project checkout
+    // produced — refuse the *second* epic-scoped Committee before it can spawn a
+    // single reviewer. The fake adapter does not enforce that rule, so the
+    // invariant is asserted here rather than discovered against real Paseo.
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let checkout = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_project(project_id))
+        .expect("the read succeeds")
+        .expect("the project exists")
+        .root_path
+        .as_str()
+        .to_owned();
+    let nodes = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+        .expect("the topology reads");
+    let mut consultation_cwds = Vec::new();
+    for node in nodes.iter().filter(|node| {
+        node.mini_project_id == Some(epic_id) && matches!(node.kind.as_str(), "CSW" | "ASW")
+    }) {
+        let bound = world
+            .daemon
+            .state()
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .expect("the container reads");
+        if let Some(cwd) = bound.and_then(|binding| binding.canonical_cwd) {
+            consultation_cwds.push((node.kind.as_str().to_owned(), cwd.as_str().to_owned()));
+        }
+    }
+    assert!(
+        consultation_cwds.len() >= 2,
+        "this fixture runs an Advisor and a Committee, so both must be placed: {consultation_cwds:?}"
+    );
+    for (kind, cwd) in &consultation_cwds {
+        assert_ne!(
+            cwd, &checkout,
+            "a {kind} must not be placed on the project checkout every other one shares"
+        );
+    }
+    let mut distinct = consultation_cwds
+        .iter()
+        .map(|(_, cwd)| cwd.clone())
+        .collect::<Vec<_>>();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        consultation_cwds.len(),
+        "two consultations claimed one directory: {consultation_cwds:?}"
+    );
 }
 
 #[tokio::test]
