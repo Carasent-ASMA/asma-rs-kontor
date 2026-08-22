@@ -22,20 +22,20 @@ use kontor_core::calendar::{
 };
 use kontor_core::compaction::CompactionStatus;
 use kontor_core::id::{
-    AccountProfileId, ArtifactKey, CanonicalDocument, CommandReceiptId, ContentHash, ExternalName,
-    GateKey, IdempotencyKey, IntakeReceiptId, ModuleKey, PhaseKey, ProjectId, RoleKey,
-    SchemaVersion, SkillKey, SourceEventId, SpecVersion, TaskId, Timestamp, WorkProfileKey,
-    parse_utc_timestamp, validate_module_key, validate_open_key,
+    AccountProfileId, ArtifactKey, CanonicalDocument, CommandReceiptId, ContentHash, CurrencyCode,
+    ExternalName, GateKey, IdempotencyKey, IntakeReceiptId, ModuleKey, Money, PhaseKey, ProjectId,
+    RoleKey, SchemaVersion, SkillKey, SourceEventId, SpecVersion, TaskId, Timestamp,
+    WorkProfileKey, parse_utc_timestamp, validate_module_key, validate_open_key,
 };
 use kontor_core::id::{AggregateRevision, CalendarProfileId, SCHEMA_VERSION, WorkCalendarId};
 use kontor_core::spec::ProjectSessionTopologySpec;
 use kontor_core::spec::{
-    ApprovalReceipt, AutoArmPolicy, ContextCapabilityResult, ContextClamp, ContextEnforcement,
-    ContextPolicyInputs, ContextPolicySnapshot, ContextPolicySource, ContextWindowBounds,
-    ContextWindowClass, ContextWindowPolicy, DedupExpression, EffectiveContextPolicy, EffortLevel,
-    EnvironmentKind, IntakeReceipt, IntakeResult, JsonPointer, ModelChainPolicy, ModelRef,
-    ModelRung, PersonaScenarioSnapshot, PersonaScenarioSpec, PhaseEdge, ProposedWorkGraph,
-    ProviderQuotaKind, ProviderQuotaSource, ProviderRef, RequestedContextPolicy,
+    ApprovalReceipt, AutoArmPolicy, BudgetBounds, ContextCapabilityResult, ContextClamp,
+    ContextEnforcement, ContextPolicyInputs, ContextPolicySnapshot, ContextPolicySource,
+    ContextWindowBounds, ContextWindowClass, ContextWindowPolicy, DedupExpression,
+    EffectiveContextPolicy, EffortLevel, EnvironmentKind, IntakeReceipt, IntakeResult, JsonPointer,
+    ModelChainPolicy, ModelRef, ModelRung, PersonaScenarioSnapshot, PersonaScenarioSpec, PhaseEdge,
+    ProposedWorkGraph, ProviderQuotaKind, ProviderQuotaSource, ProviderRef, RequestedContextPolicy,
     ResolvedWorkProfileSnapshot, RoleContextSeed, Shareability, ShareabilityClass,
     ShareabilityClassifier, ShareabilityProvenance, ShareabilityTier, TeamContextPolicySeed,
     TriggerSpec, WorkProfileSpec, resolve_context_window,
@@ -746,6 +746,28 @@ fn budget_bounds_are_never_open_ended() {
     let mut spec = profile();
     spec.budget_defaults.max_tokens = 0;
     assert!(spec.validate().is_err(), "a zero bound is not a bound");
+}
+
+#[test]
+fn unconstrained_budget_is_positive_and_distinct_from_a_stated_ceiling() {
+    let unbounded = BudgetBounds::unconstrained();
+    unbounded
+        .validate()
+        .expect("the omitted-arm sentinel must pass positive-value validation");
+    assert!(unbounded.is_unconstrained());
+    let stated = BudgetBounds {
+        max_tokens: 1_000,
+        max_commands: 10,
+        max_duration_seconds: 60,
+        max_cost: Money {
+            minor_units: 1,
+            currency: CurrencyCode::parse("NOK").unwrap(),
+        },
+    };
+    assert!(!stated.is_unconstrained());
+    // Currencies differ (NOK vs XXX), so `within` is false; auto-arm skips it
+    // when the grant is unconstrained rather than treating that as BudgetExceeded.
+    assert!(!stated.within(&unbounded));
 }
 
 // ---------------------------------------------------------------------------

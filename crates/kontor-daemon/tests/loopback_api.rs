@@ -3419,17 +3419,12 @@ async fn a_cyclic_or_dangling_epic_rolls_the_whole_application_back() {
     );
 }
 
-/// OP-REQ-043: a budget bounds a **runaway**, not a subscription.
+/// OP-REQ-043: omitted `budget` is no per-run ceiling.
 ///
-/// `execution:arm` used to demand four resource numbers per grant. On a
-/// subscription that is the wrong control: the money spent is an output worth
-/// reporting, quota headroom is what actually halts work, and a per-task cost
-/// ceiling cannot prevent the exhaustion that stops a fleet while it *can*
-/// refuse work that would have cost nothing. So the bounds now default from the
-/// epic's pinned work profile, and an explicit budget exists only to narrow
-/// them.
+/// Quota headroom and capacity govern unconstrained work. The pinned profile's
+/// `budget_defaults` are not substituted, and the grant reports `budget: null`.
 #[tokio::test]
-async fn arming_takes_the_pinned_profiles_budget_when_the_caller_states_none() {
+async fn arming_without_a_budget_imposes_no_profile_ceiling() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
     let created = ensure_project(&world, "arm-budget-1", "Kontor", "/tmp/kontor-arm-budget").await;
@@ -3463,7 +3458,7 @@ async fn arming_takes_the_pinned_profiles_budget_when_the_caller_states_none() {
         format!("/v1/projects/{project}/epics:apply"),
         &epic_body(
             revision,
-            "Budget-defaulted epic",
+            "Budget-omitted epic",
             &category,
             serde_json::json!([{"title": "First"}]),
         ),
@@ -3476,30 +3471,6 @@ async fn arming_takes_the_pinned_profiles_budget_when_the_caller_states_none() {
     let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
     let epic_revision = applied.json()["revision"].as_u64().expect("revision");
 
-    // The profile the epic actually pinned, read from the frozen workflow
-    // snapshot rather than copied into this test. A fixture that hardcoded the
-    // pack's numbers would keep passing after somebody changed the pack, which
-    // is exactly the drift this endpoint must not have.
-    let defaults = {
-        let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
-        world.daemon.state().with_store(|store| {
-            let task = store
-                .list_tasks(project_id)
-                .expect("the tasks read back")
-                .into_iter()
-                .next()
-                .expect("the epic has a task");
-            store
-                .get_active_task_workflow(project_id, task.id)
-                .expect("the workflow reads back")
-                .expect("the task has an active workflow")
-                .snapshot
-                .definition
-                .budget_defaults
-        })
-    };
-
-    // No `budget` key at all.
     let armed = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
         &serde_json::json!({
@@ -3509,7 +3480,7 @@ async fn arming_takes_the_pinned_profiles_budget_when_the_caller_states_none() {
             "allowed_end": "2099-01-01T00:00:00Z",
             "max_concurrency": 1,
             "granted_by": account_id,
-            "reason": "Arm without restating four numbers"
+            "reason": "Arm without a money ceiling"
         }),
     )
     .signed_as(&world, "admin")
@@ -3518,42 +3489,21 @@ async fn arming_takes_the_pinned_profiles_budget_when_the_caller_states_none() {
     .await;
     assert_eq!(
         armed.status, 200,
-        "a grant must not require the caller to restate the profile's bounds: {}",
+        "omitting budget must succeed: {}",
         armed.body
     );
-
-    // The stored authorization carries the bounds it was granted under. A
-    // receipt records what was authorized; it is not rewritten by a later change
-    // of the policy it defaulted from.
-    let granted = &armed.json()["budget"];
-    assert_eq!(
-        granted["max_tokens"].as_u64(),
-        Some(defaults.max_tokens),
-        "the grant must report the bounds it was actually taken under: {}",
+    assert!(
+        armed.json()["budget"].is_null(),
+        "omitted budget must not substitute profile defaults: {}",
         armed.body
-    );
-    assert_eq!(
-        granted["max_commands"].as_u64(),
-        Some(defaults.max_commands)
-    );
-    assert_eq!(
-        granted["max_duration_seconds"].as_u64(),
-        Some(defaults.max_duration_seconds)
-    );
-    assert_eq!(
-        granted["max_cost_minor_units"].as_u64(),
-        Some(defaults.max_cost.minor_units)
-    );
-    assert_eq!(
-        granted["cost_currency"].as_str(),
-        Some(defaults.max_cost.currency.as_str()),
-        "the currency is recorded, never converted"
     );
 }
 
-/// Explicit bounds narrow the profile's; they never widen them.
+/// Explicit bounds are stored as stated. They may exceed the pinned profile's
+/// `budget_defaults`, and a different currency is not refused. Zero is still
+/// invalid.
 #[tokio::test]
-async fn an_explicit_arming_budget_may_only_narrow_the_pinned_profiles_bounds() {
+async fn an_explicit_arming_budget_is_stored_as_stated() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
     let created = ensure_project(&world, "arm-budget-2", "Kontor", "/tmp/kontor-arm-narrow").await;
@@ -3638,11 +3588,11 @@ async fn an_explicit_arming_budget_may_only_narrow_the_pinned_profiles_bounds() 
         narrowed.body
     );
 
-    // Wider than any profile in the pack.
+    // Wider than any profile in the pack — still a valid explicit ceiling.
     let widened = arm(
-        "arm-narrow-refused",
+        "arm-wide-ok",
         serde_json::json!({
-            "max_tokens": 999_999_999_u64,
+            "max_tokens": 4_000_000_u64,
             "max_commands": 999_999,
             "max_duration_seconds": 999_999,
             "max_cost_minor_units": 999_999,
@@ -3651,16 +3601,15 @@ async fn an_explicit_arming_budget_may_only_narrow_the_pinned_profiles_bounds() 
     )
     .send(&world)
     .await;
-    assert!(
-        widened.status.is_client_error(),
-        "arming wider than the pinned profile allows is not a grant this endpoint can make: {}",
+    assert_eq!(
+        widened.status, 200,
+        "an explicit bound may exceed profile defaults: {}",
         widened.body
     );
+    assert_eq!(widened.json()["budget"]["max_tokens"], 4_000_000);
 
-    // A cost in another currency is refused rather than compared. Two
-    // currencies are not two numbers, and no rate belongs on this path.
     let other_currency = arm(
-        "arm-narrow-currency",
+        "arm-eur-ok",
         serde_json::json!({
             "max_tokens": 1000,
             "max_commands": 10,
@@ -3671,10 +3620,29 @@ async fn an_explicit_arming_budget_may_only_narrow_the_pinned_profiles_bounds() 
     )
     .send(&world)
     .await;
-    assert!(
-        other_currency.status.is_client_error(),
-        "a EUR ceiling against a NOK default must be refused, never converted: {}",
+    assert_eq!(
+        other_currency.status, 200,
+        "an explicit EUR ceiling is stored as stated: {}",
         other_currency.body
+    );
+    assert_eq!(other_currency.json()["budget"]["cost_currency"], "EUR");
+
+    let zero = arm(
+        "arm-zero-refused",
+        serde_json::json!({
+            "max_tokens": 0,
+            "max_commands": 10,
+            "max_duration_seconds": 600,
+            "max_cost_minor_units": 100,
+            "cost_currency": "NOK"
+        }),
+    )
+    .send(&world)
+    .await;
+    assert!(
+        zero.status.is_client_error(),
+        "a zero bound is still invalid: {}",
+        zero.body
     );
 }
 
@@ -3963,8 +3931,8 @@ async fn an_unarmed_epic_is_ready_without_a_grant() {
     );
 }
 
-/// A narrowing grant may omit the window and concurrency; those default the
-/// same way budget already does.
+/// A narrowing grant may omit the window and concurrency; omitted budget is
+/// unconstrained rather than a profile ceiling.
 #[tokio::test]
 async fn arming_omits_the_window_and_concurrency_when_the_caller_states_none() {
     let world = World::open_empty().await;
@@ -4032,6 +4000,11 @@ async fn arming_omits_the_window_and_concurrency_when_the_caller_states_none() {
         armed.json()["max_concurrency"],
         serde_json::json!(DEFAULT_CAPACITY.mission_max_in_flight),
         "omitted concurrency takes the realm mission ceiling: {}",
+        armed.body
+    );
+    assert!(
+        armed.json()["budget"].is_null(),
+        "omitted budget is unconstrained: {}",
         armed.body
     );
 }
@@ -13406,11 +13379,7 @@ async fn both_handoff_conditions_withhold_a_follow_up_until_each_is_satisfied() 
             "expected_revision": epic_revision, "tasks": [],
             "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
             "max_concurrency": 1,
-            // No budget: it takes the pinned profile's own `budget_defaults`.
-            // These fixtures state that profile's numbers in NOK while the
-            // profile declares them in EUR, and `execution:arm` refuses a
-            // cross-currency ceiling rather than comparing two currencies as
-            // two numbers (OP-REQ-042).
+            // No budget: unconstrained. Quota headroom and capacity govern.
             "granted_by": account_id, "reason": "Run alpha"
         }),
     )
@@ -13671,11 +13640,7 @@ async fn the_artifact_condition_alone_withholds_a_follow_up_once_the_phase_is_me
             "expected_revision": epic_revision, "tasks": [],
             "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
             "max_concurrency": 1,
-            // No budget: it takes the pinned profile's own `budget_defaults`.
-            // These fixtures state that profile's numbers in NOK while the
-            // profile declares them in EUR, and `execution:arm` refuses a
-            // cross-currency ceiling rather than comparing two currencies as
-            // two numbers (OP-REQ-042).
+            // No budget: unconstrained. Quota headroom and capacity govern.
             "granted_by": account_id, "reason": "Run alpha"
         }),
     )
@@ -14462,11 +14427,7 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
             "expected_revision": epic_revision, "tasks": [],
             "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
             "max_concurrency": 1,
-            // No budget: it takes the omega profile's own `budget_defaults`,
-            // which are these numbers in the profile's own currency. Stating
-            // them here in NOK against a EUR default is the cross-currency
-            // comparison OP-REQ-042 forbids, and `execution:arm` now refuses it
-            // rather than comparing two currencies as two numbers.
+            // No budget: unconstrained. Quota headroom and capacity govern.
             "granted_by": account_id, "reason": "Run omega"
         }),
     )

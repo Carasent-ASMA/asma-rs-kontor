@@ -819,7 +819,8 @@ pub struct ExecutionAuthorization {
     pub allowed_start: TimeRange,
     /// Maximum concurrent runs it authorizes.
     pub max_concurrency: u32,
-    /// Budget bounds it authorizes.
+    /// Budget bounds it authorizes, or [`BudgetBounds::unconstrained`] when the
+    /// arm omitted a ceiling.
     pub budget: BudgetBounds,
     /// Who created it.
     pub created_by: AccountProfileId,
@@ -833,7 +834,7 @@ impl ExecutionAuthorization {
     /// Validate the authorization.
     ///
     /// # Errors
-    /// Rejects an inverted start range, zero concurrency or an unbounded budget.
+    /// Rejects an inverted start range, zero concurrency or a zero budget bound.
     pub fn validate(&self) -> DomainResult<()> {
         self.allowed_start.validate()?;
         if self.max_concurrency == 0 {

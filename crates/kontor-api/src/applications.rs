@@ -3013,12 +3013,10 @@ pub struct AuthorizationProjectionDto {
     pub allowed_end: Timestamp,
     /// Maximum concurrent runs it authorizes.
     pub max_concurrency: u32,
-    /// The bounds this grant was actually taken under.
-    ///
-    /// Reported because a receipt records what was authorized. When the grant
-    /// defaulted from the pinned work profile, this is what it defaulted to —
-    /// and a later change to that profile does not rewrite it.
-    pub budget: BudgetBoundsDto,
+    /// The bounds this grant was actually taken under, or `null` when the arm
+    /// omitted a ceiling. Quota headroom and capacity govern unconstrained arms.
+    #[schema(nullable)]
+    pub budget: Option<BudgetBoundsDto>,
     /// Whether it has been disarmed, and when.
     #[schema(value_type = Option<String>, format = DateTime)]
     pub revoked_at: Option<Timestamp>,
@@ -3126,19 +3124,11 @@ pub struct ArmRequest {
     /// Maximum concurrent runs. Omitted takes the realm's mission ceiling.
     #[serde(default)]
     pub max_concurrency: Option<u32>,
-    /// The budget ceiling, when the caller narrows it.
+    /// Optional per-run ceiling. Absent means no budget constraint.
     ///
-    /// Absent takes the pinned work profile's `budget_defaults`. A budget bounds
-    /// a **runaway**, not a subscription: `max_commands` and
-    /// `max_duration_seconds` are genuine stops on a looping seat and
-    /// `max_tokens` is a recorded quantity, none of which depends on how the
-    /// account is billed. `max_cost` is no longer a per-task ceiling — on a
-    /// subscription the money spent is an output worth reporting, and capping it
-    /// per task cannot prevent the quota exhaustion that actually halts work
-    /// while it *can* refuse work that would have cost nothing.
-    ///
-    /// Supplied bounds may only narrow the profile's. Arming wider than the
-    /// pinned profile allows is not a grant this endpoint can make.
+    /// Quota headroom and capacity govern unconstrained work. Stated bounds are
+    /// validated as positive and stored as stated; they do not have to sit
+    /// inside the pinned profile's `budget_defaults`.
     #[serde(default)]
     pub budget: Option<BudgetBoundsRequest>,
     /// The account profile acting as the granting authority.

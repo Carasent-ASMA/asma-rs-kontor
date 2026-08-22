@@ -8587,7 +8587,7 @@
               },
               {
                 "$ref": "#/components/schemas/BudgetBoundsRequest",
-                "description": "The budget ceiling, when the caller narrows it.\n\nAbsent takes the pinned work profile's `budget_defaults`. A budget bounds\na **runaway**, not a subscription: `max_commands` and\n`max_duration_seconds` are genuine stops on a looping seat and\n`max_tokens` is a recorded quantity, none of which depends on how the\naccount is billed. `max_cost` is no longer a per-task ceiling — on a\nsubscription the money spent is an output worth reporting, and capping it\nper task cannot prevent the quota exhaustion that actually halts work\nwhile it *can* refuse work that would have cost nothing.\n\nSupplied bounds may only narrow the profile's. Arming wider than the\npinned profile allows is not a grant this endpoint can make."
+                "description": "Optional per-run ceiling. Absent means no budget constraint.\n\nQuota headroom and capacity govern unconstrained work. Stated bounds are\nvalidated as positive and stored as stated; they do not have to sit\ninside the pinned profile's `budget_defaults`."
               }
             ]
           },
@@ -8672,8 +8672,7 @@
           "selected_tasks",
           "allowed_start",
           "allowed_end",
-          "max_concurrency",
-          "budget"
+          "max_concurrency"
         ],
         "properties": {
           "allowed_end": {
@@ -8691,8 +8690,15 @@
             "description": "The authorization."
           },
           "budget": {
-            "$ref": "#/components/schemas/BudgetBoundsDto",
-            "description": "The bounds this grant was actually taken under.\n\nReported because a receipt records what was authorized. When the grant\ndefaulted from the pinned work profile, this is what it defaulted to —\nand a later change to that profile does not rewrite it."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BudgetBoundsDto",
+                "description": "The bounds this grant was actually taken under, or `null` when the arm\nomitted a ceiling. Quota headroom and capacity govern unconstrained arms."
+              }
+            ]
           },
           "max_concurrency": {
             "type": "integer",
